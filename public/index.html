@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Autoloop 控制台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%228%22 fill=%22%23157a65%22/%3E%3Ctext x=%2216%22 y=%2222%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2218%22 font-weight=%22700%22 fill=%22white%22%3EA%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="Autoloop 控制台首页"><span class="brand-mark" aria-hidden="true">A</span><span>Autoloop <strong>控制台</strong></span></a>
+    <div class="header-actions"><span id="connection" class="connection" role="status"><span class="dot"></span>正在连接</span><button id="refresh" class="button secondary" type="button">刷新</button></div>
+  </header>
+  <nav class="navigation" aria-label="控制台工作区">
+    <button class="nav-item active" data-view="overview" aria-current="page">总览</button>
+    <button class="nav-item" data-view="rules">调度规则</button>
+    <button class="nav-item" data-view="runs">执行轮次</button>
+    <button class="nav-item" data-view="cards">待调度处理 <span id="card-count" class="count" hidden>0</span></button>
+  </nav>
+  <main>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <section id="view-overview" class="view" aria-labelledby="overview-title">
+      <div class="page-heading"><div><p class="eyebrow">PILOT OVERVIEW</p><h1 id="overview-title">今天的自动化</h1><p class="subtle">看见进展，只处理真正需要你的事。</p></div></div>
+      <div id="summary" class="summary-grid" aria-live="polite"></div>
+      <div class="work-grid" aria-live="polite">
+        <section class="panel"><div class="panel-heading"><h2>正在运行</h2><span class="subtle">最近 5 条</span></div><div id="running-list" class="list compact-list"></div></section>
+        <section class="panel"><div class="panel-heading"><h2>等待重试</h2><span class="subtle">最近 5 条</span></div><div id="retrying-list" class="list compact-list"></div></section>
+        <section class="panel"><div class="panel-heading"><h2>今日完成</h2><span class="subtle">最近 5 条</span></div><div id="done-list" class="list compact-list"></div></section>
+        <section class="panel"><div class="panel-heading"><h2>待调度处理</h2><span class="subtle">最近 5 条</span></div><div id="attention-list" class="list compact-list"></div></section>
+      </div>
+      <div class="overview-grid">
+        <section class="panel"><div class="panel-heading"><h2>运行环境</h2><span class="subtle">实时状态</span></div><div id="environment-list" class="list"></div></section>
+      </div>
+      <section class="panel"><div class="panel-heading"><h2>接下来的复查</h2><span class="subtle">到期后才会调用 Agent</span></div><div id="timer-list" class="list"></div></section>
+    </section>
+    <section id="view-rules" class="view" hidden aria-labelledby="rules-title">
+      <div class="page-heading"><div><p class="eyebrow">SCHEDULING</p><h1 id="rules-title">调度规则</h1><p class="subtle">定义何时工作，由谁执行，以及在哪里执行。</p></div><button id="new-rule" class="button primary" type="button">新建规则</button></div>
+      <div id="rules-list" class="rule-grid"></div>
+    </section>
+    <section id="view-runs" class="view" hidden aria-labelledby="runs-title">
+      <div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h1 id="runs-title">执行轮次</h1><p class="subtle">每个结果都能追溯，异常不会被静默吞掉。</p></div></div>
+      <div id="runs-list" class="run-list"></div>
+    </section>
+    <section id="view-cards" class="view" hidden aria-labelledby="cards-title">
+      <div class="page-heading"><div><p class="eyebrow">HUMAN DECISIONS</p><h1 id="cards-title">待我处理</h1><p class="subtle">回答后，任务会接回原会话继续。</p></div></div>
+      <div id="cards-list" class="card-list"></div>
+    </section>
+  </main>
+  <dialog id="rule-dialog" aria-labelledby="rule-dialog-title"><div id="rule-form-container"></div></dialog>
+  <script type="module" src="/app.mjs"></script>
+</body>
+</html>
