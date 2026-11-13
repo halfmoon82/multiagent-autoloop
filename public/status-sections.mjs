@@ -11,6 +11,9 @@ export function projectForRun(run, rules = []) {
   const rule = rules.find(item => item.name === run.rule);
   return String(rule?.cwd || '').trim() || '未识别';
 }
+export function projectForCard(card) {
+  return String(card.project || card.cwd || '').trim() || '未识别';
+}
 export function runLine(run, models = {}, rules = []) {
   const text = run.error || run.summary || '暂无概要';
   return { id: run.id, rule: run.rule, project: projectForRun(run, rules), state: run.state, status: run.state === 'queued' && run.attempts > 0 ? '等待重试' : statusLabel(run.state), text, attempts: run.attempts || 0, model: models[run.agent] || '未配置', billing: billingText(run) };

@@ -13,7 +13,7 @@ const output = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const snapshot = {
   seq: 1, totals: { running: 1, queued: 2, retrying: 0, unknown: 0, doneToday: 3 },
   spending: { today: { rounds: 4, tokens: 1234, cost: 0.12, missingCost: 0 } },
-  cards: [{ id: 9, state: 'open', title: '是否继续测试', text: '这是一个不产生模型费用的假卡片。', options: ['继续', '暂停'] }, { id: 10, state: 'open', title: '直接结案测试', text: '不需要继续执行。', options: [] }],
+  cards: [{ id: 9, state: 'open', title: '是否继续测试', text: '这是一个不产生模型费用的假卡片。', options: ['继续', '暂停'] }, { id: 10, state: 'open', title: '直接结案测试', text: '不需要继续执行。', options: [] }, { id: 11, state: 'open', title: '恢复测试', text: '规则同名卡片不得误认项目。', options: [] }],
   agents: [{ id: 'fake', name: '无模型 Agent', worker: 'test', online: true }], channels: [{ id: 'desktop', name: '桌面通知', online: true }],
   lines: [{ name: '恢复测试', paused: null }], runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '' }], timers: [],
 };
@@ -41,6 +41,8 @@ try {
   assert.equal(await page.locator('#attention-list').count(), 1, 'overview must have one attention list');
   assert.match(await page.locator('#summary').innerText(), /今日完成/); assert.match(await page.locator('#summary').innerText(), /1,234/);
   assert.ok((await page.locator('#running-list').innerText()).includes(`项目 · ${root}`), 'overview task summary must show its project');
+  const collisionCard = page.locator('#attention-list .list-row').filter({ hasText: '规则同名卡片不得误认项目' });
+  assert.ok((await collisionCard.innerText()).includes('项目 · 未识别'), 'decision card project must not be inferred from a title collision');
   await page.screenshot({ path: path.join(output, 'console-desktop.png'), fullPage: true });
   await page.getByRole('button', { name: '调度规则', exact: true }).click();
   const beforeDismiss = hub.requests.length; acceptDialogs = false;

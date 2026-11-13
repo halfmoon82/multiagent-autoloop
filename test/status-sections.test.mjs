@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitRunSections, runLine, projectForRun } from '../public/status-sections.mjs';
+import { splitRunSections, runLine, projectForRun, projectForCard } from '../public/status-sections.mjs';
 const snapshot = { models: { claude: '默认模型' }, runs: [
   { id: 1, rule: '开发', state: 'claimed', summary: '正在改' },
   { id: 2, rule: '部署', state: 'queued', attempts: 3, error: '连接失败' },
@@ -32,4 +32,11 @@ test('task lines identify their project from run data or the matching rule workd
   assert.equal(projectForRun({ rule: '不存在' }, rules), '未识别');
   assert.equal(runLine({ id: 11, rule: '开发', state: 'claimed' }, {}, rules).project, '/workspace/demo');
   assert.equal(splitRunSections({ runs: [{ id: 12, rule: '部署', state: 'claimed' }] }, {}, new Date(), rules).running[0].project, '/workspace/deploy');
+});
+
+test('decision cards never infer project from a title collision with a rule name', () => {
+  const rules = [{ name: '开发', cwd: '/workspace/demo' }];
+  assert.equal(projectForCard({ title: '开发', text: '卡片标题与规则同名' }, rules), '未识别');
+  assert.equal(projectForCard({ title: '开发', project: '显式卡片项目' }, rules), '显式卡片项目');
+  assert.equal(projectForCard({ title: '开发', cwd: '/workspace/card' }, rules), '/workspace/card');
 });

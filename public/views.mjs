@@ -1,9 +1,9 @@
 import { formatState, formatTime, statusLabel, scheduleLabel } from './format.mjs';
-import { splitRunSections, projectForRun } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
-const projectText = project => `项目 · ${project || '未识别'}`;
+const projectText = project => `项目 · ${project}`;
 export function renderSummary(snapshot) {
   const view = formatState(snapshot);
   const items = [
@@ -85,7 +85,7 @@ export function renderAttention(snapshot, rules = []) {
   const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules);
   const items = [];
   for (const card of (snapshot.cards || []).filter(card => card.state === 'open').slice(0, 5)) {
-    items.push({ id: card.id, rule: card.title, project: projectForRun(card, rules), status: '待调度', text: card.text || card.result || '需要处理', attempts: 0 });
+    items.push({ id: card.id, rule: card.title, project: projectForCard(card), status: '待调度', text: card.text || card.result || '需要处理', attempts: 0 });
   }
   items.push(...sections.needsAttention);
   return renderRunSection(items.slice(0, 5), '没有等待调度处理的事。');
