@@ -14,7 +14,8 @@ test('GET /api/state returns the hub snapshot without sending the key back', asy
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.seq, 7);
-    assert.equal(body.secret, 'Bearer server-secret');
+    assert.equal(body.secret, 'Bearer [已隐藏]');
+    assert.equal(JSON.stringify(body).includes('server-secret'), false);
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
     assert.match(response.headers.get('content-security-policy'), /default-src 'self'/);
     assert.equal(hub.requests[0].url, '/v1/state');

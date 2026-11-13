@@ -34,3 +34,33 @@ test('reads model labels from the configured HOME', () => {
   writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ modelId: 'claude-test' }));
   assert.deepEqual(readLabels(home), { codex: 'codex-test', workbuddy: 'workbuddy-test', claude: 'claude-test' });
 });
+
+test('caches model discovery instead of rescanning logs on every refresh', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'autoloop-model-cache-'));
+  const day = path.join(home, '.codebuddy', 'logs', '2026-11-13');
+  mkdirSync(day, { recursive: true });
+  const log = path.join(day, 'session.jsonl');
+  writeFileSync(log, '{"model":"workbuddy-before"}\n');
+  const script = `
+    import { writeFileSync } from 'node:fs';
+    import { modelLabels } from ${JSON.stringify(moduleUrl)};
+    const first = modelLabels();
+    writeFileSync(${JSON.stringify(log)}, '{"model":"workbuddy-after"}\\n');
+    const second = modelLabels();
+    process.stdout.write(JSON.stringify({ first, second }));
+  `;
+  const output = execFileSync(process.execPath, ['--input-type=module', '--eval', script], {
+    env: { ...process.env, HOME: home }, encoding: 'utf8',
+  });
+  const { first, second } = JSON.parse(output);
+  assert.equal(first.workbuddy, 'workbuddy-before');
+  assert.equal(second.workbuddy, 'workbuddy-before');
+});
+
+test('finds a recent WorkBuddy model when it is beyond the log read window', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'autoloop-model-tail-'));
+  const day = path.join(home, '.codebuddy', 'logs', '2026-11-13');
+  mkdirSync(day, { recursive: true });
+  writeFileSync(path.join(day, 'large.jsonl'), `${'x'.repeat(300 * 1024)}\n{"model":"workbuddy-tail"}\n`);
+  assert.equal(readLabels(home).workbuddy, 'workbuddy-tail');
+});

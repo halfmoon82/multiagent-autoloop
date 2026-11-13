@@ -35,11 +35,16 @@ try {
   context = await chromium.launchPersistentContext(profile, { channel: 'chrome', headless: true, viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage(); const errors = [];
   page.on('response', response => { if (response.status() >= 400) console.log('HTTP DIAGNOSTIC:', response.status(), response.url()); }); page.on('pageerror', error => errors.push(error.message)); page.on('console', message => { if (message.type() === 'error') errors.push(`${message.text()} at ${JSON.stringify(message.location())}`); });
-  page.on('dialog', dialog => dialog.accept());
+  let acceptDialogs = true;
+  page.on('dialog', dialog => acceptDialogs ? dialog.accept() : dialog.dismiss());
   await page.goto(url); await page.getByRole('heading', { name: '今天的自动化' }).waitFor();
+  assert.equal(await page.locator('#attention-list').count(), 1, 'overview must have one attention list');
   assert.match(await page.locator('#summary').innerText(), /今日完成/); assert.match(await page.locator('#summary').innerText(), /1,234/);
   await page.screenshot({ path: path.join(output, 'console-desktop.png'), fullPage: true });
   await page.getByRole('button', { name: '调度规则', exact: true }).click();
+  const beforeDismiss = hub.requests.length; acceptDialogs = false;
+  await page.locator('[data-action="pause"]').click(); await page.waitForTimeout(150);
+  assert.equal(hub.requests.length, beforeDismiss, 'dismissing pause must not call the hub'); acceptDialogs = true;
   await page.locator('[data-action="pause"]').click(); await page.locator('[data-action="resume"]').waitFor();
   await page.locator('[data-action="resume"]').click(); await page.locator('[data-action="pause"]').waitFor();
   await page.locator('[data-action="run"]').click();

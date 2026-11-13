@@ -51,7 +51,12 @@ document.addEventListener('click', async event => {
     if (action === 'cancel' && !confirm(`确定停止第 ${id} 轮？`)) return;
     if (action === 'edit') { const rule = state.rules.find(item => item.name === id); openRuleForm({ rule, agents: state.agents, sources: state.sources, api, onSaved: refresh }); return; }
     if (action === 'answer-choice') { const split = id.lastIndexOf(':'); await api(`/api/cards/${id.slice(0, split)}/answer`, { method: 'POST', body: JSON.stringify({ choice: Number(id.slice(split + 1)) }) }); showNotice('回答已提交，任务将继续。'); await refresh(); return; }
-    const body = ['pause', 'resolve'].includes(action) ? { reason: prompt(action === 'pause' ? '暂停原因（可留空）' : '结案说明') || '' } : {};
+    let body = {};
+    if (['pause', 'resolve'].includes(action)) {
+      const reason = prompt(action === 'pause' ? '暂停原因（可留空）' : '结案说明');
+      if (reason === null) return;
+      body = { reason };
+    }
     await perform(action, id, body);
   } catch (error) { showNotice(error.message); } finally { button.disabled = false; }
 });
