@@ -1,0 +1,40 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+
+# Test and browser artifacts
+playwright-report/
+test-results/
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+master.key
+
+# Autoloop runtime state: never publish real rules, databases, or logs
+state/
+/rules.json
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.pid
+
+# Local agent workspaces and generated deliverables
+work/
+outputs/
+.worktrees/
+worktrees/
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
