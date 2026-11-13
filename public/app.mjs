@@ -24,9 +24,9 @@ function render() {
   if (!state.snapshot) return;
   const draftAnswers = Object.fromEntries([...document.querySelectorAll('form[data-action="answer-text"]')].map(form => [form.dataset.id, form.elements.answer.value]));
   replace('summary', renderSummary(state.snapshot));
-  const work = renderWorkSections(state.snapshot);
+  const work = renderWorkSections(state.snapshot, state.rules);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers(state.snapshot));
-  replace('rules-list', renderRules(state.snapshot, state.rules, state.models)); replace('runs-list', renderRuns(state.snapshot)); replace('cards-list', renderCards(state.snapshot));
+  replace('rules-list', renderRules(state.snapshot, state.rules, state.models)); replace('runs-list', renderRuns(state.snapshot, state.rules)); replace('cards-list', renderCards(state.snapshot));
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined) form.elements.answer.value = draftAnswers[form.dataset.id]; });
   const count = state.snapshot.cards?.filter(card => card.state === 'open').length || 0; $('card-count').textContent = String(count); $('card-count').hidden = !count;
 }

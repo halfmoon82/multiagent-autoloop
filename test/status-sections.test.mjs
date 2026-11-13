@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitRunSections, runLine } from '../public/status-sections.mjs';
+import { splitRunSections, runLine, projectForRun, projectForCard } from '../public/status-sections.mjs';
 const snapshot = { models: { claude: '默认模型' }, runs: [
   { id: 1, rule: '开发', state: 'claimed', summary: '正在改' },
   { id: 2, rule: '部署', state: 'queued', attempts: 3, error: '连接失败' },
@@ -22,4 +22,21 @@ test('run lines include model and billing status', () => {
   assert.equal(paid.model, '默认模型'); assert.equal(paid.billing, '$1.50');
   const unpaid = runLine({ id: 10, rule: '开发', agent: 'workbuddy', state: 'done', usage: { input: 100, output: 10 } }, { workbuddy: 'hy4free' });
   assert.equal(unpaid.model, 'hy4free'); assert.equal(unpaid.billing, '110 Token · 费用未上报');
+});
+
+test('task lines identify their project from run data or the matching rule workdir', () => {
+  const rules = [{ name: '开发', cwd: '/workspace/demo' }, { name: '部署', cwd: '/workspace/deploy' }];
+  assert.equal(projectForRun({ project: '显式项目' }, rules), '显式项目');
+  assert.equal(projectForRun({ cwd: '/workspace/run-cwd' }, rules), '/workspace/run-cwd');
+  assert.equal(projectForRun({ rule: '开发' }, rules), '/workspace/demo');
+  assert.equal(projectForRun({ rule: '不存在' }, rules), '未识别');
+  assert.equal(runLine({ id: 11, rule: '开发', state: 'claimed' }, {}, rules).project, '/workspace/demo');
+  assert.equal(splitRunSections({ runs: [{ id: 12, rule: '部署', state: 'claimed' }] }, {}, new Date(), rules).running[0].project, '/workspace/deploy');
+});
+
+test('decision cards never infer project from a title collision with a rule name', () => {
+  const rules = [{ name: '开发', cwd: '/workspace/demo' }];
+  assert.equal(projectForCard({ title: '开发', text: '卡片标题与规则同名' }, rules), '未识别');
+  assert.equal(projectForCard({ title: '开发', project: '显式卡片项目' }, rules), '显式卡片项目');
+  assert.equal(projectForCard({ title: '开发', cwd: '/workspace/card' }, rules), '/workspace/card');
 });
