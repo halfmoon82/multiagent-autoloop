@@ -1,0 +1,17 @@
+{
+  "name": "multiagent-autoloop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "start": "node scripts/start.mjs",
+    "test:browser": "node test/browser.spec.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0"
+  }
+}

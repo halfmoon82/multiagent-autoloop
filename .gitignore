@@ -38,3 +38,6 @@ worktrees/
 .idea/
 .vscode/
 *.swp
+
+# Local console screenshots
+console-*.png
