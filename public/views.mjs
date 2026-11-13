@@ -1,8 +1,9 @@
 import { formatState, formatTime, statusLabel, scheduleLabel } from './format.mjs';
-import { splitRunSections } from './status-sections.mjs';
+import { splitRunSections, projectForRun } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
+const projectText = project => `项目 · ${project || '未识别'}`;
 export function renderSummary(snapshot) {
   const view = formatState(snapshot);
   const items = [
@@ -29,7 +30,7 @@ export function renderRules(snapshot, rules, models = {}) {
     const card = el('article', `rule-card${line?.paused ? ' paused' : ''}`); card.dataset.rule = rule.name;
     const top = el('div', 'rule-top'); top.append(el('div', 'rule-name', rule.name), badge(line?.paused ? '已暂停' : '运行中', line?.paused ? 'warn' : 'good'));
     const description = el('p', 'rule-description', rule.prompt || '未填写处理说明');
-    const meta = el('div', 'rule-meta'); meta.append(el('span', 'chip', scheduleLabel(rule)), el('span', 'chip', `Agent · ${rule.to}`), el('span', 'chip', `模型 · ${models[rule.to] || '未配置'}`), el('span', 'chip', rule.resume ? '续接会话' : '新会话'));
+    const meta = el('div', 'rule-meta'); meta.append(el('span', 'chip', scheduleLabel(rule)), el('span', 'chip', projectText(rule.cwd)), el('span', 'chip', `Agent · ${rule.to}`), el('span', 'chip', `模型 · ${models[rule.to] || '未配置'}`), el('span', 'chip', rule.resume ? '续接会话' : '新会话'));
     const actions = el('div', 'actions');
     actions.append(button('立即运行', 'run', rule.name, 'secondary', !!line?.paused));
     actions.append(button(line?.paused ? '恢复' : '暂停', line?.paused ? 'resume' : 'pause', rule.name, 'secondary'));
@@ -38,12 +39,12 @@ export function renderRules(snapshot, rules, models = {}) {
   });
 }
 function button(text, action, id, style = 'secondary', disabled = false) { const node = el('button', `button ${style}`, text); node.type = 'button'; node.dataset.action = action; node.dataset.id = id; node.disabled = disabled; return node; }
-export function renderRuns(snapshot) {
+export function renderRuns(snapshot, rules = []) {
   const runs = snapshot.runs || [];
   if (!runs.length) return [el('div', 'empty', '还没有执行轮次。')];
   return runs.map(run => {
     const card = el('article', 'run-card'); const top = el('div', 'run-top'); const title = el('div'); title.append(el('div', 'run-name', `#${run.id} · ${run.rule}`), el('div', 'row-meta', `${run.agent} · ${formatTime(run.createdAt)} · 尝试 ${run.attempts || 0} 次`)); top.append(title, badge(statusLabel(run.state), run.state === 'unknown' ? 'bad' : run.state === 'done' ? 'good' : ''));
-    const summary = el('p', `run-summary${run.error ? ' run-error' : ''}`, run.error || run.summary || '这一轮还没有结论。');
+    const summary = el('p', `run-summary${run.error ? ' run-error' : ''}`, `${projectText(projectForRun(run, rules))}\n${run.error || run.summary || '这一轮还没有结论。'}`);
     card.append(top, summary);
     if (run.link && /^(https?:|codex:|claude:)/.test(run.link)) { const link = el('a', 'text-button', '打开原会话'); link.href = run.link; link.rel = 'noreferrer'; card.append(link); }
     if (['claimed', 'queued'].includes(run.state)) { const actions = el('div', 'actions'); actions.append(button('停止这一轮', 'cancel', String(run.id), 'danger')); card.append(actions); }
@@ -71,7 +72,7 @@ export function renderCards(snapshot) {
 function runRow(item) {
   const row = el('div', 'list-row');
   const text = el('div');
-  text.append(el('div', 'row-title', `#${item.id} · ${item.rule}`), el('div', 'row-meta', `${item.status}${item.attempts ? ` · 第 ${item.attempts} 次` : ''} · 模型 · ${item.model} · ${item.text}`));
+  text.append(el('div', 'row-title', `#${item.id} · ${item.rule}`), el('div', 'row-meta', `${projectText(item.project)} · ${item.status}${item.attempts ? ` · 第 ${item.attempts} 次` : ''} · 模型 · ${item.model} · ${item.text}`));
   if (item.state === 'done' || item.state === 'nothing') text.append(el('div', 'row-meta', `计费 · ${item.billing}`));
   row.append(text);
   return row;
@@ -80,21 +81,21 @@ export function renderRunSection(items, emptyText) {
   if (!items.length) return [el('div', 'empty', emptyText)];
   return items.map(runRow);
 }
-export function renderAttention(snapshot) {
-  const sections = splitRunSections(snapshot, snapshot.models || {});
+export function renderAttention(snapshot, rules = []) {
+  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules);
   const items = [];
   for (const card of (snapshot.cards || []).filter(card => card.state === 'open').slice(0, 5)) {
-    items.push({ id: card.id, rule: card.title, status: '待调度', text: card.text || card.result || '需要处理', attempts: 0 });
+    items.push({ id: card.id, rule: card.title, project: projectForRun(card, rules), status: '待调度', text: card.text || card.result || '需要处理', attempts: 0 });
   }
   items.push(...sections.needsAttention);
   return renderRunSection(items.slice(0, 5), '没有等待调度处理的事。');
 }
-export function renderWorkSections(snapshot) {
-  const sections = splitRunSections(snapshot, snapshot.models || {});
+export function renderWorkSections(snapshot, rules = []) {
+  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules);
   return {
     running: renderRunSection(sections.running, '没有正在运行的任务。'),
     retrying: renderRunSection(sections.retrying, '没有等待重试的任务。'),
     doneToday: renderRunSection(sections.doneToday, '今天还没有完成任务。'),
-    attention: renderAttention(snapshot),
+    attention: renderAttention(snapshot, rules),
   };
 }
