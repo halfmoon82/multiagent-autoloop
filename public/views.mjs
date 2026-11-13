@@ -51,6 +51,28 @@ export function renderRuns(snapshot, rules = []) {
     return card;
   });
 }
+export function renderSchedulingSessions(sessions = []) {
+  if (!sessions.length) return [el('div', 'empty', '还没有开启的调度会话。')];
+  return sessions.map(session => {
+    const card = el('article', 'run-card');
+    const top = el('div', 'run-top');
+    const title = el('div');
+    const status = session.statusText || session.status || '未知';
+    title.append(
+      el('div', 'run-name', `${session.agent || 'Codex ACP'} · ${session.id}`),
+      el('div', 'row-meta', `ACP · ${session.sessionId || '未识别'} · ${formatTime(session.createdAt)}${session.stopReason ? ` · ${session.stopReason}` : ''}`),
+    );
+    top.append(title, badge(status, session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
+    const summary = el('p', `run-summary${session.error ? ' run-error' : ''}`, session.error || `${projectText(session.cwd || '未识别')} · ${status}`);
+    card.append(top, summary);
+    if (!['closing', 'closed'].includes(session.status)) {
+      const actions = el('div', 'actions');
+      actions.append(button('关闭会话', 'close-session', session.id, 'danger'));
+      card.append(actions);
+    }
+    return card;
+  });
+}
 export function renderCards(snapshot) {
   const cards = (snapshot.cards || []).filter(card => ['open', 'decided'].includes(card.state));
   if (!cards.length) return [el('div', 'empty', '没有等待您回答的卡片。')];

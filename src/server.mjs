@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { HubError, hubRequest } from './hub.mjs';
 import { readRuleOptions, saveRule, RuleError } from './rules.mjs';
 import { modelLabels } from './models.mjs';
+import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-session.mjs';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const FILES = new Map([
@@ -37,10 +38,13 @@ function idOf(text) { const id = Number(text); if (!/^[1-9][0-9]*$/.test(text) |
 async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/state') return jsonResponse(res, 200, await hubRequest(config, '/v1/state'));
   if (req.method === 'GET' && url.pathname === '/api/rules') return jsonResponse(res, 200, { ...readRuleOptions(config), models: modelLabels() });
+  if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
   if (!['POST', 'PUT'].includes(req.method)) return false;
   checkWrite(req); const body = await readJson(req);
+  if (req.method === 'POST' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 201, await config.schedulingSessions.start({ prompt: body.prompt }));
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   let match;
+  if ((match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/close$/))) return jsonResponse(res, 200, await config.schedulingSessions.close(decodeURIComponent(match[1])));
   if (req.method === 'PUT' && (match = url.pathname.match(/^\/api\/rules\/([^/]+)$/))) return jsonResponse(res, 200, await saveRule(config, body, decodeURIComponent(match[1])));
   if ((match = url.pathname.match(/^\/api\/rules\/([^/]+)\/(run|pause|resume)$/))) {
     const name = decodeURIComponent(match[1]); const action = match[2];
@@ -55,14 +59,15 @@ async function handleApi(config, req, res, url) {
   }
   return false;
 }
-export function createConsoleServer(config) {
-  return http.createServer(async (req, res) => {
+export function createConsoleServer(config, schedulingSessions = new SchedulingSessionManager()) {
+  config = { ...config, schedulingSessions };
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const host = req.headers.host?.split(':')[0]?.toLowerCase();
     if (!['127.0.0.1', 'localhost'].includes(host)) return jsonResponse(res, 403, { error: '控制台只接受本机地址' });
     try { if (url.pathname.startsWith('/api/') && await handleApi(config, req, res, url) !== false) return; }
     catch (error) {
-      const status = error instanceof RequestError || error instanceof RuleError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
+      const status = error instanceof RequestError || error instanceof RuleError || error instanceof SchedulingSessionError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
       return jsonResponse(res, status, { error: error.message });
     }
     const asset = FILES.get(url.pathname);
@@ -72,4 +77,6 @@ export function createConsoleServer(config) {
     }
     return jsonResponse(res, 404, { error: '没有这个控制台地址' });
   });
+  server.on('close', () => schedulingSessions.dispose?.());
+  return server;
 }

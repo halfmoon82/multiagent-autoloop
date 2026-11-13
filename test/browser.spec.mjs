@@ -18,6 +18,12 @@ const snapshot = {
   lines: [{ name: '恢复测试', paused: null }], runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '' }], timers: [],
 };
 const rawRules = { sources: { local: { name: '本机' } }, agents: { fake: { name: '无模型 Agent', use: 'command', access: 'read' } }, rules: [{ name: '恢复测试', when: { source: 'local', types: ['recovery.*'] }, to: 'fake', cwd: root, prompt: '只验证控制台', resume: false }], elsewhere: [] };
+const schedulingSessions = {
+  records: [],
+  async list() { return this.records; },
+  async start({ prompt } = {}) { const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, status: 'running', statusText: '运行中', prompt: prompt || '默认调度说明', createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' }; this.records.push(session); return session; },
+  async close(id) { this.records = this.records.filter(session => session.id !== id); return { id, status: 'closed', statusText: '已关闭' }; },
+};
 const rulesFile = path.join(root, 'rules.json'); writeFileSync(rulesFile, JSON.stringify(rawRules));
 const cliPath = path.join(root, 'check.sh'); writeFileSync(cliPath, '#!/bin/sh\nexit 0\n'); chmodSync(cliPath, 0o700);
 const hub = await fakeHub((req, res) => {
@@ -28,7 +34,7 @@ const hub = await fakeHub((req, res) => {
   if (req.url.endsWith('/resume')) { snapshot.lines[0].paused = null; return json(res, { changed: true }); }
   return json(res, { ok: true });
 });
-const consoleServer = createConsoleServer({ hubUrl: hub.url, ownerKey: 'not-returned', rulesFile, cliPath, root });
+const consoleServer = createConsoleServer({ hubUrl: hub.url, ownerKey: 'not-returned', rulesFile, cliPath, root }, schedulingSessions);
 const url = await listen(consoleServer);
 let context;
 try {
@@ -65,6 +71,13 @@ try {
   try { await page.locator('dialog').waitFor({ state: 'hidden', timeout: 5000 }); }
   catch (error) { console.log('DIALOG DIAGNOSTIC:', await page.locator('dialog').innerText()); console.log('HUB REQUESTS:', hub.requests.map(x => x.url)); throw error; }
   const saved = JSON.parse(readFileSync(rulesFile, 'utf8')); assert.equal(saved.rules.at(-1).name, '手机创建测试');
+  await page.getByRole('button', { name: '调度会话', exact: true }).click();
+  await page.getByRole('button', { name: '开启调度会话', exact: true }).click();
+  const sessionCard = page.locator('#sessions-list .run-card').filter({ hasText: 'browser-session' });
+  await sessionCard.waitFor();
+  assert.ok((await sessionCard.innerText()).includes(`项目 · ${root}`), 'scheduling session must show its project');
+  await page.getByRole('button', { name: '关闭会话', exact: true }).click();
+  await page.getByText('还没有开启的调度会话').waitFor();
   await page.screenshot({ path: path.join(output, 'console-mobile.png'), fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);

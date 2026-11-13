@@ -27,6 +27,7 @@
 | `src/config.mjs` | 外部运行目录、Hub 地址、服务端密钥和监听配置 | 浏览器配置、业务规则 |
 | `src/hub.mjs` | Autoloop Hub 请求、超时和错误转换 | 路由级参数校验、任意 URL 代理 |
 | `src/rules.mjs` | 规则表单转换、草稿校验和原子替换 | Agent 权限定义、目标项目执行 |
+| `src/scheduling-session.mjs` | 本地 Codex ACP 调度会话启动、状态与关闭 | 浏览器直接启动进程、自动审批权限 |
 | `src/models.mjs` | 本机模型标签的只读发现与默认文案 | 模型计费推断、凭证采集 |
 | `src/server.mjs` | 本机 HTTP API、静态资源、安全校验和路由允许列表 | 调度业务状态存储 |
 | `public/` | 状态展示、表单和交互 | 密钥、直接 Hub 访问、业务文件写入 |
