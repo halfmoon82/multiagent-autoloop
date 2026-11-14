@@ -49,10 +49,17 @@ Codex / WorkBuddy / Claude Code 等执行平台
 - 事务：先写草稿，调用当前安装版 `agent-autoloop check`，成功后原子替换；失败保持原文件字节不变。
 - 权限：access 属于 Agent，不属于单条 Rule。
 
+### 调度会话 `src/scheduling-session.mjs`
+
+- 输入：服务端固定启动 `@agentclientprotocol/codex-acp`，工作目录固定为本仓库根目录。
+- 输出：本地 ACP 会话 ID、状态、Codex 适配器信息和关闭结果。
+- 安全：浏览器不能指定启动命令、工作目录或环境变量；ACP 权限请求一律取消，不自动代批。
+- 生命周期：控制台进程持有连接；关闭会话会发送 `session/close` 并终止适配器进程。
+
 ### HTTP 服务 `src/server.mjs`
 
 - 拥有：静态资源、`/api/*` 路由、参数校验、本机 Host/Origin 校验和统一错误响应。
-- 写操作：同源、自定义 `x-console-request`、JSON body、数字 ID 和固定动作允许列表。
+- 写操作：同源、自定义 `x-console-request`、JSON body、数字 ID 和固定动作允许列表；调度会话使用单独的只读列表、开启和关闭路由。
 - 状态：无独立业务数据库；状态事实源仍是外部 Autoloop Hub。
 
 ### 模型标签 `src/models.mjs`

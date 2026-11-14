@@ -16,13 +16,14 @@
   <nav class="navigation" aria-label="控制台工作区">
     <button class="nav-item active" data-view="overview" aria-current="page">总览</button>
     <button class="nav-item" data-view="rules">调度规则</button>
+    <button class="nav-item" data-view="sessions">调度会话</button>
     <button class="nav-item" data-view="runs">执行轮次</button>
     <button class="nav-item" data-view="cards">待调度处理 <span id="card-count" class="count" hidden>0</span></button>
   </nav>
   <main>
     <div id="notice" class="notice" role="status" hidden></div>
     <section id="view-overview" class="view" aria-labelledby="overview-title">
-      <div class="page-heading"><div><p class="eyebrow">PILOT OVERVIEW</p><h1 id="overview-title">今天的自动化</h1><p class="subtle">看见进展，只处理真正需要你的事。</p></div></div>
+      <div class="page-heading"><div><p class="eyebrow">PILOT OVERVIEW</p><h1 id="overview-title">今天的自动化</h1><p class="subtle">看见进展，只处理真正需要你的事。</p></div><label class="subtle project-filter">项目 <select id="project-filter" aria-label="按项目筛选"></select></label></div>
       <div id="summary" class="summary-grid" aria-live="polite"></div>
       <div class="work-grid" aria-live="polite">
         <section class="panel"><div class="panel-heading"><h2>正在运行</h2><span class="subtle">最近 5 条</span></div><div id="running-list" class="list compact-list"></div></section>
@@ -38,6 +39,10 @@
     <section id="view-rules" class="view" hidden aria-labelledby="rules-title">
       <div class="page-heading"><div><p class="eyebrow">SCHEDULING</p><h1 id="rules-title">调度规则</h1><p class="subtle">定义何时工作，由谁执行，以及在哪里执行。</p></div><button id="new-rule" class="button primary" type="button">新建规则</button></div>
       <div id="rules-list" class="rule-grid"></div>
+    </section>
+    <section id="view-sessions" class="view" hidden aria-labelledby="sessions-title">
+      <div class="page-heading"><div><p class="eyebrow">COORDINATION</p><h1 id="sessions-title">调度会话</h1><p class="subtle">每个会话绑定一个项目标识；按项目并行开启，权限请求不会自动批准。</p></div><div class="session-start"><input id="session-project" placeholder="项目标识（owner/repo）" aria-label="项目标识"><button id="start-session" class="button primary" type="button">开启调度会话</button></div></div>
+      <div id="sessions-list" class="run-list"></div>
     </section>
     <section id="view-runs" class="view" hidden aria-labelledby="runs-title">
       <div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h1 id="runs-title">执行轮次</h1><p class="subtle">每个结果都能追溯，异常不会被静默吞掉。</p></div></div>

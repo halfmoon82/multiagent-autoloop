@@ -1,4 +1,4 @@
-import { formatState, formatTime, statusLabel, scheduleLabel } from './format.mjs';
+import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
 import { splitRunSections, projectForRun, projectForCard } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
@@ -23,14 +23,22 @@ export function renderTimers(snapshot) {
   if (!(snapshot.timers || []).length) return [el('div', 'empty', '没有等待到期的复查。')];
   return snapshot.timers.map(timer => { const row = el('div', 'list-row'); const text = el('div'); text.append(el('div', 'row-title', timer.rule), el('div', 'row-meta', timer.about || timer.key)); row.append(text, el('time', 'row-meta', formatTime(timer.at))); return row; });
 }
+function projectChip(cwd) {
+  const full = String(cwd || '').trim();
+  const chip = el('span', 'chip', `项目 · ${projectName(full)}`);
+  if (full) chip.title = full;
+  return chip;
+}
 export function renderRules(snapshot, rules, models = {}) {
   if (!rules.length) return [el('div', 'empty', '还没有调度规则，点击“新建规则”开始。')];
   return rules.map(rule => {
     const line = (snapshot.lines || []).find(item => item.name === rule.name);
+    const status = ruleLineStatus(line);
     const card = el('article', `rule-card${line?.paused ? ' paused' : ''}`); card.dataset.rule = rule.name;
-    const top = el('div', 'rule-top'); top.append(el('div', 'rule-name', rule.name), badge(line?.paused ? '已暂停' : '运行中', line?.paused ? 'warn' : 'good'));
+    const top = el('div', 'rule-top'); top.append(el('div', 'rule-name', rule.name), badge(status.label, status.kind));
     const description = el('p', 'rule-description', rule.prompt || '未填写处理说明');
-    const meta = el('div', 'rule-meta'); meta.append(el('span', 'chip', scheduleLabel(rule)), el('span', 'chip', projectText(rule.cwd)), el('span', 'chip', `Agent · ${rule.to}`), el('span', 'chip', `模型 · ${models[rule.to] || '未配置'}`), el('span', 'chip', rule.resume ? '续接会话' : '新会话'));
+    const meta = el('div', 'rule-meta'); meta.append(el('span', 'chip', scheduleLabel(rule)), projectChip(rule.cwd), el('span', 'chip', `Agent · ${rule.to}`), el('span', 'chip', `模型 · ${models[rule.to] || '未配置'}`), el('span', 'chip', rule.resume ? '续接会话' : '新会话'));
+    if (status.detail) meta.append(el('span', 'chip', status.detail));
     const actions = el('div', 'actions');
     actions.append(button('立即运行', 'run', rule.name, 'secondary', !!line?.paused));
     actions.append(button(line?.paused ? '恢复' : '暂停', line?.paused ? 'resume' : 'pause', rule.name, 'secondary'));
@@ -44,10 +52,62 @@ export function renderRuns(snapshot, rules = []) {
   if (!runs.length) return [el('div', 'empty', '还没有执行轮次。')];
   return runs.map(run => {
     const card = el('article', 'run-card'); const top = el('div', 'run-top'); const title = el('div'); title.append(el('div', 'run-name', `#${run.id} · ${run.rule}`), el('div', 'row-meta', `${run.agent} · ${formatTime(run.createdAt)} · 尝试 ${run.attempts || 0} 次`)); top.append(title, badge(statusLabel(run.state), run.state === 'unknown' ? 'bad' : run.state === 'done' ? 'good' : ''));
-    const summary = el('p', `run-summary${run.error ? ' run-error' : ''}`, `${projectText(projectForRun(run, rules))}\n${run.error || run.summary || '这一轮还没有结论。'}`);
-    card.append(top, summary);
+    const project = projectForRun(run, rules);
+    const summary = el('p', `run-summary${run.error ? ' run-error' : ''}`, `${run.error || run.summary || '这一轮还没有结论。'}`);
+    card.append(top, projectChip(project), summary);
     if (run.link && /^(https?:|codex:|claude:)/.test(run.link)) { const link = el('a', 'text-button', '打开原会话'); link.href = run.link; link.rel = 'noreferrer'; card.append(link); }
     if (['claimed', 'queued'].includes(run.state)) { const actions = el('div', 'actions'); actions.append(button('停止这一轮', 'cancel', String(run.id), 'danger')); card.append(actions); }
+    return card;
+  });
+}
+function chatBubble(message) {
+  const bubble = el('div', `bubble ${message.role === 'user' ? 'user' : 'agent'}`);
+  bubble.append(el('div', 'bubble-text', message.text), el('div', 'bubble-time', formatTime(message.at)));
+  return bubble;
+}
+export function renderSchedulingSessions(sessions = []) {
+  if (!sessions.length) return [el('div', 'empty', '还没有开启的调度会话。')];
+  return sessions.map(session => {
+    const card = el('article', 'run-card session-card');
+    const top = el('div', 'run-top');
+    const title = el('div');
+    const status = session.statusText || session.status || '未知';
+    title.append(
+      el('div', 'run-name', `${session.agent || 'Codex ACP'} · ${session.id.slice(0, 8)}`),
+      el('div', 'row-meta', `ACP · ${session.sessionId || '未识别'} · ${formatTime(session.createdAt)}${session.stopReason ? ` · ${session.stopReason}` : ''}`),
+    );
+    top.append(title, badge(status, session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
+    const meta = el('div', 'rule-meta');
+    meta.append(el('span', 'chip', `项目 · ${session.project || '未识别'}`), el('span', 'chip', `更新 · ${formatTime(session.updatedAt)}`));
+    card.append(top, meta);
+    if (session.error) card.append(el('p', 'run-summary run-error', session.error));
+
+    const closed = ['closing', 'closed'].includes(session.status);
+    const log = el('div', 'chat-log');
+    for (const message of session.messages || []) log.append(chatBubble(message));
+    if (session.liveText) {
+      const streaming = el('div', 'bubble agent streaming');
+      streaming.append(el('div', 'bubble-text', session.liveText), el('div', 'bubble-time', '正在输出…'));
+      log.append(streaming);
+    }
+    if (!(session.messages || []).length && !session.liveText) log.append(el('div', 'empty', session.busy ? 'Agent 正在处理首轮调度分析…' : '还没有对话，发一条消息开始。'));
+    card.append(log);
+
+    if (!closed) {
+      const form = el('form', 'session-message');
+      form.dataset.action = 'session-message'; form.dataset.id = session.id;
+      const input = el('input'); input.name = 'message'; input.required = true;
+      input.placeholder = session.busy ? 'Agent 正在回复…' : '继续指挥这次调度，例如：现在重点看哪一项？';
+      input.disabled = !!session.busy;
+      input.setAttribute('aria-label', `发消息给会话 ${session.id}`);
+      const submit = button(session.busy ? '等待回复' : '发送', '', '', 'primary');
+      submit.type = 'submit'; submit.disabled = !!session.busy;
+      form.append(input, submit);
+      card.append(form);
+      const actions = el('div', 'actions');
+      actions.append(button('关闭会话', 'close-session', session.id, 'danger'));
+      card.append(actions);
+    }
     return card;
   });
 }
@@ -72,7 +132,9 @@ export function renderCards(snapshot) {
 function runRow(item) {
   const row = el('div', 'list-row');
   const text = el('div');
-  text.append(el('div', 'row-title', `#${item.id} · ${item.rule}`), el('div', 'row-meta', `${projectText(item.project)} · ${item.status}${item.attempts ? ` · 第 ${item.attempts} 次` : ''} · 模型 · ${item.model} · ${item.text}`));
+  const project = el('span', 'chip', `项目 · ${item.projectName || projectName(item.project)}`); if (item.project && item.project !== '未识别') project.title = item.project;
+  const metaLine = el('div', 'row-meta'); metaLine.append(project, document.createTextNode(` · ${item.status}${item.attempts ? ` · 第 ${item.attempts} 次` : ''} · 模型 · ${item.model} · ${item.text}`));
+  text.append(el('div', 'row-title', `#${item.id} · ${item.rule}`), metaLine);
   if (item.state === 'done' || item.state === 'nothing') text.append(el('div', 'row-meta', `计费 · ${item.billing}`));
   row.append(text);
   return row;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitRunSections, runLine, projectForRun, projectForCard } from '../public/status-sections.mjs';
+import { splitRunSections, runLine, projectForRun, projectForCard, matchesProject, collectProjects } from '../public/status-sections.mjs';
 const snapshot = { models: { claude: '默认模型' }, runs: [
   { id: 1, rule: '开发', state: 'claimed', summary: '正在改' },
   { id: 2, rule: '部署', state: 'queued', attempts: 3, error: '连接失败' },
@@ -39,4 +39,25 @@ test('decision cards never infer project from a title collision with a rule name
   assert.equal(projectForCard({ title: '开发', text: '卡片标题与规则同名' }, rules), '未识别');
   assert.equal(projectForCard({ title: '开发', project: '显式卡片项目' }, rules), '显式卡片项目');
   assert.equal(projectForCard({ title: '开发', cwd: '/workspace/card' }, rules), '/workspace/card');
+});
+
+test('project filter matches by project basename across identifier styles', () => {
+  assert.equal(matchesProject('/workspace/demo', ''), true);
+  assert.equal(matchesProject('/workspace/demo', '/workspace/demo'), true);
+  assert.equal(matchesProject('/workspace/demo', 'owner/demo'), true);
+  assert.equal(matchesProject('/workspace/demo', '/workspace/demo2'), false);
+  assert.equal(matchesProject('/alpha/demo', '/beta/demo'), true);
+  assert.equal(matchesProject('未识别', '未识别'), true);
+  assert.equal(matchesProject('', ''), true);
+});
+
+test('collectProjects gathers unique project identities across rules, runs, cards and sessions', () => {
+  const rules = [{ name: '开发', cwd: '/workspace/demo' }];
+  const projects = collectProjects({
+    rules,
+    runs: [{ rule: '开发' }, { project: '/elsewhere/beta' }, { project: '/elsewhere/beta' }],
+    cards: [{}, { project: '显式卡片项目' }],
+    sessions: [{ project: 'owner/demo' }, {}],
+  });
+  assert.deepEqual(projects, ['/workspace/demo', '/elsewhere/beta', '未识别', '显式卡片项目', 'owner/demo']);
 });

@@ -24,3 +24,22 @@ export function scheduleLabel(rule) {
   if (rule.when?.source) return `${rule.when.source} · ${(rule.when.types || []).join(', ')}`;
   return '手动触发';
 }
+
+export function projectName(cwd) {
+  const text = String(cwd || '').trim().replace(/[\/]+$/, '');
+  if (!text) return '未识别';
+  const base = text.split(/[\/]/).filter(Boolean).pop();
+  return base || text;
+}
+export function ruleLineStatus(line) {
+  if (line?.paused) {
+    const until = line.paused.until ? `，至 ${formatTime(line.paused.until)}` : '';
+    return { label: '已暂停', kind: 'warn', detail: `暂停原因 · ${line.paused.reason || '未填写'}${until}` };
+  }
+  const totals = line?.totals || {};
+  if (totals.running > 0) return { label: '运行中', kind: 'good', detail: `进行中 ${totals.running} 轮` };
+  if (totals.retrying > 0) return { label: '等待重试', kind: 'warn', detail: `等待重试 ${totals.retrying} 轮` };
+  if (totals.queued > 0) return { label: '排队中', kind: '', detail: `排队 ${totals.queued} 轮` };
+  const next = line?.next ? `下次运行 · ${formatTime(line.next)}` : '';
+  return { label: '待命', kind: '', detail: next };
+}
