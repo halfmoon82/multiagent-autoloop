@@ -5,6 +5,8 @@ const MAX_DEPTH = 4;
 const CACHE_TTL_MS = 30000;
 let cache = { key: null, at: 0, value: [] };
 const SKIP_DIRS = new Set(['node_modules', 'Library', 'Pods', 'vendor']);
+// 临时产物命名约定：探针/排练/工作流状态目录与标记待删的目录不是可调度项目
+const JUNK_NAME = /(待删|-(workflow-state|probe|rehearsal)(-r\d+)?$)/;
 
 export function discoverGitProjects({ roots = [], rules = [] } = {}) {
   const cacheKey = roots.join('|');
@@ -13,7 +15,8 @@ export function discoverGitProjects({ roots = [], rules = [] } = {}) {
   }
   const found = new Map();
   const consider = dir => {
-    if (!dir || /[\s\x00-\x1f\x7f]/.test(dir)) return false;
+    if (!dir || /[\x00-\x1f\x7f]/.test(dir)) return false;
+    if (JUNK_NAME.test(path.basename(dir))) return false;
     if (!existsSync(path.join(dir, '.git'))) return false;
     const key = path.resolve(dir);
     if (!found.has(key)) found.set(key, { name: path.basename(key), path: key });
@@ -25,6 +28,7 @@ export function discoverGitProjects({ roots = [], rules = [] } = {}) {
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(entry.name)) continue;
       walk(path.join(dir, entry.name), depth + 1);
     }
   };
@@ -38,10 +42,20 @@ function mergeRuleProjects(discovered, rules) {
   const found = new Map(discovered.map(project => [project.path, project]));
   for (const rule of rules || []) {
     const cwd = rule?.cwd;
-    if (!cwd || /[\s\x00-\x1f\x7f]/.test(cwd)) continue;
+    if (!cwd || /[\x00-\x1f\x7f]/.test(cwd)) continue;
     if (!existsSync(path.join(cwd, '.git'))) continue;
     const key = path.resolve(cwd);
     if (!found.has(key)) found.set(key, { name: path.basename(key), path: key });
   }
-  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  return dedupeShallowest([...found.values()]).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+}
+
+function dedupeShallowest(projects) {
+  const byName = new Map();
+  for (const project of projects) {
+    const depth = project.path.split(path.sep).length;
+    const current = byName.get(project.name);
+    if (!current || depth < current.depth) byName.set(project.name, { project, depth });
+  }
+  return [...byName.values()].map(entry => entry.project);
 }

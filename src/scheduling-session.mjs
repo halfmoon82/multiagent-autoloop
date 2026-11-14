@@ -201,7 +201,7 @@ export class SchedulingSessionManager {
   #validateProject(project) {
     const text = String(project ?? '').trim();
     if (!text) throw new SchedulingSessionError('请选择被调度的项目');
-    if (/[\s\x00-\x1f\x7f]/.test(text)) throw new SchedulingSessionError('项目标识不能包含空格或控制字符');
+    if (/[\x00-\x1f\x7f]/.test(text)) throw new SchedulingSessionError('项目标识不能包含控制字符');
     return text;
   }
 
