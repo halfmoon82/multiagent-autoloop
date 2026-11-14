@@ -357,6 +357,9 @@ test('scheduling prompt instructs native MCP tools first and keeps the console A
   const text = fake.requests.find(request => request.method === 'session/prompt').params.prompt[0].text;
   assert.match(text, /autoloop-hub MCP 工具/);
   assert.match(text, /list_rules\/list_runs\/list_cards/);
+  assert.match(text, /resume_rule\/run_rule/);
+  assert.match(text, /自愈闭环/);
+  assert.match(text, /最多重试 3 次/);
   assert.doesNotMatch(text, /curl/);
   await manager.close(manager.list()[0].id);
 });

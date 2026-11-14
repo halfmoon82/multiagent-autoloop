@@ -183,7 +183,7 @@ test('stdio server answers initialize, tools/list and tools/call over JSON-RPC',
     assert.equal(init.result.serverInfo.name, SERVER_NAME);
     assert.deepEqual(init.result.capabilities, { tools: {} });
     const toolList = responses.get(2).result.tools.map(tool => tool.name);
-    assert.deepEqual(toolList.sort(), ['list_cards', 'list_rules', 'list_runs']);
+    assert.deepEqual(toolList.sort(), ['list_cards', 'list_rules', 'list_runs', 'pause_rule', 'resume_rule', 'run_rule']);
     const cards = JSON.parse(responses.get(3).result.content[0].text);
     assert.deepEqual(cards.cards.map(card => card.id), [21, 23]);
     const bad = responses.get(4);
@@ -194,4 +194,81 @@ test('stdio server answers initialize, tools/list and tools/call over JSON-RPC',
 
 test('the MCP script path advertised by the console exists', () => {
   assert.ok(existsSync(HUB_TOOLS_PATH));
+});
+
+test('write tools post to the same hub actions as the console buttons with the right payloads', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'autoloop-mcp-write-'));
+  const requests = [];
+  const hub = await fakeHub((req, res, body) => {
+    requests.push({ method: req.method, url: req.url, body: JSON.parse(body || '{}') });
+    json(res, { changed: true });
+  });
+  writeFileSync(path.join(home, 'config.json'), JSON.stringify({ url: hub.url, owner: OWNER_SECRET }));
+  writeFileSync(path.join(home, 'rules.json'), JSON.stringify({ rules: [], agents: {}, sources: {} }));
+  const config = { root: home, hubUrl: hub.url, ownerKey: OWNER_SECRET, rulesFile: path.join(home, 'rules.json') };
+  const auditLines = [];
+  const originalError = console.error;
+  console.error = (...args) => { auditLines.push(args.join(' ')); };
+  try {
+    const resumed = await handleToolCall('resume_rule', { name: '恢复测试', reason: '自愈完成' }, { config });
+    assert.deepEqual(resumed, { changed: true });
+    const paused = await handleToolCall('pause_rule', { name: '额度耗尽规则' }, { config });
+    assert.deepEqual(paused, { changed: true });
+    const ran = await handleToolCall('run_rule', { name: '开发', subject: 'demo-fix', reason: '重触发' }, { config });
+    assert.deepEqual(ran, { changed: true });
+    assert.deepEqual(requests.map(request => `${request.method} ${request.url}`), [
+      'POST /v1/rules/%E6%81%A2%E5%A4%8D%E6%B5%8B%E8%AF%95/resume',
+      'POST /v1/rules/%E9%A2%9D%E5%BA%A6%E8%80%97%E5%B0%BD%E8%A7%84%E5%88%99/pause',
+      'POST /v1/rules/%E5%BC%80%E5%8F%91/run',
+    ]);
+    assert.deepEqual(requests[0].body, { reason: '自愈完成' });
+    assert.deepEqual(requests[1].body, {});
+    assert.deepEqual(requests[2].body, { subject: 'demo-fix', reason: '重触发' });
+    for (const request of requests) assert.equal(request.body.reason === OWNER_SECRET, false);
+  } finally {
+    console.error = originalError;
+    await close(hub.server);
+  }
+  assert.deepEqual(auditLines.map(line => line.replace(/name=.* ok$/, 'name=<rule> ok')), [
+    '[autoloop-hub] 写工具审计: resume_rule name=<rule> ok',
+    '[autoloop-hub] 写工具审计: pause_rule name=<rule> ok',
+    '[autoloop-hub] 写工具审计: run_rule name=<rule> ok',
+  ]);
+  assert.equal(auditLines.join('\n').includes(OWNER_SECRET), false, '审计日志不得携带密钥');
+});
+
+test('write tools validate a non-empty rule name and never leak the owner key', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'autoloop-mcp-write-'));
+  const hub = await fakeHub((req, res) => json(res, { changed: true }));
+  writeFileSync(path.join(home, 'config.json'), JSON.stringify({ url: hub.url, owner: OWNER_SECRET }));
+  writeFileSync(path.join(home, 'rules.json'), JSON.stringify({ rules: [], agents: {}, sources: {} }));
+  const config = { root: home, hubUrl: hub.url, ownerKey: OWNER_SECRET, rulesFile: path.join(home, 'rules.json') };
+  try {
+    for (const tool of ['resume_rule', 'pause_rule', 'run_rule']) {
+      await assert.rejects(() => handleToolCall(tool, { name: '' }, { config }), /name/);
+      await assert.rejects(() => handleToolCall(tool, {}, { config }), /name/);
+      await assert.rejects(() => handleToolCall(tool, { name: 42 }, { config }), /name/);
+    }
+    const failing = await fakeHub((req, res) => json(res, { error: 'resume boom' }, 502));
+    const failingConfig = { ...config, hubUrl: failing.url };
+    try {
+      await assert.rejects(() => handleToolCall('resume_rule', { name: 'x' }, { config: failingConfig }), /resume boom/);
+      const error = await handleToolCall('resume_rule', { name: 'x' }, { config: failingConfig }).catch(e => e);
+      assert.equal(String(error.message).includes(OWNER_SECRET), false);
+    } finally { await close(failing.server); }
+  } finally { await close(hub.server); }
+});
+
+test('write tool results never contain the owner key', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'autoloop-mcp-write-'));
+  const hub = await fakeHub((req, res) => json(res, { changed: true, echo: req.headers.authorization }));
+  writeFileSync(path.join(home, 'config.json'), JSON.stringify({ url: hub.url, owner: OWNER_SECRET }));
+  writeFileSync(path.join(home, 'rules.json'), JSON.stringify({ rules: [], agents: {}, sources: {} }));
+  const config = { root: home, hubUrl: hub.url, ownerKey: OWNER_SECRET, rulesFile: path.join(home, 'rules.json') };
+  try {
+    for (const tool of ['resume_rule', 'pause_rule', 'run_rule']) {
+      const result = await handleToolCall(tool, { name: '开发' }, { config });
+      assert.equal(JSON.stringify(result).includes(OWNER_SECRET), false, `${tool} leaked the owner key`);
+    }
+  } finally { await close(hub.server); }
 });
