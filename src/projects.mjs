@@ -13,7 +13,8 @@ export function discoverGitProjects({ roots = [], rules = [] } = {}) {
   }
   const found = new Map();
   const consider = dir => {
-    if (!dir || !existsSync(path.join(dir, '.git'))) return false;
+    if (!dir || /[\s\x00-\x1f\x7f]/.test(dir)) return false;
+    if (!existsSync(path.join(dir, '.git'))) return false;
     const key = path.resolve(dir);
     if (!found.has(key)) found.set(key, { name: path.basename(key), path: key });
     return true;

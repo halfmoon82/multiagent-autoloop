@@ -77,9 +77,9 @@ export class SchedulingSessionManager {
   async start({ prompt = DEFAULT_SCHEDULING_PROMPT, project } = {}) {
     const projectId = this.#validateProject(project);
     const text = this.#validatePrompt(`${DEFAULT_PROJECT_LINE(projectId)}\n${String(prompt ?? '')}`);
-    if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个调度会话`);
     const duplicate = [...this.sessions.values()].find(session => session.project === projectId);
     if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的调度会话（${duplicate.id.slice(0, 8)}），请先关闭再开启`);
+    if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个调度会话`);
     if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
 
     const child = this.spawnFn(process.execPath, [this.adapterPath], {
@@ -201,7 +201,7 @@ export class SchedulingSessionManager {
   #validateProject(project) {
     const text = String(project ?? '').trim();
     if (!text) throw new SchedulingSessionError('请选择被调度的项目');
-    if (/\s/.test(text)) throw new SchedulingSessionError('项目标识不能包含空格');
+    if (/[\s\x00-\x1f\x7f]/.test(text)) throw new SchedulingSessionError('项目标识不能包含空格或控制字符');
     return text;
   }
 

@@ -51,9 +51,13 @@ function syncProjectFilter() {
   select.value = state.projectFilter;
   $('clear-project-filter').hidden = !state.projectFilter;
   const projectSelect = $('session-project');
-  const previousProject = projectSelect.value;
-  projectSelect.replaceChildren(...[el('option', '', state.projects.length ? '选择被调度的项目' : '未发现 Git 项目（配置 AUTOLOOP_PROJECT_ROOTS）'), ...state.projects.map(project => { const option = el('option', '', project.name); option.value = project.path; option.title = project.path; return option; })]);
-  if (state.projects.some(project => project.path === previousProject)) projectSelect.value = previousProject;
+  const projectsKey = state.projects.map(project => `${project.name}${project.path}`).join('|');
+  if (projectsKey !== state.projectsKey) {
+    state.projectsKey = projectsKey;
+    const previousProject = projectSelect.value;
+    projectSelect.replaceChildren(...[el('option', '', state.projects.length ? '选择被调度的项目' : '未发现 Git 项目（配置 AUTOLOOP_PROJECT_ROOTS）'), ...state.projects.map(project => { const option = el('option', '', project.name); option.value = project.path; option.title = project.path; return option; })]);
+    if (state.projects.some(project => project.path === previousProject)) projectSelect.value = previousProject;
+  }
 }
 
 function render() {

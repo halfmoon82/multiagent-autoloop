@@ -18,12 +18,20 @@ function fixture() {
   return root;
 }
 
-test('discovers git repos under roots up to depth 3, skipping hidden and node_modules', () => {
+test('discovers git repos under roots up to depth 4, skipping hidden and node_modules', () => {
   const root = fixture();
   const projects = discoverGitProjects({ roots: [root] });
   const names = projects.map(project => project.name);
   assert.deepEqual(names, ['alpha', 'beta']);
   assert.ok(projects.every(project => project.path.startsWith(root)));
+});
+
+test('skips repos whose path contains whitespace or control characters', () => {
+  const root = fixture();
+  mkdirSync(path.join(root, 'my project', '.git'), { recursive: true });
+  const projects = discoverGitProjects({ roots: [root] });
+  assert.ok(!projects.some(project => project.name === 'my project'));
+  assert.deepEqual(projects.map(project => project.name), ['alpha', 'beta']);
 });
 
 test('merges rule workdirs that are git repos even without roots', () => {
