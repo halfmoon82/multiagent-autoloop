@@ -87,6 +87,7 @@ npm run test:browser
 - `main` 是稳定线；功能开发使用 `feat/<topic>`，修复使用 `fix/<topic>`。
 - 小步原子提交，提交信息说明架构意图和验证证据；不把无关格式化混入行为修改。
 - 并行 AI 修改使用独立 worktree；不得同时编辑同一目录。
+- 派发必开 worktree（硬约束，2026-11-14 多起共享 checkout 碰撞事故后确立）：任何 worker 会话（AI 开发/改造任务）必须先 `git worktree add .worktrees/<任务名> -b feat/<topic>` 开局（任务名 kebab-case ASCII）、在 worktree 内开发与提交，禁止在共享 checkout（仓库主 checkout）直接开发；监工派发 prompt 必须显式写入该指令；主 checkout 常驻 main，只保留给控制台服务运行与文档级小修。会话收尾须回收 worktree（合并后 archive/remove）。违反此约束造成的碰撞（分支被切走、垃圾文件混入提交、服务部署被堵）由当事会话负责清理。
 - 提交前运行适用测试、`git diff --check`、敏感信息扫描，并审阅 staged diff。
 - PR 创建后自动派发独立、非作者视角 reviewer，按 P0（资金/数据正确性）、P1（逻辑/事务）、P2（边界/回归）、P3（建议）审阅。
 - P0–P2 逐条核实并修复，重跑测试、推同一分支、复审；清零且验证绿后 squash 合并。返工最多三轮，超限停止并报告分歧。
