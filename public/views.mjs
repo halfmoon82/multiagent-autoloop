@@ -40,7 +40,7 @@ export function renderRules(snapshot, rules, models = {}) {
     const meta = el('div', 'rule-meta'); meta.append(el('span', 'chip', scheduleLabel(rule)), projectChip(rule.cwd), el('span', 'chip', `Agent · ${rule.to}`), el('span', 'chip', `模型 · ${models[rule.to] || '未配置'}`), el('span', 'chip', rule.resume ? '续接会话' : '新会话'));
     if (status.detail) meta.append(el('span', 'chip', status.detail));
     const actions = el('div', 'actions');
-    actions.append(button('立即运行', 'run', rule.name, 'secondary'));
+    actions.append(button('立即运行', 'run', rule.name, 'secondary', !!line?.paused));
     actions.append(button(line?.paused ? '恢复' : '暂停', line?.paused ? 'resume' : 'pause', rule.name, 'secondary'));
     actions.append(button('编辑', 'edit', rule.name, 'secondary'));
     card.append(top, description, meta, actions); return card;
