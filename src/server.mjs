@@ -41,10 +41,11 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
   if (!['POST', 'PUT'].includes(req.method)) return false;
   checkWrite(req); const body = await readJson(req);
-  if (req.method === 'POST' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 201, await config.schedulingSessions.start({ prompt: body.prompt }));
+  if (req.method === 'POST' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 201, await config.schedulingSessions.start({ prompt: body.prompt, project: body.project }));
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   let match;
   if ((match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/close$/))) return jsonResponse(res, 200, await config.schedulingSessions.close(decodeURIComponent(match[1])));
+  if ((match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/messages$/))) return jsonResponse(res, 200, await config.schedulingSessions.send(decodeURIComponent(match[1]), body.text));
   if (req.method === 'PUT' && (match = url.pathname.match(/^\/api\/rules\/([^/]+)$/))) return jsonResponse(res, 200, await saveRule(config, body, decodeURIComponent(match[1])));
   if ((match = url.pathname.match(/^\/api\/rules\/([^/]+)\/(run|pause|resume)$/))) {
     const name = decodeURIComponent(match[1]); const action = match[2];

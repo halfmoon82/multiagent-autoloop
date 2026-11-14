@@ -3,3 +3,16 @@
 @media(max-width:800px){.summary-grid{grid-template-columns:repeat(2,1fr)}.overview-grid,.rule-grid{grid-template-columns:1fr}.topbar{padding:0 18px}.navigation{padding:0 10px}main{padding:25px 16px 45px}.page-heading{align-items:flex-start}.connection{font-size:0}.connection .dot{font-size:initial}.header-actions{gap:9px}}
 @media(max-width:560px){.work-grid{grid-template-columns:1fr}}
 @media(max-width:440px){.brand{font-size:15px}.summary-grid{gap:10px}.metric{padding:15px}.metric-value{font-size:25px}.page-heading{flex-direction:column}.page-heading .button{width:100%}.text-answer{flex-direction:column}.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}.dialog-form{padding:18px}}
+.session-card{display:flex;flex-direction:column;gap:12px}
+.chat-log{display:flex;flex-direction:column;gap:10px;max-height:420px;overflow-y:auto;border:1px solid var(--line);border-radius:10px;background:#fafcfb;padding:14px}
+.bubble{max-width:82%;border-radius:12px;padding:9px 12px;font-size:13px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+.bubble-text{margin:0}
+.bubble-time{font-size:10px;color:var(--muted);margin-top:4px}
+.bubble.user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+.bubble.user .bubble-time{color:#d7ece6}
+.bubble.agent{align-self:flex-start;background:#eef2f0;border:1px solid var(--line);border-bottom-left-radius:4px}
+.bubble.streaming .bubble-text::after{content:'▍';color:var(--accent);animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+form.session-message{display:flex;gap:8px}
+form.session-message input{flex:1;min-width:0}
+form.session-message .button{white-space:nowrap}

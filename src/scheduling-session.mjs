@@ -9,6 +9,10 @@ import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
 export const DEFAULT_ADAPTER_PATH = path.join(REPOSITORY_ROOT, 'node_modules', '@agentclientprotocol', 'codex-acp', 'dist', 'index.js');
+const DEFAULT_PROJECT_LINE = project => `你负责的项目标识是 ${project}；事件 subject 遵循 <owner>-<repo> 约定，目标代码在该项目自己的隔离工作区执行。`;
+
+export const PROJECT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
 export const DEFAULT_SCHEDULING_PROMPT = [
   '你是 Multiagent Autoloop 控制台仓库中的调度会话。',
   `工作目录固定为 ${REPOSITORY_ROOT}。`,
@@ -36,9 +40,13 @@ function toPublicSession(record) {
     cwd: record.cwd,
     status: record.status,
     statusText: statusLabel(record.status),
+    project: record.project,
     prompt: record.prompt,
     stopReason: record.stopReason,
     error: record.error,
+    messages: record.messages.map(message => ({ ...message })),
+    liveText: record.liveText,
+    busy: record.status === 'running',
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -66,10 +74,9 @@ export class SchedulingSessionManager {
     return [...this.sessions.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(toPublicSession);
   }
 
-  async start({ prompt = DEFAULT_SCHEDULING_PROMPT } = {}) {
-    const text = String(prompt || '').trim();
-    if (!text) throw new SchedulingSessionError('请填写调度处理说明');
-    if (text.length > 4000) throw new SchedulingSessionError('调度处理说明不能超过 4000 字');
+  async start({ prompt = DEFAULT_SCHEDULING_PROMPT, project } = {}) {
+    const projectId = this.#validateProject(project);
+    const text = this.#validatePrompt(`${DEFAULT_PROJECT_LINE(projectId)}\n${String(prompt ?? '')}`);
     if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个调度会话`);
     if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
 
@@ -87,9 +94,12 @@ export class SchedulingSessionManager {
       agent: 'Codex ACP',
       cwd: this.cwd,
       status: 'initializing',
+      project: projectId,
       prompt: text,
       stopReason: null,
       error: null,
+      messages: [],
+      liveText: '',
       createdAt: this.now().toISOString(),
       updatedAt: this.now().toISOString(),
       child,
@@ -105,7 +115,11 @@ export class SchedulingSessionManager {
         return { outcome: { outcome: 'cancelled' } };
       })
       .onNotification(methods.client.session.update, notification => {
-        touch(summarizeUpdate(notification.update));
+        const update = notification?.params?.update || {};
+        touch(summarizeUpdate(update));
+        if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+          record.liveText += update.content.text;
+        }
       });
 
     const stream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout));
@@ -136,21 +150,8 @@ export class SchedulingSessionManager {
       record.sessionId = session.sessionId;
       record.status = 'idle';
 
-      record.promptTurn = connection.agent.request(methods.agent.session.prompt, {
-        sessionId: session.sessionId,
-        prompt: [{ type: 'text', text }],
-      });
-      record.status = 'running';
-      record.updatedAt = this.now().toISOString();
-      record.promptTurn.then(response => {
-        record.status = 'idle';
-        record.stopReason = response.stopReason;
-        record.updatedAt = this.now().toISOString();
-      }).catch(error => {
-        record.status = 'error';
-        record.error = safeMessage(error);
-        record.updatedAt = this.now().toISOString();
-      });
+      this.#pushMessage(record, 'user', text);
+      this.#runTurn(record, text);
       return toPublicSession(record);
     } catch (error) {
       record.status = 'error';
@@ -158,6 +159,18 @@ export class SchedulingSessionManager {
       this.#destroyRecord(record);
       throw new SchedulingSessionError(`开启调度会话失败：${record.error}`, { status: 502 });
     }
+  }
+
+  async send(id, text) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    if (record.status === 'error') throw new SchedulingSessionError('会话处于异常状态，请关闭后重新开启', { status: 409 });
+    if (record.status !== 'idle') throw new SchedulingSessionError('Agent 正在回复，请等这轮结束再发送', { status: 409 });
+    const message = this.#validatePrompt(text);
+    this.#pushMessage(record, 'user', message);
+    this.#runTurn(record, message);
+    return toPublicSession(record);
   }
 
   async close(id) {
@@ -175,6 +188,48 @@ export class SchedulingSessionManager {
 
   dispose() {
     for (const record of this.sessions.values()) this.#destroyRecord(record);
+  }
+
+  #validateProject(project) {
+    const text = String(project ?? '').trim();
+    if (!text) throw new SchedulingSessionError('请填写项目标识（如 owner/repo）');
+    if (!PROJECT_PATTERN.test(text)) throw new SchedulingSessionError('项目标识只能包含字母、数字和 . _ / -，不能含空格');
+    return text;
+  }
+
+  #validatePrompt(prompt) {
+    const text = String(prompt ?? '').trim();
+    if (!text) throw new SchedulingSessionError('请填写发送内容');
+    if (text.length > 4000) throw new SchedulingSessionError('发送内容不能超过 4000 字');
+    return text;
+  }
+
+  #pushMessage(record, role, text) {
+    record.messages.push({ role, text, at: this.now().toISOString() });
+    record.updatedAt = this.now().toISOString();
+  }
+
+  #runTurn(record, text) {
+    record.liveText = '';
+    record.promptTurn = record.connection.agent.request(methods.agent.session.prompt, {
+      sessionId: record.sessionId,
+      prompt: [{ type: 'text', text }],
+    });
+    record.status = 'running';
+    record.updatedAt = this.now().toISOString();
+    record.promptTurn.then(response => {
+      const reply = record.liveText.trim();
+      record.liveText = '';
+      if (reply) this.#pushMessage(record, 'agent', reply);
+      record.status = 'idle';
+      record.stopReason = response.stopReason;
+      record.updatedAt = this.now().toISOString();
+    }).catch(error => {
+      record.liveText = '';
+      record.status = 'error';
+      record.error = safeMessage(error);
+      record.updatedAt = this.now().toISOString();
+    });
   }
 
   #destroyRecord(record) {

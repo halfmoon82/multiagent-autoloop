@@ -1,7 +1,9 @@
 import { openRuleForm } from './rule-form.mjs';
 import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSchedulingSessions } from './views.mjs';
+import { projectName } from './format.mjs';
+import { projectForRun, projectForCard, matchesProject, collectProjects } from './status-sections.mjs';
 import { el } from './views.mjs';
-const state = { snapshot: null, rules: [], sessions: [], view: 'overview', loading: false };
+const state = { snapshot: null, rules: [], sessions: [], view: 'overview', loading: false, projectFilter: '' };
 const $ = id => document.getElementById(id);
 function replace(id, nodes) { $(id).replaceChildren(...nodes); }
 function showNotice(text) { const box = $('notice'); box.textContent = text; box.hidden = !text; }
@@ -20,14 +22,50 @@ export async function refresh() {
   } catch (error) { setConnection(false, '连接失败'); showNotice(`无法更新：${error.message}`); }
   finally { state.loading = false; }
 }
+function projectView() {
+  const filter = state.projectFilter;
+  if (!filter) return { snapshot: state.snapshot, rules: state.rules, sessions: state.sessions };
+  return {
+    snapshot: {
+      ...state.snapshot,
+      runs: (state.snapshot.runs || []).filter(run => matchesProject(projectForRun(run, state.rules), filter)),
+      cards: (state.snapshot.cards || []).filter(card => matchesProject(projectForCard(card), filter)),
+    },
+    rules: state.rules.filter(rule => matchesProject(rule.cwd, filter)),
+    sessions: state.sessions.filter(session => matchesProject(session.project, filter)),
+  };
+}
+
+function syncProjectFilter() {
+  const select = $('project-filter');
+  const projects = collectProjects({ rules: state.rules, runs: state.snapshot.runs || [], cards: state.snapshot.cards || [], sessions: state.sessions });
+  if (state.projectFilter && !projects.includes(state.projectFilter)) state.projectFilter = '';
+  select.replaceChildren(...[['', '全部项目'], ...projects.map(project => [project, projectName(project)])].map(([value, label]) => {
+    const option = el('option', '', label); option.value = value; return option;
+  }));
+  select.value = state.projectFilter;
+}
+
 function render() {
   if (!state.snapshot) return;
+  const view = projectView();
   const draftAnswers = Object.fromEntries([...document.querySelectorAll('form[data-action="answer-text"]')].map(form => [form.dataset.id, form.elements.answer.value]));
+  const draftMessages = Object.fromEntries([...document.querySelectorAll('form[data-action="session-message"]')].map(form => [form.dataset.id, form.elements.message.value]));
+  const chatScrolls = Object.fromEntries([...document.querySelectorAll('.chat-log')].map(log => { const form = log.parentElement?.querySelector('form[data-action="session-message"]'); return form ? [form.dataset.id, log.scrollTop] : null; }).filter(Boolean));
   replace('summary', renderSummary(state.snapshot));
-  const work = renderWorkSections(state.snapshot, state.rules);
+  const work = renderWorkSections(view.snapshot, view.rules);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers(state.snapshot));
-  replace('rules-list', renderRules(state.snapshot, state.rules, state.models)); replace('sessions-list', renderSchedulingSessions(state.sessions)); replace('runs-list', renderRuns(state.snapshot, state.rules)); replace('cards-list', renderCards(state.snapshot));
+  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replace('sessions-list', renderSchedulingSessions(view.sessions)); replace('runs-list', renderRuns(view.snapshot, view.rules)); replace('cards-list', renderCards(view.snapshot));
+  syncProjectFilter();
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined) form.elements.answer.value = draftAnswers[form.dataset.id]; });
+  document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined) form.elements.message.value = draftMessages[form.dataset.id]; });
+  document.querySelectorAll('.session-card').forEach(card => {
+    const log = card.querySelector('.chat-log'); if (!log) return;
+    const form = card.querySelector('form[data-action="session-message"]');
+    const previous = form ? chatScrolls[form.dataset.id] : undefined;
+    const stickToBottom = previous === undefined || log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    if (stickToBottom) log.scrollTop = log.scrollHeight;
+  });
   const count = state.snapshot.cards?.filter(card => card.state === 'open').length || 0; $('card-count').textContent = String(count); $('card-count').hidden = !count;
 }
 function showView(name) {
@@ -62,23 +100,38 @@ document.addEventListener('click', async event => {
   } catch (error) { showNotice(error.message); } finally { button.disabled = false; }
 });
 document.addEventListener('submit', async event => {
-  const form = event.target.closest('form[data-action="answer-text"]'); if (!form) return; event.preventDefault();
-  const input = form.elements.answer;
-  try { await api(`/api/cards/${form.dataset.id}/answer`, { method: 'POST', body: JSON.stringify({ text: input.value }) }); input.value = ''; showNotice('回答已提交，任务将继续。'); await refresh(); }
+  const answerForm = event.target.closest('form[data-action="answer-text"]');
+  if (answerForm) {
+    event.preventDefault();
+    const input = answerForm.elements.answer;
+    try { await api(`/api/cards/${answerForm.dataset.id}/answer`, { method: 'POST', body: JSON.stringify({ text: input.value }) }); input.value = ''; showNotice('回答已提交，任务将继续。'); await refresh(); }
+    catch (error) { showNotice(error.message); }
+    return;
+  }
+  const chatForm = event.target.closest('form[data-action="session-message"]');
+  if (!chatForm) return;
+  event.preventDefault();
+  const input = chatForm.elements.message;
+  const text = input.value;
+  try { await api(`/api/scheduling-sessions/${encodeURIComponent(chatForm.dataset.id)}/messages`, { method: 'POST', body: JSON.stringify({ text }) }); input.value = ''; await refresh(); }
   catch (error) { showNotice(error.message); }
 });
 $('new-rule').addEventListener('click', () => openRuleForm({ agents: state.agents, sources: state.sources, api, onSaved: refresh }));
 $('start-session').addEventListener('click', async event => {
   const button = event.currentTarget;
-  if (!confirm('通过 ACP 在本项目中开启 Codex 调度会话？这会启动 Codex，并可能消耗模型额度。')) return;
+  const project = $('session-project').value.trim();
+  if (!project) { showNotice('请先填写项目标识（如 owner/repo）。'); return; }
+  if (!confirm(`为项目 ${project} 开启 Codex 调度会话？这会启动 Codex，并可能消耗模型额度。`)) return;
   button.disabled = true;
   try {
-    const session = await api('/api/scheduling-sessions', { method: 'POST', body: '{}' });
+    const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project }) });
     showNotice(`调度会话 ${session.id} 已开启。`);
+    $('session-project').value = '';
     await refresh();
   } catch (error) { showNotice(error.message); }
   finally { button.disabled = false; }
 });
+$('project-filter').addEventListener('change', event => { state.projectFilter = event.target.value; render(); });
 $('refresh').addEventListener('click', refresh);
-setInterval(refresh, 5000);
+setInterval(() => { if (!document.hidden) refresh(); }, 2000);
 refresh();

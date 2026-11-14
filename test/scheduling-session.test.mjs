@@ -37,7 +37,11 @@ function fakeAdapter({ askPermission = false } = {}) {
         respond(request, { sessionId: 'fake-session' });
       } else if (request.method === 'session/prompt') {
         if (askPermission) setTimeout(requestPermission, 0);
-        setTimeout(() => respond(request, { stopReason: 'end_turn' }), askPermission ? 20 : 0);
+        const reply = `收到：${request.params.prompt[0].text.slice(0, 12)}`;
+        setTimeout(() => {
+          stdout.write(jsonLine({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'fake-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: reply } } } }));
+          respond(request, { stopReason: 'end_turn' });
+        }, askPermission ? 20 : 0);
       } else if (request.method === 'session/close') {
         respond(request, {});
       } else if (request.method === 'session/cancel') {
@@ -70,9 +74,10 @@ test('starts a Codex ACP scheduling session in the configured project and closes
     },
   });
 
-  const started = await manager.start({ prompt: '检查当前待调度事项' });
+  const started = await manager.start({ prompt: '检查当前待调度事项', project: 'owner-alpha/demo' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
   assert.equal(started.sessionId, 'fake-session');
+  assert.equal(started.project, 'owner-alpha/demo');
   assert.equal(started.cwd, '/workspace/control-plane');
   assert.equal(started.status, 'running');
   assert.deepEqual(fake.requests.map(request => request.method), ['initialize', 'session/new', 'session/prompt']);
@@ -80,6 +85,7 @@ test('starts a Codex ACP scheduling session in the configured project and closes
   assert.equal(fake.requests[2].params.sessionId, 'fake-session');
   assert.equal(fake.requests[2].params.prompt[0].type, 'text');
   assert.match(fake.requests[2].params.prompt[0].text, /检查当前待调度事项/);
+  assert.match(fake.requests[2].params.prompt[0].text, /owner-alpha\/demo/);
   assert.equal(manager.list().length, 1);
 
   await manager.close(started.id);
@@ -90,7 +96,7 @@ test('starts a Codex ACP scheduling session in the configured project and closes
 test('cancels ACP permission requests instead of approving them from the console', async () => {
   const fake = fakeAdapter({ askPermission: true });
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
-  const started = await manager.start({ prompt: '读取调度状态' });
+  const started = await manager.start({ prompt: '读取调度状态', project: 'owner-alpha/demo' });
   await waitFor(() => fake.requests.some(message => message.id === 'permission-1' && message.result));
   const permissionResponse = fake.requests.find(message => message.id === 'permission-1' && message.result);
   assert.equal(permissionResponse?.result.outcome.outcome, 'cancelled');
@@ -104,9 +110,35 @@ test('cancels ACP permission requests instead of approving them from the console
 test('enforces concurrency and prompt size without exposing process control to the browser', async () => {
   const first = fakeAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => first.process, maxSessions: 1 });
-  await manager.start({ prompt: '第一条' });
-  await assert.rejects(manager.start({ prompt: '第二条' }), /最多/);
-  await assert.rejects(manager.start({ prompt: 'x'.repeat(4001) }), /处理说明/);
+  await manager.start({ prompt: '第一条', project: 'owner-alpha/demo' });
+  await assert.rejects(manager.start({ prompt: '第二条', project: 'owner-alpha/demo' }), /最多/);
+  await assert.rejects(manager.start({ prompt: 'x'.repeat(4001), project: 'owner-alpha/demo' }), /4000 字/);
   await assert.rejects(manager.close('missing'), SchedulingSessionError);
   await manager.close(manager.list()[0].id);
+});
+
+test('keeps a transcript and accepts follow-up messages while the agent is idle', async () => {
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度分析', project: 'owner-alpha/demo' });
+  await waitFor(() => manager.list()[0]?.status === 'idle');
+  let listed = manager.list()[0];
+  assert.deepEqual(listed.messages.map(message => message.role), ['user', 'agent']);
+  assert.match(listed.messages[0].text, /首轮调度分析/);
+  assert.match(listed.messages[1].text, /收到：你负责的项目标识是/);
+  assert.equal(listed.liveText, '');
+  assert.equal(listed.busy, false);
+
+  const sending = await manager.send(started.id, '第二轮重点看卡片');
+  assert.equal(sending.busy, true);
+  assert.deepEqual(sending.messages.map(message => message.role), ['user', 'agent', 'user']);
+  await waitFor(() => manager.list()[0]?.status === 'idle');
+  listed = manager.list()[0];
+  assert.deepEqual(listed.messages.map(message => message.role), ['user', 'agent', 'user', 'agent']);
+  assert.match(listed.messages[3].text, /收到：第二轮重点看卡片/);
+
+  await assert.rejects(manager.send(started.id, '   '), /发送内容/);
+  await assert.rejects(manager.send('missing', '你好'), SchedulingSessionError);
+  await manager.close(started.id);
+  await assert.rejects(manager.send(started.id, '还在吗'), /不存在/);
 });
