@@ -49,6 +49,7 @@ function syncProjectFilter() {
     const option = el('option', '', value); option.value = value; if (raw !== value) option.title = raw; return option;
   }));
   select.value = state.projectFilter;
+  $('clear-project-filter').hidden = !state.projectFilter;
 }
 
 function render() {
@@ -131,12 +132,14 @@ $('start-session').addEventListener('click', async event => {
   try {
     const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project }) });
     showNotice(`调度会话 ${session.id} 已开启。`);
+    state.projectFilter = projectName(session.project || '');
     $('session-project').value = '';
     await refresh();
   } catch (error) { showNotice(error.message); }
   finally { button.disabled = false; }
 });
 $('project-filter').addEventListener('change', event => { state.projectFilter = event.target.value; render(); });
+$('clear-project-filter').addEventListener('click', () => { state.projectFilter = ''; render(); });
 $('refresh').addEventListener('click', refresh);
 setInterval(() => { if (!document.hidden) refresh(); }, 2000);
 refresh();
