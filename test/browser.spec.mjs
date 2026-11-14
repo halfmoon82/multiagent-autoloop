@@ -100,6 +100,11 @@ try {
   await page.locator('#clear-project-filter').click();
   assert.equal(await page.locator('#project-filter').inputValue(), '', 'clear-filter must reset the project filter');
   await page.getByRole('button', { name: '调度会话', exact: true }).click();
+  await page.locator('#session-project').selectOption({ index: 0 });
+  await page.getByRole('button', { name: '开启调度会话', exact: true }).click();
+  await page.waitForTimeout(300);
+  assert.ok((await page.locator('#notice').innerText()).includes('请先从列表选择'), 'placeholder selection must be rejected before starting a session');
+  assert.equal(await page.locator('#sessions-list .run-card').count(), 1, 'no session must be created for placeholder selection');
   await page.getByLabel('发消息给会话 browser-session').fill('重点看执行轮次');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.waitForTimeout(300);
