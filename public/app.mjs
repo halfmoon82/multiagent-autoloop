@@ -125,6 +125,17 @@ document.addEventListener('click', async event => {
     if (action === 'close-session' && !confirm(`关闭调度会话“${id}”？`)) return;
     if (action === 'edit') { const rule = state.rules.find(item => item.name === id); openRuleForm({ rule, agents: state.agents, sources: state.sources, api, onSaved: refresh }); return; }
     if (action === 'answer-choice') { const split = id.lastIndexOf(':'); await api(`/api/cards/${id.slice(0, split)}/answer`, { method: 'POST', body: JSON.stringify({ choice: Number(id.slice(split + 1)) }) }); showNotice('回答已提交，任务将继续。'); await refresh(); return; }
+    if (action === 'interrupt-session') {
+      const form = button.closest('form');
+      const text = form?.elements?.message?.value.trim() || '';
+      if (text && !confirm(`打断当前回复，立即发送「${text.length > 30 ? `${text.slice(0, 30)}…` : text}」？`)) return;
+      if (!text && !confirm('停止本轮调度？已排队的消息会在停止后继续跟进。')) return;
+      await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/messages`, { method: 'POST', body: JSON.stringify({ text, interrupt: true }) });
+      if (form) form.elements.message.value = '';
+      await refresh();
+      showNotice(text ? '已打断当前回复，新消息立即送出。' : '已停止本轮，排队消息将继续跟进。');
+      return;
+    }
     let body = {};
     if (['pause', 'resolve'].includes(action)) {
       const reason = prompt(action === 'pause' ? '暂停原因（可留空）' : '结案说明');
@@ -148,7 +159,13 @@ document.addEventListener('submit', async event => {
   event.preventDefault();
   const input = chatForm.elements.message;
   const text = input.value;
-  try { await api(`/api/scheduling-sessions/${encodeURIComponent(chatForm.dataset.id)}/messages`, { method: 'POST', body: JSON.stringify({ text }) }); input.value = ''; await refresh(); }
+  try {
+    const result = await api(`/api/scheduling-sessions/${encodeURIComponent(chatForm.dataset.id)}/messages`, { method: 'POST', body: JSON.stringify({ text }) });
+    input.value = '';
+    const queued = result.queuedCount || 0;
+    await refresh();
+    showNotice(queued ? `已排队，本轮结束后自动跟进（队列 ${queued} 条）。` : '已发送。');
+  }
   catch (error) { showNotice(error.message); }
 });
 $('new-rule').addEventListener('click', () => openRuleForm({ agents: state.agents, sources: state.sources, api, onSaved: refresh }));

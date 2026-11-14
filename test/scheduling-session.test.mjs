@@ -363,3 +363,166 @@ test('scheduling prompt instructs native MCP tools first and keeps the console A
   assert.doesNotMatch(text, /curl/);
   await manager.close(manager.list()[0].id);
 });
+
+// 受控适配器：session/prompt 的响应由测试手动释放，用来覆盖运行中排队/打断语义。
+function controlledAdapter({ holdInitialize = false, rejectPromptOnCancel = false } = {}) {
+  const requests = [];
+  const prompts = [];
+  const heldInitializes = [];
+  const stdin = new PassThrough(); const stdout = new PassThrough(); const stderr = new PassThrough();
+  let buffer = '';
+  const proc = { stdin, stdout, stderr, pid: 77, kill() { stdout.end(); } };
+  const respond = (request, result) => stdout.write(jsonLine({ jsonrpc: '2.0', id: request.id, result }));
+  const initializeResult = request => ({ protocolVersion: 1, agentCapabilities: { sessionCapabilities: { prompt: true } }, agentInfo: { name: 'fake-codex', version: '0' } });
+  stdin.on('data', chunk => {
+    buffer += chunk.toString();
+    let newline;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+      if (!line.trim()) continue;
+      const request = JSON.parse(line);
+      requests.push(request);
+      if (request.method === 'initialize') {
+        if (holdInitialize) heldInitializes.push(request);
+        else respond(request, initializeResult(request));
+      }
+      else if (request.method === 'session/new') respond(request, { sessionId: 'ctrl-session' });
+      else if (request.method === 'session/prompt') prompts.push(request);
+      else if (request.method === 'session/cancel') {
+        respond(request, {});
+        if (rejectPromptOnCancel && prompts.length) {
+          const pending = prompts[prompts.length - 1];
+          stdout.write(jsonLine({ jsonrpc: '2.0', id: pending.id, error: { code: -32800, message: 'request cancelled' } }));
+        }
+      }
+      else if (request.method === 'session/close') respond(request, {});
+    }
+  });
+  const endTurn = (request, text = '本轮回复') => {
+    stdout.write(jsonLine({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'ctrl-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } }));
+    respond(request, { stopReason: 'end_turn' });
+  };
+  const releaseInitialize = () => { for (const request of heldInitializes.splice(0)) respond(request, initializeResult(request)); };
+  return { process: proc, requests, prompts, endTurn, releaseInitialize };
+}
+
+test('queues follow-up messages while the agent is running and flushes them in order after the turn', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+
+  const queued = await manager.send(id, '补充：先看 NAS 部署');
+  assert.equal(queued.status, 'running');
+  assert.equal(queued.queuedCount, 1, 'a busy session must accept the message into the queue');
+  assert.equal(fake.prompts.length, 1, 'queued messages must not interrupt the running turn');
+  await manager.send(id, '再看 Phase1 门禁');
+  assert.equal(manager.list()[0].queuedCount, 2);
+
+  fake.endTurn(fake.prompts[0]);
+  await waitFor(() => fake.prompts.length === 2);
+  assert.match(fake.prompts[1].params.prompt[0].text, /补充：先看 NAS 部署/);
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => fake.prompts.length === 3);
+  assert.match(fake.prompts[2].params.prompt[0].text, /再看 Phase1 门禁/);
+  fake.endTurn(fake.prompts[2]);
+  await waitFor(() => manager.list()[0].status === 'idle' && manager.list()[0].queuedCount === 0);
+
+  const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 8)}`);
+  assert.deepEqual(transcript, ['user:你负责调度的项目', 'agent:本轮回复', 'user:补充：先看 NA', 'agent:本轮回复', 'user:再看 Phase', 'agent:本轮回复'], 'queued user messages must land between turns in send order');
+  await manager.close(id);
+});
+
+test('interrupt cancels the running turn and delivers the new message immediately after', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+
+  const interrupted = await manager.send(id, '方向变了，停下', { interrupt: true });
+  assert.equal(interrupted.queuedCount, 1, 'interrupt message is delivered ahead of the queue');
+  assert.ok(fake.requests.some(request => request.method === 'session/cancel'), 'interrupt must call session/cancel');
+  assert.equal(fake.prompts.length, 1, 'no new prompt before the cancelled turn settles');
+
+  fake.endTurn(fake.prompts[0]);
+  await waitFor(() => fake.prompts.length === 2);
+  assert.match(fake.prompts[1].params.prompt[0].text, /方向变了，停下/);
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => manager.list()[0].status === 'idle');
+  const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 6)}`);
+  assert.deepEqual(transcript, ['user:你负责调度的', 'user:方向变了，停', 'agent:本轮回复'], 'an interrupted turn must not record a partial agent reply');
+  await manager.close(id);
+});
+
+test('interrupt with an empty text stops the turn without sending a new prompt', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+
+  await manager.send(id, '', { interrupt: true });
+  assert.ok(fake.requests.some(request => request.method === 'session/cancel'));
+  assert.equal(fake.prompts.length, 1);
+
+  fake.endTurn(fake.prompts[0]);
+  await waitFor(() => manager.list()[0].status === 'idle');
+  assert.equal(fake.prompts.length, 1, 'stop-only interrupt must not start a new turn');
+  assert.equal(manager.list()[0].messages.filter(message => message.role === 'user').length, 1, 'no empty user message recorded');
+  await manager.close(id);
+});
+
+test('a genuine turn failure still marks the session as error instead of hiding it', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const request = fake.prompts[0];
+  fake.process.stdout.write(jsonLine({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'prompt boom' } }));
+  await waitFor(() => manager.list()[0].status === 'error');
+  assert.match(manager.list()[0].error, /prompt boom/);
+  await manager.close(started.id);
+});
+
+test('a cancel-induced prompt rejection settles as interrupted, not error, and the queue still drains', async () => {
+  const fake = controlledAdapter({ rejectPromptOnCancel: true });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+
+  await manager.send(id, '别跑了', { interrupt: true });
+  await waitFor(() => fake.prompts.length === 2, 1000);
+  assert.match(fake.prompts[1].params.prompt[0].text, /别跑了/);
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => manager.list()[0].status === 'idle');
+  assert.equal(manager.list()[0].error, null, 'a cancel-induced rejection must not mark the session as error');
+  const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 4)}`);
+  assert.deepEqual(transcript, ['user:你负责调', 'user:别跑了', 'agent:本轮回复'], 'the interrupted turn leaves no partial agent reply and the interrupt message is delivered');
+  await manager.close(id);
+});
+
+test('interrupt is rejected while the session is still initializing, while queueing stays open', async () => {
+  const fake = controlledAdapter({ holdInitialize: true });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const starting = manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => manager.list().length === 1);
+  const id = manager.list()[0].id;
+  assert.equal(manager.list()[0].status, 'initializing');
+
+  await assert.rejects(() => manager.send(id, '打断', { interrupt: true }), /初始化中/, 'interrupt must not fire into a session without a session id');
+  const queued = await manager.send(id, '初始化期间排一条');
+  assert.equal(queued.queuedCount, 1, 'queueing stays open during initialization');
+
+  fake.releaseInitialize();
+  await starting;
+  await waitFor(() => fake.prompts.length === 1);
+  fake.endTurn(fake.prompts[0]);
+  await waitFor(() => fake.prompts.length === 2);
+  assert.match(fake.prompts[1].params.prompt[0].text, /初始化期间排一条/);
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => manager.list()[0].status === 'idle');
+  await manager.close(id);
+});
