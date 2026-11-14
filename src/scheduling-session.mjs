@@ -137,6 +137,7 @@ export class SchedulingSessionManager {
       child,
       connection: null,
       promptTurn: null,
+      closed: false,
     };
     this.sessions.set(record.id, record);
 
@@ -158,6 +159,7 @@ export class SchedulingSessionManager {
     const connection = acpClient.connect(stream);
     record.connection = connection;
     connection.closed.then(() => {
+      record.closed = true;
       if (!this.sessions.has(record.id)) return;
       if (record.status !== 'closing' && record.status !== 'closed') {
         record.status = child.exitCode === 0 ? 'closed' : 'error';
@@ -211,6 +213,7 @@ export class SchedulingSessionManager {
     }
     // 运行中/初始化中：与 Codex 输入体验一致——默认排队跟进，interrupt 取消当前轮。
     if (interrupt) {
+      if (record.status === 'initializing') throw new SchedulingSessionError('会话初始化中，请稍候再试（打断只在运行中可用）', { status: 409 });
       record.queue.unshift(raw || null); // null = 仅停止本轮，不发新消息
       record.interruptRequested = true;
       record.updatedAt = this.now().toISOString();
@@ -218,7 +221,8 @@ export class SchedulingSessionManager {
       return toPublicSession(record);
     }
     const message = this.#validatePrompt(raw);
-    if (record.queue.length >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
+    const pendingMessages = record.queue.filter(item => item !== null).length;
+    if (pendingMessages >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
     record.queue.push(message);
     record.updatedAt = this.now().toISOString();
     return toPublicSession(record);
@@ -307,7 +311,7 @@ export class SchedulingSessionManager {
       const interrupted = record.interruptRequested;
       record.liveText = '';
       record.interruptRequested = false;
-      if (error && !interrupted) {
+      if (error && !(interrupted && !record.closed)) {
         record.status = 'error';
         record.error = safeMessage(error);
       } else {
