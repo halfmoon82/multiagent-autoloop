@@ -98,6 +98,18 @@ test('starts a Codex ACP scheduling session in the configured project and closes
   assert.deepEqual(manager.list(), []);
 });
 
+test('injects console scheduling contract into the prompt after project context', async () => {
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  await manager.start({ project: '/workspace/demo', projectContext: '# 项目约定', consoleContext: '# 调度契约\n事件链不变量' });
+  await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
+  const text = fake.requests.find(request => request.method === 'session/prompt').params.prompt[0].text;
+  assert.match(text, /# 调度契约/);
+  assert.match(text, /事件链不变量/);
+  assert.ok(text.indexOf('# 项目约定') < text.indexOf('# 调度契约'), 'project context must precede console contract');
+  await manager.close(manager.list()[0].id);
+});
+
 test('injects project docs into the default prompt and stays project-first', async () => {
   const fake = fakeAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });

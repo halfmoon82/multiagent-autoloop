@@ -13,13 +13,14 @@ export const DEFAULT_ADAPTER_PATH = path.join(REPOSITORY_ROOT, 'node_modules', '
 
 export const DEFAULT_SCHEDULING_PROMPT = `你是 Multiagent Autoloop 控制台仓库中的调度会话，工作目录固定为 ${REPOSITORY_ROOT}（只读了解调度契约用）。`;
 
-export function buildSchedulingPrompt({ project, projectContext } = {}) {
+export function buildSchedulingPrompt({ project, projectContext, consoleContext } = {}) {
   return [
     `你负责调度的项目：${project}。`,
     `【项目资料】\n${projectContext || '未找到该项目资料，先阅读本仓库文档建立上下文。'}`,
+    `【调度契约】\n${consoleContext || '未找到调度控制台资料。'}`,
     `【任务】按顺序：`,
     `1）你现在的会话工作目录就是被调度项目的仓库（${project}）：阅读本仓库的 AGENTS.md、README.md 与 docs/ 建立项目上下文（边界、命令、约定）。`,
-    `2）调度控制台契约文档在 ${REPOSITORY_ROOT}/README.md 与 ${REPOSITORY_ROOT}/docs/（绝对路径只读，重点是 docs/scheduling-contract.md 的事件链契约）。`,
+    `2）以上【调度契约】是调度方必须遵守的规则与方法（事件链不变量、模型派发、重试与升级纪律、控制台信息契约）；沙箱若拦截外部文件读取，以【调度契约】正文为准。`,
     `3）通过控制台 API（http://127.0.0.1:50761，仅本机）检查该项目相关的调度状态（规则、轮次、卡片），整理：正在运行/等待重试/待调度处理的事项、建议的处理顺序、真正需要用户决策的问题。`,
     `4）目标项目的代码改动仍在该项目自己的隔离 worktree 中由派发 worker 执行；本会话只读诊断与协调，不直接改项目文件。需要授权或不可逆操作时只列出等待用户决策。`,
   ].join('\n');
@@ -78,9 +79,10 @@ export class SchedulingSessionManager {
     return [...this.sessions.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(toPublicSession);
   }
 
-  async start({ prompt, project, projectContext } = {}) {
+  async start({ prompt, project, projectContext, consoleContext } = {}) {
     const projectId = this.#validateProject(project);
-    const composed = prompt ? `${buildSchedulingPrompt({ project: projectId, projectContext })}\n\n【本次附加说明】\n${prompt}` : buildSchedulingPrompt({ project: projectId, projectContext });
+    const base = buildSchedulingPrompt({ project: projectId, projectContext, consoleContext });
+    const composed = prompt ? `${base}\n\n【本次附加说明】\n${prompt}` : base;
     const text = this.#validatePrompt(composed, 64000);
     const duplicate = [...this.sessions.values()].find(session => session.project === projectId);
     if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的调度会话（${duplicate.id.slice(0, 8)}），请先关闭再开启`);
@@ -221,7 +223,7 @@ export class SchedulingSessionManager {
   #validatePrompt(prompt, max = 4000) {
     const text = String(prompt ?? '').trim();
     if (!text) throw new SchedulingSessionError('请填写发送内容');
-    if (text.length > max) throw new SchedulingSessionError(`发送内容不能超过 ${max} 字`);
+    if (text.length > max) throw new SchedulingSessionError(`发送内容不能超过 ${max} 字（当前 ${text.length} 字）`);
     return text;
   }
 

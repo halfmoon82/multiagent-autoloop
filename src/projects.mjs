@@ -76,3 +76,21 @@ export function readProjectDocs(dir) {
   }
   return sections.length ? sections.join('\n\n') : `未找到该项目资料（${dir} 下没有 AGENTS.md、CLAUDE.md 或 README）。`;
 }
+
+const CONSOLE_DOC_FILES = ['AGENTS.md', 'docs/scheduling-contract.md', 'docs/architecture.md', 'README.md'];
+const CONSOLE_DOC_MAX_BYTES = 12 * 1024;
+
+export function readConsoleDocs(root) {
+  if (!root || !existsSync(root)) return `未找到调度控制台资料（${root || '无路径'} 不存在或不可读）。`;
+  const sections = [];
+  for (const name of CONSOLE_DOC_FILES) {
+    const file = path.join(root, name);
+    try {
+      const stat = statSync(file);
+      if (!stat.isFile() || stat.size > CONSOLE_DOC_MAX_BYTES) continue;
+      const text = readFileSync(file, 'utf8').trim();
+      if (text) sections.push(`----- ${name} -----\n${text}`);
+    } catch { /* 缺失或不可读则跳过 */ }
+  }
+  return sections.length ? sections.join('\n\n') : '未找到调度控制台资料。';
+}
