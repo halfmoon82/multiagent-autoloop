@@ -31,12 +31,23 @@ const schedulingSessions = {
     const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
     this.records.push(session); return session;
   },
-  async send(id, text) {
+  async send(id, text, { interrupt = false } = {}) {
     const session = this.records.find(item => item.id === id);
     if (!session) throw new Error('调度会话不存在');
-    session.messages.push({ role: 'user', text, at: '2026-11-14T00:02:00Z' });
-    session.messages.push({ role: 'agent', text: `收到：${text}`, at: '2026-11-14T00:02:05Z' });
-    session.updatedAt = '2026-11-14T00:02:05Z';
+    session.sendCalls = session.sendCalls || [];
+    session.sendCalls.push({ text, interrupt });
+    if (session.busy && !interrupt) {
+      session.queue = (session.queue || []).concat(text);
+      session.queuedCount = session.queue.length;
+      session.updatedAt = '2026-11-14T00:03:00Z';
+      return session;
+    }
+    if (interrupt) { session.queue = []; session.queuedCount = 0; session.busy = false; session.status = 'idle'; session.statusText = '待命'; }
+    if (text) {
+      session.messages.push({ role: 'user', text, at: '2026-11-14T00:03:00Z' });
+      session.messages.push({ role: 'agent', text: `收到：${text}`, at: '2026-11-14T00:03:05Z' });
+    }
+    session.updatedAt = '2026-11-14T00:03:05Z';
     return session;
   },
   async close(id) { this.records = this.records.filter(session => session.id !== id); return { id, status: 'closed', statusText: '已关闭' }; },
@@ -133,6 +144,26 @@ try {
   await page.waitForTimeout(300);
   assert.ok((await sessionCard.innerText()).includes('重点看执行轮次'), 'user message must appear in the conversation');
   assert.ok((await sessionCard.innerText()).includes('收到：重点看执行轮次'), 'agent reply must appear in the conversation');
+
+  // busy 时输入保持可用：发送默认排队，「打断」立即送达（与 Codex 输入体验一致）
+  const record = schedulingSessions.records[0];
+  record.status = 'running'; record.busy = true; record.statusText = '运行中';
+  await page.waitForTimeout(2500);
+  const msgInput = page.getByLabel('发消息给会话 browser-session');
+  assert.equal(await msgInput.isEnabled(), true, 'busy 时输入框必须保持可输入');
+  assert.equal(await page.getByRole('button', { name: '打断', exact: true }).count(), 1, 'busy 时必须提供打断按钮');
+  await msgInput.fill('补充：先看 NAS 部署');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.waitForTimeout(300);
+  assert.deepEqual(record.sendCalls.at(-1), { text: '补充：先看 NAS 部署', interrupt: false }, 'busy 时发送默认排队，不打断当前轮');
+  assert.ok((await page.locator('#notice').innerText()).includes('排队'), 'queued sends must say they will follow after the turn');
+  assert.ok((await sessionCard.innerText()).includes('已排队 1 条'), 'queued count must be visible on the card');
+  await msgInput.fill('方向变了，停下');
+  await page.getByRole('button', { name: '打断', exact: true }).click();
+  await page.waitForTimeout(300);
+  assert.deepEqual(record.sendCalls.at(-1), { text: '方向变了，停下', interrupt: true }, '打断按钮必须以 interrupt 立即送达');
+  assert.ok((await sessionCard.innerText()).includes('方向变了，停下'), 'interrupt message must reach the conversation immediately');
+
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
   await page.screenshot({ path: path.join(output, 'console-mobile.png'), fullPage: true });

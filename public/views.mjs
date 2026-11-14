@@ -99,13 +99,14 @@ export function renderSchedulingSessions(sessions = []) {
       const form = el('form', 'session-message');
       form.dataset.action = 'session-message'; form.dataset.id = session.id;
       const input = el('input'); input.name = 'message'; input.required = true;
-      input.placeholder = session.busy ? 'Agent 正在回复…' : '继续指挥这次调度，例如：现在重点看哪一项？';
-      input.disabled = !!session.busy;
+      input.placeholder = session.busy ? '排队跟进：本轮结束后自动发送；需要立即介入请点「打断」' : '继续指挥这次调度，例如：现在重点看哪一项？';
       input.setAttribute('aria-label', `发消息给会话 ${session.id}`);
-      const submit = button(session.busy ? '等待回复' : '发送', '', '', 'primary');
-      submit.type = 'submit'; submit.disabled = !!session.busy;
+      const submit = button('发送', '', '', 'primary');
+      submit.type = 'submit';
       form.append(input, submit);
+      if (session.busy) form.append(button('打断', 'interrupt-session', session.id, 'danger'));
       card.append(form);
+      if (session.queuedCount) card.append(el('p', 'row-meta', `已排队 ${session.queuedCount} 条，本轮结束后自动跟进。`));
       const actions = el('div', 'actions');
       actions.append(button('关闭会话', 'close-session', session.id, 'danger'));
       card.append(actions);

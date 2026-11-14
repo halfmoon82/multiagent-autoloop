@@ -67,6 +67,7 @@ function toPublicSession(record) {
     messages: record.messages.map(message => ({ ...message })),
     liveText: record.liveText,
     busy: record.status === 'running',
+    queuedCount: (record.queue || []).filter(item => item !== null).length,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -125,6 +126,8 @@ export class SchedulingSessionManager {
       project: projectId,
       writableDir: this.writableDir,
       prompt: text,
+      queue: [],
+      interruptRequested: false,
       stopReason: null,
       error: null,
       messages: [],
@@ -194,15 +197,30 @@ export class SchedulingSessionManager {
     }
   }
 
-  async send(id, text) {
+  async send(id, text, { interrupt = false } = {}) {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
     if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
     if (record.status === 'error') throw new SchedulingSessionError('会话处于异常状态，请关闭后重新开启', { status: 409 });
-    if (record.status !== 'idle') throw new SchedulingSessionError('Agent 正在回复，请等这轮结束再发送', { status: 409 });
-    const message = this.#validatePrompt(text);
-    this.#pushMessage(record, 'user', message);
-    this.#runTurn(record, message);
+    const raw = String(text ?? '').trim();
+    if (record.status === 'idle') {
+      const message = this.#validatePrompt(raw);
+      this.#pushMessage(record, 'user', message);
+      this.#runTurn(record, message);
+      return toPublicSession(record);
+    }
+    // 运行中/初始化中：与 Codex 输入体验一致——默认排队跟进，interrupt 取消当前轮。
+    if (interrupt) {
+      record.queue.unshift(raw || null); // null = 仅停止本轮，不发新消息
+      record.interruptRequested = true;
+      record.updatedAt = this.now().toISOString();
+      try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
+      return toPublicSession(record);
+    }
+    const message = this.#validatePrompt(raw);
+    if (record.queue.length >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
+    record.queue.push(message);
+    record.updatedAt = this.now().toISOString();
     return toPublicSession(record);
   }
 
@@ -279,25 +297,41 @@ export class SchedulingSessionManager {
 
   #runTurn(record, text) {
     record.liveText = '';
+    record.status = 'running';
+    record.updatedAt = this.now().toISOString();
     record.promptTurn = record.connection.agent.request(methods.agent.session.prompt, {
       sessionId: record.sessionId,
       prompt: [{ type: 'text', text }],
     });
-    record.status = 'running';
-    record.updatedAt = this.now().toISOString();
+    const finish = (reply, stopReason, error) => {
+      const interrupted = record.interruptRequested;
+      record.liveText = '';
+      record.interruptRequested = false;
+      if (error && !interrupted) {
+        record.status = 'error';
+        record.error = safeMessage(error);
+      } else {
+        record.status = 'idle';
+        record.stopReason = error ? 'interrupted' : stopReason;
+        if (reply && !interrupted) this.#pushMessage(record, 'agent', reply);
+      }
+      record.updatedAt = this.now().toISOString();
+      this.#drainQueue(record);
+    };
     record.promptTurn.then(response => {
-      const reply = record.liveText.trim();
-      record.liveText = '';
-      if (reply) this.#pushMessage(record, 'agent', reply);
-      record.status = 'idle';
-      record.stopReason = response.stopReason;
-      record.updatedAt = this.now().toISOString();
-    }).catch(error => {
-      record.liveText = '';
-      record.status = 'error';
-      record.error = safeMessage(error);
-      record.updatedAt = this.now().toISOString();
-    });
+      const interrupted = response?.stopReason && response.stopReason !== 'end_turn';
+      finish(interrupted ? '' : record.liveText.trim(), response?.stopReason, null);
+    }).catch(error => finish('', null, error));
+  }
+
+  #drainQueue(record) {
+    while (record.status === 'idle' && record.queue.length) {
+      const next = record.queue.shift();
+      if (next === null) continue; // 纯打断标记：消费后继续排后续消息
+      this.#pushMessage(record, 'user', next);
+      this.#runTurn(record, next);
+      break;
+    }
   }
 
   #destroyRecord(record) {
