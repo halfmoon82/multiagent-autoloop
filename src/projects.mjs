@@ -81,7 +81,7 @@ const CONSOLE_DOC_FILES = ['AGENTS.md', 'docs/scheduling-contract.md', 'docs/arc
 const CONSOLE_DOC_MAX_BYTES = 12 * 1024;
 
 export function readConsoleDocs(root) {
-  if (!root || !existsSync(root)) return '未找到调度控制台资料。';
+  if (!root || !existsSync(root)) return `未找到调度控制台资料（${root || '无路径'} 不存在或不可读）。`;
   const sections = [];
   for (const name of CONSOLE_DOC_FILES) {
     const file = path.join(root, name);

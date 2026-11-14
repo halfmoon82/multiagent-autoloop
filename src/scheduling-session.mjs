@@ -223,7 +223,7 @@ export class SchedulingSessionManager {
   #validatePrompt(prompt, max = 4000) {
     const text = String(prompt ?? '').trim();
     if (!text) throw new SchedulingSessionError('请填写发送内容');
-    if (text.length > max) throw new SchedulingSessionError(`发送内容不能超过 ${max} 字`);
+    if (text.length > max) throw new SchedulingSessionError(`发送内容不能超过 ${max} 字（当前 ${text.length} 字）`);
     return text;
   }
 

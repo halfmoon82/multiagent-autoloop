@@ -14,8 +14,8 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
   const calls = [];
   const manager = {
     async list() { calls.push(['list']); return [{ id: 'one', sessionId: 'acp-1', agent: 'Codex ACP', cwd: '/workspace/control-plane', project: 'owner/demo', status: 'idle', statusText: '待命', prompt: '检查调度', createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' }]; },
-    async start({ prompt, project, projectContext } = {}) {
-      calls.push(['start', prompt, project, projectContext]);
+    async start({ prompt, project, projectContext, consoleContext } = {}) {
+      calls.push(['start', prompt, project, projectContext, consoleContext]);
       if (!project) throw new SchedulingSessionError('请填写项目标识');
       return { id: 'two', sessionId: 'acp-2', agent: 'Codex ACP', cwd: '/workspace/control-plane', project, status: 'running', statusText: '运行中', prompt, createdAt: '2026-11-14T00:01:00Z', updatedAt: '2026-11-14T00:01:00Z' };
     },
@@ -53,6 +53,7 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     assert.equal(startedBody.sessionId, 'acp-2');
     assert.equal(startedBody.project, repo);
     assert.match(calls[1][3] || '', /未找到该项目资料|AGENTS/, 'server must pass project context docs');
+    assert.match(calls[1][4] || '', /事件链不变量/, 'server must inject the real console scheduling contract, not the fallback sentence');
 
     const messageMissingMarker = await fetch(`${url}/api/scheduling-sessions/two/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '你好' }) });
     assert.equal(messageMissingMarker.status, 403);
