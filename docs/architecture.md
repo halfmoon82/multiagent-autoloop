@@ -53,7 +53,7 @@ Codex / WorkBuddy / Claude Code 等执行平台
 
 - 输入：服务端固定启动 `@agentclientprotocol/codex-acp`，工作目录为被调度项目的本地仓库（项目须是已发现的本机 Git 仓；无法识别时回退本仓库根目录），浏览器不能指定工作目录。
 - 输出：本地 ACP 会话 ID、状态、Codex 适配器信息和关闭结果。
-- 安全：浏览器不能指定启动命令、工作目录或环境变量；ACP 权限请求一律取消，不自动代批。
+- 安全：浏览器不能指定启动命令、工作目录或环境变量；ACP 权限请求仅自动批准允许脚本目录（AGENT_AUTOLOOP_HOME/scripts）内的文件编辑，其余一律取消，不自动代批。
 - 生命周期：控制台进程持有连接；关闭会话会发送 `session/close` 并终止适配器进程。
 
 ### HTTP 服务 `src/server.mjs`

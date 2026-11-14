@@ -161,6 +161,59 @@ test('starts the session inside the project repo and falls back to the console c
   await manager3.close(plain.id);
 });
 
+test('auto-approves file edits inside the writable scripts dir and cancels everything else', async () => {
+  const { mkdtempSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const writableDir = mkdtempSync(path.join(tmpdir(), 'writable-'));
+  const fake = fakeAdapter({ askPermission: true });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, writableDir });
+  await manager.start({ prompt: '读取状态', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.requests.some(message => message.id === 'permission-1' && message.result));
+  const denied = fake.requests.find(message => message.id === 'permission-1' && message.result);
+  assert.equal(denied?.result.outcome.outcome, 'cancelled', 'permission without a known writable scope must be denied');
+  await manager.close(manager.list()[0].id);
+
+  // 手动构造带 locations 的编辑请求
+  const requests = [];
+  const { PassThrough } = await import('node:stream');
+  const jsonLine = v => JSON.stringify(v) + '\n';
+  const stdin = new PassThrough(); const stdout = new PassThrough(); const stderr = new PassThrough();
+  let buffer = '';
+  const proc = { stdin, stdout, stderr, pid: 7, kill() { stdout.end(); } };
+  stdin.on('data', chunk => {
+    buffer += chunk.toString();
+    let nl;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1);
+      if (!line.trim()) continue;
+      const req = JSON.parse(line); requests.push(req);
+      if (req.method === 'initialize') stdout.write(jsonLine({ jsonrpc: '2.0', id: req.id, result: { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: 'fake' } } }));
+      else if (req.method === 'session/new') stdout.write(jsonLine({ jsonrpc: '2.0', id: req.id, result: { sessionId: 's-perm' } }));
+      else if (req.method === 'session/prompt') {
+        stdout.write(jsonLine({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's-perm', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } } } }));
+        setTimeout(() => stdout.write(jsonLine({ jsonrpc: '2.0', id: req.id, result: { stopReason: 'end_turn' } })), 5);
+      } else if (req.method === 'session/close' || req.method === 'session/cancel') stdout.write(jsonLine({ jsonrpc: '2.0', id: req.id, result: {} }));
+    }
+  });
+  const manager2 = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => proc, writableDir });
+  await manager2.start({ project: 'owner-alpha/demo' });
+  const perm = { jsonrpc: '2.0', id: 'perm-in', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't1', kind: 'edit', status: 'pending', locations: [{ path: path.join(writableDir, 'scan.mjs') }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }, { optionId: 'deny', name: '拒绝', kind: 'reject_once' }] } };
+  const permOut = { jsonrpc: '2.0', id: 'perm-out', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't2', kind: 'edit', status: 'pending', locations: [{ path: '/etc/crontab' }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }] } };
+  const permTraverse = { jsonrpc: '2.0', id: 'perm-tr', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't3', kind: 'edit', status: 'pending', locations: [{ path: path.join(writableDir, '..', 'escape.mjs') }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }] } };
+  const permExec = { jsonrpc: '2.0', id: 'perm-ex', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't4', kind: 'execute', status: 'pending' }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }] } };
+  stdout.write(jsonLine(perm)); stdout.write(jsonLine(permOut)); stdout.write(jsonLine(permTraverse)); stdout.write(jsonLine(permExec));
+  await waitFor(() => requests.filter(r => typeof r.id === 'string' && r.id.startsWith('perm-') && r.result).length >= 4, 1000);
+  const byId = id => requests.find(r => r.id === id && r.result);
+  assert.ok(byId('perm-in') && byId('perm-out') && byId('perm-tr') && byId('perm-ex'), 'all four permission responses received');
+  assert.equal(byId('perm-in').result.outcome.outcome, 'selected', 'edit inside writable dir must be approved');
+  assert.equal(byId('perm-out').result.outcome.outcome, 'cancelled', 'edit outside writable dir must be cancelled');
+  assert.equal(byId('perm-tr').result.outcome.outcome, 'cancelled', 'path traversal must be cancelled');
+  assert.equal(byId('perm-ex').result.outcome.outcome, 'cancelled', 'shell execution must stay cancelled');
+  await manager2.close(manager2.list()[0].id);
+  mkdirSync(path.join(writableDir, 'sub'), { recursive: true });
+});
+
 test('cancels ACP permission requests instead of approving them from the console', async () => {
   const fake = fakeAdapter({ askPermission: true });
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });

@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HubError, hubRequest } from './hub.mjs';
@@ -69,7 +69,12 @@ async function handleApi(config, req, res, url) {
   }
   return false;
 }
-export function createConsoleServer(config, schedulingSessions = new SchedulingSessionManager()) {
+export function createConsoleServer(config, schedulingSessions) {
+  if (!schedulingSessions) {
+    const writableDir = config.root ? path.join(config.root, 'scripts') : null;
+    if (writableDir) { try { mkdirSync(writableDir, { recursive: true }); } catch { /* 目录不可写时按只读会话处理 */ } }
+    schedulingSessions = new SchedulingSessionManager({ writableDir });
+  }
   config = { ...config, schedulingSessions };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');

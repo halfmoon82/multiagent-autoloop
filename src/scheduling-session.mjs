@@ -13,9 +13,10 @@ export const DEFAULT_ADAPTER_PATH = path.join(REPOSITORY_ROOT, 'node_modules', '
 
 export const DEFAULT_SCHEDULING_PROMPT = `你是 Multiagent Autoloop 控制台仓库中的调度会话，工作目录固定为 ${REPOSITORY_ROOT}（只读了解调度契约用）。`;
 
-export function buildSchedulingPrompt({ project, projectContext, consoleContext } = {}) {
+export function buildSchedulingPrompt({ project, projectContext, consoleContext, writableDir } = {}) {
   return [
     `你负责调度的项目：${project}。`,
+    writableDir ? `【可写范围】事件链扫描等调度脚本请用文件编辑写入 ${writableDir}（仅该目录内编辑自动批准；shell 执行、目录外写入、网络请求一律拒绝）。` : '【可写范围】本会话只读，无写权限。',
     `【项目资料】\n${projectContext || '未找到该项目资料，先阅读本仓库文档建立上下文。'}`,
     `【调度契约】\n${consoleContext || '未找到调度控制台资料。'}`,
     `【任务】按顺序：`,
@@ -46,6 +47,7 @@ function toPublicSession(record) {
     status: record.status,
     statusText: statusLabel(record.status),
     project: record.project,
+    writableDir: record.writableDir,
     prompt: record.prompt,
     stopReason: record.stopReason,
     error: record.error,
@@ -66,8 +68,9 @@ function summarizeUpdate(update) {
 }
 
 export class SchedulingSessionManager {
-  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, now = () => new Date() } = {}) {
+  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, now = () => new Date() } = {}) {
     this.cwd = path.resolve(cwd);
+    this.writableDir = writableDir ? path.resolve(writableDir) : null;
     this.adapterPath = adapterPath;
     this.spawnFn = spawnFn;
     this.maxSessions = maxSessions;
@@ -81,7 +84,7 @@ export class SchedulingSessionManager {
 
   async start({ prompt, project, projectContext, consoleContext } = {}) {
     const projectId = this.#validateProject(project);
-    const base = buildSchedulingPrompt({ project: projectId, projectContext, consoleContext });
+    const base = buildSchedulingPrompt({ project: projectId, projectContext, consoleContext, writableDir: this.writableDir });
     const composed = prompt ? `${base}\n\n【本次附加说明】\n${prompt}` : base;
     const text = this.#validatePrompt(composed, 64000);
     const duplicate = [...this.sessions.values()].find(session => session.project === projectId);
@@ -107,6 +110,7 @@ export class SchedulingSessionManager {
       cwd: sessionCwd,
       status: 'initializing',
       project: projectId,
+      writableDir: this.writableDir,
       prompt: text,
       stopReason: null,
       error: null,
@@ -122,9 +126,9 @@ export class SchedulingSessionManager {
 
     const touch = note => { record.updatedAt = this.now().toISOString(); return note; };
     const acpClient = client({ name: 'autoloop-console' })
-      .onRequest(methods.client.session.requestPermission, async () => {
+      .onRequest(methods.client.session.requestPermission, async request => {
         touch('permission');
-        return { outcome: { outcome: 'cancelled' } };
+        return { outcome: this.#decidePermission(request?.params) };
       })
       .onNotification(methods.client.session.update, notification => {
         const update = notification?.params?.update || {};
@@ -204,6 +208,20 @@ export class SchedulingSessionManager {
 
   dispose() {
     for (const record of this.sessions.values()) this.#destroyRecord(record);
+  }
+
+  #decidePermission(params) {
+    const toolCall = params?.toolCall || {};
+    if (!this.writableDir || toolCall.kind !== 'edit') return { outcome: 'cancelled' };
+    const locations = Array.isArray(toolCall.locations) ? toolCall.locations : [];
+    if (!locations.length) return { outcome: 'cancelled' };
+    const inside = locations.every(location => {
+      const target = path.resolve(String(location?.path || ''));
+      return target === this.writableDir || target.startsWith(this.writableDir + path.sep);
+    });
+    if (!inside) return { outcome: 'cancelled' };
+    const allow = (params.options || []).find(option => String(option?.kind || '').startsWith('allow'));
+    return allow ? { outcome: 'selected', optionId: allow.optionId } : { outcome: 'cancelled' };
   }
 
   #projectCwd(project) {
