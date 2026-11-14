@@ -7,8 +7,8 @@ const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'ov
 const $ = id => document.getElementById(id);
 function replace(id, nodes) { $(id).replaceChildren(...nodes); }
 let noticeError = false;
-function showNotice(text) { const box = $('notice'); box.textContent = text; box.hidden = !text; }
-function showErrorNotice(text) { noticeError = true; showNotice(text); }
+function showNotice(text) { noticeError = false; const box = $('notice'); box.textContent = text; box.hidden = !text; }
+function showErrorNotice(text) { showNotice(text); noticeError = true; }
 function setConnection(online, text) { const node = $('connection'); node.className = `connection ${online ? 'online' : 'offline'}`; node.replaceChildren(el('span', 'dot'), document.createTextNode(text)); }
 export async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...(options.body ? { 'content-type': 'application/json', 'x-console-request': '1' } : {}), ...options.headers } });

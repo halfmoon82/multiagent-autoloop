@@ -57,7 +57,7 @@ const cliPath = path.join(root, 'check.sh'); writeFileSync(cliPath, '#!/bin/sh\n
 const hub = await fakeHub((req, res) => {
   if (req.url === '/v1/state') return json(res, snapshot);
   if (req.url.endsWith('/resolve')) { snapshot.cards[1].state = 'closed'; return json(res, { changed: true }); }
-  if (req.url.endsWith('/answer')) { snapshot.cards[0].state = 'decided'; return json(res, { changed: true }); }
+  if (req.url.endsWith('/answer')) { const match = req.url.match(/\/cards\/(\d+)\/answer$/); const card = snapshot.cards.find(item => item.id === Number(match?.[1])); if (card) card.state = 'decided'; return json(res, { changed: true }); }
   if (req.url.endsWith('/pause')) { snapshot.lines[0].paused = { reason: 'browser test' }; return json(res, { changed: true }); }
   if (req.url.endsWith('/resume')) { snapshot.lines[0].paused = null; return json(res, { changed: true }); }
   return json(res, { ok: true });
@@ -115,6 +115,10 @@ try {
   const answerNode = await answerInput.elementHandle();
   await page.waitForTimeout(4500);
   assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, answerNode), true, 'answer input DOM node must survive background refreshes so IME composition is not broken');
+  await collisionCard.locator('input[name="answer"]').fill('通知存活测试');
+  await collisionCard.getByRole('button', { name: '发送回答' }).click();
+  await page.waitForTimeout(2500);
+  assert.ok((await page.locator('#notice').innerText()).includes('回答已提交'), 'action notices must survive background refresh cycles');
   await page.getByRole('button', { name: '继续', exact: true }).click();
   const resolveCard=page.locator('.decision-card').filter({hasText:'直接结案测试'}); await resolveCard.getByRole('button',{name:'结案',exact:true}).click();
   await page.setViewportSize({ width: 360, height: 800 });
