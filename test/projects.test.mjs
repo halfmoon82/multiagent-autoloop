@@ -26,12 +26,27 @@ test('discovers git repos under roots up to depth 4, skipping hidden and node_mo
   assert.ok(projects.every(project => project.path.startsWith(root)));
 });
 
-test('skips repos whose path contains whitespace or control characters', () => {
+test('allows repos whose path contains whitespace', () => {
   const root = fixture();
   mkdirSync(path.join(root, 'my project', '.git'), { recursive: true });
   const projects = discoverGitProjects({ roots: [root] });
-  assert.ok(!projects.some(project => project.name === 'my project'));
-  assert.deepEqual(projects.map(project => project.name), ['alpha', 'beta']);
+  assert.ok(projects.some(project => project.name === 'my project'));
+});
+
+test('skips transient probe, rehearsal and workflow-state directories', () => {
+  const root = fixture();
+  for (const name of ['vibe-handoff-probe', 'vibe-rehearsal-r4', 'vga-fix-workflow-state', '旧库-待删-20261027']) mkdirSync(path.join(root, name, '.git'), { recursive: true });
+  const projects = discoverGitProjects({ roots: [root] });
+  for (const name of ['vibe-handoff-probe', 'vibe-rehearsal-r4', 'vga-fix-workflow-state', '旧库-待删-20261027']) assert.ok(!projects.some(project => project.name === name), name);
+});
+
+test('skips dated work directories and keeps the shallower repo on name collisions', () => {
+  const root = fixture();
+  mkdirSync(path.join(root, '2026-08-17', 'an-z', 'work', 'stale', '.git'), { recursive: true });
+  mkdirSync(path.join(root, 'holder', 'alpha', '.git'), { recursive: true });
+  const projects = discoverGitProjects({ roots: [root] });
+  assert.ok(!projects.some(project => project.name === 'stale'));
+  assert.deepEqual(projects.filter(project => project.name === 'alpha').map(project => project.path), [path.join(root, 'alpha')]);
 });
 
 test('merges rule workdirs that are git repos even without roots', () => {
@@ -40,11 +55,11 @@ test('merges rule workdirs that are git repos even without roots', () => {
   assert.deepEqual(projects.map(project => project.name), ['alpha']);
 });
 
-test('skips rule workdirs whose path contains whitespace', () => {
+test('merges rule workdirs whose path contains whitespace', () => {
   const root = fixture();
   mkdirSync(path.join(root, 'spaced rule', '.git'), { recursive: true });
   const projects = discoverGitProjects({ roots: [], rules: [{ name: 'spaced', cwd: path.join(root, 'spaced rule') }] });
-  assert.deepEqual(projects, []);
+  assert.deepEqual(projects.map(project => project.name), ['spaced rule']);
 });
 
 test('GET /api/projects lists discovered git projects', async () => {
