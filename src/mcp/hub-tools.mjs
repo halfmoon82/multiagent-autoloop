@@ -1,5 +1,6 @@
-// autoloop-hub：调度会话专用的只读 MCP server。
-// 通过 stdio JSON-RPC 提供 list_rules / list_runs / list_cards 三个工具，
+// autoloop-hub：调度会话专用 MCP server（调度状态查询与自愈规则操作）。
+// 通过 stdio JSON-RPC 提供六个工具：只读 list_rules / list_runs / list_cards，
+// 以及受控写 resume_rule / pause_rule / run_rule（与控制台按钮同一套 Hub 动作）。
 // 数据来自 Autoloop Hub（/v1/state）与 AGENT_AUTOLOOP_HOME 下的 rules.json。
 // 安全边界：owner key 只用于 Hub 请求头，绝不进入工具输出、日志或 stderr。
 import { readFileSync } from 'node:fs';
@@ -126,14 +127,55 @@ function compactObject(entries) {
   return Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined && value !== ''));
 }
 
+const SUBJECT_PATTERN = /^[!-~]+$/; // 调度契约 §4.5：稳定 ASCII 标识，无空格、无控制字符
+
+function requireValidSubject(args) {
+  if (args?.subject === undefined) return undefined;
+  if (typeof args.subject !== 'string' || !SUBJECT_PATTERN.test(args.subject)) {
+    const error = new Error('subject 必须是稳定 ASCII 标识：可打印 ASCII、无空格（调度契约 §4.5）');
+    error.code = -32602;
+    throw error;
+  }
+  return args.subject;
+}
+
+// run_rule 进程内 per-rule 冷却：防注入/失控循环烧额度（代码层刹车，不只靠 prompt 纪律）。
+// cooldowns Map 经 deps 注入：stdio 主循环持有一份贯穿进程生命周期的实例，测试可换新实例隔离。
+const RUN_COOLDOWN_MS = 10 * 60 * 1000;
+const defaultCooldowns = new Map(); // name -> 最近一次成功 run 的时间戳（now 由 deps 注入，便于测试）
+
+function checkRunCooldown(cooldowns, name, now) {
+  const previous = cooldowns.get(name);
+  if (previous === undefined) return;
+  const elapsed = now() - previous;
+  if (elapsed < RUN_COOLDOWN_MS) {
+    const remainingSeconds = Math.ceil((RUN_COOLDOWN_MS - elapsed) / 1000);
+    const error = new Error(`规则「${name}」正在冷却：${remainingSeconds} 秒内已 run 过，剩余冷却约 ${remainingSeconds} 秒后才能重触发`);
+    error.code = -32000;
+    throw error;
+  }
+}
+
 // 受控写工具：与控制台按钮同一套 Hub 动作（服务端直连）。run_rule 会启动 Agent 消耗额度，
-// 属于调度契约 §4.2「自愈后恢复或重触发」的授权动作。每次调用打一行审计日志（不含密钥）。
+// 属于调度契约 §4.2「自愈后恢复或重触发」的授权动作。每次调用打一行审计日志（不含密钥），
+// 成功与失败（含冷却拒绝）都留痕；审计不记录响应体。
 async function callRuleAction(args, deps, action) {
   const name = requireRuleName(args);
-  const body = compactObject({ reason: args?.reason, ...(action === 'run' ? { subject: args?.subject } : {}) });
-  const result = await deps.request(deps.config, `/v1/rules/${encodeURIComponent(name)}/${action}`, { method: 'POST', body });
-  console.error(`[autoloop-hub] 写工具审计: ${action}_rule name=${name} ok`);
-  return result;
+  const body = compactObject({ reason: args?.reason, ...(action === 'run' ? { subject: requireValidSubject(args) } : {}) });
+  const now = deps.now || Date.now;
+  const cooldowns = deps.cooldowns || defaultCooldowns;
+  try {
+    if (action === 'run') checkRunCooldown(cooldowns, name, now);
+    const result = await deps.request(deps.config, `/v1/rules/${encodeURIComponent(name)}/${action}`, { method: 'POST', body });
+    if (action === 'run') cooldowns.set(name, now());
+    console.error(`[autoloop-hub] 写工具审计: ${action}_rule name=${name} ok`);
+    return result;
+  } catch (error) {
+    // 失败/拒绝也留一行；只记错误类别与状态码，不记 message（避免把 Hub 响应体带进日志）。
+    const detail = [error.name !== 'Error' ? error.name : null, error.status ? `status=${error.status}` : null, error.code !== undefined ? `code=${error.code}` : null].filter(Boolean).join(' ');
+    console.error(`[autoloop-hub] 写工具审计: ${action}_rule name=${name} 拒绝/失败 ${detail}`.trim());
+    throw error;
+  }
 }
 
 export const TOOLS = [
@@ -164,7 +206,7 @@ export const TOOLS = [
   },
   {
     name: 'run_rule',
-    description: '立即触发一次规则（POST /v1/rules/:name/run），会启动 Agent 消耗额度；仅用于自愈验证后的重触发。受控写工具。',
+    description: '立即触发一次规则（POST /v1/rules/:name/run），会启动 Agent 消耗额度；仅用于自愈验证后的重触发。同一规则 10 分钟内重复 run 会被冷却拒绝（code -32000，错误含剩余冷却秒数）。受控写工具。',
     inputSchema: {
       type: 'object',
       properties: { ...NAME_PROPERTY, subject: { type: 'string', description: '可选。本次运行的稳定 ASCII 事件标识。' } },
@@ -183,14 +225,14 @@ const IMPLEMENTATIONS = {
   run_rule: (args, deps) => callRuleAction(args, deps, 'run'),
 };
 
-export async function handleToolCall(name, args = {}, { config, request = hubRequest } = {}) {
+export async function handleToolCall(name, args = {}, { config, request = hubRequest, now, cooldowns } = {}) {
   const implementation = IMPLEMENTATIONS[name];
   if (!implementation) {
     const error = new Error(`未知工具：${String(name)}。可用工具：${TOOLS.map(tool => tool.name).join(', ')}`);
     error.code = -32602;
     throw error;
   }
-  const deps = { config: config || loadConsoleConfig(), request };
+  const deps = { config: config || loadConsoleConfig(), request, ...(now ? { now } : {}), ...(cooldowns ? { cooldowns } : {}) };
   return implementation({ ...args }, deps);
 }
 
@@ -199,20 +241,21 @@ export async function handleToolCall(name, args = {}, { config, request = hubReq
 const LATEST_PROTOCOL_VERSION = '2025-06-18';
 
 export function createRequestHandler(deps = {}) {
+  const statefulDeps = { cooldowns: new Map(), ...deps };
   return async function handleRequest(message) {
     const { id, method, params } = message;
     if (method === 'initialize') {
       return {
         protocolVersion: params?.protocolVersion || LATEST_PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: SERVER_NAME, title: 'Autoloop Hub 只读调度状态工具', version: SERVER_VERSION },
+        serverInfo: { name: SERVER_NAME, title: 'Autoloop Hub 调度状态查询与自愈规则操作', version: SERVER_VERSION },
       };
     }
     if (method === 'ping') return {};
     if (method === 'tools/list') return { tools: TOOLS };
     if (method === 'tools/call') {
       try {
-        const result = await handleToolCall(params?.name, params?.arguments || {}, deps);
+        const result = await handleToolCall(params?.name, params?.arguments || {}, statefulDeps);
         console.error(`[autoloop-hub] tool call ok: ${params?.name}`); // 只记工具名，不记参数与任何密钥
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (error) {
