@@ -6,7 +6,9 @@ import { el } from './views.mjs';
 const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null };
 const $ = id => document.getElementById(id);
 function replace(id, nodes) { $(id).replaceChildren(...nodes); }
+let noticeError = false;
 function showNotice(text) { const box = $('notice'); box.textContent = text; box.hidden = !text; }
+function showErrorNotice(text) { noticeError = true; showNotice(text); }
 function setConnection(online, text) { const node = $('connection'); node.className = `connection ${online ? 'online' : 'offline'}`; node.replaceChildren(el('span', 'dot'), document.createTextNode(text)); }
 export async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...(options.body ? { 'content-type': 'application/json', 'x-console-request': '1' } : {}), ...options.headers } });
@@ -18,8 +20,8 @@ export async function refresh() {
   if (state.loading) return; state.loading = true;
   try {
     const [snapshot, ruleData, sessions, projectData] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects')]);
-    snapshot.models = state.models || {}; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; state.models = ruleData.models || {}; setConnection(true, '已连接'); showNotice(''); render();
-  } catch (error) { setConnection(false, '连接失败'); showNotice(`无法更新：${error.message}`); }
+    snapshot.models = state.models || {}; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; state.models = ruleData.models || {}; setConnection(true, '已连接'); if (noticeError) { noticeError = false; showNotice(''); } render();
+  } catch (error) { setConnection(false, '连接失败'); showErrorNotice(`无法更新：${error.message}`); }
   finally { state.loading = false; }
 }
 function projectView() {
@@ -68,7 +70,7 @@ function replaceKeyedPreserving(containerId, freshNodes, keyAttr, pinnedKey) {
   if (!pinnedKey) return list.replaceChildren(...freshNodes);
   const kept = [...list.querySelectorAll(`[data-${keyAttr}]`)].find(node => node.dataset[keyAttr] === pinnedKey);
   if (!kept) return list.replaceChildren(...freshNodes);
-  list.replaceChildren(...freshNodes.map(node => node.dataset?.[keyAttr] !== undefined && node.dataset[keyAttr] === pinnedKey ? kept : node));
+  list.replaceChildren(...freshNodes.map(node => node.dataset[keyAttr] === pinnedKey ? kept : node));
 }
 
 function captureFocus() {
