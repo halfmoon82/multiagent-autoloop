@@ -136,6 +136,17 @@ test('starts the session inside the project repo and falls back to the console c
   const fallback = await manager2.start({ project: 'owner/not-on-disk' });
   assert.equal(fallbackCwd, '/workspace/control-plane', 'unknown projects fall back to the console cwd');
   await manager2.close(fallback.id);
+
+  const plainDir = mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'plain-dir-'));
+  let plainCwd;
+  const fake3 = fakeAdapter();
+  const manager3 = new SchedulingSessionManager({
+    cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js',
+    spawnFn: (command, args, options) => { plainCwd = options.cwd; return fake3.process; },
+  });
+  const plain = await manager3.start({ project: plainDir });
+  assert.equal(plainCwd, '/workspace/control-plane', 'a directory without .git must not become the session cwd');
+  await manager3.close(plain.id);
 });
 
 test('cancels ACP permission requests instead of approving them from the console', async () => {

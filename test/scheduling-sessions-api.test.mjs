@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createConsoleServer } from '../src/server.mjs';
 import { SchedulingSessionError } from '../src/scheduling-session.mjs';
 import { listen, close } from './helpers.mjs';
@@ -23,7 +26,12 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     },
     async close(id) { calls.push(['close', id]); return { id, status: 'closed', statusText: '已关闭' }; },
   };
-  const server = createConsoleServer(config, manager);
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'api-projects-'));
+  const repo = path.join(projectRoot, 'demo-repo');
+  mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const rulesFile = path.join(projectRoot, 'rules.json');
+  writeFileSync(rulesFile, JSON.stringify({ sources: {}, agents: {}, rules: [], elsewhere: [] }));
+  const server = createConsoleServer({ ...config, projectRoots: [projectRoot], rulesFile }, manager);
   const url = await listen(server);
   try {
     const listResponse = await fetch(`${url}/api/scheduling-sessions`);
@@ -36,12 +44,15 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     const noProject = await fetch(`${url}/api/scheduling-sessions`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ prompt: '检查当前调度' }) });
     assert.equal(noProject.status, 400);
 
-    const started = await fetch(`${url}/api/scheduling-sessions`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ prompt: '检查当前调度', project: 'owner/demo' }) });
+    const unknownProject = await fetch(`${url}/api/scheduling-sessions`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ project: '/etc' }) });
+    assert.equal(unknownProject.status, 400, 'projects outside the discovered repo list must be rejected');
+
+    const started = await fetch(`${url}/api/scheduling-sessions`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ prompt: '检查当前调度', project: repo }) });
     assert.equal(started.status, 201);
     const startedBody = await started.json();
     assert.equal(startedBody.sessionId, 'acp-2');
-    assert.equal(startedBody.project, 'owner/demo');
-    assert.match(calls[2][3] || '', /未找到该项目资料|AGENTS/, 'server must pass project context docs');
+    assert.equal(startedBody.project, repo);
+    assert.match(calls[1][3] || '', /未找到该项目资料|AGENTS/, 'server must pass project context docs');
 
     const messageMissingMarker = await fetch(`${url}/api/scheduling-sessions/two/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '你好' }) });
     assert.equal(messageMissingMarker.status, 403);
@@ -61,13 +72,12 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     const closed = await fetch(`${url}/api/scheduling-sessions/two/close`, { method: 'POST', headers: writeHeaders, body: '{}' });
     assert.equal(closed.status, 200);
     assert.equal((await closed.json()).status, 'closed');
-    assert.deepEqual(calls.map(call => call[0]), ['list', 'start', 'start', 'send', 'send', 'close']);
+    assert.deepEqual(calls.map(call => call[0]), ['list', 'start', 'send', 'send', 'close']);
     assert.equal(calls[1][1], '检查当前调度');
-    assert.equal(calls[1][2], undefined);
-    assert.equal(calls[2][2], 'owner/demo');
-    assert.equal(calls[3][1], 'none');
+    assert.equal(calls[1][2], repo);
+    assert.equal(calls[2][1], 'none');
+    assert.equal(calls[3][1], 'two');
+    assert.equal(calls[3][2], '重点看卡片');
     assert.equal(calls[4][1], 'two');
-    assert.equal(calls[4][2], '重点看卡片');
-    assert.equal(calls[5][1], 'two');
   } finally { await close(server); }
 });

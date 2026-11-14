@@ -43,7 +43,12 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
   if (!['POST', 'PUT'].includes(req.method)) return false;
   checkWrite(req); const body = await readJson(req);
-  if (req.method === 'POST' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 201, await config.schedulingSessions.start({ prompt: body.prompt, project: body.project, projectContext: readProjectDocs(String(body.project || '')) }));
+  if (req.method === 'POST' && url.pathname === '/api/scheduling-sessions') {
+    const project = String(body.project || '');
+    const known = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).find(item => item.path === project);
+    if (!known) throw new RequestError(400, '项目不在已发现的 Git 仓库列表中，请从下拉选择');
+    return jsonResponse(res, 201, await config.schedulingSessions.start({ prompt: body.prompt, project: known.path, projectContext: readProjectDocs(known.path) }));
+  }
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   let match;
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/close$/))) return jsonResponse(res, 200, await config.schedulingSessions.close(decodeURIComponent(match[1])));

@@ -206,7 +206,7 @@ export class SchedulingSessionManager {
 
   #projectCwd(project) {
     try {
-      if (existsSync(project) && statSync(project).isDirectory()) return path.resolve(project);
+      if (existsSync(project) && statSync(project).isDirectory() && existsSync(path.join(project, '.git'))) return path.resolve(project);
     } catch { /* 回退控制台工作目录 */ }
     return this.cwd;
   }
