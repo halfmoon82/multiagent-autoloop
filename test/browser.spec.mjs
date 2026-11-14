@@ -93,6 +93,12 @@ try {
   const sessionCard = page.locator('#sessions-list .run-card').filter({ hasText: 'browser-' });
   await sessionCard.waitFor();
   assert.ok((await sessionCard.innerText()).includes('项目 · owner/demo'), 'scheduling session must show its bound project');
+  assert.equal(await page.locator('#project-filter').inputValue(), 'demo', 'starting a session must switch the project filter to the new session so the card stays visible');
+  assert.equal(await page.locator('#clear-project-filter').getAttribute('hidden'), null, 'a clear-filter button must be shown while a filter is active');
+  await page.getByRole('button', { name: '总览', exact: true }).click();
+  await page.locator('#clear-project-filter').click();
+  assert.equal(await page.locator('#project-filter').inputValue(), '', 'clear-filter must reset the project filter');
+  await page.getByRole('button', { name: '调度会话', exact: true }).click();
   await page.getByLabel('发消息给会话 browser-session').fill('重点看执行轮次');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.waitForTimeout(300);
