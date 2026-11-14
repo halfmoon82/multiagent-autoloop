@@ -7,7 +7,7 @@ function jsonLine(value) {
   return `${JSON.stringify(value)}\n`;
 }
 
-function fakeAdapter({ askPermission = false } = {}) {
+function fakeAdapter({ askPermission = false, failInitialize = false, stderrBytes = 0 } = {}) {
   const requests = [];
   const stdin = new PassThrough();
   const stdout = new PassThrough();
@@ -32,10 +32,15 @@ function fakeAdapter({ askPermission = false } = {}) {
       const request = JSON.parse(line);
       requests.push(request);
       if (request.method === 'initialize') {
-        respond(request, { protocolVersion: 1, agentCapabilities: { sessionCapabilities: { prompt: true } }, agentInfo: { name: 'fake-codex', version: '0' } });
+        if (failInitialize) {
+          stdout.write(jsonLine({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'initialize boom' } }));
+        } else {
+          respond(request, { protocolVersion: 1, agentCapabilities: { sessionCapabilities: { prompt: true } }, agentInfo: { name: 'fake-codex', version: '0' } });
+        }
       } else if (request.method === 'session/new') {
         respond(request, { sessionId: 'fake-session' });
       } else if (request.method === 'session/prompt') {
+        if (stderrBytes > 0) stderr.write('x'.repeat(stderrBytes));
         if (askPermission) setTimeout(requestPermission, 0);
         const reply = `收到：${request.params.prompt[0].text.slice(0, 12)}`;
         setTimeout(() => {
@@ -115,6 +120,36 @@ test('enforces concurrency and prompt size without exposing process control to t
   await assert.rejects(manager.start({ prompt: 'x'.repeat(4001), project: 'owner-alpha/demo' }), /4000 字/);
   await assert.rejects(manager.close('missing'), SchedulingSessionError);
   await manager.close(manager.list()[0].id);
+});
+
+test('rejects a start when the ACP adapter is missing and cleans up after initialize failures', async () => {
+  const missing = new SchedulingSessionManager({ adapterPath: '/definitely/not/there.js' });
+  await assert.rejects(missing.start({ project: 'owner/demo' }), /适配器/);
+
+  const failing = fakeAdapter({ failInitialize: true });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => failing.process });
+  await assert.rejects(manager.start({ project: 'owner/demo' }), /开启调度会话失败/);
+  assert.deepEqual(manager.list(), []);
+  assert.ok(failing.process.killedWith, 'failed start must terminate the adapter process');
+});
+
+test('drains adapter stderr so a chatty child cannot deadlock the session', async () => {
+  const fake = fakeAdapter({ stderrBytes: 200 * 1024 });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '检查状态', project: 'owner/demo' });
+  await waitFor(() => manager.list().find(session => session.id === started.id)?.status === 'idle');
+  assert.equal(manager.list()[0].stopReason, 'end_turn');
+  await manager.close(started.id);
+});
+
+test('marks the session error when the adapter process exits on its own', async () => {
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '读取状态', project: 'owner/demo' });
+  await waitFor(() => manager.list().find(session => session.id === started.id)?.status === 'running');
+  fake.process.kill('SIGKILL');
+  await waitFor(() => manager.list().find(session => session.id === started.id)?.status === 'error');
+  assert.match(manager.list()[0].error, /进程已退出|ACP connection closed/);
 });
 
 test('keeps a transcript and accepts follow-up messages while the agent is idle', async () => {

@@ -39,9 +39,10 @@ function projectView() {
 function syncProjectFilter() {
   const select = $('project-filter');
   const projects = collectProjects({ rules: state.rules, runs: state.snapshot.runs || [], cards: state.snapshot.cards || [], sessions: state.sessions });
-  if (state.projectFilter && !projects.includes(state.projectFilter)) state.projectFilter = '';
-  select.replaceChildren(...[['', '全部项目'], ...projects.map(project => [project, projectName(project)])].map(([value, label]) => {
-    const option = el('option', '', label); option.value = value; return option;
+  const keys = new Set(projects.map(project => projectName(project)));
+  if (state.projectFilter && !keys.has(state.projectFilter)) state.projectFilter = '';
+  select.replaceChildren(...[['', '全部项目'], ...projects.map(project => [projectName(project), project])].map(([value, raw]) => {
+    const option = el('option', '', value); option.value = value; if (raw !== value) option.title = raw; return option;
   }));
   select.value = state.projectFilter;
 }

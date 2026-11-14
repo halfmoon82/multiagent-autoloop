@@ -35,8 +35,8 @@ export function splitRunSections(snapshot, models = {}, now = new Date(), rules 
 }
 
 export function matchesProject(value, filter) {
-  const text = String(value || '').trim();
-  return !filter || text === filter;
+  if (!filter) return true;
+  return projectName(value) === projectName(filter);
 }
 
 export function collectProjects({ rules = [], runs = [], cards = [], sessions = [] } = {}) {

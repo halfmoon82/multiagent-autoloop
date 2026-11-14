@@ -60,7 +60,7 @@ try {
   assert.ok((await page.locator('#running-list').innerText()).includes(`项目 · ${path.basename(root)}`), 'overview task summary must show its short project name');
   const collisionCard = page.locator('#attention-list .list-row').filter({ hasText: '规则同名卡片不得误认项目' });
   assert.ok((await collisionCard.innerText()).includes('项目 · 未识别'), 'decision card project must not be inferred from a title collision');
-  await page.locator('#project-filter').selectOption('/elsewhere/beta');
+  await page.locator('#project-filter').selectOption('beta');
   assert.ok(!(await page.locator('#running-list').innerText()).includes('恢复测试'), 'project filter must hide other projects from running list');
   assert.ok((await page.locator('#retrying-list').innerText()).includes('beta 项目等待重试'), 'project filter must keep the matching retrying run');
   await page.locator('#project-filter').selectOption('');

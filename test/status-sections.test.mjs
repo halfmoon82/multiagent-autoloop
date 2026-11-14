@@ -41,10 +41,12 @@ test('decision cards never infer project from a title collision with a rule name
   assert.equal(projectForCard({ title: '开发', cwd: '/workspace/card' }, rules), '/workspace/card');
 });
 
-test('project filter matches exact project identity and passes through empty filter', () => {
+test('project filter matches by project basename across identifier styles', () => {
   assert.equal(matchesProject('/workspace/demo', ''), true);
   assert.equal(matchesProject('/workspace/demo', '/workspace/demo'), true);
+  assert.equal(matchesProject('/workspace/demo', 'owner/demo'), true);
   assert.equal(matchesProject('/workspace/demo', '/workspace/demo2'), false);
+  assert.equal(matchesProject('/alpha/demo', '/beta/demo'), true);
   assert.equal(matchesProject('未识别', '未识别'), true);
   assert.equal(matchesProject('', ''), true);
 });

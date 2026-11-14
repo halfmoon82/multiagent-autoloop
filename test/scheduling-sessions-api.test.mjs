@@ -54,6 +54,9 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     assert.equal(sentBody.busy, true);
     assert.equal(sentBody.messages.at(-1).text, '重点看卡片');
 
+    const putClose = await fetch(`${url}/api/scheduling-sessions/two/close`, { method: 'PUT', headers: writeHeaders, body: '{}' });
+    assert.equal(putClose.status, 404, 'session routes must only accept POST');
+
     const closed = await fetch(`${url}/api/scheduling-sessions/two/close`, { method: 'POST', headers: writeHeaders, body: '{}' });
     assert.equal(closed.status, 200);
     assert.equal((await closed.json()).status, 'closed');

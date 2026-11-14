@@ -87,6 +87,8 @@ export class SchedulingSessionManager {
       shell: false,
     });
     if (!child?.stdin || !child?.stdout || !child?.stderr) throw new SchedulingSessionError('无法启动 Codex ACP 适配器', { status: 500 });
+    let stderrTail = '';
+    child.stderr.on('data', chunk => { stderrTail = (stderrTail + chunk.toString()).slice(-4096); });
 
     const record = {
       id: randomUUID(),
@@ -129,7 +131,11 @@ export class SchedulingSessionManager {
       if (!this.sessions.has(record.id)) return;
       if (record.status !== 'closing' && record.status !== 'closed') {
         record.status = child.exitCode === 0 ? 'closed' : 'error';
-        if (record.status === 'error' && !record.error) record.error = 'Codex ACP 进程已退出';
+        if (record.status === 'error' && !record.error) {
+        record.error = 'Codex ACP 进程已退出';
+        const tail = stderrTail.trim();
+        if (tail) console.error(`[scheduling-session] adapter stderr:\n${tail}`);
+      }
         record.updatedAt = this.now().toISOString();
       }
     }).catch(() => {});
