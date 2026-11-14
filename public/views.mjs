@@ -1,5 +1,5 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
-import { splitRunSections, projectForRun, projectForCard } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard, sessionProgress } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
@@ -118,7 +118,7 @@ export function renderCards(snapshot) {
   if (!cards.length) return [el('div', 'empty', '没有等待您回答的卡片。')];
   return cards.map(card => {
     const box = el('article', 'decision-card'); const top = el('div', 'run-top'); top.append(el('div', 'run-name', card.title), badge(statusLabel(card.state), card.state === 'open' ? 'warn' : 'good'));
-    box.append(top, el('p', 'decision-text', card.text || ''));
+    box.append(top, projectChip(projectForCard(card)), el('p', 'decision-text', card.text || ''));
     if (card.state === 'open') {
       const options = el('div', 'option-list'); (card.options || []).forEach((option, index) => options.append(button(option, 'answer-choice', `${card.id}:${index}`, 'secondary')));
       box.append(options);
@@ -128,6 +128,32 @@ export function renderCards(snapshot) {
       const submit = button('发送回答', '', '', 'primary'); submit.type = 'submit'; answer.append(input, submit); box.append(answer);
     } else box.append(el('p', 'row-meta', `已选择：${card.choice ?? card.answer ?? '—'}，等待后续执行。`));
     return box;
+  });
+}
+
+export function renderSessionProgress(sessions = [], rules = [], snapshot = {}) {
+  if (!sessions.length) return [el('div', 'empty', '开启调度会话后，这里按项目汇总任务总进度。')];
+  return sessions.map(session => {
+    const progress = sessionProgress(session, rules, snapshot.lines || []);
+    const row = el('div', 'list-row');
+    const text = el('div');
+    text.append(el('div', 'row-title', `项目 · ${projectName(progress.project)}`));
+    const metaLine = el('div', 'row-meta');
+    if (progress.totalRounds === 0) {
+      metaLine.textContent = progress.ruleCount ? '该项目还没有产生执行轮次。' : '该项目还没有绑定调度规则。';
+    } else {
+      const cost = typeof progress.cost === 'number' ? ` · 今日费用 $${progress.cost.toFixed(2)}` : '';
+      metaLine.textContent = `运行中 ${progress.running} · 等待 ${progress.waiting} · 今日完成 ${progress.doneToday} · 累计完成 ${progress.finished}/${progress.totalRounds}${cost}`;
+      const track = el('div', 'progress-track');
+      const bar = el('progress', 'progress-bar');
+      bar.max = 100; bar.value = Math.round(progress.ratio * 100);
+      bar.setAttribute('aria-label', `${projectName(progress.project)} 总进度 ${Math.round(progress.ratio * 100)}%`);
+      track.append(bar);
+      text.append(track);
+    }
+    text.append(metaLine);
+    row.append(text, badge(session.statusText || session.status || '未知', session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
+    return row;
   });
 }
 
@@ -147,12 +173,7 @@ export function renderRunSection(items, emptyText) {
 }
 export function renderAttention(snapshot, rules = []) {
   const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules);
-  const items = [];
-  for (const card of (snapshot.cards || []).filter(card => card.state === 'open').slice(0, 5)) {
-    items.push({ id: card.id, rule: card.title, project: projectForCard(card), status: '待调度', text: card.text || card.result || '需要处理', attempts: 0 });
-  }
-  items.push(...sections.needsAttention);
-  return renderRunSection(items.slice(0, 5), '没有等待调度处理的事。');
+  return renderRunSection(sections.needsAttention, '没有等待调度处理的事。');
 }
 export function renderWorkSections(snapshot, rules = []) {
   const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules);
