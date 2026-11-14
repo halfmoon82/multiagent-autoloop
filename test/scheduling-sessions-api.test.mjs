@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConsoleServer } from '../src/server.mjs';
@@ -8,6 +8,25 @@ import { SchedulingSessionError } from '../src/scheduling-session.mjs';
 import { listen, close } from './helpers.mjs';
 
 const config = { hubUrl: 'http://127.0.0.1:1', ownerKey: 'server-secret', host: '127.0.0.1' };
+
+test('createConsoleServer derives and creates the writable scripts dir from config.root', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'console-root-'));
+  const server = createConsoleServer({ ...config, root, rulesFile: path.join(root, 'rules.json') });
+  const url = await listen(server);
+  try {
+    assert.ok(existsSync(path.join(root, 'scripts')), 'AGENT_AUTOLOOP_HOME/scripts must be created for scheduling sessions');
+  } finally { await close(server); }
+});
+
+test('createConsoleServer falls back to read-only when the scripts dir cannot be created', async () => {
+  const fileRoot = path.join(mkdtempSync(path.join(tmpdir(), 'console-root-')), 'a-file');
+  writeFileSync(fileRoot, 'x');
+  const server = createConsoleServer({ ...config, root: fileRoot, rulesFile: path.join(path.dirname(fileRoot), 'rules.json') });
+  const url = await listen(server);
+  try {
+    assert.ok(!existsSync(path.join(fileRoot, 'scripts')), 'uncreatable scripts dir must stay absent');
+  } finally { await close(server); }
+});
 const writeHeaders = { 'content-type': 'application/json', 'x-console-request': '1' };
 
 test('scheduling session API lists, starts and closes local ACP sessions', async () => {

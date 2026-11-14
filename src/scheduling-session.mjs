@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
@@ -210,17 +210,31 @@ export class SchedulingSessionManager {
     for (const record of this.sessions.values()) this.#destroyRecord(record);
   }
 
+  #insideWritableDir(target) {
+    if (!target) return false;
+    let root;
+    try { root = realpathSync(this.writableDir); } catch { return false; }
+    try {
+      if (lstatSync(target).isSymbolicLink()) return false;
+      const resolved = realpathSync(target);
+      return resolved === root || resolved.startsWith(root + path.sep);
+    } catch (error) {
+      if (error.code !== 'ENOENT') return false;
+      try {
+        const resolved = path.join(realpathSync(path.dirname(target)), path.basename(target));
+        return resolved === root || resolved.startsWith(root + path.sep);
+      } catch { return false; }
+    }
+  }
+
   #decidePermission(params) {
     const toolCall = params?.toolCall || {};
     if (!this.writableDir || toolCall.kind !== 'edit') return { outcome: 'cancelled' };
     const locations = Array.isArray(toolCall.locations) ? toolCall.locations : [];
     if (!locations.length) return { outcome: 'cancelled' };
-    const inside = locations.every(location => {
-      const target = path.resolve(String(location?.path || ''));
-      return target === this.writableDir || target.startsWith(this.writableDir + path.sep);
-    });
+    const inside = locations.every(location => this.#insideWritableDir(String(location?.path || '')));
     if (!inside) return { outcome: 'cancelled' };
-    const allow = (params.options || []).find(option => String(option?.kind || '').startsWith('allow'));
+    const allow = (params.options || []).find(option => option?.kind === 'allow_once');
     return allow ? { outcome: 'selected', optionId: allow.optionId } : { outcome: 'cancelled' };
   }
 

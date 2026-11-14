@@ -72,8 +72,12 @@ async function handleApi(config, req, res, url) {
 export function createConsoleServer(config, schedulingSessions) {
   if (!schedulingSessions) {
     const writableDir = config.root ? path.join(config.root, 'scripts') : null;
-    if (writableDir) { try { mkdirSync(writableDir, { recursive: true }); } catch { /* 目录不可写时按只读会话处理 */ } }
-    schedulingSessions = new SchedulingSessionManager({ writableDir });
+    let allowedDir = writableDir;
+    if (allowedDir) {
+      try { mkdirSync(allowedDir, { recursive: true }); }
+      catch (error) { console.error(`[console] 脚本目录 ${allowedDir} 创建失败，会话按只读处理：${error.message}`); allowedDir = null; }
+    }
+    schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir });
   }
   config = { ...config, schedulingSessions };
   const server = http.createServer(async (req, res) => {
