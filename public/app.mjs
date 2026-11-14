@@ -140,7 +140,7 @@ $('start-session').addEventListener('click', async event => {
     const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project }) });
     showNotice(`调度会话 ${session.id} 已开启。`);
     state.projectFilter = projectName(session.project || '');
-    $('session-project').value = '';
+    $('session-project').selectedIndex = 0;
     await refresh();
   } catch (error) { showNotice(error.message); }
   finally { button.disabled = false; }

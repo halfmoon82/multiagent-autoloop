@@ -40,6 +40,13 @@ test('merges rule workdirs that are git repos even without roots', () => {
   assert.deepEqual(projects.map(project => project.name), ['alpha']);
 });
 
+test('skips rule workdirs whose path contains whitespace', () => {
+  const root = fixture();
+  mkdirSync(path.join(root, 'spaced rule', '.git'), { recursive: true });
+  const projects = discoverGitProjects({ roots: [], rules: [{ name: 'spaced', cwd: path.join(root, 'spaced rule') }] });
+  assert.deepEqual(projects, []);
+});
+
 test('GET /api/projects lists discovered git projects', async () => {
   const root = fixture();
   const rulesFile = path.join(root, 'rules.json');

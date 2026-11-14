@@ -38,7 +38,8 @@ function mergeRuleProjects(discovered, rules) {
   const found = new Map(discovered.map(project => [project.path, project]));
   for (const rule of rules || []) {
     const cwd = rule?.cwd;
-    if (!cwd || !existsSync(path.join(cwd, '.git'))) continue;
+    if (!cwd || /[\s\x00-\x1f\x7f]/.test(cwd)) continue;
+    if (!existsSync(path.join(cwd, '.git'))) continue;
     const key = path.resolve(cwd);
     if (!found.has(key)) found.set(key, { name: path.basename(key), path: key });
   }
