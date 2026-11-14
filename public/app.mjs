@@ -1,7 +1,7 @@
 import { openRuleForm } from './rule-form.mjs';
-import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSchedulingSessions } from './views.mjs';
+import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSchedulingSessions, renderSessionProgress } from './views.mjs';
 import { projectName } from './format.mjs';
-import { projectForRun, projectForCard, matchesProject, collectProjects } from './status-sections.mjs';
+import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject } from './status-sections.mjs';
 import { el } from './views.mjs';
 const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '' };
 const $ = id => document.getElementById(id);
@@ -45,8 +45,9 @@ function syncProjectFilter() {
     if (!byKey.has(key)) byKey.set(key, project);
   }
   if (state.projectFilter && !byKey.has(state.projectFilter)) state.projectFilter = '';
-  select.replaceChildren(...[['', '全部项目'], ...[...byKey.entries()]].map(([value, raw]) => {
-    const option = el('option', '', value); option.value = value; if (raw !== value) option.title = raw; return option;
+  const entries = [['', '全部项目', ''], ...[...byKey.entries()].map(([key, raw]) => [key, key, raw])];
+  select.replaceChildren(...entries.map(([value, label, title]) => {
+    const option = el('option', '', label); option.value = value; if (title && title !== label) option.title = title; return option;
   }));
   select.value = state.projectFilter;
   $('clear-project-filter').hidden = !state.projectFilter;
@@ -60,15 +61,35 @@ function syncProjectFilter() {
   }
 }
 
+function captureFocus() {
+  const active = document.activeElement;
+  if (!active || !['INPUT', 'TEXTAREA'].includes(active.tagName) || !active.name || !active.form?.dataset?.action) return null;
+  return { action: active.form.dataset.action, id: active.form.dataset.id || '', name: active.name, start: active.selectionStart ?? null, end: active.selectionEnd ?? null };
+}
+function restoreFocus(info) {
+  if (!info) return;
+  const form = [...document.querySelectorAll(`form[data-action="${info.action}"]`)].find(item => (item.dataset.id || '') === info.id);
+  const input = form?.elements?.[info.name];
+  if (!input) return;
+  input.focus({ preventScroll: true });
+  if (info.start !== null && typeof input.setSelectionRange === 'function') { try { input.setSelectionRange(info.start, info.end); } catch { /* 非文本控件 */ } }
+}
+
 function render() {
   if (!state.snapshot) return;
+  const focus = captureFocus();
   const view = projectView();
   const draftAnswers = Object.fromEntries([...document.querySelectorAll('form[data-action="answer-text"]')].map(form => [form.dataset.id, form.elements.answer.value]));
   const draftMessages = Object.fromEntries([...document.querySelectorAll('form[data-action="session-message"]')].map(form => [form.dataset.id, form.elements.message.value]));
   const chatScrolls = Object.fromEntries([...document.querySelectorAll('.session-card')].map(card => { if (!card.dataset.session) return null; const log = card.querySelector('.chat-log'); if (!log) return null; return [card.dataset.session, { top: log.scrollTop, atBottom: log.scrollHeight - log.scrollTop - log.clientHeight < 40 }]; }).filter(Boolean));
-  replace('summary', renderSummary(state.snapshot));
+  const filter = state.projectFilter;
+  const scoped = scopedTotals(view.snapshot, view.rules, filter);
+  const spending = scopedSpending(view.snapshot, view.rules, filter);
+  const summarySnapshot = scoped ? { ...view.snapshot, totals: scoped, spending: { today: spending } } : state.snapshot;
+  replace('summary', renderSummary(summarySnapshot));
+  replace('progress-list', renderSessionProgress(view.sessions, view.rules, view.snapshot));
   const work = renderWorkSections(view.snapshot, view.rules);
-  replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers(state.snapshot));
+  replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
   replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replace('sessions-list', renderSchedulingSessions(view.sessions)); replace('runs-list', renderRuns(view.snapshot, view.rules)); replace('cards-list', renderCards(view.snapshot));
   syncProjectFilter();
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined) form.elements.answer.value = draftAnswers[form.dataset.id]; });
@@ -80,6 +101,7 @@ function render() {
     log.scrollTop = Math.min(previous.top, Math.max(log.scrollHeight - log.clientHeight, 0));
   });
   const count = state.snapshot.cards?.filter(card => card.state === 'open').length || 0; $('card-count').textContent = String(count); $('card-count').hidden = !count;
+  restoreFocus(focus);
 }
 function showView(name) {
   state.view = name;

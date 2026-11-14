@@ -48,3 +48,79 @@ export function collectProjects({ rules = [], runs = [], cards = [], sessions = 
   for (const session of sessions) add(session.project);
   return projects;
 }
+
+export function ruleProject(rules = [], name) {
+  return String(rules.find(rule => rule.name === name)?.cwd || '').trim() || '未识别';
+}
+
+function scopedLines(snapshot, rules, filter) {
+  return (snapshot.lines || []).filter(line => matchesProject(ruleProject(rules, line.name), filter));
+}
+
+// 项目筛选后的总览数字：只聚合该项目的规则行，全部 Hub 上报数据，不编造。
+export function scopedTotals(snapshot, rules = [], filter = '') {
+  if (!filter) return null;
+  const lines = scopedLines(snapshot, rules, filter);
+  const totals = { running: 0, queued: 0, retrying: 0, unknown: 0, doneToday: 0 };
+  for (const line of lines) {
+    const t = line.totals || {};
+    totals.running += t.running || 0;
+    totals.queued += t.queued || 0;
+    totals.retrying += t.retrying || 0;
+    totals.unknown += t.unknown || 0;
+    totals.doneToday += t.doneToday || 0;
+  }
+  return totals;
+}
+
+export function scopedSpending(snapshot, rules = [], filter = '') {
+  if (!filter) return null;
+  const lines = scopedLines(snapshot, rules, filter);
+  let tokens = 0, cost = 0, hasCost = false, rounds = 0, missingRounds = 0;
+  for (const line of lines) {
+    const usage = line.usage || {};
+    tokens += (usage.input || 0) + (usage.output || 0);
+    const t = line.totals || {};
+    const finished = (t.done || 0) + (t.nothing || 0);
+    rounds += finished;
+    if (typeof usage.cost === 'number') { hasCost = true; cost += usage.cost; }
+    else missingRounds += finished;
+  }
+  return { tokens, rounds, cost: hasCost ? cost : undefined, missingCost: hasCost ? missingRounds : rounds };
+}
+
+export function timersForProject(timers = [], rules = [], filter = '') {
+  if (!filter) return timers;
+  return timers.filter(timer => matchesProject(ruleProject(rules, timer.rule), filter));
+}
+
+// 每个调度会话负责的项目任务总进度：只统计绑定到该项目工作目录的规则行。
+export function sessionProgress(session, rules = [], lines = []) {
+  const cwd = String(session?.project || '').trim();
+  const names = new Set(rules.filter(rule => cwd && matchesProject(rule.cwd, cwd)).map(rule => rule.name));
+  const totals = { running: 0, queued: 0, retrying: 0, unknown: 0, done: 0, nothing: 0, doneToday: 0 };
+  let tokens = 0, cost = 0, hasCost = false;
+  for (const line of lines) {
+    if (!names.has(line.name)) continue;
+    const t = line.totals || {};
+    for (const key of Object.keys(totals)) totals[key] += t[key] || 0;
+    const usage = line.usage || {};
+    tokens += (usage.input || 0) + (usage.output || 0);
+    if (typeof usage.cost === 'number') { hasCost = true; cost += usage.cost; }
+  }
+  const finished = totals.done + totals.nothing;
+  const totalRounds = finished + totals.running + totals.queued + totals.retrying + totals.unknown;
+  return {
+    project: cwd,
+    ruleCount: names.size,
+    running: totals.running,
+    waiting: totals.queued + totals.retrying,
+    unknown: totals.unknown,
+    doneToday: totals.doneToday,
+    finished,
+    totalRounds,
+    ratio: totalRounds ? finished / totalRounds : null,
+    tokens,
+    cost: hasCost ? cost : undefined,
+  };
+}

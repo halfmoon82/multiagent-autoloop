@@ -12,13 +12,18 @@ const demoRepo = path.join(root, 'demo-repo'); mkdirSync(path.join(demoRepo, '.g
 const profile = mkdtempSync(path.join(tmpdir(), 'console-browser-profile-'));
 const output = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const snapshot = {
-  seq: 1, totals: { running: 1, queued: 2, retrying: 0, unknown: 0, doneToday: 3 },
+  seq: 1, totals: { running: 8, queued: 8, retrying: 8, unknown: 8, doneToday: 9 },
   spending: { today: { rounds: 4, tokens: 1234, cost: 0.12, missingCost: 0 } },
   cards: [{ id: 9, state: 'open', title: '是否继续测试', text: '这是一个不产生模型费用的假卡片。', options: ['继续', '暂停'] }, { id: 10, state: 'open', title: '直接结案测试', text: '不需要继续执行。', options: [] }, { id: 11, state: 'open', title: '恢复测试', text: '规则同名卡片不得误认项目。', options: [] }],
   agents: [{ id: 'fake', name: '无模型 Agent', worker: 'test', online: true }], channels: [{ id: 'desktop', name: '桌面通知', online: true }],
-  lines: [{ name: '恢复测试', paused: null }], runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '' }, { id: 4, rule: 'beta 巡检', agent: 'fake', state: 'queued', attempts: 2, project: '/elsewhere/beta', createdAt: '2026-11-14T01:00:00Z', summary: 'beta 项目等待重试' }], timers: [],
+  lines: [
+    { name: '恢复测试', paused: null, totals: { running: 1, queued: 0, retrying: 0, unknown: 0, done: 4, nothing: 1, doneToday: 2 }, usage: { input: 800, output: 200, cost: 0.5 } },
+    { name: 'beta 巡检', paused: null, totals: { running: 0, queued: 2, retrying: 0, unknown: 0, done: 1, nothing: 0, doneToday: 1 }, usage: { input: 10, output: 5 } },
+    { name: 'demo 巡检', paused: null, totals: { running: 0, queued: 0, retrying: 0, unknown: 0, done: 3, nothing: 0, doneToday: 1 }, usage: { input: 10, output: 5, cost: 0.1 } },
+  ],
+  runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '' }, { id: 4, rule: 'beta 巡检', agent: 'fake', state: 'queued', attempts: 2, project: '/elsewhere/beta', createdAt: '2026-11-14T01:00:00Z', summary: 'beta 项目等待重试' }], timers: [],
 };
-const rawRules = { sources: { local: { name: '本机' } }, agents: { fake: { name: '无模型 Agent', use: 'command', access: 'read' } }, rules: [{ name: '恢复测试', when: { source: 'local', types: ['recovery.*'] }, to: 'fake', cwd: root, prompt: '只验证控制台', resume: false }], elsewhere: [] };
+const rawRules = { sources: { local: { name: '本机' } }, agents: { fake: { name: '无模型 Agent', use: 'command', access: 'read' } }, rules: [{ name: '恢复测试', when: { source: 'local', types: ['recovery.*'] }, to: 'fake', cwd: root, prompt: '只验证控制台', resume: false }, { name: 'beta 巡检', when: { source: 'local', types: ['beta.*'] }, to: 'fake', cwd: '/elsewhere/beta', prompt: 'beta 项目巡检', resume: false }, { name: 'demo 巡检', when: { cron: '0 9 * * *' }, to: 'fake', cwd: demoRepo, prompt: 'demo 项目巡检', resume: false }], elsewhere: [] };
 const schedulingSessions = {
   records: [],
   async list() { return this.records; },
@@ -56,29 +61,44 @@ try {
   let acceptDialogs = true;
   page.on('dialog', dialog => acceptDialogs ? dialog.accept() : dialog.dismiss());
   await page.goto(url); await page.getByRole('heading', { name: '今天的自动化' }).waitFor();
+  const filterOptions = await page.locator('#project-filter').locator('option').allInnerTexts();
+  assert.ok(filterOptions.includes('全部项目'), 'project filter must offer an explicit 全部 option');
   assert.equal(await page.locator('#attention-list').count(), 1, 'overview must have one attention list');
   assert.match(await page.locator('#summary').innerText(), /今日完成/); assert.match(await page.locator('#summary').innerText(), /1,234/);
   assert.ok((await page.locator('#running-list').innerText()).includes(`项目 · ${path.basename(root)}`), 'overview task summary must show its short project name');
-  const collisionCard = page.locator('#attention-list .list-row').filter({ hasText: '规则同名卡片不得误认项目' });
-  assert.ok((await collisionCard.innerText()).includes('项目 · 未识别'), 'decision card project must not be inferred from a title collision');
+  assert.ok(!(await page.locator('#attention-list').innerText()).includes('是否继续测试'), 'open decision cards must not sit in the scheduling-handled queue');
+  assert.match(await page.locator('#attention-list').innerText(), /没有等待调度处理的事/, 'scheduling queue only lists scheduling-handleable items');
+  const metric = async index => page.locator('#summary .metric').nth(index).innerText();
+  assert.match(await metric(2), /9/, 'unfiltered summary uses the hub totals');
+  await page.locator('#project-filter').selectOption(path.basename(root));
+  assert.match(await metric(0), /正在运行[\s\S]*1/, 'scoped summary counts only the filtered project running rounds');
+  assert.match(await metric(2), /今日完成[\s\S]*2[\s\S]*1,000 Token/, 'scoped summary totals come from that project rule lines');
+  assert.match(await metric(3), /今日费用 \$0\.50/, 'scoped summary cost comes from that project usage');
   await page.locator('#project-filter').selectOption('beta');
+  assert.match(await metric(1), /等待与重试[\s\S]*2/, 'switching the filter rescopes every metric');
+  assert.match(await metric(3), /未上报/, 'a project without reported cost must not fabricate one');
   assert.ok(!(await page.locator('#running-list').innerText()).includes('恢复测试'), 'project filter must hide other projects from running list');
   assert.ok((await page.locator('#retrying-list').innerText()).includes('beta 项目等待重试'), 'project filter must keep the matching retrying run');
   await page.locator('#project-filter').selectOption('');
   assert.ok((await page.locator('#running-list').innerText()).includes('恢复测试'), 'clearing the project filter restores the full overview');
   await page.screenshot({ path: path.join(output, 'console-desktop.png'), fullPage: true });
   await page.getByRole('button', { name: '调度规则', exact: true }).click();
+  const recoveryCard = page.locator('.rule-card').filter({ hasText: '恢复测试' });
   const beforeDismiss = hub.requests.length; acceptDialogs = false;
-  await page.locator('[data-action="pause"]').click(); await page.waitForTimeout(150);
+  await recoveryCard.locator('[data-action="pause"]').click(); await page.waitForTimeout(150);
   assert.equal(hub.requests.length, beforeDismiss, 'dismissing pause must not call the hub'); acceptDialogs = true;
-  await page.locator('[data-action="pause"]').click(); await page.locator('[data-action="resume"]').waitFor();
-  await page.locator('[data-action="resume"]').click(); await page.locator('[data-action="pause"]').waitFor();
-  await page.locator('[data-action="run"]').click();
+  await recoveryCard.locator('[data-action="pause"]').click(); await recoveryCard.locator('[data-action="resume"]').waitFor();
+  await recoveryCard.locator('[data-action="resume"]').click(); await recoveryCard.locator('[data-action="pause"]').waitFor();
+  await recoveryCard.locator('[data-action="run"]').click();
   await page.getByRole('button', { name: '执行轮次', exact: true }).click();
   assert.ok((await page.locator('#runs-list').innerText()).includes(`项目 · ${path.basename(root)}`), 'run summary must show its short project name');
   await page.locator('[data-action="cancel"]').first().click();
-  await page.getByRole('button', { name: '待调度处理', exact: false }).click();
+  await page.getByRole('button', { name: '待我处理', exact: false }).click();
+  const collisionCard = page.locator('.decision-card').filter({ hasText: '规则同名卡片不得误认项目' });
+  assert.ok((await collisionCard.innerText()).includes('项目 · 未识别'), 'decision cards must show their own project, never inferred from a rule name collision');
   const textAnswer=page.locator('form[data-action="answer-text"]').first().locator('input'); await textAnswer.fill('刷新后仍要保留'); await page.waitForTimeout(5500); assert.equal(await textAnswer.inputValue(), '刷新后仍要保留');
+  await page.keyboard.type('追加输入');
+  assert.equal(await page.locator('form[data-action="answer-text"]').first().locator('input').inputValue(), '刷新后仍要保留追加输入', 'typing must continue seamlessly across background refreshes');
   await page.getByRole('button', { name: '继续', exact: true }).click();
   const resolveCard=page.locator('.decision-card').filter({hasText:'直接结案测试'}); await resolveCard.getByRole('button',{name:'结案',exact:true}).click();
   await page.setViewportSize({ width: 360, height: 800 });
@@ -97,6 +117,9 @@ try {
   assert.equal(await page.locator('#project-filter').inputValue(), 'demo-repo', 'starting a session must switch the project filter to the new session so the card stays visible');
   assert.equal(await page.locator('#clear-project-filter').getAttribute('hidden'), null, 'a clear-filter button must be shown while a filter is active');
   await page.getByRole('button', { name: '总览', exact: true }).click();
+  const progressRow = page.locator('#progress-list .list-row').filter({ hasText: '项目 · demo-repo' });
+  assert.ok((await progressRow.innerText()).includes('累计完成 3/3'), 'overview must show per-session project task progress');
+  assert.ok((await progressRow.innerText()).includes('$0.10'), 'session progress must show the project today cost');
   await page.locator('#clear-project-filter').click();
   assert.equal(await page.locator('#project-filter').inputValue(), '', 'clear-filter must reset the project filter');
   await page.getByRole('button', { name: '调度会话', exact: true }).click();
@@ -111,7 +134,7 @@ try {
   assert.ok((await sessionCard.innerText()).includes('重点看执行轮次'), 'user message must appear in the conversation');
   assert.ok((await sessionCard.innerText()).includes('收到：重点看执行轮次'), 'agent reply must appear in the conversation');
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
-  await page.getByText('还没有开启的调度会话').waitFor();
+  await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
   await page.screenshot({ path: path.join(output, 'console-mobile.png'), fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
