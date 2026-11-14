@@ -41,7 +41,7 @@
       <div id="rules-list" class="rule-grid"></div>
     </section>
     <section id="view-sessions" class="view" hidden aria-labelledby="sessions-title">
-      <div class="page-heading"><div><p class="eyebrow">COORDINATION</p><h1 id="sessions-title">调度会话</h1><p class="subtle">每个会话绑定一个项目标识；按项目并行开启，权限请求不会自动批准。</p></div><div class="session-start"><input id="session-project" placeholder="项目标识（owner/repo）" aria-label="项目标识"><button id="start-session" class="button primary" type="button">开启调度会话</button></div></div>
+      <div class="page-heading"><div><p class="eyebrow">COORDINATION</p><h1 id="sessions-title">调度会话</h1><p class="subtle">每个项目一个会话，从本地 Git 仓库选择；开始时会读取目标项目的 AGENTS.md 等文件。</p></div><div class="session-start"><select id="session-project" aria-label="项目标识"></select><button id="start-session" class="button primary" type="button">开启调度会话</button></div></div>
       <div id="sessions-list" class="run-list"></div>
     </section>
     <section id="view-runs" class="view" hidden aria-labelledby="runs-title">

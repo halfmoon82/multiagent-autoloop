@@ -9,9 +9,9 @@ import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
 export const DEFAULT_ADAPTER_PATH = path.join(REPOSITORY_ROOT, 'node_modules', '@agentclientprotocol', 'codex-acp', 'dist', 'index.js');
-const DEFAULT_PROJECT_LINE = project => `你负责的项目标识是 ${project}；事件 subject 遵循 <owner>-<repo> 约定，目标代码在该项目自己的隔离工作区执行。`;
+const DEFAULT_PROJECT_LINE = project => `你负责的项目是 ${project}；事件 subject 遵循 <owner>-<repo> 约定。若该项是本地仓库路径，开始调度前先阅读其 AGENTS.md、README.md 与 docs/ 了解被调度项目的边界与约定；目标代码在该项目自己的隔离工作区执行。`;
 
-export const PROJECT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
 
 export const DEFAULT_SCHEDULING_PROMPT = [
   '你是 Multiagent Autoloop 控制台仓库中的调度会话。',
@@ -77,6 +77,8 @@ export class SchedulingSessionManager {
   async start({ prompt = DEFAULT_SCHEDULING_PROMPT, project } = {}) {
     const projectId = this.#validateProject(project);
     const text = this.#validatePrompt(`${DEFAULT_PROJECT_LINE(projectId)}\n${String(prompt ?? '')}`);
+    const duplicate = [...this.sessions.values()].find(session => session.project === projectId);
+    if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的调度会话（${duplicate.id.slice(0, 8)}），请先关闭再开启`);
     if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个调度会话`);
     if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
 
@@ -198,8 +200,8 @@ export class SchedulingSessionManager {
 
   #validateProject(project) {
     const text = String(project ?? '').trim();
-    if (!text) throw new SchedulingSessionError('请填写项目标识（如 owner/repo）');
-    if (!PROJECT_PATTERN.test(text)) throw new SchedulingSessionError('项目标识只能包含字母、数字和 . _ / -，不能含空格');
+    if (!text) throw new SchedulingSessionError('请选择被调度的项目');
+    if (/[\s\x00-\x1f\x7f]/.test(text)) throw new SchedulingSessionError('项目标识不能包含空格或控制字符');
     return text;
   }
 

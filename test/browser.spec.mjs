@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,7 @@ import { createConsoleServer } from '../src/server.mjs';
 import { fakeHub, json, listen, close } from './helpers.mjs';
 
 const root = mkdtempSync(path.join(tmpdir(), 'console-browser-data-'));
+const demoRepo = path.join(root, 'demo-repo'); mkdirSync(path.join(demoRepo, '.git'), { recursive: true });
 const profile = mkdtempSync(path.join(tmpdir(), 'console-browser-profile-'));
 const output = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const snapshot = {
@@ -45,7 +46,7 @@ const hub = await fakeHub((req, res) => {
   if (req.url.endsWith('/resume')) { snapshot.lines[0].paused = null; return json(res, { changed: true }); }
   return json(res, { ok: true });
 });
-const consoleServer = createConsoleServer({ hubUrl: hub.url, ownerKey: 'not-returned', rulesFile, cliPath, root }, schedulingSessions);
+const consoleServer = createConsoleServer({ hubUrl: hub.url, ownerKey: 'not-returned', rulesFile, cliPath, root, projectRoots: [root] }, schedulingSessions);
 const url = await listen(consoleServer);
 let context;
 try {
@@ -88,17 +89,22 @@ try {
   catch (error) { console.log('DIALOG DIAGNOSTIC:', await page.locator('dialog').innerText()); console.log('HUB REQUESTS:', hub.requests.map(x => x.url)); throw error; }
   const saved = JSON.parse(readFileSync(rulesFile, 'utf8')); assert.equal(saved.rules.at(-1).name, '手机创建测试');
   await page.getByRole('button', { name: '调度会话', exact: true }).click();
-  await page.getByLabel('项目标识').fill('owner/demo');
+  await page.getByLabel('项目标识').selectOption(demoRepo);
   await page.getByRole('button', { name: '开启调度会话', exact: true }).click();
   const sessionCard = page.locator('#sessions-list .run-card').filter({ hasText: 'browser-' });
   await sessionCard.waitFor();
-  assert.ok((await sessionCard.innerText()).includes('项目 · owner/demo'), 'scheduling session must show its bound project');
-  assert.equal(await page.locator('#project-filter').inputValue(), 'demo', 'starting a session must switch the project filter to the new session so the card stays visible');
+  assert.ok((await sessionCard.innerText()).includes('项目 · demo-repo'), 'scheduling session must show its bound project name');
+  assert.equal(await page.locator('#project-filter').inputValue(), 'demo-repo', 'starting a session must switch the project filter to the new session so the card stays visible');
   assert.equal(await page.locator('#clear-project-filter').getAttribute('hidden'), null, 'a clear-filter button must be shown while a filter is active');
   await page.getByRole('button', { name: '总览', exact: true }).click();
   await page.locator('#clear-project-filter').click();
   assert.equal(await page.locator('#project-filter').inputValue(), '', 'clear-filter must reset the project filter');
   await page.getByRole('button', { name: '调度会话', exact: true }).click();
+  await page.locator('#session-project').selectOption({ index: 0 });
+  await page.getByRole('button', { name: '开启调度会话', exact: true }).click();
+  await page.waitForTimeout(300);
+  assert.ok((await page.locator('#notice').innerText()).includes('请先从列表选择'), 'placeholder selection must be rejected before starting a session');
+  assert.equal(await page.locator('#sessions-list .run-card').count(), 1, 'no session must be created for placeholder selection');
   await page.getByLabel('发消息给会话 browser-session').fill('重点看执行轮次');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.waitForTimeout(300);

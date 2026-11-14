@@ -116,7 +116,7 @@ test('enforces concurrency and prompt size without exposing process control to t
   const first = fakeAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => first.process, maxSessions: 1 });
   await manager.start({ prompt: '第一条', project: 'owner-alpha/demo' });
-  await assert.rejects(manager.start({ prompt: '第二条', project: 'owner-alpha/demo' }), /最多/);
+  await assert.rejects(manager.start({ prompt: '第二条', project: 'owner-beta/other' }), /最多/);
   await assert.rejects(manager.start({ prompt: 'x'.repeat(4001), project: 'owner-alpha/demo' }), /4000 字/);
   await assert.rejects(manager.close('missing'), SchedulingSessionError);
   await manager.close(manager.list()[0].id);
@@ -131,6 +131,28 @@ test('rejects a start when the ACP adapter is missing and cleans up after initia
   await assert.rejects(manager.start({ project: 'owner/demo' }), /开启调度会话失败/);
   assert.deepEqual(manager.list(), []);
   assert.ok(failing.process.killedWith, 'failed start must terminate the adapter process');
+});
+
+test('rejects control characters in project and prefers duplicate message over capacity limit', async () => {
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, maxSessions: 1 });
+  await manager.start({ project: 'owner/demo' });
+  await assert.rejects(manager.start({ project: 'owner/demo' }), /已有进行中的调度会话/);
+  await assert.rejects(manager.start({ project: 'owner/other' }), /最多同时开启/);
+  await assert.rejects(manager.start({ project: 'bad\x00project' }), /空格或控制字符/);
+  await manager.close(manager.list()[0].id);
+});
+
+test('rejects a second active session for the same project but allows other projects', async () => {
+  const first = fakeAdapter();
+  const second = fakeAdapter();
+  let n = 0;
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => (++n === 1 ? first.process : second.process) });
+  await manager.start({ project: '/Volumes/Storage/auto调度' });
+  await assert.rejects(manager.start({ project: '/Volumes/Storage/auto调度' }), /已有进行中的调度会话/);
+  const other = await manager.start({ project: 'owner/other' });
+  assert.equal(manager.list().length, 2);
+  for (const session of manager.list()) await manager.close(session.id);
 });
 
 test('drains adapter stderr so a chatty child cannot deadlock the session', async () => {
@@ -160,7 +182,7 @@ test('keeps a transcript and accepts follow-up messages while the agent is idle'
   let listed = manager.list()[0];
   assert.deepEqual(listed.messages.map(message => message.role), ['user', 'agent']);
   assert.match(listed.messages[0].text, /首轮调度分析/);
-  assert.match(listed.messages[1].text, /收到：你负责的项目标识是/);
+  assert.match(listed.messages[1].text, /收到：你负责的项目是/);
   assert.equal(listed.liveText, '');
   assert.equal(listed.busy, false);
 
