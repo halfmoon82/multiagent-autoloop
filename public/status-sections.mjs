@@ -76,15 +76,17 @@ export function scopedTotals(snapshot, rules = [], filter = '') {
 export function scopedSpending(snapshot, rules = [], filter = '') {
   if (!filter) return null;
   const lines = scopedLines(snapshot, rules, filter);
-  let tokens = 0, cost = 0, hasCost = false, rounds = 0;
+  let tokens = 0, cost = 0, hasCost = false, rounds = 0, missingRounds = 0;
   for (const line of lines) {
     const usage = line.usage || {};
     tokens += (usage.input || 0) + (usage.output || 0);
-    if (typeof usage.cost === 'number') { hasCost = true; cost += usage.cost; }
     const t = line.totals || {};
-    rounds += (t.done || 0) + (t.nothing || 0);
+    const finished = (t.done || 0) + (t.nothing || 0);
+    rounds += finished;
+    if (typeof usage.cost === 'number') { hasCost = true; cost += usage.cost; }
+    else missingRounds += finished;
   }
-  return { tokens, rounds, cost: hasCost ? cost : undefined, missingCost: hasCost ? 0 : rounds };
+  return { tokens, rounds, cost: hasCost ? cost : undefined, missingCost: hasCost ? missingRounds : rounds };
 }
 
 export function timersForProject(timers = [], rules = [], filter = '') {

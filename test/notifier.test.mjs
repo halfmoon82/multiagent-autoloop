@@ -65,3 +65,18 @@ test('hub failures are swallowed and notification errors never break polling', a
   await notifier.poll();
   assert.equal(calls.length, 1, 'a throwing notifier must not break later dedupe');
 });
+
+test('the polling handle is unref’d so notifications never keep the process alive', () => {
+  let captured = null;
+  const fakeTimer = { unref: () => { fakeTimer.unrefCalled = true; } };
+  const notifier = new CardNotifier({
+    intervalMs: 60000,
+    fetchState: async () => ({ cards: [] }),
+    setTimer: () => captured = fakeTimer,
+    clearTimer: () => {},
+  });
+  notifier.start();
+  assert.equal(captured, fakeTimer);
+  assert.equal(fakeTimer.unrefCalled, true, 'interval handle must be unref’d');
+  notifier.stop();
+});

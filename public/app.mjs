@@ -63,7 +63,7 @@ function syncProjectFilter() {
 
 function captureFocus() {
   const active = document.activeElement;
-  if (!active || !active.name || !active.form?.dataset?.action) return null;
+  if (!active || !['INPUT', 'TEXTAREA'].includes(active.tagName) || !active.name || !active.form?.dataset?.action) return null;
   return { action: active.form.dataset.action, id: active.form.dataset.id || '', name: active.name, start: active.selectionStart ?? null, end: active.selectionEnd ?? null };
 }
 function restoreFocus(info) {

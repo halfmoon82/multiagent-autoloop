@@ -19,8 +19,9 @@ export function macosNotify({ title, body }) {
 }
 
 // 轮询 Hub，发现新出现的「待我处理」开放卡片时发系统通知。
-// 首次轮询只做种子（避免重启后对存量卡片刷屏）；卡片以 id+createdAt 去重，
-// 关闭后以新的 createdAt 重新打开会再次提醒。
+// 首次轮询只做种子（避免重启后对存量卡片刷屏）；去重键为 id+createdAt（无 createdAt
+// 时退化为 id）：关闭的卡片会在下一轮 poll 从去重表移除，重开即再提醒；只有在同一
+// 轮询间隔内完成「关闭+重开」才会漏一次提醒，可接受。
 export class CardNotifier {
   constructor({ config, intervalMs = 15000, notify = macosNotify, fetchState, setTimer = setInterval, clearTimer = clearInterval } = {}) {
     this.intervalMs = intervalMs;
@@ -37,6 +38,7 @@ export class CardNotifier {
     if (this.handle) return;
     this.poll();
     this.handle = this.setTimer(() => { this.poll(); }, this.intervalMs);
+    this.handle?.unref?.(); // 通知轮询不得阻止进程退出
   }
 
   stop() {

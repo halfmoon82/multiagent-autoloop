@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { splitRunSections, runLine, projectForRun, projectForCard, matchesProject, collectProjects, ruleProject, scopedTotals, scopedSpending, timersForProject, sessionProgress } from '../public/status-sections.mjs';
+import { formatCost } from '../public/format.mjs';
 const snapshot = { models: { claude: '默认模型' }, runs: [
   { id: 1, rule: '开发', state: 'claimed', summary: '正在改' },
   { id: 2, rule: '部署', state: 'queued', attempts: 3, error: '连接失败' },
@@ -107,4 +108,17 @@ test('sessionProgress aggregates the tasks owned by one scheduling session proje
   const idle = sessionProgress({ project: '/nowhere/empty' }, rules, lines);
   assert.equal(idle.totalRounds, 0);
   assert.equal(idle.ratio, null, 'a session without rules has no progress bar');
+});
+
+test('scopedSpending keeps per-line unreported rounds mixed with reported cost', () => {
+  const rules = [{ name: '开发', cwd: '/workspace/demo' }, { name: '联调', cwd: '/workspace/demo' }];
+  const snapshot = { lines: [
+    { name: '开发', totals: { done: 2, nothing: 0 }, usage: { input: 100, output: 10, cost: 0.5 } },
+    { name: '联调', totals: { done: 1, nothing: 2 }, usage: { input: 7, output: 3 } },
+  ] };
+  const spending = scopedSpending(snapshot, rules, 'demo');
+  assert.equal(spending.rounds, 5);
+  assert.equal(spending.cost, 0.5);
+  assert.equal(spending.missingCost, 3, 'unreported lines must keep their finished rounds unreported');
+  assert.equal(formatCost(spending), '$0.50（3 轮未报）', 'mixed reporting must show the unreported count like the hub does');
 });
