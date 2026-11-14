@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
@@ -9,17 +9,21 @@ import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
 export const DEFAULT_ADAPTER_PATH = path.join(REPOSITORY_ROOT, 'node_modules', '@agentclientprotocol', 'codex-acp', 'dist', 'index.js');
-const DEFAULT_PROJECT_LINE = project => `你负责的项目是 ${project}；事件 subject 遵循 <owner>-<repo> 约定。若该项是本地仓库路径，开始调度前先阅读其 AGENTS.md、README.md 与 docs/ 了解被调度项目的边界与约定；目标代码在该项目自己的隔离工作区执行。`;
 
 
+export const DEFAULT_SCHEDULING_PROMPT = `你是 Multiagent Autoloop 控制台仓库中的调度会话，工作目录固定为 ${REPOSITORY_ROOT}（只读了解调度契约用）。`;
 
-export const DEFAULT_SCHEDULING_PROMPT = [
-  '你是 Multiagent Autoloop 控制台仓库中的调度会话。',
-  `工作目录固定为 ${REPOSITORY_ROOT}。`,
-  '请先阅读 README.md、AGENTS.md、docs/architecture.md、docs/scheduling-contract.md 和相关测试，了解当前项目边界。',
-  '然后检查当前调度状态，整理：1）正在运行/等待重试/待调度处理的事项；2）建议的处理顺序；3）真正需要用户决策的问题。',
-  '不要修改文件，不要执行部署，不要改变真实调度规则；需要授权或不可逆操作时只列出等待用户决策。'
-].join('\n');
+export function buildSchedulingPrompt({ project, projectContext } = {}) {
+  return [
+    `你负责调度的项目：${project}。`,
+    `【项目资料】\n${projectContext || '未找到该项目资料，先阅读本仓库文档建立上下文。'}`,
+    `【任务】按顺序：`,
+    `1）你现在的会话工作目录就是被调度项目的仓库（${project}）：阅读本仓库的 AGENTS.md、README.md 与 docs/ 建立项目上下文（边界、命令、约定）。`,
+    `2）调度控制台契约文档在 ${REPOSITORY_ROOT}/README.md 与 ${REPOSITORY_ROOT}/docs/（绝对路径只读，重点是 docs/scheduling-contract.md 的事件链契约）。`,
+    `3）通过控制台 API（http://127.0.0.1:50761，仅本机）检查该项目相关的调度状态（规则、轮次、卡片），整理：正在运行/等待重试/待调度处理的事项、建议的处理顺序、真正需要用户决策的问题。`,
+    `4）目标项目的代码改动仍在该项目自己的隔离 worktree 中由派发 worker 执行；本会话只读诊断与协调，不直接改项目文件。需要授权或不可逆操作时只列出等待用户决策。`,
+  ].join('\n');
+}
 
 export class SchedulingSessionError extends Error {
   constructor(message, { status = 400 } = {}) {
@@ -74,16 +78,18 @@ export class SchedulingSessionManager {
     return [...this.sessions.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(toPublicSession);
   }
 
-  async start({ prompt = DEFAULT_SCHEDULING_PROMPT, project } = {}) {
+  async start({ prompt, project, projectContext } = {}) {
     const projectId = this.#validateProject(project);
-    const text = this.#validatePrompt(`${DEFAULT_PROJECT_LINE(projectId)}\n${String(prompt ?? '')}`);
+    const composed = prompt ? `${buildSchedulingPrompt({ project: projectId, projectContext })}\n\n【本次附加说明】\n${prompt}` : buildSchedulingPrompt({ project: projectId, projectContext });
+    const text = this.#validatePrompt(composed, 64000);
     const duplicate = [...this.sessions.values()].find(session => session.project === projectId);
     if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的调度会话（${duplicate.id.slice(0, 8)}），请先关闭再开启`);
     if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个调度会话`);
     if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
 
+    const sessionCwd = this.#projectCwd(projectId);
     const child = this.spawnFn(process.execPath, [this.adapterPath], {
-      cwd: this.cwd,
+      cwd: sessionCwd,
       env: { ...process.env, NO_BROWSER: process.env.NO_BROWSER || '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
@@ -96,7 +102,7 @@ export class SchedulingSessionManager {
       id: randomUUID(),
       sessionId: null,
       agent: 'Codex ACP',
-      cwd: this.cwd,
+      cwd: sessionCwd,
       status: 'initializing',
       project: projectId,
       prompt: text,
@@ -151,7 +157,7 @@ export class SchedulingSessionManager {
       record.agent = initialized.agentInfo?.title || initialized.agentInfo?.name || record.agent;
 
       const session = await connection.agent.request(methods.agent.session.new, {
-        cwd: this.cwd,
+        cwd: sessionCwd,
         mcpServers: [],
       });
       if (!session?.sessionId) throw new SchedulingSessionError('Codex ACP 没有返回会话 ID', { status: 502 });
@@ -198,6 +204,13 @@ export class SchedulingSessionManager {
     for (const record of this.sessions.values()) this.#destroyRecord(record);
   }
 
+  #projectCwd(project) {
+    try {
+      if (existsSync(project) && statSync(project).isDirectory()) return path.resolve(project);
+    } catch { /* 回退控制台工作目录 */ }
+    return this.cwd;
+  }
+
   #validateProject(project) {
     const text = String(project ?? '').trim();
     if (!text) throw new SchedulingSessionError('请选择被调度的项目');
@@ -205,10 +218,10 @@ export class SchedulingSessionManager {
     return text;
   }
 
-  #validatePrompt(prompt) {
+  #validatePrompt(prompt, max = 4000) {
     const text = String(prompt ?? '').trim();
     if (!text) throw new SchedulingSessionError('请填写发送内容');
-    if (text.length > 4000) throw new SchedulingSessionError('发送内容不能超过 4000 字');
+    if (text.length > max) throw new SchedulingSessionError(`发送内容不能超过 ${max} 字`);
     return text;
   }
 

@@ -98,6 +98,46 @@ test('starts a Codex ACP scheduling session in the configured project and closes
   assert.deepEqual(manager.list(), []);
 });
 
+test('injects project docs into the default prompt and stays project-first', async () => {
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  await manager.start({ project: '/workspace/demo', projectContext: '# 项目约定\n每次改动先跑测试' });
+  await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
+  const text = fake.requests.find(request => request.method === 'session/prompt').params.prompt[0].text;
+  assert.match(text, /# 项目约定/);
+  assert.match(text, /每次改动先跑测试/);
+  assert.ok(text.indexOf('项目约定') < text.indexOf('调度状态'), 'project context must come before status analysis');
+  assert.match(text, /调度状态/);
+  await manager.close(manager.list()[0].id);
+});
+
+test('starts the session inside the project repo and falls back to the console cwd', async () => {
+  const { mkdtempSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const repo = mkdtempSync((await import('node:path')).join(tmpdir(), 'target-repo-'));
+  mkdirSync((await import('node:path')).join(repo, '.git'), { recursive: true });
+  let seenCwd;
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({
+    cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js',
+    spawnFn: (command, args, options) => { seenCwd = options.cwd; return fake.process; },
+  });
+  const started = await manager.start({ project: repo, projectContext: 'ctx' });
+  assert.equal(seenCwd, repo, 'session must be spawned inside the project repo');
+  assert.equal(started.cwd, repo);
+  await manager.close(started.id);
+
+  let fallbackCwd;
+  const fake2 = fakeAdapter();
+  const manager2 = new SchedulingSessionManager({
+    cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js',
+    spawnFn: (command, args, options) => { fallbackCwd = options.cwd; return fake2.process; },
+  });
+  const fallback = await manager2.start({ project: 'owner/not-on-disk' });
+  assert.equal(fallbackCwd, '/workspace/control-plane', 'unknown projects fall back to the console cwd');
+  await manager2.close(fallback.id);
+});
+
 test('cancels ACP permission requests instead of approving them from the console', async () => {
   const fake = fakeAdapter({ askPermission: true });
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
@@ -113,13 +153,15 @@ test('cancels ACP permission requests instead of approving them from the console
 });
 
 test('enforces concurrency and prompt size without exposing process control to the browser', async () => {
-  const first = fakeAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => first.process, maxSessions: 1 });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, maxSessions: 1 });
   await manager.start({ prompt: '第一条', project: 'owner-alpha/demo' });
   await assert.rejects(manager.start({ prompt: '第二条', project: 'owner-beta/other' }), /最多/);
-  await assert.rejects(manager.start({ prompt: 'x'.repeat(4001), project: 'owner-alpha/demo' }), /4000 字/);
-  await assert.rejects(manager.close('missing'), SchedulingSessionError);
+  await assert.rejects(manager.start({ prompt: 'x'.repeat(65000), project: 'owner-delta/big' }), /64000/);
   await manager.close(manager.list()[0].id);
+  const bigContext = await manager.start({ project: 'owner-gamma/big', projectContext: 'y'.repeat(5000) });
+  assert.match(manager.list().find(session => session.id === bigContext.id).prompt, /y{100}/);
+  await manager.close(bigContext.id);
+  await assert.rejects(manager.close('missing'), SchedulingSessionError);
 });
 
 test('rejects a start when the ACP adapter is missing and cleans up after initialize failures', async () => {
@@ -184,7 +226,7 @@ test('keeps a transcript and accepts follow-up messages while the agent is idle'
   let listed = manager.list()[0];
   assert.deepEqual(listed.messages.map(message => message.role), ['user', 'agent']);
   assert.match(listed.messages[0].text, /首轮调度分析/);
-  assert.match(listed.messages[1].text, /收到：你负责的项目是/);
+  assert.match(listed.messages[1].text, /收到：你负责调度的项目/);
   assert.equal(listed.liveText, '');
   assert.equal(listed.busy, false);
 
