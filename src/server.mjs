@@ -6,6 +6,7 @@ import { HubError, hubRequest } from './hub.mjs';
 import { readRuleOptions, saveRule, RuleError } from './rules.mjs';
 import { modelLabels } from './models.mjs';
 import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-session.mjs';
+import { discoverGitProjects } from './projects.mjs';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const FILES = new Map([
@@ -39,6 +40,7 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/state') return jsonResponse(res, 200, await hubRequest(config, '/v1/state'));
   if (req.method === 'GET' && url.pathname === '/api/rules') return jsonResponse(res, 200, { ...readRuleOptions(config), models: modelLabels() });
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
+  if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
   if (!['POST', 'PUT'].includes(req.method)) return false;
   checkWrite(req); const body = await readJson(req);
   if (req.method === 'POST' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 201, await config.schedulingSessions.start({ prompt: body.prompt, project: body.project }));

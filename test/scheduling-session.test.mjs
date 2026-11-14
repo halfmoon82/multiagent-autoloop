@@ -133,6 +133,18 @@ test('rejects a start when the ACP adapter is missing and cleans up after initia
   assert.ok(failing.process.killedWith, 'failed start must terminate the adapter process');
 });
 
+test('rejects a second active session for the same project but allows other projects', async () => {
+  const first = fakeAdapter();
+  const second = fakeAdapter();
+  let n = 0;
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => (++n === 1 ? first.process : second.process) });
+  await manager.start({ project: '/Volumes/Storage/auto调度' });
+  await assert.rejects(manager.start({ project: '/Volumes/Storage/auto调度' }), /已有进行中的调度会话/);
+  const other = await manager.start({ project: 'owner/other' });
+  assert.equal(manager.list().length, 2);
+  for (const session of manager.list()) await manager.close(session.id);
+});
+
 test('drains adapter stderr so a chatty child cannot deadlock the session', async () => {
   const fake = fakeAdapter({ stderrBytes: 200 * 1024 });
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
@@ -160,7 +172,7 @@ test('keeps a transcript and accepts follow-up messages while the agent is idle'
   let listed = manager.list()[0];
   assert.deepEqual(listed.messages.map(message => message.role), ['user', 'agent']);
   assert.match(listed.messages[0].text, /首轮调度分析/);
-  assert.match(listed.messages[1].text, /收到：你负责的项目标识是/);
+  assert.match(listed.messages[1].text, /收到：你负责的项目是/);
   assert.equal(listed.liveText, '');
   assert.equal(listed.busy, false);
 

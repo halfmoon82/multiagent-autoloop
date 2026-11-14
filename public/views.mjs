@@ -69,6 +69,7 @@ export function renderSchedulingSessions(sessions = []) {
   if (!sessions.length) return [el('div', 'empty', '还没有开启的调度会话。')];
   return sessions.map(session => {
     const card = el('article', 'run-card session-card');
+    card.dataset.session = session.id;
     const top = el('div', 'run-top');
     const title = el('div');
     const status = session.statusText || session.status || '未知';
@@ -78,7 +79,8 @@ export function renderSchedulingSessions(sessions = []) {
     );
     top.append(title, badge(status, session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
     const meta = el('div', 'rule-meta');
-    meta.append(el('span', 'chip', `项目 · ${session.project || '未识别'}`), el('span', 'chip', `更新 · ${formatTime(session.updatedAt)}`));
+    const projectChip = el('span', 'chip', `项目 · ${projectName(session.project || '')}`); if (session.project) projectChip.title = session.project;
+    meta.append(projectChip, el('span', 'chip', `更新 · ${formatTime(session.updatedAt)}`));
     card.append(top, meta);
     if (session.error) card.append(el('p', 'run-summary run-error', session.error));
 

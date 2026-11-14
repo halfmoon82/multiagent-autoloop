@@ -18,5 +18,6 @@ export function loadConsoleConfig(root = process.env.AGENT_AUTOLOOP_HOME) {
     cliPath: path.join(root, 'app', 'bin', 'agent-autoloop.ts'),
     host: '127.0.0.1',
     port: Number(process.env.AUTOLOOP_CONSOLE_PORT || 0),
+    projectRoots: (process.env.AUTOLOOP_PROJECT_ROOTS || '').split(/[,:]/).map(item => item.trim()).filter(Boolean),
   };
 }

@@ -3,7 +3,7 @@ import { renderSummary, renderAttention, renderEnvironment, renderTimers, render
 import { projectName } from './format.mjs';
 import { projectForRun, projectForCard, matchesProject, collectProjects } from './status-sections.mjs';
 import { el } from './views.mjs';
-const state = { snapshot: null, rules: [], sessions: [], view: 'overview', loading: false, projectFilter: '' };
+const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '' };
 const $ = id => document.getElementById(id);
 function replace(id, nodes) { $(id).replaceChildren(...nodes); }
 function showNotice(text) { const box = $('notice'); box.textContent = text; box.hidden = !text; }
@@ -17,8 +17,8 @@ export async function api(path, options = {}) {
 export async function refresh() {
   if (state.loading) return; state.loading = true;
   try {
-    const [snapshot, ruleData, sessions] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions')]);
-    snapshot.models = state.models || {}; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; state.models = ruleData.models || {}; setConnection(true, '已连接'); showNotice(''); render();
+    const [snapshot, ruleData, sessions, projectData] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects')]);
+    snapshot.models = state.models || {}; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; state.models = ruleData.models || {}; setConnection(true, '已连接'); showNotice(''); render();
   } catch (error) { setConnection(false, '连接失败'); showNotice(`无法更新：${error.message}`); }
   finally { state.loading = false; }
 }
@@ -50,6 +50,10 @@ function syncProjectFilter() {
   }));
   select.value = state.projectFilter;
   $('clear-project-filter').hidden = !state.projectFilter;
+  const projectSelect = $('session-project');
+  const previousProject = projectSelect.value;
+  projectSelect.replaceChildren(...[el('option', '', state.projects.length ? '选择被调度的项目' : '未发现 Git 项目（配置 AUTOLOOP_PROJECT_ROOTS）'), ...state.projects.map(project => { const option = el('option', '', project.name); option.value = project.path; option.title = project.path; return option; })]);
+  if (state.projects.some(project => project.path === previousProject)) projectSelect.value = previousProject;
 }
 
 function render() {
@@ -57,7 +61,7 @@ function render() {
   const view = projectView();
   const draftAnswers = Object.fromEntries([...document.querySelectorAll('form[data-action="answer-text"]')].map(form => [form.dataset.id, form.elements.answer.value]));
   const draftMessages = Object.fromEntries([...document.querySelectorAll('form[data-action="session-message"]')].map(form => [form.dataset.id, form.elements.message.value]));
-  const chatScrolls = Object.fromEntries([...document.querySelectorAll('.chat-log')].map(log => { const form = log.parentElement?.querySelector('form[data-action="session-message"]'); return form ? [form.dataset.id, log.scrollTop] : null; }).filter(Boolean));
+  const chatScrolls = Object.fromEntries([...document.querySelectorAll('.session-card')].map(card => { if (!card.dataset.session) return null; const log = card.querySelector('.chat-log'); if (!log) return null; return [card.dataset.session, { top: log.scrollTop, atBottom: log.scrollHeight - log.scrollTop - log.clientHeight < 40 }]; }).filter(Boolean));
   replace('summary', renderSummary(state.snapshot));
   const work = renderWorkSections(view.snapshot, view.rules);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers(state.snapshot));
@@ -67,10 +71,9 @@ function render() {
   document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined) form.elements.message.value = draftMessages[form.dataset.id]; });
   document.querySelectorAll('.session-card').forEach(card => {
     const log = card.querySelector('.chat-log'); if (!log) return;
-    const form = card.querySelector('form[data-action="session-message"]');
-    const previous = form ? chatScrolls[form.dataset.id] : undefined;
-    const stickToBottom = previous === undefined || log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-    if (stickToBottom) log.scrollTop = log.scrollHeight;
+    const previous = chatScrolls[card.dataset.session];
+    if (!previous || previous.atBottom) { log.scrollTop = log.scrollHeight; return; }
+    log.scrollTop = Math.min(previous.top, Math.max(log.scrollHeight - log.clientHeight, 0));
   });
   const count = state.snapshot.cards?.filter(card => card.state === 'open').length || 0; $('card-count').textContent = String(count); $('card-count').hidden = !count;
 }
@@ -126,7 +129,7 @@ $('new-rule').addEventListener('click', () => openRuleForm({ agents: state.agent
 $('start-session').addEventListener('click', async event => {
   const button = event.currentTarget;
   const project = $('session-project').value.trim();
-  if (!project) { showNotice('请先填写项目标识（如 owner/repo）。'); return; }
+  if (!project) { showNotice('请先从列表选择被调度的项目。'); return; }
   if (!confirm(`为项目 ${project} 开启 Codex 调度会话？这会启动 Codex，并可能消耗模型额度。`)) return;
   button.disabled = true;
   try {
