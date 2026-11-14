@@ -9,6 +9,19 @@ import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
 export const DEFAULT_ADAPTER_PATH = path.join(REPOSITORY_ROOT, 'node_modules', '@agentclientprotocol', 'codex-acp', 'dist', 'index.js');
+export const HUB_TOOLS_PATH = path.join(REPOSITORY_ROOT, 'src', 'mcp', 'hub-tools.mjs');
+
+// 调度会话挂载的只读 MCP server：stdio JSON-RPC，数据来自 Autoloop Hub。
+// env 最小透传（ACP stdio MCP 无 cwd 字段，脚本用绝对路径，工作目录无影响）。
+// 注意：owner key 只经 AGENT_AUTOLOOP_HOME/config.json 在 MCP 子进程内读取，绝不进入这里的参数。
+export function buildHubMcpServer() {
+  return {
+    name: 'autoloop-hub',
+    command: process.execPath,
+    args: [HUB_TOOLS_PATH],
+    env: [{ name: 'AGENT_AUTOLOOP_HOME', value: process.env.AGENT_AUTOLOOP_HOME || '' }],
+  };
+}
 
 
 export const DEFAULT_SCHEDULING_PROMPT = `你是 Multiagent Autoloop 控制台仓库中的调度会话，工作目录固定为 ${REPOSITORY_ROOT}（只读了解调度契约用）。`;
@@ -22,7 +35,7 @@ export function buildSchedulingPrompt({ project, projectContext, consoleContext,
     `【任务】按顺序：`,
     `1）你现在的会话工作目录就是被调度项目的仓库（${project}）：阅读本仓库的 AGENTS.md、README.md 与 docs/ 建立项目上下文（边界、命令、约定）。`,
     `2）以上【调度契约】是调度方必须遵守的规则与方法（事件链不变量、模型派发、重试与升级纪律、控制台信息契约）；沙箱若拦截外部文件读取，以【调度契约】正文为准。`,
-    `3）通过控制台 API（http://127.0.0.1:50761，仅本机）检查该项目相关的调度状态（规则、轮次、卡片），整理：正在运行/等待重试/待调度处理的事项、建议的处理顺序、真正需要用户决策的问题。`,
+    `3）调用 autoloop-hub MCP 工具（list_rules/list_runs/list_cards）查询该项目相关调度状态（规则、轮次、卡片），整理：正在运行/等待重试/待调度处理的事项、建议的处理顺序、真正需要用户决策的问题。若工具不可用，可用控制台 API（http://127.0.0.1:50761，仅本机）兜底读取同一状态（沙箱可能拦截命令行 HTTP 请求，优先走 MCP 工具）。`,
     `4）目标项目的代码改动仍在该项目自己的隔离 worktree 中由派发 worker 执行；本会话只读诊断与协调，不直接改项目文件。需要授权或不可逆操作时只列出等待用户决策。`,
   ].join('\n');
 }
@@ -164,7 +177,7 @@ export class SchedulingSessionManager {
 
       const session = await connection.agent.request(methods.agent.session.new, {
         cwd: sessionCwd,
-        mcpServers: [],
+        mcpServers: [buildHubMcpServer()],
       });
       if (!session?.sessionId) throw new SchedulingSessionError('Codex ACP 没有返回会话 ID', { status: 502 });
       record.sessionId = session.sessionId;

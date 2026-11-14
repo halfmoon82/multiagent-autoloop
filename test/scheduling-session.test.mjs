@@ -327,3 +327,36 @@ test('keeps a transcript and accepts follow-up messages while the agent is idle'
   await manager.close(started.id);
   await assert.rejects(manager.send(started.id, '还在吗'), /不存在/);
 });
+
+test('session/new carries the autoloop-hub MCP server pointing at the bundled read-only tools script', async () => {
+  const { existsSync } = await import('node:fs');
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  await manager.start({ project: '/workspace/demo', projectContext: 'ctx' });
+  await waitFor(() => fake.requests.some(request => request.method === 'session/new'));
+  const newRequest = fake.requests.find(request => request.method === 'session/new');
+  assert.equal(Array.isArray(newRequest.params.mcpServers), true);
+  assert.equal(newRequest.params.mcpServers.length, 1);
+  const server = newRequest.params.mcpServers[0];
+  assert.equal(server.name, 'autoloop-hub');
+  assert.equal(server.command, process.execPath);
+  assert.equal(server.args.length, 1);
+  assert.ok(existsSync(server.args[0]), 'MCP 脚本路径必须存在');
+  assert.match(server.args[0], /src[\/]mcp[\/]hub-tools\.mjs$/);
+  assert.ok(Array.isArray(server.env), 'env 透传必须是 EnvVariable 数组');
+  const homeVar = server.env.find(item => item.name === 'AGENT_AUTOLOOP_HOME');
+  assert.ok(homeVar, '必须透传 AGENT_AUTOLOOP_HOME 给 MCP 子进程');
+  await manager.close(manager.list()[0].id);
+});
+
+test('scheduling prompt instructs native MCP tools first and keeps the console API as fallback', async () => {
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  await manager.start({ project: '/workspace/demo', projectContext: 'ctx' });
+  await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
+  const text = fake.requests.find(request => request.method === 'session/prompt').params.prompt[0].text;
+  assert.match(text, /autoloop-hub MCP 工具/);
+  assert.match(text, /list_rules\/list_runs\/list_cards/);
+  assert.doesNotMatch(text, /curl/);
+  await manager.close(manager.list()[0].id);
+});
