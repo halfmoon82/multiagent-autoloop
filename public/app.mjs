@@ -3,7 +3,7 @@ import { renderSummary, renderAttention, renderEnvironment, renderTimers, render
 import { projectName } from './format.mjs';
 import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject } from './status-sections.mjs';
 import { el } from './views.mjs';
-const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '' };
+const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null };
 const $ = id => document.getElementById(id);
 function replace(id, nodes) { $(id).replaceChildren(...nodes); }
 function showNotice(text) { const box = $('notice'); box.textContent = text; box.hidden = !text; }
@@ -61,10 +61,20 @@ function syncProjectFilter() {
   }
 }
 
+// 后台刷新每 2 秒整棵重建卡片树；输入框持有焦点或正在输入法组词时，替换 DOM 节点会打断组词。
+// 对持有焦点的卡片整棵复用旧节点（内容暂停更新到失焦或提交为止），其余卡片照常重建。
+function replaceKeyedPreserving(containerId, freshNodes, keyAttr, pinnedKey) {
+  const list = $(containerId);
+  if (!pinnedKey) return list.replaceChildren(...freshNodes);
+  const kept = [...list.querySelectorAll(`[data-${keyAttr}]`)].find(node => node.dataset[keyAttr] === pinnedKey);
+  if (!kept) return list.replaceChildren(...freshNodes);
+  list.replaceChildren(...freshNodes.map(node => node.dataset?.[keyAttr] !== undefined && node.dataset[keyAttr] === pinnedKey ? kept : node));
+}
+
 function captureFocus() {
   const active = document.activeElement;
   if (!active || !['INPUT', 'TEXTAREA'].includes(active.tagName) || !active.name || !active.form?.dataset?.action) return null;
-  return { action: active.form.dataset.action, id: active.form.dataset.id || '', name: active.name, start: active.selectionStart ?? null, end: active.selectionEnd ?? null };
+  return { action: active.form.dataset.action, id: active.form.dataset.id || '', name: active.name, start: active.selectionStart ?? null, end: active.selectionEnd ?? null, element: active };
 }
 function restoreFocus(info) {
   if (!info) return;
@@ -72,12 +82,15 @@ function restoreFocus(info) {
   const input = form?.elements?.[info.name];
   if (!input) return;
   input.focus({ preventScroll: true });
+  if (input === info.element) return;
   if (info.start !== null && typeof input.setSelectionRange === 'function') { try { input.setSelectionRange(info.start, info.end); } catch { /* 非文本控件 */ } }
 }
 
 function render() {
   if (!state.snapshot) return;
   const focus = captureFocus();
+  const pin = focus && state.skipPinOnce !== focus.id && ['session-message', 'answer-text'].includes(focus.action) ? focus : null;
+  state.skipPinOnce = null;
   const view = projectView();
   const draftAnswers = Object.fromEntries([...document.querySelectorAll('form[data-action="answer-text"]')].map(form => [form.dataset.id, form.elements.answer.value]));
   const draftMessages = Object.fromEntries([...document.querySelectorAll('form[data-action="session-message"]')].map(form => [form.dataset.id, form.elements.message.value]));
@@ -90,10 +103,10 @@ function render() {
   replace('progress-list', renderSessionProgress(view.sessions, view.rules, view.snapshot));
   const work = renderWorkSections(view.snapshot, view.rules);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
-  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replace('sessions-list', renderSchedulingSessions(view.sessions)); replace('runs-list', renderRuns(view.snapshot, view.rules)); replace('cards-list', renderCards(view.snapshot));
+  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', pin?.action === 'session-message' ? pin.id : null); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot), 'card', pin?.action === 'answer-text' ? pin.id : null);
   syncProjectFilter();
-  document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined) form.elements.answer.value = draftAnswers[form.dataset.id]; });
-  document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined) form.elements.message.value = draftMessages[form.dataset.id]; });
+  document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) form.elements.answer.value = draftAnswers[form.dataset.id]; });
+  document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) form.elements.message.value = draftMessages[form.dataset.id]; });
   document.querySelectorAll('.session-card').forEach(card => {
     const log = card.querySelector('.chat-log'); if (!log) return;
     const previous = chatScrolls[card.dataset.session];
@@ -150,7 +163,7 @@ document.addEventListener('submit', async event => {
   if (answerForm) {
     event.preventDefault();
     const input = answerForm.elements.answer;
-    try { await api(`/api/cards/${answerForm.dataset.id}/answer`, { method: 'POST', body: JSON.stringify({ text: input.value }) }); input.value = ''; showNotice('回答已提交，任务将继续。'); await refresh(); }
+    try { await api(`/api/cards/${answerForm.dataset.id}/answer`, { method: 'POST', body: JSON.stringify({ text: input.value }) }); input.value = ''; state.skipPinOnce = answerForm.dataset.id; showNotice('回答已提交，任务将继续。'); await refresh(); }
     catch (error) { showNotice(error.message); }
     return;
   }
@@ -162,6 +175,7 @@ document.addEventListener('submit', async event => {
   try {
     const result = await api(`/api/scheduling-sessions/${encodeURIComponent(chatForm.dataset.id)}/messages`, { method: 'POST', body: JSON.stringify({ text }) });
     input.value = '';
+    state.skipPinOnce = chatForm.dataset.id;
     const queued = result.queuedCount || 0;
     await refresh();
     showNotice(queued ? `已排队，本轮结束后自动跟进（队列 ${queued} 条）。` : '已发送。');

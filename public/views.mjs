@@ -118,7 +118,7 @@ export function renderCards(snapshot) {
   const cards = (snapshot.cards || []).filter(card => ['open', 'decided'].includes(card.state));
   if (!cards.length) return [el('div', 'empty', '没有等待您回答的卡片。')];
   return cards.map(card => {
-    const box = el('article', 'decision-card'); const top = el('div', 'run-top'); top.append(el('div', 'run-name', card.title), badge(statusLabel(card.state), card.state === 'open' ? 'warn' : 'good'));
+    const box = el('article', 'decision-card'); box.dataset.card = String(card.id); const top = el('div', 'run-top'); top.append(el('div', 'run-name', card.title), badge(statusLabel(card.state), card.state === 'open' ? 'warn' : 'good'));
     box.append(top, projectChip(projectForCard(card)), el('p', 'decision-text', card.text || ''));
     if (card.state === 'open') {
       const options = el('div', 'option-list'); (card.options || []).forEach((option, index) => options.append(button(option, 'answer-choice', `${card.id}:${index}`, 'secondary')));

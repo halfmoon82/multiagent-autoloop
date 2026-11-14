@@ -110,6 +110,11 @@ try {
   const textAnswer=page.locator('form[data-action="answer-text"]').first().locator('input'); await textAnswer.fill('刷新后仍要保留'); await page.waitForTimeout(5500); assert.equal(await textAnswer.inputValue(), '刷新后仍要保留');
   await page.keyboard.type('追加输入');
   assert.equal(await page.locator('form[data-action="answer-text"]').first().locator('input').inputValue(), '刷新后仍要保留追加输入', 'typing must continue seamlessly across background refreshes');
+  const answerInput = page.locator('form[data-action="answer-text"]').first().locator('input');
+  await answerInput.focus();
+  const answerNode = await answerInput.elementHandle();
+  await page.waitForTimeout(4500);
+  assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, answerNode), true, 'answer input DOM node must survive background refreshes so IME composition is not broken');
   await page.getByRole('button', { name: '继续', exact: true }).click();
   const resolveCard=page.locator('.decision-card').filter({hasText:'直接结案测试'}); await resolveCard.getByRole('button',{name:'结案',exact:true}).click();
   await page.setViewportSize({ width: 360, height: 800 });
@@ -125,6 +130,11 @@ try {
   const sessionCard = page.locator('#sessions-list .run-card').filter({ hasText: 'browser-' });
   await sessionCard.waitFor();
   assert.ok((await sessionCard.innerText()).includes('项目 · demo-repo'), 'scheduling session must show its bound project name');
+  const chatInput = page.getByLabel('发消息给会话 browser-session');
+  await chatInput.focus();
+  const chatNode = await chatInput.elementHandle();
+  await page.waitForTimeout(4500);
+  assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, chatNode), true, 'session chat input DOM node must survive background refreshes so IME composition is not broken');
   assert.equal(await page.locator('#project-filter').inputValue(), 'demo-repo', 'starting a session must switch the project filter to the new session so the card stays visible');
   assert.equal(await page.locator('#clear-project-filter').getAttribute('hidden'), null, 'a clear-filter button must be shown while a filter is active');
   await page.getByRole('button', { name: '总览', exact: true }).click();
