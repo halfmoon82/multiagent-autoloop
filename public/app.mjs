@@ -220,9 +220,10 @@ document.addEventListener('click', async event => {
       if (action === 'queue-steer') {
         const input = liveFormInput('session-message', sessionId, 'message');
         if (input) {
-          if (input.value) { // 已有草稿：在光标处换行插入取回的消息（与 insertNewline 一致）
-            const start = input.selectionStart ?? input.value.length;
-            input.value = `${input.value.slice(0, start)}\n${text}${input.value.slice(start)}`;
+          if (input.value) { // 已有草稿：在光标处换行插入取回的消息（与 insertNewline 一致：折叠选区）
+            const start = (document.activeElement === input ? input.selectionStart : null) ?? input.value.length; // 未聚焦时部分引擎 selectionStart 为 0，取末尾
+            const end = (document.activeElement === input ? input.selectionEnd : null) ?? input.value.length;
+            input.value = `${input.value.slice(0, start)}\n${text}${input.value.slice(end)}`;
             input.selectionStart = input.selectionEnd = start + 1 + text.length;
           } else input.value = text;
           autoGrow(input);
