@@ -19,7 +19,7 @@ export async function api(path, options = {}) {
 export async function refresh() {
   if (state.loading) return; state.loading = true;
   try {
-    const [snapshot, ruleData, sessions, projectData, serial, serialFailed] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null), Promise.resolve(false)]);
+    const [snapshot, ruleData, sessions, projectData, serial] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null)]);
     state.serial = serial || { chains: [] };
     state.serialFailed = !serial;
     snapshot.models = state.models || {}; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; state.models = ruleData.models || {}; setConnection(true, '已连接'); if (noticeError) { noticeError = false; showNotice(''); } render();
