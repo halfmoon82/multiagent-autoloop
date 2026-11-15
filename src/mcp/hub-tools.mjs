@@ -1,9 +1,9 @@
-// autoloop-hub：调度会话专用 MCP server（调度状态查询与自愈规则操作）。
-// 通过 stdio JSON-RPC 提供六个工具：只读 list_rules / list_runs / list_cards，
+// autoloop-hub：调度会话专用 MCP server（调度状态查询、自愈规则操作与控制台文档读取）。
+// 通过 stdio JSON-RPC 提供七个工具：只读 list_rules / list_runs / list_cards / read_console_doc，
 // 以及受控写 resume_rule / pause_rule / run_rule（与控制台按钮同一套 Hub 动作）。
 // 数据来自 Autoloop Hub（/v1/state）与 AGENT_AUTOLOOP_HOME 下的 rules.json。
 // 安全边界：owner key 只用于 Hub 请求头，绝不进入工具输出、日志或 stderr。
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConsoleConfig } from '../config.mjs';
@@ -112,6 +112,42 @@ const NAME_PROPERTY = {
   reason: { type: 'string', description: '可选。本次操作的原因，写入 Hub 请求。' },
 };
 
+// read_console_doc：按白名单相对路径读取控制台仓库文档（AGENTS.md / README.md / docs/*.md）。
+// 会话提示词不再内联契约与架构全文，由本工具按需获取；白名单 + 根目录锚定防任意文件读取。
+const DOC_MAX_BYTES = 16 * 1024;
+const DOC_PATH_PATTERN = /^(?:AGENTS\.md|README\.md|docs\/[A-Za-z0-9._-]+\.md)$/;
+
+export function resolveConsoleDoc(root, relPath) {
+  const rel = String(relPath ?? '').trim().replace(/^\.\//, '');
+  const invalid = () => {
+    const error = new Error(`path 不在允许清单内（仅 AGENTS.md、README.md、docs/*.md）：${String(relPath ?? '')}`);
+    error.code = -32602;
+    return error;
+  };
+  if (!rel || path.isAbsolute(String(relPath ?? '')) || rel.split('/').includes('..') || !DOC_PATH_PATTERN.test(rel)) throw invalid();
+  const abs = path.resolve(root, rel);
+  if (abs !== root && !abs.startsWith(root + path.sep)) throw invalid();
+  let stat;
+  try { stat = lstatSync(abs); } catch {
+    const error = new Error(`文档不存在：${rel}`);
+    error.code = -32602;
+    throw error;
+  }
+  // lstat 不跟随符号链接：链接文件 isFile() 为 false，拒绝仓库外借链读取。
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > DOC_MAX_BYTES) {
+    const error = new Error(`文档不存在、不是普通文件或超过上限（${DOC_MAX_BYTES} 字节）：${rel}`);
+    error.code = -32602;
+    throw error;
+  }
+  return { absPath: abs, rel };
+}
+
+async function readConsoleDoc(args) {
+  const { absPath, rel } = resolveConsoleDoc(REPOSITORY_ROOT, args?.path);
+  const text = readFileSync(absPath, 'utf8');
+  return { doc: rel, bytes: Buffer.byteLength(text), content: text };
+}
+
 const WRITE_TOOL_NAMES = ['resume_rule', 'pause_rule', 'run_rule'];
 
 function requireRuleName(args) {
@@ -201,6 +237,16 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'read_console_doc',
+    description: '按白名单相对路径读取调度控制台文档全文（AGENTS.md、README.md、docs/*.md），用于按需获取调度契约/架构细节，代替在会话提示词里内联全文。只读。',
+    inputSchema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: '必填。文档相对路径，如 docs/scheduling-contract.md。' } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'resume_rule',
     description: '恢复一条已暂停的调度规则（POST /v1/rules/:name/resume）。受控写工具，用于自愈完成后恢复规则。',
     inputSchema: { type: 'object', properties: NAME_PROPERTY, required: ['name'], additionalProperties: false },
@@ -226,6 +272,7 @@ const IMPLEMENTATIONS = {
   list_rules: listRules,
   list_runs: listRuns,
   list_cards: listCards,
+  read_console_doc: readConsoleDoc,
   resume_rule: (args, deps) => callRuleAction(args, deps, 'resume'),
   pause_rule: (args, deps) => callRuleAction(args, deps, 'pause'),
   run_rule: (args, deps) => callRuleAction(args, deps, 'run'),
@@ -238,7 +285,13 @@ export async function handleToolCall(name, args = {}, { config, request = hubReq
     error.code = -32602;
     throw error;
   }
-  const deps = { config: config || loadConsoleConfig(), request, ...(now ? { now } : {}), ...(cooldowns ? { cooldowns } : {}) };
+  let loadedConfig;
+  const deps = {
+    get config() { return config || (loadedConfig ??= loadConsoleConfig()); },
+    request,
+    ...(now ? { now } : {}),
+    ...(cooldowns ? { cooldowns } : {}),
+  };
   return implementation({ ...args }, deps);
 }
 
@@ -254,7 +307,7 @@ export function createRequestHandler(deps = {}) {
       return {
         protocolVersion: params?.protocolVersion || LATEST_PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: SERVER_NAME, title: 'Autoloop Hub 调度状态查询与自愈规则操作', version: SERVER_VERSION },
+        serverInfo: { name: SERVER_NAME, title: 'Autoloop Hub 调度状态查询、自愈规则操作与控制台文档读取', version: SERVER_VERSION },
       };
     }
     if (method === 'ping') return {};
