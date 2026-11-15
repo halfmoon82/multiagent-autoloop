@@ -50,6 +50,21 @@ const schedulingSessions = {
     session.queuedCount = session.queue.length;
     return session;
   },
+  async steerQueued(id, itemId) {
+    const session = this.records.find(item => item.id === id);
+    if (!session) throw new Error('调度会话不存在');
+    session.steerCalls = session.steerCalls || [];
+    session.steerCalls.push(itemId);
+    const item = (session.queue || []).find(entry => entry.id === itemId);
+    if (!item) {
+      const error = new Error('队列消息不存在或已送达'); error.status = 404;
+      throw error;
+    }
+    session.queue = (session.queue || []).filter(entry => entry.id !== itemId);
+    session.queued = session.queue;
+    session.queuedCount = session.queue.length;
+    return this.send(id, item?.text || '', { interrupt: true });
+  },
   async send(id, text, { interrupt = false } = {}) {
     const session = this.records.find(item => item.id === id);
     if (!session) throw new Error('调度会话不存在');
@@ -63,7 +78,7 @@ const schedulingSessions = {
       session.updatedAt = '2026-11-14T00:03:00Z';
       return session;
     }
-    if (interrupt) { session.queue = []; session.queued = []; session.queuedCount = 0; session.busy = false; session.status = 'idle'; session.statusText = '待命'; }
+    if (interrupt) { session.queue = (text ? [{ id: `q${++this.queueSeq}`, text, at: '2026-11-14T00:03:00Z' }] : []).concat(session.queue || []); session.queued = session.queue; session.queuedCount = session.queue.length; session.busy = false; session.status = 'idle'; session.statusText = '待命'; }
     if (text) {
       session.messages.push({ role: 'user', text, at: '2026-11-14T00:03:00Z' });
       session.messages.push({ role: 'agent', text: `收到：${text}`, at: '2026-11-14T00:03:05Z' });
@@ -317,8 +332,9 @@ try {
   await page.waitForTimeout(300);
   assert.deepEqual(record.sendCalls.at(-1), { text: '', interrupt: true }, 'Enter on the interrupt button must trigger interrupt, not a queued send');
 
-  // 队列可见、可 steer in（取回输入框编辑）、可单条删除（与 Codex 输入体验一致）
+  // 队列可见、可 steer in（立即追加发送）、可单条删除（与 Codex 输入体验一致）
   record.status = 'running'; record.busy = true; record.statusText = '运行中';
+  record.queue = []; record.queued = []; record.queuedCount = 0; // 隔离前面打断测试遗留的队列状态
   await msgInput.fill(''); // 解冻卡片
   await page.waitForTimeout(2500);
   const queueInput = page.getByLabel('发消息给会话 browser-session');
@@ -330,15 +346,16 @@ try {
   const chipTwo = page.getByRole('button', { name: '队列消息二', exact: true });
   await chipOne.waitFor({ timeout: 5000 });
   await chipTwo.waitFor({ timeout: 5000 });
-  await chipTwo.click(); // steer in：取回输入框编辑
+  await chipTwo.click(); // steer in：立即追加发送（打断当前轮马上送达这条）
   await page.waitForTimeout(600);
-  assert.equal(await queueInput.inputValue(), '队列消息二', 'steer in must load the queued message into the input for editing');
-  assert.equal(record.queue.filter(item => item.text === '队列消息二').length, 0, 'steered-in message must leave the queue');
+  assert.deepEqual(record.sendCalls.at(-1), { text: '队列消息二', interrupt: true }, 'steer in must deliver the queued message immediately like an interrupt');
+  assert.deepEqual(record.queue.map(item => item.text), ['队列消息二', '队列消息一'], 'steered-in message must jump to the queue head for immediate delivery, remaining order kept');
+  assert.equal(await queueInput.inputValue(), '', 'steer in must not touch the input draft');
   await page.getByRole('button', { name: /删除队列消息 队列消息一/ }).click(); // 单条删除
   await page.waitForTimeout(600);
-  assert.equal(record.queue.filter(item => item.text === '队列消息一').length, 0, 'deleted queued message must leave the queue');
-  assert.equal(record.removeCalls.length, 2, 'each queue removal must hit the session API');
-  assert.equal(record.queue.length, 0);
+  assert.deepEqual(record.queue.map(item => item.text), ['队列消息二'], 'deleted queued message must leave the queue');
+  assert.equal(record.removeCalls.length, 1, 'only the explicit deletion may call the remove API');
+  assert.equal(record.steerCalls.length, 1, 'steer in must call the steer API');
 
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();

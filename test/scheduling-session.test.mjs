@@ -483,6 +483,30 @@ test('removeQueued drops only the chosen queued message and unknown ids are 404'
   await assert.rejects(() => manager.removeQueued(id, 'whatever'), error => error.status === 404 && /不存在/.test(error.message), 'a closed session is destroyed, so removal must be a plain 404');
 });
 
+test('steer in delivers the chosen queued message immediately and keeps the remaining queue order', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '第一条');
+  await manager.send(id, '第二条');
+  const listed = manager.list()[0];
+  const steered = await manager.steerQueued(id, listed.queued[1].id);
+  assert.deepEqual(steered.queued.map(item => item.text), ['第二条', '第一条'], 'steered-in message must jump to the queue head for immediate delivery, remaining order unchanged');
+  assert.ok(fake.requests.some(request => request.method === 'session/cancel'), 'steer in must cancel the running turn like an interrupt');
+  await assert.rejects(() => manager.steerQueued(id, 'no-such-item'), error => error.status === 404, 'steering an unknown item must be 404');
+  fake.endTurn(fake.prompts[0]);
+  await waitFor(() => fake.prompts.length === 2);
+  assert.match(fake.prompts[1].params.prompt[0].text, /第二条/, 'steered-in message must be delivered first, ahead of the remaining queue');
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => fake.prompts.length === 3);
+  assert.match(fake.prompts[2].params.prompt[0].text, /第一条/, 'remaining queue must keep its order');
+  fake.endTurn(fake.prompts[2]);
+  await waitFor(() => manager.list()[0].status === 'idle');
+  await manager.close(id);
+});
+
 test('interrupt cancels the running turn and delivers the new message immediately after', async () => {
   const fake = controlledAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
@@ -553,6 +577,27 @@ test('a cancel-induced prompt rejection settles as interrupted, not error, and t
   const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 4)}`);
   assert.deepEqual(transcript, ['user:你是 M', 'user:别跑了', 'agent:本轮回复'], 'the interrupted turn leaves no partial agent reply and the interrupt message is delivered');
   await manager.close(id);
+});
+
+test('steerQueued is rejected with 409 before touching the queue while initializing or in error', async () => {
+  const fake = controlledAdapter({ holdInitialize: true });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const starting = manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => manager.list().length === 1);
+  const id = manager.list()[0].id;
+  await manager.send(id, '初始化期间排一条');
+  const itemId = manager.list()[0].queued[0].id;
+  await assert.rejects(() => manager.steerQueued(id, itemId), error => error.status === 409, 'steering during initialization must be 409');
+  assert.deepEqual(manager.list()[0].queued.map(item => item.text), ['初始化期间排一条'], 'a rejected steer must leave the queue untouched');
+  fake.releaseInitialize();
+  await starting;
+  await waitFor(() => fake.prompts.length === 1);
+  fake.endTurn(fake.prompts[0]);
+  await waitFor(() => fake.prompts.length === 2, 'the queued message must still be deliverable after the rejected steer');
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => manager.list()[0].status === 'idle');
+  await manager.close(id);
+  await assert.rejects(() => manager.steerQueued(id, 'whatever'), error => error.status === 404, 'a destroyed session must be 404');
 });
 
 test('interrupt is rejected while the session is still initializing, while queueing stays open', async () => {

@@ -214,25 +214,17 @@ document.addEventListener('click', async event => {
     if (action === 'edit') { const rule = state.rules.find(item => item.name === id); openRuleForm({ rule, agents: state.agents, sources: state.sources, api, onSaved: refresh }); return; }
     if (action === 'answer-choice') { const split = id.lastIndexOf(':'); await api(`/api/cards/${id.slice(0, split)}/answer`, { method: 'POST', body: JSON.stringify({ choice: Number(id.slice(split + 1)) }) }); showNotice('回答已提交，任务将继续。'); await refresh(); return; }
     if (action === 'queue-steer' || action === 'queue-delete') {
-      // 队列消息管理（与 Codex 输入体验一致）：steer in = 取回输入框编辑；删除 = 从队列移除
+      // 队列消息管理（与 Codex 输入体验一致）：steer in = 立即追加发送（打断当前轮马上送达）；
+      // 删除 = 从队列移除这条，剩余队列保持顺序
       const split = id.lastIndexOf(':');
       const sessionId = id.slice(0, split); const itemId = id.slice(split + 1);
-      const text = button.closest('.queue-item')?.querySelector('.queue-chip')?.textContent ?? '';
-      await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(itemId)}`, { method: 'DELETE', body: JSON.stringify({}) });
       if (action === 'queue-steer') {
-        const input = liveFormInput('session-message', sessionId, 'message');
-        if (input) {
-          if (input.value) { // 已有草稿：在光标处换行插入取回的消息（与 insertNewline 一致：折叠选区）
-            const start = (document.activeElement === input ? input.selectionStart : null) ?? input.value.length; // 未聚焦时部分引擎 selectionStart 为 0，取末尾
-            const end = (document.activeElement === input ? input.selectionEnd : null) ?? input.value.length;
-            input.value = `${input.value.slice(0, start)}\n${text}${input.value.slice(end)}`;
-            input.selectionStart = input.selectionEnd = start + 1 + text.length;
-          } else input.value = text;
-          autoGrow(input);
-          input.focus();
-        }
-        showNotice('已取回队列消息，可修改后重新发送。');
-      } else showNotice('已删除队列消息。');
+        await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(itemId)}/steer`, { method: 'POST', body: JSON.stringify({}) });
+        showNotice('已立即送出该队列消息，当前轮已打断。');
+      } else {
+        await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(itemId)}`, { method: 'DELETE', body: JSON.stringify({}) });
+        showNotice('已删除队列消息。');
+      }
       await refresh();
       return;
     }
