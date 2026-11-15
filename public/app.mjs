@@ -186,6 +186,7 @@ function openNodePop(seg) {
   pop.append(el('div', 'node-pop-title', seg.dataset.title || seg.dataset.node));
   pop.append(el('div', 'node-pop-meta', `${seg.dataset.part || seg.dataset.status} · 节点内 ${seg.dataset.percent}%`));
   if (seg.dataset.summary) pop.append(el('div', 'node-pop-summary', seg.dataset.summary));
+  else pop.append(el('div', 'node-pop-summary', '暂无进展摘要：节点推进后由开发/审阅上报一句话进展。'));
   if (seg.dataset.pr) { const link = el('a', 'pr-link', '打开 PR'); link.href = seg.dataset.pr; link.rel = 'noreferrer'; pop.append(link); }
   pop.hidden = false;
   row.querySelectorAll('.node-seg').forEach(other => other.setAttribute('aria-selected', other === seg ? 'true' : 'false'));
