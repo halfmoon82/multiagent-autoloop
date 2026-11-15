@@ -76,8 +76,8 @@ try {
   // 断言组词未被提交/重启——2026-11-15 事故：replaceChildren 复用节点仍会先移除再插入，组词被杀
   const cdp = await context.newCDPSession(page);
   const probeCompositionAcrossRefresh = async (locator, commitText) => {
-    await locator.fill(''); // 清空既有内容，使最终值断言不受前置步骤残留影响
-    await locator.click(); // 真实鼠标点击，贴近用户交互
+    await locator.click(); // 真实鼠标点击（而非程序化 focus），更贴近用户实际交互
+    await locator.fill('占位'); // 非空草稿让卡片钉住，避免 click 与组词之间的刷新重建句柄（竞态）
     const handle = await locator.elementHandle();
     await page.evaluate(node => {
       window.__imeEvents = [];
@@ -93,7 +93,7 @@ try {
     assert.equal(await page.evaluate(() => window.__imeEvents.at(-1)), 'compositionupdate', 'composition must continue seamlessly after a background refresh');
     await cdp.send('Input.insertText', { text: commitText });
     await page.waitForTimeout(200);
-    assert.equal(await locator.inputValue(), commitText, 'committed IME text must land in the input intact');
+    assert.equal(await locator.inputValue(), `占位${commitText}`, 'committed IME text must land in the input intact');
     assert.equal(await page.evaluate(() => window.__imeEvents.filter(type => type === 'compositionend').length), 1, 'exactly one composition must commit');
   };
   const filterOptions = await page.locator('#project-filter').locator('option').allInnerTexts();
@@ -203,7 +203,11 @@ try {
   await page.keyboard.press('Alt+Enter');
   await page.keyboard.type('第二行');
   assert.equal(await newlineInput.inputValue(), '第一行\n第二行', 'Alt+Enter must insert a newline in the textarea');
-  assert.equal(schedulingSessions.records[0].sendCalls.filter(call => call.text.includes('第二行')).length, 0, 'Alt+Enter must not send the message');
+  await newlineInput.fill('第三行');
+  await page.keyboard.press('Shift+Enter');
+  await page.keyboard.type('第四行');
+  assert.equal(await newlineInput.inputValue(), '第三行\n第四行', 'Shift+Enter must also insert a newline in the textarea');
+  assert.equal(schedulingSessions.records[0].sendCalls.filter(call => call.text.includes('第二行') || call.text.includes('第四行')).length, 0, 'Alt/Shift+Enter must not send the message');
   assert.ok((await sessionCard.innerText()).includes('收到：重点看执行轮次'), 'agent reply must appear in the conversation');
 
   // busy 时输入保持可用：发送默认排队，「打断」立即送达（与 Codex 输入体验一致）
@@ -226,6 +230,13 @@ try {
   assert.deepEqual(record.sendCalls.at(-1), { text: '方向变了，停下', interrupt: true }, '打断按钮必须以 interrupt 立即送达');
   assert.ok((await sessionCard.innerText()).includes('方向变了，停下'), 'interrupt message must reach the conversation immediately');
   assert.equal(await msgInput.inputValue(), '方向变了，停下', 'interrupt must return the just-sent message to the input for re-editing');
+  record.status = 'running'; record.busy = true; record.statusText = '运行中';
+  await msgInput.fill(''); // 清空草稿解冻卡片，让运行中状态与打断按钮渲染出来
+  await page.waitForTimeout(2500);
+  await page.getByRole('button', { name: '打断', exact: true }).focus();
+  await page.keyboard.press('Enter'); // 键盘可达性：按钮上的回车保持原生语义，必须是打断而不是发送
+  await page.waitForTimeout(300);
+  assert.deepEqual(record.sendCalls.at(-1), { text: '', interrupt: true }, 'Enter on the interrupt button must trigger interrupt, not a queued send');
 
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
