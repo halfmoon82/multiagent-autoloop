@@ -232,6 +232,11 @@ try {
   await page.waitForTimeout(2600);
   assert.ok(await pop.isVisible(), 'an open node popover must survive background refreshes');
   assert.ok((await pop.innerText()).includes('正在实现第二块功能'), 'refreshed popover keeps the same node content');
+  // 无摘要节点（如 pending）点开后必须有兜底文案，不能是空弹层
+  const segThree = progressRow.locator('.node-seg').filter({ hasText: '三' });
+  await segThree.click();
+  assert.ok((await pop.innerText()).includes('暂无进展摘要'), 'pending node without worker summary must show a fallback line instead of an empty popover');
+  await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
   assert.ok(!(await pop.isVisible()), 'Escape must close the popover');
   await segTwo.focus();
