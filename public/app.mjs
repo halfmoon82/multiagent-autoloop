@@ -63,14 +63,31 @@ function syncProjectFilter() {
   }
 }
 
-// 后台刷新每 2 秒整棵重建卡片树；输入框持有焦点或正在输入法组词时，替换 DOM 节点会打断组词。
-// 对持有焦点的卡片整棵复用旧节点（内容暂停更新到失焦或提交为止），其余卡片照常重建。
-function replaceKeyedPreserving(containerId, freshNodes, keyAttr, pinnedKey) {
+// 后台刷新每 2 秒重建列表；输入框持有焦点或正在输入法组词时，整棵替换 DOM 会打断组词。
+// 与 React 稳定 key 同理：在替换点直接检查 document.activeElement，
+// 对其所在卡片整棵复用旧节点（内容暂停更新到失焦或提交为止），其余卡片照常重建。
+function replaceKeyedPreserving(containerId, freshNodes, keyAttr, skipKey) {
   const list = $(containerId);
-  if (!pinnedKey) return list.replaceChildren(...freshNodes);
-  const kept = [...list.querySelectorAll(`[data-${keyAttr}]`)].find(node => node.dataset[keyAttr] === pinnedKey);
-  if (!kept) return list.replaceChildren(...freshNodes);
-  list.replaceChildren(...freshNodes.map(node => node.dataset[keyAttr] === pinnedKey ? kept : node));
+  const active = document.activeElement;
+  if (active && ['INPUT', 'TEXTAREA'].includes(active.tagName) && list.contains(active)) {
+    const card = active.closest(`[data-${keyAttr}]`);
+    if (card) {
+      const key = card.dataset[keyAttr];
+      if (key !== skipKey) {
+        const kept = [...list.children].find(node => node.dataset?.[keyAttr] === key);
+        // 卡片在新数据集中仍存在才复用；已消失（远程关闭/已结案）则照常替换，避免列表持续冻结过期内容
+        if (kept && freshNodes.some(node => node.dataset?.[keyAttr] === key)) {
+          list.replaceChildren(...freshNodes.map(node => node.dataset?.[keyAttr] === key ? kept : node));
+          return;
+        }
+      } else {
+        // 提交后本轮：跳过更新，让新消息/新状态立即呈现
+        return;
+      }
+    }
+    // 聚焦元素在容器内但不在任何卡片里：fall through 照常替换（与旧语义一致）
+  }
+  list.replaceChildren(...freshNodes);
 }
 
 function captureFocus() {
@@ -91,8 +108,6 @@ function restoreFocus(info) {
 function render() {
   if (!state.snapshot) return;
   const focus = captureFocus();
-  const pin = focus && state.skipPinOnce !== focus.id && ['session-message', 'answer-text'].includes(focus.action) ? focus : null;
-  state.skipPinOnce = null;
   const view = projectView();
   const draftAnswers = Object.fromEntries([...document.querySelectorAll('form[data-action="answer-text"]')].map(form => [form.dataset.id, form.elements.answer.value]));
   const draftMessages = Object.fromEntries([...document.querySelectorAll('form[data-action="session-message"]')].map(form => [form.dataset.id, form.elements.message.value]));
@@ -105,7 +120,7 @@ function render() {
   replace('progress-list', renderSessionProgress(view.sessions, view.rules, view.snapshot));
   const work = renderWorkSections(view.snapshot, view.rules);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
-  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', pin?.action === 'session-message' ? pin.id : null); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot), 'card', pin?.action === 'answer-text' ? pin.id : null);
+  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', state.skipPinOnce); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot), 'card', state.skipPinOnce); state.skipPinOnce = null;
   syncProjectFilter();
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) form.elements.answer.value = draftAnswers[form.dataset.id]; });
   document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) form.elements.message.value = draftMessages[form.dataset.id]; });
