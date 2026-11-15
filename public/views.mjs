@@ -305,7 +305,7 @@ function runRow(item) {
   const row = el('div', 'list-row');
   const text = el('div');
   const project = el('span', 'chip', `项目 · ${item.projectName || projectName(item.project)}`); if (item.project && item.project !== '未识别') project.title = item.project;
-  const metaLine = el('div', 'row-meta'); metaLine.append(project, document.createTextNode(` · ${item.status}${item.attempts ? ` · 第 ${item.attempts} 次` : ''} · 模型 · ${item.model} · ${item.text}`));
+  const metaLine = el('div', 'row-meta'); metaLine.append(project, document.createTextNode(` · ${item.status}${item.attempts ? ` · 第 ${item.attempts} 次` : ''}${item.agent ? ` · 执行 · ${item.agent}` : ''} · 模型 · ${item.model} · ${item.text}`));
   text.append(el('div', 'row-title', `#${item.id} · ${item.rule}`), metaLine);
   if (item.state === 'done' || item.state === 'nothing') text.append(el('div', 'row-meta', `计费 · ${item.billing}`));
   row.append(text);
@@ -315,16 +315,16 @@ export function renderRunSection(items, emptyText) {
   if (!items.length) return [el('div', 'empty', emptyText)];
   return items.map(runRow);
 }
-export function renderAttention(snapshot, rules = []) {
-  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules);
+export function renderAttention(snapshot, rules = [], agentNames = {}) {
+  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules, agentNames);
   return renderRunSection(sections.needsAttention, '没有等待调度处理的事。');
 }
-export function renderWorkSections(snapshot, rules = []) {
-  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules);
+export function renderWorkSections(snapshot, rules = [], agentNames = {}) {
+  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules, agentNames);
   return {
     running: renderRunSection(sections.running, '没有正在运行的任务。'),
     retrying: renderRunSection(sections.retrying, '没有等待重试的任务。'),
     doneToday: renderRunSection(sections.doneToday, '今天还没有完成任务。'),
-    attention: renderAttention(snapshot, rules),
+    attention: renderAttention(snapshot, rules, agentNames),
   };
 }

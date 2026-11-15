@@ -17,23 +17,25 @@ export function projectForCard(card, rules = []) {
   const rule = rules.find(item => item.name === card.rule);
   return String(rule?.cwd || '').trim() || '未识别';
 }
-export function runLine(run, models = {}, rules = []) {
+export function runLine(run, models = {}, rules = [], agentNames = {}) {
   const text = run.error || run.summary || '暂无概要';
   const project = projectForRun(run, rules);
-  return { id: run.id, rule: run.rule, project, projectName: projectName(project), state: run.state, status: run.state === 'queued' && run.attempts > 0 ? '等待重试' : statusLabel(run.state), text, attempts: run.attempts || 0, model: models[run.agent] || '未配置', billing: billingText(run) };
+  const agentId = String(run.agent || '').trim();
+  const agent = agentId ? (agentNames[agentId] || agentId) : '';
+  return { id: run.id, rule: run.rule, project, projectName: projectName(project), state: run.state, status: run.state === 'queued' && run.attempts > 0 ? '等待重试' : statusLabel(run.state), text, attempts: run.attempts || 0, agent, model: models[run.agent] || '未配置', billing: billingText(run) };
 }
 const sameLocalDay = (iso, now = new Date()) => {
   if (!iso) return false;
   const d = new Date(iso);
   return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
 };
-export function splitRunSections(snapshot, models = {}, now = new Date(), rules = []) {
+export function splitRunSections(snapshot, models = {}, now = new Date(), rules = [], agentNames = {}) {
   const runs = snapshot.runs || [];
   return {
-    running: runs.filter(run => run.state === 'claimed').slice(0, 5).map(run => runLine(run, models, rules)),
-    retrying: runs.filter(run => run.state === 'queued' && run.attempts > 0).slice(0, 5).map(run => runLine(run, models, rules)),
-    doneToday: runs.filter(run => ['done', 'nothing'].includes(run.state) && sameLocalDay(run.finishedAt || run.createdAt, now)).slice(0, 5).map(run => runLine(run, models, rules)),
-    needsAttention: runs.filter(run => ['unknown', 'cancelled'].includes(run.state)).slice(0, 5).map(run => runLine(run, models, rules)),
+    running: runs.filter(run => run.state === 'claimed').slice(0, 5).map(run => runLine(run, models, rules, agentNames)),
+    retrying: runs.filter(run => run.state === 'queued' && run.attempts > 0).slice(0, 5).map(run => runLine(run, models, rules, agentNames)),
+    doneToday: runs.filter(run => ['done', 'nothing'].includes(run.state) && sameLocalDay(run.finishedAt || run.createdAt, now)).slice(0, 5).map(run => runLine(run, models, rules, agentNames)),
+    needsAttention: runs.filter(run => ['unknown', 'cancelled'].includes(run.state)).slice(0, 5).map(run => runLine(run, models, rules, agentNames)),
   };
 }
 

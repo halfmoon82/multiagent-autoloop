@@ -122,6 +122,7 @@ try {
   assert.equal(await page.locator('#attention-list').count(), 1, 'overview must have one attention list');
   assert.match(await page.locator('#summary').innerText(), /今日完成/); assert.match(await page.locator('#summary').innerText(), /1,234/);
   assert.ok((await page.locator('#running-list').innerText()).includes(`项目 · ${path.basename(root)}`), 'overview task summary must show its short project name');
+  assert.ok((await page.locator('#running-list').innerText()).includes('执行 · 无模型 Agent'), 'overview items must show which agent executes them');
   assert.ok(!(await page.locator('#attention-list').innerText()).includes('是否继续测试'), 'open decision cards must not sit in the scheduling-handled queue');
   assert.match(await page.locator('#attention-list').innerText(), /没有等待调度处理的事/, 'scheduling queue only lists scheduling-handleable items');
   const metric = async index => page.locator('#summary .metric').nth(index).innerText();
