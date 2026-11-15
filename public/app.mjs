@@ -232,6 +232,9 @@ document.addEventListener('click', async event => {
         }
         showNotice('已取回队列消息，可修改后重新发送。');
       } else showNotice('已删除队列消息。');
+      await refresh();
+      return;
+    }
     if (action === 'continue-session') {
       if (!confirm('继续调度将新建会话、注入该存档最近 10 轮转录，并启动 Codex 消耗模型额度。继续？')) return;
       const resumed = await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/continue`, { method: 'POST', body: JSON.stringify({}) });
