@@ -75,14 +75,17 @@ function replaceKeyedPreserving(containerId, freshNodes, keyAttr, skipKey) {
       const key = card.dataset[keyAttr];
       if (key !== skipKey) {
         const kept = [...list.children].find(node => node.dataset?.[keyAttr] === key);
-        if (kept) {
+        // 卡片在新数据集中仍存在才复用；已消失（远程关闭/已结案）则照常替换，避免列表持续冻结过期内容
+        if (kept && freshNodes.some(node => node.dataset?.[keyAttr] === key)) {
           list.replaceChildren(...freshNodes.map(node => node.dataset?.[keyAttr] === key ? kept : node));
           return;
         }
+      } else {
+        // 提交后本轮：跳过更新，让新消息/新状态立即呈现
+        return;
       }
     }
-    // 聚焦元素在容器内但无法定位卡片，或提交后需立即刷新（skipKey）：跳过本轮更新
-    return;
+    // 聚焦元素在容器内但不在任何卡片里：fall through 照常替换（与旧语义一致）
   }
   list.replaceChildren(...freshNodes);
 }
