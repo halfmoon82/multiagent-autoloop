@@ -98,8 +98,8 @@ export function renderSchedulingSessions(sessions = []) {
     if (!closed) {
       const form = el('form', 'session-message');
       form.dataset.action = 'session-message'; form.dataset.id = session.id;
-      const input = el('input'); input.name = 'message'; input.required = true;
-      input.placeholder = session.busy ? '排队跟进：本轮结束后自动发送；需要立即介入请点「打断」' : '继续指挥这次调度，例如：现在重点看哪一项？';
+      const input = el('textarea'); input.name = 'message'; input.required = true; input.rows = 1; input.dataset.autogrow = '';
+      input.placeholder = session.busy ? '排队跟进：本轮结束后自动发送；需要立即介入请点「打断」' : '继续指挥这次调度，例如：现在重点看哪一项？回车发送，Alt/Shift+回车换行';
       input.setAttribute('aria-label', `发消息给会话 ${session.id}`);
       const submit = button('发送', '', '', 'primary');
       submit.type = 'submit';
@@ -126,7 +126,7 @@ export function renderCards(snapshot, rules = []) {
       box.append(options);
       const resolve = button('结案', 'resolve', String(card.id), 'secondary'); box.append(resolve);
       const answer = el('form', 'text-answer'); answer.dataset.action = 'answer-text'; answer.dataset.id = card.id;
-      const input = el('input'); input.name = 'answer'; input.required = true; input.placeholder = '输入其他回答'; input.setAttribute('aria-label', `回答 ${card.title}`);
+      const input = el('textarea'); input.name = 'answer'; input.required = true; input.rows = 1; input.dataset.autogrow = ''; input.placeholder = '输入其他回答，回车发送，Alt/Shift+回车换行'; input.setAttribute('aria-label', `回答 ${card.title}`);
       const submit = button('发送回答', '', '', 'primary'); submit.type = 'submit'; answer.append(input, submit); box.append(answer);
     } else box.append(el('p', 'row-meta', `已选择：${card.choice ?? card.answer ?? '—'}，等待后续执行。`));
     return box;
