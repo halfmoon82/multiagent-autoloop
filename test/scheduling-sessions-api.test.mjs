@@ -50,6 +50,12 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
       if (itemId !== 'q1') throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
       return { id: 'two', status: 'running', statusText: '运行中', queued: [], queuedCount: 0 };
     },
+    async steerQueued(id, itemId) {
+      calls.push(['steerQueued', id, itemId]);
+      if (id !== 'two') throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+      if (itemId !== 'q1') throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
+      return { id: 'two', status: 'running', statusText: '运行中', queued: [], queuedCount: 0 };
+    },
     async close(id) { calls.push(['close', id]); return { id, status: 'closed', statusText: '已关闭' }; },
   };
   const projectRoot = mkdtempSync(path.join(tmpdir(), 'api-projects-'));
@@ -103,6 +109,16 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     assert.equal(removed.status, 200);
     assert.equal((await removed.json()).queuedCount, 0);
 
+    const steerMissingMarker = await fetch(`${url}/api/scheduling-sessions/two/queue/q1/steer`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(steerMissingMarker.status, 403, 'steer in must require the console request marker');
+
+    const steerMissingItem = await fetch(`${url}/api/scheduling-sessions/two/queue/none/steer`, { method: 'POST', headers: writeHeaders, body: '{}' });
+    assert.equal(steerMissingItem.status, 404, 'steering an unknown queue item must be 404');
+
+    const steered = await fetch(`${url}/api/scheduling-sessions/two/queue/q1/steer`, { method: 'POST', headers: writeHeaders, body: '{}' });
+    assert.equal(steered.status, 200);
+    assert.equal((await steered.json()).queuedCount, 0);
+
     const deleteRuleRun = await fetch(`${url}/api/rules/%E6%81%A2%E5%A4%8D%E6%B5%8B%E8%AF%95/run`, { method: 'DELETE', headers: writeHeaders, body: '{}' });
     assert.equal(deleteRuleRun.status, 404, 'DELETE must not reach action routes that only accept POST');
     const deleteCardAnswer = await fetch(`${url}/api/cards/9/answer`, { method: 'DELETE', headers: writeHeaders, body: '{}' });
@@ -114,8 +130,10 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     const closed = await fetch(`${url}/api/scheduling-sessions/two/close`, { method: 'POST', headers: writeHeaders, body: '{}' });
     assert.equal(closed.status, 200);
     assert.equal((await closed.json()).status, 'closed');
-    assert.deepEqual(calls.map(call => call[0]), ['list', 'start', 'send', 'send', 'removeQueued', 'removeQueued', 'close']);
+    assert.deepEqual(calls.map(call => call[0]), ['list', 'start', 'send', 'send', 'removeQueued', 'removeQueued', 'steerQueued', 'steerQueued', 'close']);
     assert.deepEqual(calls[5], ['removeQueued', 'two', 'q1']);
+    assert.deepEqual(calls[6], ['steerQueued', 'two', 'none']);
+    assert.deepEqual(calls[7], ['steerQueued', 'two', 'q1']);
     assert.equal(calls[1][1], '检查当前调度');
     assert.equal(calls[1][2], repo);
     assert.equal(calls[2][1], 'none');

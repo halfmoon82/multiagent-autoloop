@@ -284,6 +284,21 @@ export class SchedulingSessionManager {
     return toPublicSession(record);
   }
 
+  async steerQueued(id, itemId) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    // 与 send(interrupt) 同一套状态前置校验：必须先拦下，避免消息已从队列摘除但发送被拒而丢失
+    if (record.status === 'initializing') throw new SchedulingSessionError('会话初始化中，请稍候再试（steer in 只在运行中可用）', { status: 409 });
+    if (record.status === 'error') throw new SchedulingSessionError('会话处于异常状态，请关闭后重新开启', { status: 409 });
+    const index = record.queue.findIndex(item => item !== null && item.id === String(itemId || ''));
+    if (index === -1) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
+    const [item] = record.queue.splice(index, 1);
+    record.updatedAt = this.now().toISOString();
+    // steer in = 立即追加发送：以该消息为内容打断当前轮，剩余队列顺序不变
+    return this.send(record.id, item.text, { interrupt: true });
+  }
+
   async close(id) {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });

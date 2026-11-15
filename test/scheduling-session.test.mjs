@@ -483,6 +483,30 @@ test('removeQueued drops only the chosen queued message and unknown ids are 404'
   await assert.rejects(() => manager.removeQueued(id, 'whatever'), error => error.status === 404 && /不存在/.test(error.message), 'a closed session is destroyed, so removal must be a plain 404');
 });
 
+test('steer in delivers the chosen queued message immediately and keeps the remaining queue order', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '第一条');
+  await manager.send(id, '第二条');
+  const listed = manager.list()[0];
+  const steered = await manager.steerQueued(id, listed.queued[1].id);
+  assert.deepEqual(steered.queued.map(item => item.text), ['第二条', '第一条'], 'steered-in message must jump to the queue head for immediate delivery, remaining order unchanged');
+  assert.ok(fake.requests.some(request => request.method === 'session/cancel'), 'steer in must cancel the running turn like an interrupt');
+  await assert.rejects(() => manager.steerQueued(id, 'no-such-item'), error => error.status === 404, 'steering an unknown item must be 404');
+  fake.endTurn(fake.prompts[0]);
+  await waitFor(() => fake.prompts.length === 2);
+  assert.match(fake.prompts[1].params.prompt[0].text, /第二条/, 'steered-in message must be delivered first, ahead of the remaining queue');
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => fake.prompts.length === 3);
+  assert.match(fake.prompts[2].params.prompt[0].text, /第一条/, 'remaining queue must keep its order');
+  fake.endTurn(fake.prompts[2]);
+  await waitFor(() => manager.list()[0].status === 'idle');
+  await manager.close(id);
+});
+
 test('interrupt cancels the running turn and delivers the new message immediately after', async () => {
   const fake = controlledAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
