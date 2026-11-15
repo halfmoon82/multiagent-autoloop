@@ -10,7 +10,6 @@ import { discoverGitProjects } from './projects.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(MODULE_DIR, '..', 'public');
-const CONSOLE_ROOT = path.resolve(MODULE_DIR, '..');
 const FILES = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']], ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/app.mjs', ['app.mjs', 'text/javascript; charset=utf-8']], ['/format.mjs', ['format.mjs', 'text/javascript; charset=utf-8']],

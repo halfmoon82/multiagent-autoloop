@@ -112,6 +112,7 @@ test('keeps behavioral guardrails inline and routes console docs through read_co
   assert.match(text, /read_console_doc/);
   assert.match(text, /docs\/scheduling-contract\.md/);
   assert.match(text, /事件 subject 使用无空格的稳定 ASCII 标识/);
+  assert.match(text, /穷尽仍失败的任务，挂起并在会话中升级给用户/);
   assert.ok(!text.includes('【项目资料】'), 'project docs must not be inlined anymore');
   assert.ok(!text.includes('【调度契约】'), 'console contract must not be inlined anymore');
   await manager.close(manager.list()[0].id);
@@ -341,7 +342,7 @@ test('session/new carries the autoloop-hub MCP server pointing at the bundled re
   const { existsSync } = await import('node:fs');
   const fake = fakeAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
-  await manager.start({ project: '/workspace/demo', projectContext: 'ctx' });
+  await manager.start({ project: '/workspace/demo' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/new'));
   const newRequest = fake.requests.find(request => request.method === 'session/new');
   assert.equal(Array.isArray(newRequest.params.mcpServers), true);

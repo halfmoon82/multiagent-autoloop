@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -382,6 +382,16 @@ test('read_console_doc rejects traversal, absolute paths and non-whitelist files
     const error = await handleToolCall('read_console_doc', { path: docPath }).catch(e => e);
     assert.ok(error && error.code === -32602, `${label}: expected -32602, got ${error && error.code}`);
   }
+});
+
+test('resolveConsoleDoc rejects symlinked docs to prevent reading outside the repo', async () => {
+  const { resolveConsoleDoc } = await import('../src/mcp/hub-tools.mjs');
+  const root = mkdtempSync(path.join(tmpdir(), 'autoloop-doc-link-'));
+  mkdirSync(path.join(root, 'docs'), { recursive: true });
+  const outside = path.join(tmpdir(), 'autoloop-secret.txt');
+  writeFileSync(outside, 'top-secret');
+  symlinkSync(outside, path.join(root, 'docs', 'evil.md'));
+  assert.throws(() => resolveConsoleDoc(root, 'docs/evil.md'), /不是普通文件/);
 });
 
 test('resolveConsoleDoc validates against a given root: happy path, missing and oversized docs', async () => {

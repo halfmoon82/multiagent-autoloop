@@ -3,7 +3,7 @@
 // 以及受控写 resume_rule / pause_rule / run_rule（与控制台按钮同一套 Hub 动作）。
 // 数据来自 Autoloop Hub（/v1/state）与 AGENT_AUTOLOOP_HOME 下的 rules.json。
 // 安全边界：owner key 只用于 Hub 请求头，绝不进入工具输出、日志或 stderr。
-import { readFileSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConsoleConfig } from '../config.mjs';
@@ -128,13 +128,14 @@ export function resolveConsoleDoc(root, relPath) {
   const abs = path.resolve(root, rel);
   if (abs !== root && !abs.startsWith(root + path.sep)) throw invalid();
   let stat;
-  try { stat = statSync(abs); } catch {
+  try { stat = lstatSync(abs); } catch {
     const error = new Error(`文档不存在：${rel}`);
     error.code = -32602;
     throw error;
   }
-  if (!stat.isFile() || stat.size > DOC_MAX_BYTES) {
-    const error = new Error(`文档不存在或超过上限（${DOC_MAX_BYTES} 字节）：${rel}`);
+  // lstat 不跟随符号链接：链接文件 isFile() 为 false，拒绝仓库外借链读取。
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > DOC_MAX_BYTES) {
+    const error = new Error(`文档不存在、不是普通文件或超过上限（${DOC_MAX_BYTES} 字节）：${rel}`);
     error.code = -32602;
     throw error;
   }
@@ -306,7 +307,7 @@ export function createRequestHandler(deps = {}) {
       return {
         protocolVersion: params?.protocolVersion || LATEST_PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: SERVER_NAME, title: 'Autoloop Hub 调度状态查询与自愈规则操作', version: SERVER_VERSION },
+        serverInfo: { name: SERVER_NAME, title: 'Autoloop Hub 调度状态查询、自愈规则操作与控制台文档读取', version: SERVER_VERSION },
       };
     }
     if (method === 'ping') return {};
