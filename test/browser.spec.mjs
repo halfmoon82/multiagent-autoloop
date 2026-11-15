@@ -111,7 +111,7 @@ try {
   await page.keyboard.type('追加输入');
   assert.equal(await page.locator('form[data-action="answer-text"]').first().locator('input').inputValue(), '刷新后仍要保留追加输入', 'typing must continue seamlessly across background refreshes');
   const answerInput = page.locator('form[data-action="answer-text"]').first().locator('input');
-  await answerInput.focus();
+  await answerInput.click(); // 真实鼠标点击（而非程序化 focus），更贴近用户实际交互
   const answerNode = await answerInput.elementHandle();
   await page.waitForTimeout(4500);
   assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, answerNode), true, 'answer input DOM node must survive background refreshes so IME composition is not broken');
@@ -135,7 +135,7 @@ try {
   await sessionCard.waitFor();
   assert.ok((await sessionCard.innerText()).includes('项目 · demo-repo'), 'scheduling session must show its bound project name');
   const chatInput = page.getByLabel('发消息给会话 browser-session');
-  await chatInput.focus();
+  await chatInput.click(); // 真实鼠标点击（而非程序化 focus），更贴近用户实际交互
   const chatNode = await chatInput.elementHandle();
   await page.waitForTimeout(4500);
   assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, chatNode), true, 'session chat input DOM node must survive background refreshes so IME composition is not broken');
