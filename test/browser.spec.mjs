@@ -56,6 +56,10 @@ const schedulingSessions = {
     session.steerCalls = session.steerCalls || [];
     session.steerCalls.push(itemId);
     const item = (session.queue || []).find(entry => entry.id === itemId);
+    if (!item) {
+      const error = new Error('队列消息不存在或已送达'); error.status = 404;
+      throw error;
+    }
     session.queue = (session.queue || []).filter(entry => entry.id !== itemId);
     session.queued = session.queue;
     session.queuedCount = session.queue.length;

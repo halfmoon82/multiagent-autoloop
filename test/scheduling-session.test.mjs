@@ -579,6 +579,27 @@ test('a cancel-induced prompt rejection settles as interrupted, not error, and t
   await manager.close(id);
 });
 
+test('steerQueued is rejected with 409 before touching the queue while initializing or in error', async () => {
+  const fake = controlledAdapter({ holdInitialize: true });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const starting = manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => manager.list().length === 1);
+  const id = manager.list()[0].id;
+  await manager.send(id, '初始化期间排一条');
+  const itemId = manager.list()[0].queued[0].id;
+  await assert.rejects(() => manager.steerQueued(id, itemId), error => error.status === 409, 'steering during initialization must be 409');
+  assert.deepEqual(manager.list()[0].queued.map(item => item.text), ['初始化期间排一条'], 'a rejected steer must leave the queue untouched');
+  fake.releaseInitialize();
+  await starting;
+  await waitFor(() => fake.prompts.length === 1);
+  fake.endTurn(fake.prompts[0]);
+  await waitFor(() => fake.prompts.length === 2, 'the queued message must still be deliverable after the rejected steer');
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => manager.list()[0].status === 'idle');
+  await manager.close(id);
+  await assert.rejects(() => manager.steerQueued(id, 'whatever'), error => error.status === 404, 'a destroyed session must be 404');
+});
+
 test('interrupt is rejected while the session is still initializing, while queueing stays open', async () => {
   const fake = controlledAdapter({ holdInitialize: true });
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
