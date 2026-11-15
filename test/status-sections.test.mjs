@@ -157,3 +157,15 @@ test('latestChainsByProject keeps a single chain per project untouched and toler
   assert.deepEqual(latestChainsByProject(single), single);
   assert.deepEqual(latestChainsByProject([]), []);
 });
+
+test('run lines name the executing agent and never pad unknown models with a default label', () => {
+  const named = runLine({ id: 13, rule: '开发', agent: 'codex', state: 'claimed', summary: '正在改' }, { codex: 'kimi-for-coding' }, [], { codex: 'Codex' });
+  assert.equal(named.agent, 'Codex');
+  const raw = runLine({ id: 14, rule: '巡检', agent: 'liuxue-scan', state: 'claimed', summary: '扫描中' }, {}, []);
+  assert.equal(raw.agent, 'liuxue-scan');
+  assert.equal(raw.model, '未配置');
+  const missing = runLine({ id: 15, rule: '旧数据', state: 'claimed', summary: '无 agent 字段' }, {}, []);
+  assert.equal(missing.agent, '');
+  const sections = splitRunSections({ runs: [{ id: 16, rule: '开发', agent: 'codex', state: 'claimed' }] }, { codex: 'kimi-for-coding' }, new Date(), [], { codex: 'Codex' });
+  assert.equal(sections.running[0].agent, 'Codex');
+});
