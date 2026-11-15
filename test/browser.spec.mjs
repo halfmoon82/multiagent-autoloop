@@ -72,6 +72,30 @@ try {
   let acceptDialogs = true;
   page.on('dialog', dialog => acceptDialogs ? dialog.accept() : dialog.dismiss());
   await page.goto(url); await page.getByRole('heading', { name: '今天的自动化' }).waitFor();
+  // 真实输入法组词探测（CDP imeSetComposition）：组词进行中跨过后台刷新周期，
+  // 断言组词未被提交/重启——2026-11-15 事故：replaceChildren 复用节点仍会先移除再插入，组词被杀
+  const cdp = await context.newCDPSession(page);
+  const probeCompositionAcrossRefresh = async (locator, commitText) => {
+    await locator.fill(''); // 清空既有内容，使最终值断言不受前置步骤残留影响
+    await locator.click(); // 真实鼠标点击，贴近用户交互
+    const handle = await locator.elementHandle();
+    await page.evaluate(node => {
+      window.__imeEvents = [];
+      for (const type of ['compositionstart', 'compositionupdate', 'compositionend']) node.addEventListener(type, event => window.__imeEvents.push(event.type));
+    }, handle);
+    await cdp.send('Input.imeSetComposition', { text: 'pinyinbushuru', selectionStart: 13, selectionEnd: 13 });
+    await page.waitForTimeout(4500); // 跨过至少两轮 2s 后台刷新
+    const state = await page.evaluate(node => ({ active: document.activeElement === node, events: window.__imeEvents.slice() }), handle);
+    assert.equal(state.active, true, 'input must keep focus while IME composition is active across background refreshes');
+    assert.equal(state.events.filter(type => type === 'compositionstart').length, 1, 'background refresh must not kill and restart an in-progress IME composition');
+    await cdp.send('Input.imeSetComposition', { text: 'pinyinbushuruzhong', selectionStart: 16, selectionEnd: 16 });
+    await page.waitForTimeout(200);
+    assert.equal(await page.evaluate(() => window.__imeEvents.at(-1)), 'compositionupdate', 'composition must continue seamlessly after a background refresh');
+    await cdp.send('Input.insertText', { text: commitText });
+    await page.waitForTimeout(200);
+    assert.equal(await locator.inputValue(), commitText, 'committed IME text must land in the input intact');
+    assert.equal(await page.evaluate(() => window.__imeEvents.filter(type => type === 'compositionend').length), 1, 'exactly one composition must commit');
+  };
   const filterOptions = await page.locator('#project-filter').locator('option').allInnerTexts();
   assert.ok(filterOptions.includes('全部项目'), 'project filter must offer an explicit 全部 option');
   assert.equal(await page.locator('#attention-list').count(), 1, 'overview must have one attention list');
@@ -124,6 +148,7 @@ try {
   const answerNode = await answerInput.elementHandle();
   await page.waitForTimeout(4500);
   assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, answerNode), true, 'answer input DOM node must survive background refreshes so IME composition is not broken');
+  await probeCompositionAcrossRefresh(page.locator('form[data-action="answer-text"]').first().locator('input'), '拼音补输入');
   await collisionCard.locator('input[name="answer"]').fill('通知存活测试');
   await collisionCard.getByRole('button', { name: '发送回答' }).click();
   await page.waitForTimeout(2500);
@@ -148,6 +173,7 @@ try {
   const chatNode = await chatInput.elementHandle();
   await page.waitForTimeout(4500);
   assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, chatNode), true, 'session chat input DOM node must survive background refreshes so IME composition is not broken');
+  await probeCompositionAcrossRefresh(chatInput, '拼音补输入');
   assert.equal(await page.locator('#project-filter').inputValue(), 'demo-repo', 'starting a session must switch the project filter to the new session so the card stays visible');
   assert.equal(await page.locator('#clear-project-filter').getAttribute('hidden'), null, 'a clear-filter button must be shown while a filter is active');
   await page.getByRole('button', { name: '总览', exact: true }).click();

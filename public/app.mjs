@@ -64,30 +64,40 @@ function syncProjectFilter() {
 }
 
 // 后台刷新每 2 秒重建列表；输入框持有焦点或正在输入法组词时，整棵替换 DOM 会打断组词。
-// 与 React 稳定 key 同理：在替换点直接检查 document.activeElement，
-// 对其所在卡片整棵复用旧节点（内容暂停更新到失焦或提交为止），其余卡片照常重建。
+// 与 React 稳定 key 同理：在替换点直接检查 document.activeElement，对其所在卡片钉住旧节点
+// （内容暂停更新到失焦或提交为止），其余卡片照常重建。
+// 注意：钉住 ≠ 复用。replaceChildren 会把子节点先全部摘除再插入，同一节点也会经历
+// remove+insert，输入法组词照样被杀（2026-11-15 实测验证）。所以这里做原地键控更新：
+// 钉住节点全程留在 DOM 里，只增删、移动它的兄弟节点。
 function replaceKeyedPreserving(containerId, freshNodes, keyAttr, skipKey) {
   const list = $(containerId);
   const active = document.activeElement;
+  let pinned = null;
   if (active && ['INPUT', 'TEXTAREA'].includes(active.tagName) && list.contains(active)) {
     const card = active.closest(`[data-${keyAttr}]`);
+    if (card && card.dataset[keyAttr] === skipKey) {
+      // 提交后本轮：跳过更新，让新消息/新状态立即呈现
+      return;
+    }
     if (card) {
       const key = card.dataset[keyAttr];
-      if (key !== skipKey) {
-        const kept = [...list.children].find(node => node.dataset?.[keyAttr] === key);
-        // 卡片在新数据集中仍存在才复用；已消失（远程关闭/已结案）则照常替换，避免列表持续冻结过期内容
-        if (kept && freshNodes.some(node => node.dataset?.[keyAttr] === key)) {
-          list.replaceChildren(...freshNodes.map(node => node.dataset?.[keyAttr] === key ? kept : node));
-          return;
-        }
-      } else {
-        // 提交后本轮：跳过更新，让新消息/新状态立即呈现
-        return;
-      }
+      // 卡片在新数据集中仍存在才钉住；已消失（远程关闭/已结案）则照常替换，避免列表持续冻结过期内容
+      if (freshNodes.some(node => node.dataset?.[keyAttr] === key)) pinned = card;
     }
-    // 聚焦元素在容器内但不在任何卡片里：fall through 照常替换（与旧语义一致）
+    // 聚焦元素在容器内但不在任何卡片里：pinned 保持 null，照常替换（与旧语义一致）
   }
-  list.replaceChildren(...freshNodes);
+  if (!pinned) { list.replaceChildren(...freshNodes); return; }
+  const pinnedKey = pinned.dataset[keyAttr];
+  const ordered = freshNodes.map(node => node.dataset?.[keyAttr] === pinnedKey ? pinned : node);
+  const wanted = new Set(ordered);
+  // 只摘除真正消失的旧卡片；钉住卡片绝不摘除（摘除即打断输入法组词）
+  for (const child of [...list.children]) if (child !== pinned && !wanted.has(child)) child.remove();
+  // 自尾向头按目标顺序插入其余节点；insertBefore 只触碰钉住卡片的兄弟节点，不移动钉住卡片本身。
+  // 钉住卡片因此可能短暂偏离 API 顺序，失焦或提交后下一轮即恢复正常排序。
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    if (ordered[i] === pinned) continue;
+    list.insertBefore(ordered[i], list.children[i] ?? null);
+  }
 }
 
 function captureFocus() {
