@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { withStateLock } from './detour.mjs';
+import { DetourError, withStateLockAsync } from './detour.mjs';
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -40,7 +40,8 @@ export function readRuleOptions(config) {
 }
 export async function saveRule(config, input, existingName, check = defaultCheck) {
   // 与频限绕行等状态操作互斥（detour.mjs 的 withStateLock），整文件读-改-写不被交错。
-  return withStateLock(config, async () => {
+  try {
+    return await withStateLockAsync(config, async () => {
     const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
     const rule = ruleFrom(input);
     if (!raw.agents?.[rule.to]) throw new RuleError('所选 Agent 不在配置中');
@@ -58,5 +59,9 @@ export async function saveRule(config, input, existingName, check = defaultCheck
       renameSync(draft, config.rulesFile);
     } finally { try { unlinkSync(draft); } catch {} }
     return rule;
-  });
+    });
+  } catch (error) {
+    if (error instanceof DetourError) throw new RuleError(error.message);
+    throw error;
+  }
 }

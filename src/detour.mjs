@@ -1,8 +1,7 @@
 // 频限绕行登记与回归：模型被频限拦下时记录被拦 Agent/模型、证据与替代派发，
 // 按冷却节奏最小核实恢复，核实通过后把规则原子回归原派发。
 // 只拥有 detours.json 状态机、rules.json 的原子替换与状态锁；探测命令本身由登记时给出。
-import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export class DetourError extends Error {}
@@ -13,54 +12,88 @@ const text = (value, label) => {
   return result;
 };
 
-const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const lockToken = () => `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const lockFile = (config) => path.join(config.root, '.console-state.lock');
 
-/** 运行目录的状态锁：登记/核实/回归与控制台规则表单互斥，整文件读-改-写不被交错。 */
+function tryAcquire(config, token) {
+  const fd = openSync(lockFile(config), 'wx');
+  writeFileSync(fd, token);
+  closeSync(fd);
+}
+
+function releaseIfOurs(config, token) {
+  try {
+    if (existsSync(lockFile(config)) && readFileSync(lockFile(config), 'utf8') === token) unlinkSync(lockFile(config));
+  } catch { /* 锁已被回收方处理 */ }
+}
+
+function staleOrGone(config, staleMs) {
+  try {
+    if (Date.now() - statSync(lockFile(config)).mtimeMs > staleMs) { unlinkSync(lockFile(config)); return true; }
+  } catch { /* 锁文件恰好消失，下一轮 openSync(wx) 直接成功 */ }
+  return false;
+}
+
+/** 同步状态锁：给 detour 的同步操作用（CLI 进程内自旋等待可接受）。 */
 export function withStateLock(config, fn, { timeoutMs = 5000, staleMs = 60000 } = {}) {
-  const lockFile = path.join(config.root, '.console-state.lock');
-  const started = Date.now();
-  let fd;
+  const token = lockToken();
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
-    try { fd = openSync(lockFile, 'wx'); break; }
+    try { tryAcquire(config, token); break; }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      try {
-        if (Date.now() - started > timeoutMs) throw new DetourError('状态被其他操作占用，请稍后重试');
-        const age = Date.now() - readFileSync(lockFile, 'utf8').trim().split(':')[0];
-        if (age > staleMs) { unlinkSync(lockFile); continue; }
-      } catch (inner) { if (inner instanceof DetourError) throw inner; }
-      sleep(100);
+      if (Date.now() > deadline) throw new DetourError('状态被其他操作占用，请稍后重试');
+      if (!staleOrGone(config, staleMs)) sleepSync(100);
     }
   }
-  try {
-    writeFileSync(fd, `${Date.now()}:${process.pid}`);
-    return fn();
-  } finally {
-    try { closeSync(fd); } catch {}
-    try { unlinkSync(lockFile); } catch {}
+  try { return fn(); } finally { releaseIfOurs(config, token); }
+}
+
+/** 异步状态锁：给控制台 server 内的 async 操作用（setTimeout 重试，不阻塞事件循环）。 */
+export async function withStateLockAsync(config, fn, { timeoutMs = 15000, staleMs = 60000 } = {}) {
+  const token = lockToken();
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try { tryAcquire(config, token); break; }
+    catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      if (Date.now() > deadline) throw new DetourError('状态被其他操作占用，请稍后重试');
+      if (!staleOrGone(config, staleMs)) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
+  try { return await fn(); } finally { releaseIfOurs(config, token); }
 }
 
 export function detoursFile(config) { return path.join(config.root, 'detours.json'); }
 
+/** 只读：损坏即抛错，不在只读路径上改名留档。 */
 export function readDetours(config) {
   const file = detoursFile(config);
   if (!existsSync(file)) return [];
   let raw;
   try { raw = JSON.parse(readFileSync(file, 'utf8')); }
-  catch (error) {
-    // 手滑改坏时留档隔离，而不是卡死所有绕行核实。
-    renameSync(file, path.join(config.root, `detours.json.corrupt-${Date.now()}`));
-    return [];
-  }
-  if (!Array.isArray(raw.detours)) {
-    renameSync(file, path.join(config.root, `detours.json.corrupt-${Date.now()}`));
-    return [];
-  }
+  catch (error) { throw new DetourError(`detours.json 损坏：${error.message}（跑一次 record/verify 会自动留档隔离）`); }
+  if (!Array.isArray(raw.detours)) throw new DetourError('detours.json 缺少 detours 数组（跑一次 record/verify 会自动留档隔离）');
   return raw.detours;
 }
 
+/** 把损坏的 detours.json 改名留档并视为空；只能在持锁写路径上调用。 */
+export function quarantineCorruptDetours(config) {
+  const file = detoursFile(config);
+  if (!existsSync(file)) return false;
+  let raw;
+  try { raw = JSON.parse(readFileSync(file, 'utf8')); } catch { raw = null; }
+  if (raw && Array.isArray(raw.detours)) return false;
+  renameSync(file, path.join(config.root, `detours.json.corrupt-${Date.now()}`));
+  return true;
+}
+
+let detourPersister = null; // 测试注入：写 detours.json 的实现，用于验证回滚路径
+export function setDetourPersisterForTest(fn) { detourPersister = fn; }
+
 function writeDetours(config, detours) {
+  if (detourPersister) return detourPersister(config, detours);
   const file = detoursFile(config);
   const draft = path.join(config.root, `.detours-${process.pid}-${Date.now()}.json`);
   try {
@@ -69,9 +102,7 @@ function writeDetours(config, detours) {
   } finally { try { unlinkSync(draft); } catch {} }
 }
 
-function timestamp() {
-  return new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-');
-}
+const timestamp = () => new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-');
 
 function writeRules(config, raw, { backup, backupName } = {}) {
   const directory = path.dirname(config.rulesFile);
@@ -89,10 +120,9 @@ function readRules(config) {
   catch (error) { throw new DetourError(`读不到 ${config.rulesFile}：${error.message}`); }
 }
 
-function findActiveDetour(config, id) {
-  const detour = readDetours(config).find((item) => item.id === id && item.status === 'detoured');
-  if (!detour) throw new DetourError(`没有进行中的绕行：${id}`);
-  return detour;
+/** 用登记时留的备份把 rules.json 回滚到写 detours 之前。 */
+function rollbackRules(config, backupName) {
+  renameSync(path.join(path.dirname(config.rulesFile), backupName), config.rulesFile);
 }
 
 function findAnyDetour(config, id) {
@@ -104,6 +134,7 @@ function findAnyDetour(config, id) {
 /** 登记一次频限绕行：把指定规则切到替代 Agent，留原始派发的快照。 */
 export function recordDetour(config, input, now = new Date()) {
   return withStateLock(config, () => {
+    quarantineCorruptDetours(config);
     const id = text(input.id, '绕行标识');
     if (!/^[\w.-]+$/.test(id)) throw new DetourError('绕行标识只能是字母、数字、下划线、点和短横');
     if (id.includes('..')) throw new DetourError('绕行标识不能包含连续点');
@@ -138,11 +169,12 @@ export function recordDetour(config, input, now = new Date()) {
       probe: { ...(probeCommand ? { command: probeCommand } : {}), cooldownMinutes },
       lastProbeAt: null, lastProbeOk: null, history: [{ at: now.toISOString(), event: 'detoured', note: evidence }],
     };
-    writeRules(config, raw, { backup, backupName: `rules.json.bak-detour-${id}` });
+    const backupName = `rules.json.bak-detour-${id}`;
+    writeRules(config, raw, { backup, backupName });
     try { writeDetours(config, [...detours, record]); }
     catch (error) {
       // 登记写失败时把 rules.json 回滚到绕行前，不留「切走但无记录」的状态。
-      renameSync(path.join(config.root, `rules.json.bak-detour-${id}`), config.rulesFile);
+      rollbackRules(config, backupName);
       throw new DetourError(`登记写入失败，rules.json 已回滚：${error.message}`);
     }
     return record;
@@ -179,7 +211,7 @@ function applyRevert(config, detour, now, cause) {
   detour.history.push({ at: now.toISOString(), event: 'reverted', note: `${cause}；回归 ${reverted.length} 条${skipped.length ? `，跳过 ${skipped.length} 条` : ''}` });
   try { writeDetours(config, readDetours(config).map((item) => (item.id === detour.id ? detour : item))); }
   catch (error) {
-    renameSync(path.join(config.root, backupName), config.rulesFile);
+    rollbackRules(config, backupName);
     throw new DetourError(`回归记录写入失败，rules.json 已回滚：${error.message}`);
   }
   return { record: detour, reverted, skipped };
@@ -188,6 +220,7 @@ function applyRevert(config, detour, now, cause) {
 /** 记一次核实结果；恢复（ok）时回归原派发。 */
 export function markProbeResult(config, id, ok, now = new Date()) {
   return withStateLock(config, () => {
+    quarantineCorruptDetours(config);
     const detours = readDetours(config);
     const detour = detours.find((item) => item.id === id && item.status === 'detoured');
     if (!detour) throw new DetourError(`没有进行中的绕行：${id}`);
@@ -202,6 +235,7 @@ export function markProbeResult(config, id, ok, now = new Date()) {
 /** 不经探测直接回归（例如人工确认已恢复）。已回归的记录返回 already: true，不重复动作。 */
 export function revertDetour(config, id, now = new Date()) {
   return withStateLock(config, () => {
+    quarantineCorruptDetours(config);
     const target = findAnyDetour(config, id);
     if (target.status === 'reverted') return { record: target, already: true, reverted: [], skipped: [] };
     return applyRevert(config, target, now, '人工回归');

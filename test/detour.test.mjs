@@ -5,12 +5,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   DetourError, readDetours, recordDetour, dueForProbe, markProbeResult, revertDetour,
+  setDetourPersisterForTest,
 } from '../src/detour.mjs';
+import { saveRule } from '../src/rules.mjs';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const T0 = new Date('2026-11-15T08:00:00+08:00');
 
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'console-detour-'));
+  writeFileSync(path.join(root, 'config.json'), JSON.stringify({ url: 'http://127.0.0.1:50494', owner: 'test' }));
   const rulesFile = path.join(root, 'rules.json');
   const initial = {
     sources: { local: { name: '本机' } },
@@ -180,14 +185,16 @@ test('dueForProbe tolerates hand-edited records without a probe block', () => {
   assert.deepEqual(dueForProbe(config, at(0)).map((d) => d.id), ['wb-hy4-1']);
 });
 
-test('readDetours quarantines a corrupt file instead of blocking every detour', () => {
+test('readDetours refuses a corrupt file loudly; a locked write path quarantines it and proceeds', () => {
   const { config } = fixture();
   const file = path.join(config.root, 'detours.json');
   writeFileSync(file, '{not json');
-  assert.deepEqual(readDetours(config), []);
+  assert.throws(() => readDetours(config), DetourError);
+  recordDetour(config, input, T0); // 持锁写路径留档隔离后照常登记
   const [quarantine] = readdirSync(config.root).filter((name) => name.startsWith('detours.json.corrupt-'));
   assert.ok(quarantine);
   assert.equal(readFileSync(path.join(config.root, quarantine), 'utf8'), '{not json');
+  assert.equal(readDetours(config)[0].id, 'wb-hy4-1');
 });
 
 test('markProbeResult on a reverted record says there is no active detour', () => {
@@ -205,4 +212,54 @@ test('revertDetour on an already reverted record reports it plainly', () => {
   assert.equal(second.already, true);
   assert.equal(second.record.status, 'reverted');
   assert.deepEqual(first.reverted, ['开发', '审阅']);
+});
+
+
+// ---- 第二轮复审修复的回归测试 ----
+
+test('recordDetour rolls rules.json back when the detours write fails', () => {
+  const { config, initial } = fixture();
+  setDetourPersisterForTest(() => { throw new Error('磁盘满'); });
+  try {
+    assert.throws(() => recordDetour(config, input, T0), /已回滚/);
+  } finally { setDetourPersisterForTest(null); }
+  assert.deepEqual(JSON.parse(readFileSync(config.rulesFile, 'utf8')), initial); // 一字未动
+  assert.deepEqual(readDetours(config), []); // 也没有半截登记
+});
+
+test('markProbeResult ok rolls rules.json back when the detours write fails', () => {
+  const { config } = fixture();
+  recordDetour(config, input, T0);
+  setDetourPersisterForTest(() => { throw new Error('磁盘满'); });
+  try {
+    assert.throws(() => markProbeResult(config, 'wb-hy4-1', true, T0), /已回滚/);
+  } finally { setDetourPersisterForTest(null); }
+  const saved = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
+  assert.deepEqual(saved.rules.map((rule) => rule.to), ['claude', 'claude', 'claude']); // 仍绕行
+  assert.equal(readDetours(config)[0].status, 'detoured');
+});
+
+test('saveRule holds the lock across a slow draft check; a concurrent detour in another process survives', async () => {
+  const { config } = fixture();
+  const slow = () => new Promise((resolve) => setTimeout(resolve, 300));
+  const saving = saveRule(config, { name: '新规则', trigger: 'cron', cron: '0 9 * * *', to: 'claude', cwd: '/tmp', prompt: '新', parallel: '', resume: false }, null, slow);
+  // 模拟生产形态：绕行 CLI 是独立进程，与本进程内 server 的表单保存竞争同一把锁
+  // （spawn 保持异步，父进程事件循环不被堵，锁才能按时交接）
+  const childDone = new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `
+      const { loadConsoleConfig } = await import('./src/config.mjs');
+      const { recordDetour } = await import('./src/detour.mjs');
+      recordDetour(loadConsoleConfig(), ${JSON.stringify(input)});
+    `], { cwd: path.resolve(fileURLToPath(new URL('..', import.meta.url))), env: { ...process.env, AGENT_AUTOLOOP_HOME: config.root }, stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    child.stderr.on('data', (chunk) => { err += chunk; });
+    child.on('exit', (code) => resolve({ code, err }));
+  });
+  const [child] = await Promise.all([childDone, saving.then(() => null)]);
+  assert.equal(child.code, 0, child.err);
+  const saved = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
+  const detoured = saved.rules.find((rule) => rule.name === '开发');
+  const added = saved.rules.find((rule) => rule.name === '新规则');
+  assert.equal(detoured.to, 'claude'); // 两种变更都存活
+  assert.ok(added);
 });

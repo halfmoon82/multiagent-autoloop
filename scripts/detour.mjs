@@ -10,7 +10,7 @@
 import { spawn } from 'node:child_process';
 import { loadConsoleConfig } from '../src/config.mjs';
 import {
-  DetourError, readDetours, recordDetour, dueForProbe, markProbeResult, revertDetour,
+  DetourError, quarantineCorruptDetours, readDetours, recordDetour, dueForProbe, markProbeResult, revertDetour,
 } from '../src/detour.mjs';
 
 function args() {
@@ -62,9 +62,18 @@ try {
     });
     console.log(`已登记绕行 ${record.id}：${record.rules.map((rule) => rule.name).join('、')} 切到 ${record.fallbackAgent}`);
   } else if (command === 'verify') {
-    const due = options.id ? readDetours(config).filter((d) => d.id === options.id && d.status === 'detoured') : dueForProbe(config);
+    let due;
+    try {
+      due = options.id ? readDetours(config).filter((d) => d.id === options.id && d.status === 'detoured') : dueForProbe(config);
+    } catch (error) {
+      if (!(error instanceof DetourError) || !/损坏|缺少 detours 数组/.test(error.message)) throw error;
+      quarantineCorruptDetours(config); // 损坏文件留档隔离后按空集合重试一轮
+      due = options.id ? [] : dueForProbe(config);
+      console.log('detours.json 已损坏，已改名留档，本次按无绕行处理');
+    }
     if (!due.length) { console.log('没有到期的绕行要核实'); process.exit(0); }
     const timeoutMs = Number(options.timeout || 120000);
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) throw new DetourError('--timeout 要是至少 1000 毫秒的整数');
     let failures = 0;
     for (const detour of due) {
       try {
@@ -73,6 +82,7 @@ try {
         const result = markProbeResult(config, detour.id, ok);
         console.log(`${detour.id}：探测${ok ? '通过，已回归' : '未通过，继续绕行'}${result.skipped.length ? `；跳过 ${result.skipped.map((item) => `${item.name}（${item.reason}：现在 ${item.currentTo ?? '不存在'}）`).join('、')}` : ''}`);
       } catch (error) {
+        if (/没有进行中的绕行/.test(error.message)) continue; // 并发 verify 已处理
         failures += 1; // 一条失败不阻断其余到期的绕行
         console.error(`${detour.id}：${error.message}`);
       }
