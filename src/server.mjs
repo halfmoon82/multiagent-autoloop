@@ -42,10 +42,21 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/state') return jsonResponse(res, 200, await hubRequest(config, '/v1/state'));
   if (req.method === 'GET' && url.pathname === '/api/rules') return jsonResponse(res, 200, { ...readRuleOptions(config), models: modelLabels() });
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
+  if (req.method === 'GET' && url.pathname === '/api/session-archives') return jsonResponse(res, 200, { sessions: await config.schedulingSessions.listArchived() });
   if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
   if (req.method === 'GET' && url.pathname === '/api/serial-progress') return jsonResponse(res, 200, await loadChains({ root: config.root, rules: readRuleOptions(config).rules || [] }));
   if (!['POST', 'PUT'].includes(req.method)) return false;
   checkWrite(req); const body = await readJson(req);
+  const continueMatch = req.method === 'POST' ? url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/continue$/) : null;
+  if (continueMatch) {
+    const id = decodeURIComponent(continueMatch[1]);
+    const archived = await config.schedulingSessions.listArchived();
+    const record = archived.find(item => item.id === id);
+    if (!record) throw new RequestError(404, '会话存档不存在');
+    const known = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).find(item => item.path === record.project);
+    if (!known) throw new RequestError(400, '该项目已不在已发现的 Git 仓库列表中，无法继续');
+    return jsonResponse(res, 201, await config.schedulingSessions.continueSession(id));
+  }
   if (req.method === 'POST' && url.pathname === '/api/scheduling-sessions') {
     const project = String(body.project || '');
     const known = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).find(item => item.path === project);
@@ -78,7 +89,7 @@ export function createConsoleServer(config, schedulingSessions) {
       try { mkdirSync(allowedDir, { recursive: true }); }
       catch (error) { console.error(`[console] 脚本目录 ${allowedDir} 创建失败，会话按只读处理：${error.message}`); allowedDir = null; }
     }
-    schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir });
+    schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root });
   }
   config = { ...config, schedulingSessions };
   const server = http.createServer(async (req, res) => {

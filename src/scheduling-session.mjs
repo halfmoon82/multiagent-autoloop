@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
+import { SessionArchive } from './session-archive.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -70,6 +71,7 @@ function toPublicSession(record) {
     statusText: statusLabel(record.status),
     project: record.project,
     writableDir: record.writableDir,
+    continuedFrom: record.continuedFrom || null,
     prompt: record.prompt,
     stopReason: record.stopReason,
     error: record.error,
@@ -91,7 +93,7 @@ function summarizeUpdate(update) {
 }
 
 export class SchedulingSessionManager {
-  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, now = () => new Date() } = {}) {
+  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, archiveRoot = null, now = () => new Date() } = {}) {
     this.cwd = path.resolve(cwd);
     this.writableDir = writableDir ? path.resolve(writableDir) : null;
     this.adapterPath = adapterPath;
@@ -99,13 +101,44 @@ export class SchedulingSessionManager {
     this.maxSessions = maxSessions;
     this.now = now;
     this.sessions = new Map();
+    // 会话存档：写穿到运行目录，重启后留档可继续；不可用时降级为纯内存。
+    this.archive = archiveRoot ? new SessionArchive(archiveRoot) : null;
+    this.archiveWarned = false;
+    this.bootMarked = false;
   }
 
   list() {
     return [...this.sessions.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(toPublicSession);
   }
 
-  async start({ prompt, project } = {}) {
+  async #ensureBootMarked() {
+    if (this.bootMarked || !this.archive) return;
+    this.bootMarked = true;
+    try { await this.archive.loadAllDetailed({ markActive: true }); }
+    catch { this.bootMarked = false; }
+  }
+
+  // 已存档列表排除仍在内存活跃的会话：它们的真相在上面的活跃组，避免同一会话两处展示。
+  async listArchived() {
+    if (!this.archive) return [];
+    await this.#ensureBootMarked();
+    try {
+      const { sessions } = await this.archive.loadAllDetailed();
+      return sessions.filter(item => !this.sessions.has(item.id));
+    } catch { return []; }
+  }
+
+  // 用存档转录新建会话续跑（ACP 无法跨进程重连，只能新建）。
+  async continueSession(id) {
+    if (!this.archive) throw new SchedulingSessionError('会话存档不可用（未配置运行目录）', { status: 503 });
+    let record;
+    try { record = await this.archive.read(id); }
+    catch (error) { throw new SchedulingSessionError(`无法继续该会话：${error.message}`, { status: error.status || 400 }); }
+    const prompt = await this.archive.buildContinuation(id);
+    return this.start({ prompt, project: record.project, continuedFrom: record.id });
+  }
+
+  async start({ prompt, project, continuedFrom = null } = {}) {
     const projectId = this.#validateProject(project);
     const base = buildSchedulingPrompt({ project: projectId, writableDir: this.writableDir });
     const composed = prompt ? `${base}\n\n【本次附加说明】\n${prompt}` : base;
@@ -134,6 +167,7 @@ export class SchedulingSessionManager {
       status: 'initializing',
       project: projectId,
       writableDir: this.writableDir,
+      continuedFrom,
       prompt: text,
       queue: [],
       interruptRequested: false,
@@ -172,6 +206,7 @@ export class SchedulingSessionManager {
       if (!this.sessions.has(record.id)) return;
       if (record.status !== 'closing' && record.status !== 'closed') {
         record.status = child.exitCode === 0 ? 'closed' : 'error';
+        this.#persist(record);
         if (record.status === 'error' && !record.error) {
         record.error = 'Codex ACP 进程已退出';
         const tail = stderrTail.trim();
@@ -246,8 +281,10 @@ export class SchedulingSessionManager {
       try { await record.connection.agent.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch {}
       try { await record.connection.agent.request(methods.agent.session.close, { sessionId: record.sessionId }); } catch {}
     }
+    record.updatedAt = this.now().toISOString();
+    this.#persist(record);
     this.#destroyRecord(record);
-    return toPublicSession({ ...record, status: 'closed', updatedAt: this.now().toISOString() });
+    return toPublicSession({ ...record, status: 'closed', updatedAt: record.updatedAt });
   }
 
   dispose() {
@@ -306,6 +343,25 @@ export class SchedulingSessionManager {
   #pushMessage(record, role, text) {
     record.messages.push({ role, text, at: this.now().toISOString() });
     record.updatedAt = this.now().toISOString();
+    this.#persist(record);
+  }
+
+  #persist(record) {
+    if (!this.archive) return;
+    this.archive.save({
+      id: record.id,
+      project: record.project,
+      agent: record.agent,
+      prompt: record.prompt,
+      continuedFrom: record.continuedFrom,
+      messages: record.messages,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      closedAt: ['closing', 'closed'].includes(record.status) ? record.updatedAt : null,
+      endStatus: ['closing', 'closed'].includes(record.status) ? 'closed' : record.status === 'error' ? 'error' : 'active',
+    }).catch(() => {
+      if (!this.archiveWarned) { this.archiveWarned = true; console.error('[scheduling-session] 会话存档写入失败，已降级为内存会话'); }
+    });
   }
 
   #runTurn(record, text) {
@@ -329,6 +385,7 @@ export class SchedulingSessionManager {
         if (reply && !interrupted) this.#pushMessage(record, 'agent', reply);
       }
       record.updatedAt = this.now().toISOString();
+      this.#persist(record);
       this.#drainQueue(record);
     };
     record.promptTurn.then(response => {
