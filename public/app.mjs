@@ -19,8 +19,9 @@ export async function api(path, options = {}) {
 export async function refresh() {
   if (state.loading) return; state.loading = true;
   try {
-    const [snapshot, ruleData, sessions, projectData, serial] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => ({ chains: [] }))]);
-    state.serial = serial;
+    const [snapshot, ruleData, sessions, projectData, serial, serialFailed] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null), Promise.resolve(false)]);
+    state.serial = serial || { chains: [] };
+    state.serialFailed = !serial;
     snapshot.models = state.models || {}; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; state.models = ruleData.models || {}; setConnection(true, '已连接'); if (noticeError) { noticeError = false; showNotice(''); } render();
   } catch (error) { setConnection(false, '连接失败'); showErrorNotice(`无法更新：${error.message}`); }
   finally { state.loading = false; }
@@ -128,7 +129,12 @@ function render() {
   const spending = scopedSpending(view.snapshot, view.rules, filter);
   const summarySnapshot = scoped ? { ...view.snapshot, totals: scoped, spending: { today: spending } } : state.snapshot;
   replace('summary', renderSummary(summarySnapshot));
-  replace('progress-list', renderProjectProgress({ chains: (state.serial?.chains || []).filter(chain => matchesProject(chain.project, filter)), sessions: view.sessions, rules: state.rules, snapshot: view.snapshot }));
+  const openNode = (() => { const pop = document.querySelector('.node-pop:not([hidden])'); if (!pop) return null; const row = pop.closest('.list-row'); const seg = row?.querySelector(`[data-node="${CSS.escape(pop.dataset.for)}"]`); return row?.dataset.chain && seg ? { chain: row.dataset.chain, node: seg.dataset.node } : null; })();
+  replace('progress-list', renderProjectProgress({ chains: (state.serial?.chains || []).filter(chain => matchesProject(chain.project, filter)), sessions: view.sessions, rules: view.rules, snapshot: view.snapshot, loadError: !!state.serialFailed }));
+  if (openNode) {
+    const seg = document.querySelector(`.list-row[data-chain="${CSS.escape(openNode.chain)}"] [data-node="${CSS.escape(openNode.node)}"]`);
+    if (seg) openNodePop(seg);
+  }
   const work = renderWorkSections(view.snapshot, view.rules);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
   replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', state.skipPinOnce); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
@@ -159,26 +165,33 @@ async function perform(action, id, body = {}) {
 function closeNodePop(except) {
   document.querySelectorAll('.node-pop').forEach(pop => { if (pop !== except) pop.hidden = true; });
 }
+function openNodePop(seg) {
+  const row = seg.closest('.list-row');
+  const pop = row?.querySelector('.node-pop');
+  if (!pop) return;
+  if (!pop.hidden && pop.dataset.for === seg.dataset.node) { pop.hidden = true; return; }
+  closeNodePop(pop);
+  pop.replaceChildren();
+  pop.dataset.for = seg.dataset.node;
+  pop.append(el('div', 'node-pop-title', seg.dataset.title || seg.dataset.node));
+  pop.append(el('div', 'node-pop-meta', `${seg.dataset.part || seg.dataset.status} · 节点内 ${seg.dataset.percent}%`));
+  if (seg.dataset.summary) pop.append(el('div', 'node-pop-summary', seg.dataset.summary));
+  if (seg.dataset.pr) { const link = el('a', 'pr-link', '打开 PR'); link.href = seg.dataset.pr; link.rel = 'noreferrer'; pop.append(link); }
+  pop.hidden = false;
+  row.querySelectorAll('.node-seg').forEach(other => other.setAttribute('aria-selected', other === seg ? 'true' : 'false'));
+}
 document.addEventListener('click', event => {
   const seg = event.target.closest('.node-seg');
-  if (seg) {
-    const row = seg.closest('.list-row');
-    const pop = row?.querySelector('.node-pop');
-    if (!pop) return;
-    if (!pop.hidden && pop.dataset.for === seg.dataset.node) { pop.hidden = true; return; }
-    closeNodePop(pop);
-    pop.replaceChildren();
-    pop.dataset.for = seg.dataset.node;
-    pop.append(el('div', 'node-pop-title', seg.dataset.title || seg.dataset.node));
-    pop.append(el('div', 'node-pop-meta', `${seg.dataset.part || seg.dataset.status} · 节点内 ${seg.dataset.percent}%`));
-    if (seg.dataset.summary) pop.append(el('div', 'node-pop-summary', seg.dataset.summary));
-    if (seg.dataset.pr) { const link = el('a', 'pr-link', '打开 PR'); link.href = seg.dataset.pr; link.rel = 'noreferrer'; pop.append(link); }
-    pop.hidden = false;
-    return;
-  }
+  if (seg) { openNodePop(seg); return; }
   if (!event.target.closest('.node-pop')) closeNodePop();
 });
-document.addEventListener('keydown', event => { if (event.key === 'Escape') closeNodePop(); });
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') { closeNodePop(); return; }
+  if ((event.key === 'Enter' || event.key === ' ') && event.target.closest?.('.node-seg')) {
+    event.preventDefault();
+    openNodePop(event.target.closest('.node-seg'));
+  }
+});
 document.addEventListener('click', async event => {
   const button = event.target.closest('button[data-action]'); if (!button) return;
   const { action, id } = button.dataset;

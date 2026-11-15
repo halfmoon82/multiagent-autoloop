@@ -126,3 +126,25 @@ test('GET /api/serial-progress exposes chains without leaking beyond whitelisted
     assert.deepEqual(Object.keys(chain.nodes[0]).sort(), ['id', 'kind', 'label', 'part', 'percent', 'prUrl', 'status', 'summary', 'title', 'weight'].sort(), 'only whitelisted node fields may leave the server');
   } finally { await close(server); await close(hub.server); }
 });
+
+test('done nodes after the current node do not widen the percent', () => {
+  const chain = { nodes: { a: { status: 'pending' }, b: { status: 'rework' }, c: { status: 'done' } }, lastNode: 'b' };
+  assert.equal(computeChainProgress(chain).percent, 25, 'only done nodes before the current node count');
+  const normal = { nodes: { a: { status: 'done' }, b: { status: 'rework' }, c: { status: 'done' } }, lastNode: 'b' };
+  assert.equal(computeChainProgress(normal).percent, 58.3);
+});
+
+test('filename prefix matching stops at a word boundary', () => {
+  const rules = [{ name: 'V6x串行推进', cwd: '/wrong/v6x' }, { name: 'V6串行推进', cwd: '/right/vibeguide' }];
+  assert.equal(mapChainProject('v6-serial.json', {}, rules), '/right/vibeguide', 'v6 must not match V6x just because of ordering');
+  assert.equal(mapChainProject('phase1-serial.json', {}, [{ name: 'Phase1串行推进', cwd: '/p/hs' }]), '/p/hs');
+});
+
+test('node ids are truncated before order and current resolution', () => {
+  const longId = 'x'.repeat(120);
+  const raw = JSON.stringify({ nodes: { [longId]: { status: 'dev_dispatched', title: '长 id 节点' } }, lastNode: longId });
+  const chain = parseChainFile(raw, 'long-serial.json');
+  assert.equal(chain.current.id, 'x'.repeat(80));
+  assert.deepEqual(chain.order, ['x'.repeat(80)]);
+  assert.equal(chain.percent, 30, 'single current node contributes its own default fraction');
+});

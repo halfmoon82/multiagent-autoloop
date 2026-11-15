@@ -57,8 +57,11 @@ export function computeChainProgress(chain) {
   let currentContribution = 0;
   for (const id of order) {
     const node = chain.nodes[id] || {};
-    if (id === lastNode) currentContribution = (effectiveNodePercent(node) / 100) * weights.get(id);
-    else if (node.status === 'done') doneWeight += weights.get(id);
+    if (id === lastNode) {
+      currentContribution = (effectiveNodePercent(node) / 100) * weights.get(id);
+      break; // 只计当前节点之前的完成节点；链序在 current 之后的 done（回退场景）不计入分子
+    }
+    if (node.status === 'done') doneWeight += weights.get(id);
   }
   const percent = Math.round(((doneWeight + currentContribution) / total) * 1000) / 10;
   return { percent, currentId: lastNode };
@@ -71,7 +74,11 @@ export function mapChainProject(fileName, data, rules = []) {
   if (meta) return meta;
   const stem = fileName.replace(/-serial\.json$/i, '').toLowerCase();
   if (stem) {
-    const rule = rules.find(item => text(item?.name).toLowerCase().startsWith(stem));
+    // 前缀必须在词边界处匹配：'v6' 命中 'V6串行推进' 但不能命中 'V6x串行推进'（stem 后不能紧跟 ascii 字母数字）
+    const rule = rules.find(item => {
+      const name = text(item?.name).toLowerCase();
+      return name.startsWith(stem) && !/^[a-z0-9]/.test(name.slice(stem.length));
+    });
     if (rule) return text(rule.cwd, 500).trim() || '未识别';
   }
   return '未识别';
@@ -86,10 +93,11 @@ export function parseChainFile(raw, sourceFile, rules = []) {
   const ids = Object.keys(data.nodes);
   if (!ids.length) throw new Error(`${sourceFile}：nodes 为空`);
   if (ids.length > MAX_NODES) throw new Error(`${sourceFile}：节点超过 ${MAX_NODES} 个`);
+  const safeId = id => text(id, 80);
   const nodes = ids.map(id => {
     const node = data.nodes[id] || {};
     return {
-      id: text(id, 80),
+      id: safeId(id),
       label: text(node.label ?? id, 24),
       title: text(node.title ?? id, 120),
       status: text(node.status ?? 'pending', 40),
@@ -101,13 +109,19 @@ export function parseChainFile(raw, sourceFile, rules = []) {
       prUrl: /^https?:\/\//.test(node.pr_url || '') ? text(node.pr_url, 300) : null,
     };
   });
-  const { percent, currentId } = computeChainProgress(data);
+  const normalized = {
+    ...data,
+    nodes: Object.fromEntries(ids.map(id => [safeId(id), data.nodes[id] || {}])),
+    plan: Array.isArray(data.plan) ? data.plan.map(safeId) : undefined,
+    lastNode: typeof data.lastNode === 'string' ? safeId(data.lastNode) : undefined,
+  };
+  const { percent, currentId } = computeChainProgress(normalized);
   const current = nodes.find(node => node.id === currentId) ?? null;
   return {
     sourceFile,
     project: mapChainProject(sourceFile, data, rules),
     nodes,
-    order: chainNodeOrder(data),
+    order: chainNodeOrder(normalized),
     percent,
     current,
     updatedAt: text(data.lastEventAt, 40) || null,
@@ -130,7 +144,7 @@ export async function loadChains({ root, rules = [], now = () => Date.now() } = 
       if (stat.size > MAX_FILE_BYTES) { errors.push(`${file}：文件超过 256KB，已跳过`); continue; }
       const cached = cache.get(full);
       let chain;
-      if (cached && cached.mtimeMs === stat.mtimeMs && now() - cached.at < CACHE_TTL_MS * 10) {
+      if (cached && cached.mtimeMs === stat.mtimeMs && now() - cached.at < CACHE_TTL_MS) {
         chain = cached.chain;
       } else {
         chain = parseChainFile(readFileSync(full, 'utf8'), file, rules);
@@ -141,6 +155,8 @@ export async function loadChains({ root, rules = [], now = () => Date.now() } = 
       errors.push(error.message);
     }
   }
+  const alive = new Set(files.map(name => path.join(root, name)));
+  for (const key of [...cache.keys()]) if (!alive.has(key)) cache.delete(key);
   chains.sort((a, b) => a.project.localeCompare(b.project, 'zh-CN'));
   return { chains, errors };
 }

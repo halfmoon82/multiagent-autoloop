@@ -135,11 +135,56 @@ export function renderCards(snapshot, rules = []) {
 
 const STATUS_TEXT = { done: '完成', pending: '未开始', dev_dispatched: '开发中', in_progress: '进行中', in_review: '审阅中', review: '审阅中', rework: '返工中', external_in_progress: '外部验证中', blocked: '卡住' };
 
-// 项目任务进度：每行一个串行链（项目）。节点段可点击，浮层展示节点摘要。
-export function renderProjectProgress({ chains = [], sessions = [], rules = [], snapshot = {} } = {}) {
-  if (!chains.length) return [el('div', 'empty', '还没有节点计划。串行推进编排器写入 *-serial.json 后，这里按项目展示任务进度。')];
+function countsChips(activity, cardsHere) {
+  const chips = el('div', 'row-meta chips-line');
+  const cost = typeof activity.cost === 'number' ? `$${activity.cost.toFixed(2)}` : '未上报';
+  chips.append(
+    el('span', 'chip', `等待重试 ${activity.waiting}`),
+    el('span', 'chip', `今日完成 ${activity.doneToday}`),
+    el('span', 'chip', `待您处理 ${cardsHere} 张`),
+    el('span', 'chip', `今日费用 ${cost}`),
+  );
+  return chips;
+}
+
+// 项目任务进度：每行一个项目（串行链或有活动但无链文件）。节点段可点击，展开卡显示节点摘要。
+export function renderProjectProgress({ chains = [], sessions = [], rules = [], snapshot = {}, loadError = false } = {}) {
   const openCards = (snapshot.cards || []).filter(card => card.state === 'open');
-  return chains.map(chain => {
+  const lines = snapshot.lines || [];
+  const rows = [];
+  const chainNames = new Set(chains.map(chain => projectName(chain.project)));
+
+  // 有串行状态文件的项目：完整任务条
+  for (const chain of chains) {
+    rows.push(renderChainRow(chain, sessions, rules, openCards, lines));
+  }
+
+  // 有活动但没有链文件的项目：只显示计数行（会话绑定项目 + 有今日活动的规则项目）
+  const candidates = new Map();
+  for (const session of sessions) { const cwd = String(session.project || '').trim(); if (cwd) candidates.set(projectName(cwd), cwd); }
+  for (const rule of rules) { const cwd = String(rule.cwd || '').trim(); if (cwd) candidates.set(projectName(cwd), cwd); }
+  for (const [name, cwd] of candidates) {
+    if (chainNames.has(name)) continue;
+    const activity = projectActivity(cwd, rules, lines);
+    if (!(activity.running || activity.waiting || activity.doneToday)) continue;
+    const cardsHere = openCards.filter(card => matchesProject(projectForCard(card, rules), cwd)).length;
+    const row = el('div', 'list-row');
+    row.dataset.chain = name;
+    const main = el('div', 'progress-main');
+    const head = el('div', 'progress-head');
+    head.append(el('span', 'row-title', name), badge('无节点计划', 'warn'));
+    const session = sessions.find(item => matchesProject(item.project || '', cwd));
+    if (session) head.append(badge(session.statusText || session.status || '未知', session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
+    main.append(head, el('div', 'row-meta', '该项目没有节点计划文件，仅显示计数。'), countsChips(activity, cardsHere));
+    row.append(main);
+    rows.push(row);
+  }
+
+  if (!rows.length) return [el('div', 'empty', loadError ? '节点进度读取失败，请刷新重试。' : '还没有节点计划。串行推进编排器写入 *-serial.json 后，这里按项目展示任务进度。')];
+  return rows;
+}
+
+function renderChainRow(chain, sessions, rules, openCards, lines) {
     const name = projectName(chain.project);
     const row = el('div', 'list-row');
     row.dataset.chain = name;
@@ -169,6 +214,7 @@ export function renderProjectProgress({ chains = [], sessions = [], rules = [], 
       if (node.prUrl) seg.dataset.pr = node.prUrl;
       seg.title = `${node.title} · ${STATUS_TEXT[node.status] || node.status}${node.id === chain.current?.id ? ` ${node.percent}%` : ''}`;
       seg.setAttribute('role', 'option');
+      seg.tabIndex = 0;
       seg.setAttribute('aria-selected', node.id === chain.current?.id ? 'true' : 'false');
       if (node.id === chain.current?.id && node.percent > 0) {
         const fill = el('progress', 'node-fill');
@@ -193,20 +239,11 @@ export function renderProjectProgress({ chains = [], sessions = [], rules = [], 
       main.append(line);
     }
 
-    const activity = projectActivity(chain.project, rules, snapshot.lines || []);
+    const activity = projectActivity(chain.project, rules, lines);
     const cardsHere = openCards.filter(card => matchesProject(projectForCard(card, rules), chain.project)).length;
-    const chips = el('div', 'row-meta chips-line');
-    const cost = typeof activity.cost === 'number' ? `$${activity.cost.toFixed(2)}` : '未上报';
-    chips.append(
-      el('span', 'chip', `等待重试 ${activity.waiting}`),
-      el('span', 'chip', `今日完成 ${activity.doneToday}`),
-      el('span', 'chip', `待您处理 ${cardsHere} 张`),
-      el('span', 'chip', `今日费用 ${cost}`),
-    );
-    main.append(chips);
+    main.append(countsChips(activity, cardsHere));
     row.append(main);
     return row;
-  });
 }
 
 function runRow(item) {
