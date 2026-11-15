@@ -31,9 +31,10 @@
 | `src/session-archive.mjs` | 调度会话写穿存档（console-sessions/）与继续提示词拼装 | ACP 进程恢复、会话业务逻辑 |
 | `src/models.mjs` | 本机模型标签的只读发现与默认文案 | 模型计费推断、凭证采集 |
 | `src/serial-progress.mjs` | 串行编排状态文件（`*-serial.json`）读取、项目映射与进度计算 | 编排状态写入、节点计划定义 |
+| `src/detour.mjs` | 频限绕行登记（`detours.json`）、冷却核实与 rules.json 原子回归 | 探测命令实现、Hub 事件、规则表单校验 |
 | `src/server.mjs` | 本机 HTTP API、静态资源、安全校验和路由允许列表 | 调度业务状态存储 |
 | `public/` | 状态展示、表单和交互 | 密钥、直接 Hub 访问、业务文件写入 |
-| `scripts/` | 通用启动入口 | 真实试点绝对路径或项目部署逻辑 |
+| `scripts/` | 通用启动入口、`detour.mjs` 频限绕行 CLI | 真实试点绝对路径或项目部署逻辑 |
 | `test/` | 单元、集成和假 Hub 浏览器回归 | 真实模型调用、真实项目数据依赖 |
 
 修改跨模块行为时，先写拥有该行为的边界测试。不要把目标项目的异常错误转移到控制台修补。
