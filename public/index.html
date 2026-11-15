@@ -44,6 +44,9 @@
     <section id="view-sessions" class="view" hidden aria-labelledby="sessions-title">
       <div class="page-heading"><div><p class="eyebrow">COORDINATION</p><h1 id="sessions-title">调度会话</h1><p class="subtle">每个项目一个会话，从本地 Git 仓库选择；开始时会读取目标项目的 AGENTS.md 等文件。</p></div><div class="session-start"><select id="session-project" aria-label="项目标识"></select><button id="start-session" class="button primary" type="button">开启调度会话</button></div></div>
       <div id="sessions-list" class="run-list"></div>
+      <h2 class="section-sub">已存档会话</h2>
+      <p class="subtle">控制台重启不会丢失：转录完整保留，可一键继续（继续会新建会话并消耗模型额度）。</p>
+      <div id="archived-sessions-list" class="run-list archived-list"></div>
     </section>
     <section id="view-runs" class="view" hidden aria-labelledby="runs-title">
       <div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h1 id="runs-title">执行轮次</h1><p class="subtle">每个结果都能追溯，异常不会被静默吞掉。</p></div></div>

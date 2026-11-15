@@ -539,3 +539,59 @@ test('interrupt is rejected while the session is still initializing, while queue
   await waitFor(() => manager.list()[0].status === 'idle');
   await manager.close(id);
 });
+
+test('sessions persist to the archive and reappear as interrupted after a simulated restart', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const home = mkdtempSync(join(tmpdir(), 'sess-archive-'));
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.requests.some(message => message.method === 'session/prompt'));
+  await manager.send(started.id, '补充一条');
+  await waitFor(() => manager.list()[0].status === 'idle');
+
+  // 模拟重启：新管理器实例同一运行目录
+  const revived = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, archiveRoot: home });
+  assert.equal(revived.list().length, 0, 'active sessions live in memory only');
+  const archived = await revived.listArchived();
+  assert.equal(archived.length, 1);
+  assert.equal(archived[0].endStatus, 'interrupted');
+  assert.equal(archived[0].project, 'owner-alpha/demo');
+  assert.equal(archived[0].messages.length, 4, 'transcript includes both turns and the follow-up');
+  await manager.close(started.id);
+});
+
+test('closed sessions archive as closed and continue starts a new session with the transcript', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const home = mkdtempSync(join(tmpdir(), 'sess-archive-'));
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => manager.list()[0].status === 'idle');
+  await manager.close(started.id);
+  const archived = await manager.listArchived();
+  assert.equal(archived[0].endStatus, 'closed');
+
+  const fake2 = fakeAdapter();
+  const manager2 = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake2.process, archiveRoot: home });
+  const continued = await manager2.continueSession(started.id);
+  assert.equal(continued.continuedFrom, started.id, 'the new session records where it came from');
+  await waitFor(() => fake2.requests.some(message => message.method === 'session/prompt'));
+  const sentPrompt = fake2.requests.find(message => message.method === 'session/prompt');
+  assert.match(sentPrompt.params.prompt[0].text, /会话续跑/);
+  assert.match(sentPrompt.params.prompt[0].text, /首轮调度/, 'original scheduling brief is included');
+  assert.match(sentPrompt.params.prompt[0].text, /先简要汇报上次中断时的状态/);
+  await manager2.close(continued.id);
+});
+
+test('continueSession rejects unknown archives', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, archiveRoot: mkdtempSync(join(tmpdir(), 'sess-archive-')) });
+  await assert.rejects(() => manager.continueSession('99999999-9999-9999-9999-999999999999'), /存档不存在/);
+});
