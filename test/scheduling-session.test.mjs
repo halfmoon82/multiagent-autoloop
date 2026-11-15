@@ -113,6 +113,14 @@ test('keeps behavioral guardrails inline and routes console docs through read_co
   assert.match(text, /docs\/scheduling-contract\.md/);
   assert.match(text, /事件 subject 使用无空格的稳定 ASCII 标识/);
   assert.match(text, /穷尽仍失败的任务，挂起并在会话中升级给用户/);
+  // 实现边界：实现类任务必须派发独立 worker，禁止本会话亲自实施或派子智能体代劳
+  assert.match(text, /禁止本会话亲自写项目代码/);
+  assert.match(text, /派生子智能体\/子会话代劳/);
+  assert.match(text, /等同于本会话直接实施/);
+  assert.match(text, /琐碎自愈（本地调度脚本、配置、状态、规则的小修/);
+  // 升级门禁的"执行"主语必须是调度体系（派发 worker），不是本会话自己
+  assert.doesNotMatch(text, /由你自行决定、执行并担责/);
+  assert.match(text, /组织派发/);
   assert.ok(!text.includes('【项目资料】'), 'project docs must not be inlined anymore');
   assert.ok(!text.includes('【调度契约】'), 'console contract must not be inlined anymore');
   await manager.close(manager.list()[0].id);
