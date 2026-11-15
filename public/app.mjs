@@ -220,7 +220,8 @@ document.addEventListener('click', async event => {
       // 消息已随打断送出；退回实发内容（trim 后）便于修改重新发送。必须写回 live 节点：
       // 慢请求期间卡片可能已被后台刷新重建，这里捕获的 form 引用可能已脱离文档
       const restored = liveFormInput('session-message', id, 'message');
-      if (restored) { restored.value = text; autoGrow(restored); }
+      // 只有输入框仍保持原草稿才退回覆盖；慢请求期间用户已继续输入则不打扰
+      if (restored && restored.value.trim() === text) { restored.value = text; autoGrow(restored); }
       await refresh();
       showNotice(text ? '已打断当前回复，新消息立即送出。' : '已停止本轮，排队消息将继续跟进。');
       return;
@@ -265,7 +266,8 @@ document.addEventListener('submit', async event => {
     event.preventDefault();
     const input = answerForm.elements.answer;
     const cardId = answerForm.dataset.id;
-    try { await api(`/api/cards/${cardId}/answer`, { method: 'POST', body: JSON.stringify({ text: input.value }) }); const liveInput = liveFormInput('answer-text', cardId, 'answer'); if (liveInput) { liveInput.value = ''; autoGrow(liveInput); } state.skipPinOnce = cardId; showNotice('回答已提交，任务将继续。'); await refresh(); }
+    const answerText = input.value;
+    try { await api(`/api/cards/${cardId}/answer`, { method: 'POST', body: JSON.stringify({ text: answerText }) }); const liveInput = liveFormInput('answer-text', cardId, 'answer'); if (liveInput && liveInput.value === answerText) { liveInput.value = ''; autoGrow(liveInput); } state.skipPinOnce = cardId; showNotice('回答已提交，任务将继续。'); await refresh(); }
     catch (error) { showNotice(error.message); }
     return;
   }
@@ -278,7 +280,7 @@ document.addEventListener('submit', async event => {
   try {
     const result = await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/messages`, { method: 'POST', body: JSON.stringify({ text }) });
     const liveInput = liveFormInput('session-message', sessionId, 'message');
-    if (liveInput) { liveInput.value = ''; autoGrow(liveInput); }
+    if (liveInput && liveInput.value === text) { liveInput.value = ''; autoGrow(liveInput); } // 发送后仍原样才清空；慢请求期间用户已改内容则不打扰
     state.skipPinOnce = sessionId;
     const queued = result.queuedCount || 0;
     await refresh();
