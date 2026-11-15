@@ -126,10 +126,6 @@ export class SessionArchive {
     return { sessions, errors };
   }
 
-  async loadAll() {
-    const { sessions } = await this.loadAllDetailed();
-    return sessions;
-  }
 
   // 组装"继续调度"的首轮提示词：最近 N 轮转录 + 续跑指令。
   async buildContinuation(id) {
