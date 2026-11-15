@@ -189,7 +189,7 @@ document.addEventListener('click', async event => {
     await perform(action, id, body);
   } catch (error) { showNotice(error.message); } finally { button.disabled = false; }
 });
-// 输入体验与 Codex 对齐：回车直接发送（输入法组词中的回车除外），Alt/Option+Shift+回车输入框内换行。
+// 输入体验与 Codex 对齐：Alt 或 Shift+回车在输入框内换行，其余 Enter 直接发送（输入法组词中的回车除外）。
 // 只处理 textarea 自身的回车：焦点在表单内按钮上时保持原生语义（Enter=click，打断还是打断）。
 document.addEventListener('keydown', event => {
   if (event.key !== 'Enter' || event.target.tagName !== 'TEXTAREA' || event.isComposing) return;
