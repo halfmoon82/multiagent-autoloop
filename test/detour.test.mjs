@@ -241,7 +241,7 @@ test('markProbeResult ok rolls rules.json back when the detours write fails', ()
 
 test('saveRule holds the lock across a slow draft check; a concurrent detour in another process survives', async () => {
   const { config } = fixture();
-  const slow = () => new Promise((resolve) => setTimeout(resolve, 300));
+  const slow = () => new Promise((resolve) => setTimeout(resolve, 2000)); // 拉开窗口：慢机上无锁变异也能被子进程抓到
   const saving = saveRule(config, { name: '新规则', trigger: 'cron', cron: '0 9 * * *', to: 'claude', cwd: '/tmp', prompt: '新', parallel: '', resume: false }, null, slow);
   // 模拟生产形态：绕行 CLI 是独立进程，与本进程内 server 的表单保存竞争同一把锁
   // （spawn 保持异步，父进程事件循环不被堵，锁才能按时交接）

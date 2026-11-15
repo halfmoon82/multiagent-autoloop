@@ -42,24 +42,24 @@ export async function saveRule(config, input, existingName, check = defaultCheck
   // 与频限绕行等状态操作互斥（detour.mjs 的 withStateLock），整文件读-改-写不被交错。
   try {
     return await withStateLockAsync(config, async () => {
-    const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
-    const rule = ruleFrom(input);
-    if (!raw.agents?.[rule.to]) throw new RuleError('所选 Agent 不在配置中');
-    const index = raw.rules.findIndex(item => item.name === (existingName ?? rule.name));
-    if (existingName === null && index >= 0) throw new RuleError('已经有同名规则');
-    if (existingName !== null && index < 0) throw new RuleError('要编辑的规则已经不存在');
-    if (existingName !== null && rule.name !== existingName) throw new RuleError('当前版本不支持修改规则名称');
-    if (existingName === null) raw.rules.push(rule);
-    else { const preserved = { ...raw.rules[index] }; delete preserved.parallel; raw.rules[index] = { ...preserved, ...rule }; }
-    const directory = path.dirname(config.rulesFile);
-    const draft = path.join(directory, `.console-${process.pid}-${Date.now()}.json`);
-    try {
-      writeFileSync(draft, JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 });
-      await check(config, draft);
-      renameSync(draft, config.rulesFile);
-    } finally { try { unlinkSync(draft); } catch {} }
-    return rule;
-    });
+      const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
+      const rule = ruleFrom(input);
+      if (!raw.agents?.[rule.to]) throw new RuleError('所选 Agent 不在配置中');
+      const index = raw.rules.findIndex(item => item.name === (existingName ?? rule.name));
+      if (existingName === null && index >= 0) throw new RuleError('已经有同名规则');
+      if (existingName !== null && index < 0) throw new RuleError('要编辑的规则已经不存在');
+      if (existingName !== null && rule.name !== existingName) throw new RuleError('当前版本不支持修改规则名称');
+      if (existingName === null) raw.rules.push(rule);
+      else { const preserved = { ...raw.rules[index] }; delete preserved.parallel; raw.rules[index] = { ...preserved, ...rule }; }
+      const directory = path.dirname(config.rulesFile);
+      const draft = path.join(directory, `.console-${process.pid}-${Date.now()}.json`);
+      try {
+        writeFileSync(draft, JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 });
+        await check(config, draft);
+        renameSync(draft, config.rulesFile);
+      } finally { try { unlinkSync(draft); } catch {} }
+      return rule;
+      });
   } catch (error) {
     if (error instanceof DetourError) throw new RuleError(error.message);
     throw error;
