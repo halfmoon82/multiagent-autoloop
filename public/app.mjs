@@ -174,17 +174,6 @@ document.addEventListener('click', event => {
     if (seg.dataset.summary) pop.append(el('div', 'node-pop-summary', seg.dataset.summary));
     if (seg.dataset.pr) { const link = el('a', 'pr-link', '打开 PR'); link.href = seg.dataset.pr; link.rel = 'noreferrer'; pop.append(link); }
     pop.hidden = false;
-    const track = seg.closest('.node-track');
-    const trackBox = track.getBoundingClientRect();
-    const segBox = seg.getBoundingClientRect();
-    const rowBox = row.getBoundingClientRect();
-    pop.style.left = '0px';
-    const popWidth = Math.min(360, rowBox.width - 16);
-    pop.style.maxWidth = `${popWidth}px`;
-    const left = segBox.left - rowBox.left + segBox.width / 2 - popWidth / 2;
-    pop.style.left = `${Math.max(8, Math.min(left, rowBox.width - popWidth - 8))}px`;
-    pop.style.top = `${trackBox.top - rowBox.top - 8}px`;
-    pop.style.transform = 'translateY(-100%)';
     return;
   }
   if (!event.target.closest('.node-pop')) closeNodePop();

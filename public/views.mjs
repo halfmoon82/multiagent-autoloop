@@ -143,9 +143,7 @@ export function renderProjectProgress({ chains = [], sessions = [], rules = [], 
     const name = projectName(chain.project);
     const row = el('div', 'list-row');
     row.dataset.chain = name;
-    const main = el('div');
-    main.style.flex = '1';
-    main.style.minWidth = '0';
+    const main = el('div', 'progress-main');
 
     const head = el('div', 'progress-head');
     head.append(el('span', 'row-title', name));
@@ -161,8 +159,7 @@ export function renderProjectProgress({ chains = [], sessions = [], rules = [], 
     for (const id of chain.order) {
       const node = byId.get(id);
       if (!node) continue;
-      const seg = el('div', `node-seg ${node.kind}${node.id === chain.current?.id ? ' current' : ''}`);
-      seg.style.flex = String(node.weight);
+      const seg = el('div', `node-seg ${node.kind} w${Math.min(Math.max(node.weight, 1), 10)}${node.id === chain.current?.id ? ' current' : ''}`);
       seg.dataset.node = node.id;
       seg.dataset.title = node.title;
       seg.dataset.status = STATUS_TEXT[node.status] || node.status || '未知';
@@ -174,8 +171,9 @@ export function renderProjectProgress({ chains = [], sessions = [], rules = [], 
       seg.setAttribute('role', 'option');
       seg.setAttribute('aria-selected', node.id === chain.current?.id ? 'true' : 'false');
       if (node.id === chain.current?.id && node.percent > 0) {
-        const fill = el('div', 'node-fill');
-        fill.style.width = `${node.percent}%`;
+        const fill = el('progress', 'node-fill');
+        fill.max = 100; fill.value = node.percent;
+        fill.setAttribute('aria-hidden', 'true');
         seg.append(fill);
       }
       seg.append(el('span', '', node.label));
