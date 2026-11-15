@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -66,7 +66,7 @@ test('recordDetour refuses unknown rule names and duplicate active ids', () => {
 
 test('recordDetour refuses when a named rule is already on the fallback', () => {
   const { config } = fixture();
-  assert.throws(() => recordDetour(config, { ...input, ruleNames: ['扫描'] }, T0), /已经不在被拦 Agent/);
+  assert.throws(() => recordDetour(config, { ...input, ruleNames: ['扫描'] }, T0), /不在被拦 Agent/);
 });
 
 test('readDetours tolerates a missing file and round-trips what was recorded', () => {
@@ -111,7 +111,7 @@ test('markProbeResult skips rules that left the fallback and reports them', () =
   const saved = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
   assert.equal(saved.rules[0].to, 'workbuddy');
   assert.equal(saved.rules[1].to, 'codex'); // 不强行拽回
-  assert.deepEqual(result.skipped, [{ name: '审阅', currentTo: 'codex' }]);
+  assert.deepEqual(result.skipped, [{ name: '审阅', currentTo: 'codex', reason: 'left-fallback' }]);
 });
 
 test('markProbeResult fail keeps the fallback and stays detoured', () => {
@@ -142,4 +142,67 @@ test('repeated probe failures accumulate history; revert writes a history entry'
   const [detour] = readDetours(config);
   assert.equal(detour.history.length, 3);
   assert.equal(detour.history.at(-1).event, 'reverted');
+});
+
+// ---- reviewer 复审修复的回归测试 ----
+
+test('recordDetour rejects ids that could escape the backup filename', () => {
+  const { config } = fixture();
+  for (const bad of ['../evil', 'a/b', 'a\\b', 'a b', '..']) {
+    assert.throws(() => recordDetour(config, { ...input, id: bad }, T0), DetourError);
+  }
+});
+
+test('recordDetour rejects a reused id even after the first detour reverted', () => {
+  const { config } = fixture();
+  recordDetour(config, input, T0);
+  revertDetour(config, 'wb-hy4-1', T0);
+  assert.throws(() => recordDetour(config, input, T0), /已有同名绕行记录/);
+});
+
+test('recordDetour refuses rules that are on a third agent, not the blocked one', () => {
+  const { config } = fixture();
+  const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
+  raw.rules[0].to = 'codex';
+  raw.agents.codex = { name: 'Codex' };
+  writeFileSync(config.rulesFile, JSON.stringify(raw, null, 2));
+  assert.throws(() => recordDetour(config, input, T0), /不在被拦 Agent/);
+});
+
+test('dueForProbe tolerates hand-edited records without a probe block', () => {
+  const { config } = fixture();
+  recordDetour(config, input, T0);
+  const file = path.join(config.root, 'detours.json');
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  delete raw.detours[0].probe;
+  writeFileSync(file, JSON.stringify(raw, null, 2));
+  const at = (min) => new Date(T0.getTime() + min * 60000);
+  assert.deepEqual(dueForProbe(config, at(0)).map((d) => d.id), ['wb-hy4-1']);
+});
+
+test('readDetours quarantines a corrupt file instead of blocking every detour', () => {
+  const { config } = fixture();
+  const file = path.join(config.root, 'detours.json');
+  writeFileSync(file, '{not json');
+  assert.deepEqual(readDetours(config), []);
+  const [quarantine] = readdirSync(config.root).filter((name) => name.startsWith('detours.json.corrupt-'));
+  assert.ok(quarantine);
+  assert.equal(readFileSync(path.join(config.root, quarantine), 'utf8'), '{not json');
+});
+
+test('markProbeResult on a reverted record says there is no active detour', () => {
+  const { config } = fixture();
+  recordDetour(config, input, T0);
+  revertDetour(config, 'wb-hy4-1', T0);
+  assert.throws(() => markProbeResult(config, 'wb-hy4-1', true, T0), /没有进行中的绕行/);
+});
+
+test('revertDetour on an already reverted record reports it plainly', () => {
+  const { config } = fixture();
+  recordDetour(config, input, T0);
+  const first = revertDetour(config, 'wb-hy4-1', T0);
+  const second = revertDetour(config, 'wb-hy4-1', T0);
+  assert.equal(second.already, true);
+  assert.equal(second.record.status, 'reverted');
+  assert.deepEqual(first.reverted, ['开发', '审阅']);
 });

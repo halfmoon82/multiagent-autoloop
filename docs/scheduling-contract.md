@@ -112,7 +112,7 @@
 
 这些运行时能力在本契约中保留为明确要求；后续入库必须先泛化配置、去除秘密和私有业务语义，并把现有行为测试一并迁移。文档存在不代表相应运行时脚本已经由本仓库提供。
 
-频限绕行的通用运行时机制已由本仓库提供：`src/detour.mjs` 维护运行目录下的 `detours.json` 登记（被拦 Agent/模型、证据、替代方案、冷却节奏），`scripts/detour.mjs` 提供 record/verify/revert/status；verify 执行登记时给定的探测命令，通过即把 rules.json 原子回归原派发（先写 `rules.json.bak-detour-<id>`，已离开替代 Agent 的规则不强拽）。探测命令按 Agent 而异，由登记时显式给出，仓库不提供具体 Agent 的探测实现。
+频限绕行的通用运行时机制已由本仓库提供：`src/detour.mjs` 维护运行目录下的 `detours.json` 登记（被拦 Agent/模型、证据、替代方案、冷却节奏），`scripts/detour.mjs` 提供 record/verify/revert/status；verify 执行登记时给定的探测命令，通过即把 rules.json 原子回归原派发（登记与回归各留带标识的 `.bak`，已离开替代 Agent 的规则不强拽）；登记、核实、回归与控制台规则表单保存共用状态锁互斥；登记写失败自动回滚 rules.json；改坏的 detours.json 留档隔离而不卡死核实。探测命令按 Agent 而异，由登记时显式给出，仓库不提供具体 Agent 的探测实现。
 
 ## 验收示例
 
