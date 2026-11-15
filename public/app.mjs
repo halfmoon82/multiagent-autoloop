@@ -105,6 +105,12 @@ function replaceKeyedPreserving(containerId, freshNodes, keyAttr, skipKey) {
   }
 }
 
+// 慢请求期间后台刷新（2s 周期）可能已重建卡片，事件处理器捕获的 form/input 引用可能已脱离文档；
+// 写操作前按 data-action + data-id 重新查询当前 live 节点（2026-11-15 真机事故：打断退回写到死节点上）
+function liveFormInput(action, id, name) {
+  const form = document.querySelector(`form[data-action="${action}"][data-id="${CSS.escape(String(id))}"]`);
+  return form?.elements?.[name] ?? null;
+}
 function captureFocus() {
   const active = document.activeElement;
   if (!active || !['INPUT', 'TEXTAREA'].includes(active.tagName) || !active.name || !active.form?.dataset?.action) return null;
@@ -211,8 +217,10 @@ document.addEventListener('click', async event => {
       if (text && !confirm(`打断当前回复，立即发送「${text.length > 30 ? `${text.slice(0, 30)}…` : text}」？`)) return;
       if (!text && !confirm('停止本轮调度？已排队的消息会在停止后继续跟进。')) return;
       await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/messages`, { method: 'POST', body: JSON.stringify({ text, interrupt: true }) });
-      // 消息已随打断送出；退回实发内容（trim 后）便于修改重新发送
-      if (form) { form.elements.message.value = text; autoGrow(form.elements.message); }
+      // 消息已随打断送出；退回实发内容（trim 后）便于修改重新发送。必须写回 live 节点：
+      // 慢请求期间卡片可能已被后台刷新重建，这里捕获的 form 引用可能已脱离文档
+      const restored = liveFormInput('session-message', id, 'message');
+      if (restored) { restored.value = text; autoGrow(restored); }
       await refresh();
       showNotice(text ? '已打断当前回复，新消息立即送出。' : '已停止本轮，排队消息将继续跟进。');
       return;
@@ -256,7 +264,8 @@ document.addEventListener('submit', async event => {
   if (answerForm) {
     event.preventDefault();
     const input = answerForm.elements.answer;
-    try { await api(`/api/cards/${answerForm.dataset.id}/answer`, { method: 'POST', body: JSON.stringify({ text: input.value }) }); input.value = ''; state.skipPinOnce = answerForm.dataset.id; showNotice('回答已提交，任务将继续。'); await refresh(); }
+    const cardId = answerForm.dataset.id;
+    try { await api(`/api/cards/${cardId}/answer`, { method: 'POST', body: JSON.stringify({ text: input.value }) }); const liveInput = liveFormInput('answer-text', cardId, 'answer'); if (liveInput) { liveInput.value = ''; autoGrow(liveInput); } state.skipPinOnce = cardId; showNotice('回答已提交，任务将继续。'); await refresh(); }
     catch (error) { showNotice(error.message); }
     return;
   }
@@ -265,10 +274,12 @@ document.addEventListener('submit', async event => {
   event.preventDefault();
   const input = chatForm.elements.message;
   const text = input.value;
+  const sessionId = chatForm.dataset.id;
   try {
-    const result = await api(`/api/scheduling-sessions/${encodeURIComponent(chatForm.dataset.id)}/messages`, { method: 'POST', body: JSON.stringify({ text }) });
-    input.value = '';
-    state.skipPinOnce = chatForm.dataset.id;
+    const result = await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/messages`, { method: 'POST', body: JSON.stringify({ text }) });
+    const liveInput = liveFormInput('session-message', sessionId, 'message');
+    if (liveInput) { liveInput.value = ''; autoGrow(liveInput); }
+    state.skipPinOnce = sessionId;
     const queued = result.queuedCount || 0;
     await refresh();
     showNotice(queued ? `已排队，本轮结束后自动跟进（队列 ${queued} 条）。` : '已发送。');
