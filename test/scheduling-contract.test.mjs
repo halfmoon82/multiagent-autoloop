@@ -26,3 +26,11 @@ test('cards shown to the owner must speak product language and carry benefit and
   assert.match(normalized, /每个选项必须注明收益和代价/);
   assert.match(normalized, /推荐理由/);
 });
+
+test('serial orchestrators must publish node progress for the console task bar', () => {
+  const normalized = contract.replace(/\s+/g, '');
+  assert.match(normalized, /##节点进度上报/);
+  assert.match(normalized, /serial\.json/);
+  assert.match(normalized, /plan/);
+  assert.match(normalized, /part.*percent|percent.*part/);
+});

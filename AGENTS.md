@@ -29,6 +29,7 @@
 | `src/rules.mjs` | 规则表单转换、草稿校验和原子替换 | Agent 权限定义、目标项目执行 |
 | `src/scheduling-session.mjs` | 本地 Codex ACP 调度会话启动、状态与关闭 | 浏览器直接启动进程、自动审批权限 |
 | `src/models.mjs` | 本机模型标签的只读发现与默认文案 | 模型计费推断、凭证采集 |
+| `src/serial-progress.mjs` | 串行编排状态文件（`*-serial.json`）读取、项目映射与进度计算 | 编排状态写入、节点计划定义 |
 | `src/server.mjs` | 本机 HTTP API、静态资源、安全校验和路由允许列表 | 调度业务状态存储 |
 | `public/` | 状态展示、表单和交互 | 密钥、直接 Hub 访问、业务文件写入 |
 | `scripts/` | 通用启动入口 | 真实试点绝对路径或项目部署逻辑 |
