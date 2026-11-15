@@ -87,10 +87,16 @@ async function listRuns(args, deps) {
 }
 
 async function listCards(_args, deps) {
+  const rules = readRules(deps.config);
   const state = await fetchState(deps);
   const result = (state.cards || [])
     .filter(card => (card.state || 'open') === 'open')
-    .map(card => ({ id: card.id, title: card.title, text: card.text || '' }));
+    .map(card => {
+      const direct = String(card.project || card.cwd || '').trim();
+      const rule = rules.find(item => item.name === card.rule);
+      const project = direct || String(rule?.cwd || '').trim();
+      return { id: card.id, title: card.title, text: card.text || '', project: projectName(project) };
+    });
   return { cards: result.slice(0, MAX_ITEMS) };
 }
 

@@ -42,6 +42,15 @@ test('decision cards never infer project from a title collision with a rule name
   assert.equal(projectForCard({ title: '开发', cwd: '/workspace/card' }, rules), '/workspace/card');
 });
 
+test('decision cards fall back to their creating rule workdir so cards can be grouped by project', () => {
+  const rules = [{ name: 'V6开发', cwd: '/Users/macmini/Desktop/vibeguide' }, { name: 'V6审阅', cwd: '/Users/macmini/Desktop/vibeguide' }];
+  assert.equal(projectForCard({ title: '责任闭环怎么拆', rule: 'V6开发' }, rules), '/Users/macmini/Desktop/vibeguide', 'cards created by a rule belong to that rule project');
+  assert.equal(projectForCard({ title: '另一个项目', rule: 'V6审阅' }, rules), '/Users/macmini/Desktop/vibeguide');
+  assert.equal(projectForCard({ title: '未知规则', rule: '不存在的规则' }, rules), '未识别');
+  assert.equal(projectForCard({ title: '标题撞名但不是同规则', rule: 'V6开发', project: '/explicit/elsewhere' }, rules), '/explicit/elsewhere', 'explicit card project still wins');
+  assert.equal(matchesProject(projectForCard({ rule: 'V6开发' }, rules), 'vibeguide'), true, 'the rule-derived project must match the project filter by basename');
+});
+
 test('project filter matches by project basename across identifier styles', () => {
   assert.equal(matchesProject('/workspace/demo', ''), true);
   assert.equal(matchesProject('/workspace/demo', '/workspace/demo'), true);
