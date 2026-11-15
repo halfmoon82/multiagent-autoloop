@@ -73,7 +73,10 @@ function replaceKeyedPreserving(containerId, freshNodes, keyAttr, skipKey) {
   const list = $(containerId);
   const active = document.activeElement;
   let pinned = null;
-  if (active && ['INPUT', 'TEXTAREA'].includes(active.tagName) && list.contains(active)) {
+  // 只有输入框里真有内容（草稿或输入法组词中）才值得钉住；空输入框重建无损失。
+  // 否则发送后输入框已清空、焦点仍在，卡片会被无限期冻结，刚发出的消息永远不呈现
+  // （2026-11-15 事故：回车发送后消息"消失"，必须点按钮让输入框失焦才刷新）。
+  if (active && active.value && ['INPUT', 'TEXTAREA'].includes(active.tagName) && list.contains(active)) {
     const card = active.closest(`[data-${keyAttr}]`);
     if (card && card.dataset[keyAttr] === skipKey) {
       // 提交后本轮：跳过更新，让新消息/新状态立即呈现
@@ -132,8 +135,8 @@ function render() {
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
   replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', state.skipPinOnce); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
   syncProjectFilter();
-  document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) form.elements.answer.value = draftAnswers[form.dataset.id]; });
-  document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) form.elements.message.value = draftMessages[form.dataset.id]; });
+  document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) { form.elements.answer.value = draftAnswers[form.dataset.id]; autoGrow(form.elements.answer); } });
+  document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) { form.elements.message.value = draftMessages[form.dataset.id]; autoGrow(form.elements.message); } });
   document.querySelectorAll('.session-card').forEach(card => {
     const log = card.querySelector('.chat-log'); if (!log) return;
     const previous = chatScrolls[card.dataset.session];
@@ -167,11 +170,13 @@ document.addEventListener('click', async event => {
     if (action === 'answer-choice') { const split = id.lastIndexOf(':'); await api(`/api/cards/${id.slice(0, split)}/answer`, { method: 'POST', body: JSON.stringify({ choice: Number(id.slice(split + 1)) }) }); showNotice('回答已提交，任务将继续。'); await refresh(); return; }
     if (action === 'interrupt-session') {
       const form = button.closest('form');
-      const text = form?.elements?.message?.value.trim() || '';
+      const raw = form?.elements?.message?.value ?? '';
+      const text = raw.trim();
       if (text && !confirm(`打断当前回复，立即发送「${text.length > 30 ? `${text.slice(0, 30)}…` : text}」？`)) return;
       if (!text && !confirm('停止本轮调度？已排队的消息会在停止后继续跟进。')) return;
       await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/messages`, { method: 'POST', body: JSON.stringify({ text, interrupt: true }) });
-      if (form) form.elements.message.value = '';
+      // 消息已随打断送出；草稿退回输入框，便于修改后重新发送
+      if (form) { form.elements.message.value = raw; autoGrow(form.elements.message); }
       await refresh();
       showNotice(text ? '已打断当前回复，新消息立即送出。' : '已停止本轮，排队消息将继续跟进。');
       return;
@@ -185,6 +190,29 @@ document.addEventListener('click', async event => {
     await perform(action, id, body);
   } catch (error) { showNotice(error.message); } finally { button.disabled = false; }
 });
+// 输入体验与 Codex 对齐：回车直接发送（输入法组词中的回车除外），Alt/Option+回车输入框内换行
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.isComposing) return;
+  const form = event.target.closest?.('form[data-action="answer-text"], form[data-action="session-message"]');
+  if (!form) return;
+  event.preventDefault();
+  if (event.altKey) { insertNewline(event.target); return; } // Chrome 不会为 Alt+Enter 插入换行，需手动
+  if (typeof form.requestSubmit === 'function') form.requestSubmit();
+  else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+});
+function insertNewline(node) {
+  const start = node.selectionStart ?? node.value.length;
+  const end = node.selectionEnd ?? node.value.length;
+  node.value = `${node.value.slice(0, start)}\n${node.value.slice(end)}`;
+  node.selectionStart = node.selectionEnd = start + 1;
+  node.dispatchEvent(new Event('input', { bubbles: true })); // 让 autoGrow 跟上
+}
+function autoGrow(node) {
+  if (!node || node.tagName !== 'TEXTAREA') return;
+  node.style.height = 'auto';
+  node.style.height = `${Math.min(node.scrollHeight, 132)}px`;
+}
+document.addEventListener('input', event => { if (event.target?.dataset?.autogrow !== undefined) autoGrow(event.target); });
 document.addEventListener('submit', async event => {
   const answerForm = event.target.closest('form[data-action="answer-text"]');
   if (answerForm) {

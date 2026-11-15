@@ -140,17 +140,17 @@ try {
   assert.equal(await page.locator('.decision-card').count(), 1, 'cards view must filter by project');
   assert.ok((await page.locator('.decision-card').first().innerText()).includes('是否继续测试'), 'only the beta project card stays visible');
   await page.locator('#project-filter').selectOption('');
-  const textAnswer=page.locator('form[data-action="answer-text"]').first().locator('input'); await textAnswer.fill('刷新后仍要保留'); await page.waitForTimeout(5500); assert.equal(await textAnswer.inputValue(), '刷新后仍要保留');
+  const textAnswer=page.locator('form[data-action="answer-text"]').first().locator('textarea'); await textAnswer.fill('刷新后仍要保留'); await page.waitForTimeout(5500); assert.equal(await textAnswer.inputValue(), '刷新后仍要保留');
   await page.keyboard.type('追加输入');
-  assert.equal(await page.locator('form[data-action="answer-text"]').first().locator('input').inputValue(), '刷新后仍要保留追加输入', 'typing must continue seamlessly across background refreshes');
-  const answerInput = page.locator('form[data-action="answer-text"]').first().locator('input');
+  assert.equal(await page.locator('form[data-action="answer-text"]').first().locator('textarea').inputValue(), '刷新后仍要保留追加输入', 'typing must continue seamlessly across background refreshes');
+  const answerInput = page.locator('form[data-action="answer-text"]').first().locator('textarea');
   await answerInput.click(); // 真实鼠标点击（而非程序化 focus），更贴近用户实际交互
   const answerNode = await answerInput.elementHandle();
   await page.waitForTimeout(4500);
   assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, answerNode), true, 'answer input DOM node must survive background refreshes so IME composition is not broken');
-  await probeCompositionAcrossRefresh(page.locator('form[data-action="answer-text"]').first().locator('input'), '拼音补输入');
-  await collisionCard.locator('input[name="answer"]').fill('通知存活测试');
-  await collisionCard.getByRole('button', { name: '发送回答' }).click();
+  await probeCompositionAcrossRefresh(page.locator('form[data-action="answer-text"]').first().locator('textarea'), '拼音补输入');
+  await collisionCard.locator('textarea[name="answer"]').fill('通知存活测试');
+  await collisionCard.locator('textarea[name="answer"]').press('Enter'); // 回车直接发送回答
   await page.waitForTimeout(2500);
   assert.ok((await page.locator('#notice').innerText()).includes('回答已提交'), 'action notices must survive background refresh cycles');
   await page.getByRole('button', { name: '继续', exact: true }).click();
@@ -169,10 +169,11 @@ try {
   await sessionCard.waitFor();
   assert.ok((await sessionCard.innerText()).includes('项目 · demo-repo'), 'scheduling session must show its bound project name');
   const chatInput = page.getByLabel('发消息给会话 browser-session');
+  await chatInput.fill('草稿在，节点就要在'); // 有草稿才钉住卡片；空输入框按期重建不损失任何东西
   await chatInput.click(); // 真实鼠标点击（而非程序化 focus），更贴近用户实际交互
   const chatNode = await chatInput.elementHandle();
   await page.waitForTimeout(4500);
-  assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, chatNode), true, 'session chat input DOM node must survive background refreshes so IME composition is not broken');
+  assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, chatNode), true, 'session chat input DOM node must survive background refreshes while it holds a draft');
   await probeCompositionAcrossRefresh(chatInput, '拼音补输入');
   assert.equal(await page.locator('#project-filter').inputValue(), 'demo-repo', 'starting a session must switch the project filter to the new session so the card stays visible');
   assert.equal(await page.locator('#clear-project-filter').getAttribute('hidden'), null, 'a clear-filter button must be shown while a filter is active');
@@ -192,9 +193,21 @@ try {
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.waitForTimeout(300);
   assert.ok((await sessionCard.innerText()).includes('重点看执行轮次'), 'user message must appear in the conversation');
+  // 回车必须直接发送（与 Codex 输入体验一致）；Alt/Option+回车必须换行而不是发送
+  await page.getByLabel('发消息给会话 browser-session').fill('回车发送测试');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('#sessions-list').innerText.includes('回车发送测试'), null, { timeout: 6000 });
+  assert.equal(await page.getByLabel('发消息给会话 browser-session').inputValue(), '', 'input must clear after Enter send');
+  const newlineInput = page.getByLabel('发消息给会话 browser-session');
+  await newlineInput.fill('第一行');
+  await page.keyboard.press('Alt+Enter');
+  await page.keyboard.type('第二行');
+  assert.equal(await newlineInput.inputValue(), '第一行\n第二行', 'Alt+Enter must insert a newline in the textarea');
+  assert.equal(schedulingSessions.records[0].sendCalls.filter(call => call.text.includes('第二行')).length, 0, 'Alt+Enter must not send the message');
   assert.ok((await sessionCard.innerText()).includes('收到：重点看执行轮次'), 'agent reply must appear in the conversation');
 
   // busy 时输入保持可用：发送默认排队，「打断」立即送达（与 Codex 输入体验一致）
+  await newlineInput.fill(''); // 清空草稿，让卡片解除钉住、按期重建，及时反映运行中状态
   const record = schedulingSessions.records[0];
   record.status = 'running'; record.busy = true; record.statusText = '运行中';
   await page.waitForTimeout(2500);
@@ -212,6 +225,7 @@ try {
   await page.waitForTimeout(300);
   assert.deepEqual(record.sendCalls.at(-1), { text: '方向变了，停下', interrupt: true }, '打断按钮必须以 interrupt 立即送达');
   assert.ok((await sessionCard.innerText()).includes('方向变了，停下'), 'interrupt message must reach the conversation immediately');
+  assert.equal(await msgInput.inputValue(), '方向变了，停下', 'interrupt must return the just-sent message to the input for re-editing');
 
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
