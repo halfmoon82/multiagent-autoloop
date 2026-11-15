@@ -1,5 +1,5 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
-import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
@@ -148,7 +148,8 @@ function countsChips(activity, cardsHere) {
 }
 
 // 项目任务进度：每行一个项目（串行链或有活动但无链文件）。节点段可点击，展开卡显示节点摘要。
-export function renderProjectProgress({ chains = [], sessions = [], rules = [], snapshot = {}, loadError = false } = {}) {
+export function renderProjectProgress({ chains: rawChains = [], sessions = [], rules = [], snapshot = {}, loadError = false } = {}) {
+  const chains = latestChainsByProject(rawChains); // 同一项目多条链只显示最近更新的一条
   const openCards = (snapshot.cards || []).filter(card => card.state === 'open');
   const lines = snapshot.lines || [];
   const rows = [];
