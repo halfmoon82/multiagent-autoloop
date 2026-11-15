@@ -20,7 +20,7 @@
 
 - 位置：`AGENT_AUTOLOOP_HOME/console-sessions/`（运行目录，与 rules.json 同级信任域，
   不进控制台仓库）。
-- 结构：每个会话一个 JSON（`<id>.json`，0600），外加 `index.json` 列表。
+- 结构：每个会话一个 JSON（`<id>.json`，0600）；列表为目录扫描（无 index 文件，减少写放大）。
   字段：id、project、agent、createdAt、updatedAt、closedAt、endStatus
   （active/closed/error/interrupted）、messages（完整转录）、prompt（首轮调度说明）。
 - 写时机：每条消息、每次状态变更即时写入（消息体单条 ≤4KB、单会话存档 ≤1MB，

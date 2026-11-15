@@ -27,6 +27,14 @@ const rawRules = { sources: { local: { name: '本机' } }, agents: { fake: { nam
 const schedulingSessions = {
   records: [],
   queueSeq: 0,
+  archived: [{ id: 'deadbeef-aaaa-bbbb-cccc-ddddeeee0001', project: demoRepo, agent: 'Codex ACP', prompt: '旧的首轮调度说明', continuedFrom: null, messages: [{ role: 'user', text: '上次看到一半的计划', at: '2026-11-15T01:00:00Z' }, { role: 'agent', text: '计划草案已给出，待确认', at: '2026-11-15T01:01:00Z' }], createdAt: '2026-11-15T01:00:00Z', updatedAt: '2026-11-15T01:01:00Z', closedAt: null, endStatus: 'interrupted', truncated: false }],
+  async listArchived() { return this.archived; },
+  async continueSession(id) {
+    const original = this.archived.find(item => item.id === id);
+    const session = await this.start({ prompt: '续跑', project: original?.project || '未识别' });
+    session.continuedFrom = id;
+    return session;
+  },
   async list() { return this.records; },
   async start({ prompt, project } = {}) {
     const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
@@ -326,6 +334,16 @@ try {
   assert.equal(record.removeCalls.length, 2, 'each queue removal must hit the session API');
   assert.equal(record.queue.length, 0);
 
+  await page.getByRole('button', { name: '关闭会话', exact: true }).click();
+  await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
+  // 已存档会话：转录只读可回溯，一键继续生成新会话
+  const archivedCard = page.locator('#archived-sessions-list .run-card.archived');
+  await archivedCard.waitFor();
+  assert.ok((await archivedCard.innerText()).includes('被重启中断'), 'archived sessions show why they stopped');
+  assert.ok((await archivedCard.innerText()).includes('上次看到一半的计划'), 'archived transcripts stay readable');
+  await archivedCard.getByRole('button', { name: '继续调度', exact: true }).click();
+  await page.locator('#sessions-list .run-card').filter({ hasText: '项目 · demo-repo' }).waitFor();
+  assert.ok(await archivedCard.count() >= 1, 'the archive entry stays after continuing');
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
   await page.screenshot({ path: path.join(output, 'console-mobile.png'), fullPage: true });

@@ -137,3 +137,15 @@ export function sessionProgress(session, rules = [], lines = []) {
   const cwd = String(session?.project || '').trim();
   return { project: cwd, ...projectActivity(cwd, rules, lines) };
 }
+
+// 同一项目（按 basename）存在多条串行链时，只保留最近更新的一条；旧链让位，不并排显示。
+// updatedAt 来自链文件的 lastEventAt；缺失视为最旧。
+export function latestChainsByProject(chains = []) {
+  const best = new Map();
+  for (const chain of chains) {
+    const key = projectName(String(chain?.project || '').trim());
+    const prev = best.get(key);
+    if (!prev || String(chain?.updatedAt || '') >= String(prev.updatedAt || '')) best.set(key, chain);
+  }
+  return chains.filter(chain => best.get(projectName(String(chain?.project || '').trim())) === chain);
+}

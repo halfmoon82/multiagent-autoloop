@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitRunSections, runLine, projectForRun, projectForCard, matchesProject, collectProjects, ruleProject, scopedTotals, scopedSpending, timersForProject, sessionProgress } from '../public/status-sections.mjs';
+import { splitRunSections, runLine, projectForRun, projectForCard, matchesProject, collectProjects, ruleProject, scopedTotals, scopedSpending, timersForProject, sessionProgress, latestChainsByProject } from '../public/status-sections.mjs';
 import { formatCost } from '../public/format.mjs';
 const snapshot = { models: { claude: '默认模型' }, runs: [
   { id: 1, rule: '开发', state: 'claimed', summary: '正在改' },
@@ -130,4 +130,30 @@ test('scopedSpending keeps per-line unreported rounds mixed with reported cost',
   assert.equal(spending.cost, 0.5);
   assert.equal(spending.missingCost, 3, 'unreported lines must keep their finished rounds unreported');
   assert.equal(formatCost(spending), '$0.50（3 轮未报）', 'mixed reporting must show the unreported count like the hub does');
+});
+
+test('latestChainsByProject keeps only the most recently updated chain per project', () => {
+  const chains = [
+    { sourceFile: 'phase1-serial.json', project: '/repos/health', percent: 100, updatedAt: '2026-11-15T09:58:00.000Z' },
+    { sourceFile: 'mt-serial.json', project: '/repos/health', percent: 0, updatedAt: '2026-11-15T12:00:00.000Z' },
+    { sourceFile: 'v6-serial.json', project: '/repos/vibeguide', percent: 40, updatedAt: '2026-11-15T11:00:00.000Z' },
+  ];
+  const result = latestChainsByProject(chains);
+  assert.deepEqual(result.map(chain => chain.sourceFile), ['mt-serial.json', 'v6-serial.json']);
+});
+
+test('latestChainsByProject matches projects by basename and treats missing updatedAt as oldest', () => {
+  const chains = [
+    { sourceFile: 'a-serial.json', project: '/repos/health', updatedAt: '2026-11-15T09:00:00.000Z' },
+    { sourceFile: 'b-serial.json', project: '/Volumes/backup/health', updatedAt: null },
+    { sourceFile: 'c-serial.json', project: '/repos/other', updatedAt: null },
+  ];
+  const result = latestChainsByProject(chains);
+  assert.deepEqual(result.map(chain => chain.sourceFile), ['a-serial.json', 'c-serial.json']);
+});
+
+test('latestChainsByProject keeps a single chain per project untouched and tolerates empty input', () => {
+  const single = [{ sourceFile: 'only-serial.json', project: '/repos/one', updatedAt: null }];
+  assert.deepEqual(latestChainsByProject(single), single);
+  assert.deepEqual(latestChainsByProject([]), []);
 });

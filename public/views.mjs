@@ -1,5 +1,5 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
-import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
@@ -153,6 +153,40 @@ export function renderCards(snapshot, rules = []) {
   });
 }
 
+const ARCHIVE_STATUS = { interrupted: ['被重启中断', 'warn'], error: ['异常结束', 'bad'], closed: ['已关闭', ''] };
+
+export function renderArchivedSessions(archived = [], discoveredProjects = []) {
+  if (!archived.length) return [el('div', 'empty', '还没有已存档的会话。')];
+  const known = new Set(discoveredProjects.map(project => projectName(project.path)));
+  return archived.map(record => {
+    const card = el('article', 'run-card archived');
+    const top = el('div', 'run-top');
+    const title = el('div');
+    title.append(
+      el('div', 'run-name', `${record.agent || 'Codex ACP'} · ${record.id.slice(0, 8)}`),
+      el('div', 'row-meta', `${formatTime(record.createdAt)} 开始 · 最后更新 ${formatTime(record.updatedAt)} · 转录 ${record.messages.length} 条${record.truncated ? '（早期已截断）' : ''}`),
+    );
+    const [label, kind] = ARCHIVE_STATUS[record.endStatus] || ['已存档', ''];
+    top.append(title, badge(label, kind));
+    const meta = el('div', 'rule-meta');
+    meta.append(el('span', 'chip', `项目 · ${projectName(record.project)}`));
+    if (record.continuedFrom) meta.append(el('span', 'chip', `继续自 ${record.continuedFrom.slice(0, 8)}`));
+    card.append(top, meta);
+    const log = el('div', 'chat-log');
+    for (const message of record.messages.slice(-6)) log.append(chatBubble(message));
+    if (record.messages.length > 6) log.prepend(el('div', 'row-meta', `… 更早 ${record.messages.length - 6} 条（继续时会注入最近 10 轮）`));
+    if (!record.messages.length) log.append(el('div', 'empty', '没有对话记录。'));
+    card.append(log);
+    const actions = el('div', 'actions');
+    const canContinue = known.has(projectName(record.project));
+    const resume = button(canContinue ? '继续调度' : '项目已不可用', 'continue-session', record.id, 'primary', !canContinue);
+    if (!canContinue) resume.title = '该项目已不在已发现的 Git 仓库列表中';
+    actions.append(resume);
+    card.append(actions, el('div', 'row-meta', '继续 = 新建会话并注入最近 10 轮转录，会启动 Codex 消耗模型额度。'));
+    return card;
+  });
+}
+
 const STATUS_TEXT = { done: '完成', pending: '未开始', dev_dispatched: '开发中', in_progress: '进行中', in_review: '审阅中', review: '审阅中', rework: '返工中', external_in_progress: '外部验证中', blocked: '卡住' };
 
 function countsChips(activity, cardsHere) {
@@ -168,7 +202,8 @@ function countsChips(activity, cardsHere) {
 }
 
 // 项目任务进度：每行一个项目（串行链或有活动但无链文件）。节点段可点击，展开卡显示节点摘要。
-export function renderProjectProgress({ chains = [], sessions = [], rules = [], snapshot = {}, loadError = false } = {}) {
+export function renderProjectProgress({ chains: rawChains = [], sessions = [], rules = [], snapshot = {}, loadError = false } = {}) {
+  const chains = latestChainsByProject(rawChains); // 同一项目多条链只显示最近更新的一条
   const openCards = (snapshot.cards || []).filter(card => card.state === 'open');
   const lines = snapshot.lines || [];
   const rows = [];

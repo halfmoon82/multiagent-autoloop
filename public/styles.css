@@ -38,6 +38,9 @@ progress.progress-bar::-moz-progress-bar{background:var(--accent);border-radius:
 .pr-link{color:var(--accent);font-size:12px;text-decoration:none;margin-left:8px}
 .chips-line{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
 .list-row{position:relative}
+.section-sub{font-size:14px;font-weight:700;margin:28px 0 6px}
+.run-card.archived{border-left:3px solid var(--warning)}
+.archived-list{margin-top:12px}
 @media(max-width:800px){.brand-text{display:none}.project-filter select{max-width:132px}}@media(max-width:800px){.summary-grid{grid-template-columns:repeat(2,1fr)}.overview-grid,.rule-grid{grid-template-columns:1fr}.topbar{padding:0 18px}.navigation{padding:0 10px}main{padding:25px 16px 45px}.page-heading{align-items:flex-start}.connection{font-size:0}.connection .dot{font-size:initial}.header-actions{gap:9px}}
 @media(max-width:560px){.work-grid{grid-template-columns:1fr}}
 @media(max-width:440px){.brand{font-size:15px}.summary-grid{gap:10px}.metric{padding:15px}.metric-value{font-size:25px}.page-heading{flex-direction:column}.page-heading .button{width:100%}.text-answer{flex-direction:column}.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}.dialog-form{padding:18px}}

@@ -1,5 +1,5 @@
 import { openRuleForm } from './rule-form.mjs';
-import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSchedulingSessions, renderProjectProgress } from './views.mjs';
+import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSchedulingSessions, renderProjectProgress, renderArchivedSessions } from './views.mjs';
 import { projectName } from './format.mjs';
 import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject } from './status-sections.mjs';
 import { el } from './views.mjs';
@@ -19,8 +19,9 @@ export async function api(path, options = {}) {
 export async function refresh() {
   if (state.loading) return; state.loading = true;
   try {
-    const [snapshot, ruleData, sessions, projectData, serial] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null)]);
+    const [snapshot, ruleData, sessions, projectData, serial, archives] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null), api('/api/session-archives').catch(() => ({ sessions: [] }))]);
     state.serial = serial || { chains: [] };
+    state.archived = archives?.sessions || [];
     state.serialFailed = !serial;
     snapshot.models = state.models || {}; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; state.models = ruleData.models || {}; setConnection(true, '已连接'); if (noticeError) { noticeError = false; showNotice(''); } render();
   } catch (error) { setConnection(false, '连接失败'); showErrorNotice(`无法更新：${error.message}`); }
@@ -146,7 +147,7 @@ function render() {
   }
   const work = renderWorkSections(view.snapshot, view.rules);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
-  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', state.skipPinOnce); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
+  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', state.skipPinOnce); replace('archived-sessions-list', renderArchivedSessions((state.archived || []).filter(item => matchesProject(item.project, state.projectFilter)), state.projects)); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
   syncProjectFilter();
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) { form.elements.answer.value = draftAnswers[form.dataset.id]; autoGrow(form.elements.answer); } });
   document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) { form.elements.message.value = draftMessages[form.dataset.id]; autoGrow(form.elements.message); } });
@@ -231,6 +232,11 @@ document.addEventListener('click', async event => {
         }
         showNotice('已取回队列消息，可修改后重新发送。');
       } else showNotice('已删除队列消息。');
+    if (action === 'continue-session') {
+      if (!confirm('继续调度将新建会话、注入该存档最近 10 轮转录，并启动 Codex 消耗模型额度。继续？')) return;
+      const resumed = await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/continue`, { method: 'POST', body: JSON.stringify({}) });
+      showNotice(`会话 ${resumed.id.slice(0, 8)} 已从存档继续。`);
+      state.projectFilter = projectName(resumed.project || '');
       await refresh();
       return;
     }

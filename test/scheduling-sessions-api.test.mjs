@@ -32,6 +32,7 @@ const writeHeaders = { 'content-type': 'application/json', 'x-console-request': 
 test('scheduling session API lists, starts and closes local ACP sessions', async () => {
   const calls = [];
   const manager = {
+    async listArchived() { calls.push(['listArchived']); return []; },
     async list() { calls.push(['list']); return [{ id: 'one', sessionId: 'acp-1', agent: 'Codex ACP', cwd: '/workspace/control-plane', project: 'owner/demo', status: 'idle', statusText: '待命', prompt: '检查调度', createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' }]; },
     async start({ prompt, project } = {}) {
       calls.push(['start', prompt, project]);
@@ -121,5 +122,32 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     assert.equal(calls[3][1], 'two');
     assert.equal(calls[3][2], '重点看卡片');
     assert.equal(calls[4][1], 'two');
+  } finally { await close(server); }
+});
+
+test('session archives list and continue route through the manager with validation', async () => {
+  const calls = [];
+  const repo = path.join(mkdtempSync(path.join(tmpdir(), 'archive-repo-')), 'demo'); mkdirSync(path.join(repo, '.git'), { recursive: true });
+  writeFileSync(path.join(path.dirname(repo), 'rules.json'), JSON.stringify({ agents: {}, sources: {}, rules: [] }));
+  const archiveId = 'deadbeef-0000-0000-0000-000000000001';
+  const manager = {
+    async listArchived() { calls.push(['listArchived']); return [{ id: archiveId, project: repo, agent: 'Codex ACP', messages: [], createdAt: '2026-11-15T01:00:00Z', updatedAt: '2026-11-15T01:05:00Z', closedAt: null, endStatus: 'interrupted', continuedFrom: null, prompt: '旧会话' }]; },
+    async continueSession(id) { calls.push(['continue', id]); return { id: 'new-session', project: repo, status: 'running' }; },
+    async list() { return []; },
+  };
+  const server = createConsoleServer({ ...config, projectRoots: [repo], rulesFile: path.join(repo, '..', 'rules.json') }, manager);
+  const url = await listen(server);
+  try {
+    const listResponse = await fetch(`${url}/api/session-archives`);
+    assert.equal(listResponse.status, 200);
+    assert.equal((await listResponse.json()).sessions.length, 1);
+
+    const missing = await fetch(`${url}/api/scheduling-sessions/99999999-9999-9999-9999-999999999999/continue`, { method: 'POST', headers: writeHeaders, body: '{}' });
+    assert.equal(missing.status, 404);
+
+    const resumed = await fetch(`${url}/api/scheduling-sessions/${archiveId}/continue`, { method: 'POST', headers: writeHeaders, body: '{}' });
+    assert.equal(resumed.status, 201);
+    assert.equal((await resumed.json()).id, 'new-session');
+    assert.deepEqual(calls.at(-1), ['continue', archiveId]);
   } finally { await close(server); }
 });
