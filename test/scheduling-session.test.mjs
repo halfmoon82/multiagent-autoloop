@@ -595,3 +595,34 @@ test('continueSession rejects unknown archives', async () => {
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, archiveRoot: mkdtempSync(join(tmpdir(), 'sess-archive-')) });
   await assert.rejects(() => manager.continueSession('99999999-9999-9999-9999-999999999999'), /存档不存在/);
 });
+
+test('active in-memory sessions never appear in the archived list', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const home = mkdtempSync(join(tmpdir(), 'sess-archive-'));
+  const fake = fakeAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
+  await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.requests.some(message => message.method === 'session/prompt'));
+  const archived = await manager.listArchived();
+  assert.equal(archived.length, 0, 'an active session must not surface as archived while it lives in memory');
+  await manager.close(manager.list()[0].id);
+});
+
+test('an adapter crash persists the error end-status so a restart shows 异常结束', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const home = mkdtempSync(join(tmpdir(), 'sess-archive-'));
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  fake.process.kill();
+  await waitFor(() => manager.list()[0].status === 'error');
+  const { SessionArchive } = await import('../src/session-archive.mjs');
+  const record = await new SessionArchive(home).read(started.id);
+  assert.equal(record.endStatus, 'error', 'the crash must reach the archive, not stay active');
+  await manager.close(started.id);
+});

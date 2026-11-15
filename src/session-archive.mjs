@@ -1,6 +1,6 @@
 // 调度会话存档：写穿 JSON 到 <AGENT_AUTOLOOP_HOME>/console-sessions/，
 // 控制台重启后会话留档可回溯、可一键继续。只接受 UUID 文件名，加载做形状校验。
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 
 export class ArchiveError extends Error {
@@ -81,7 +81,7 @@ export class SessionArchive {
       catch { return { name, at: '' }; }
     }).sort((a, b) => String(b.at).localeCompare(String(a.at)));
     for (const { name } of dated.slice(this.retention)) {
-      try { renameSync(path.join(this.root, name), path.join(this.root, `${name}.pruned`)); } catch { /* 清理失败不阻断 */ }
+      try { unlinkSync(path.join(this.root, name)); } catch { /* 清理失败不阻断 */ }
     }
   }
 
@@ -99,7 +99,9 @@ export class SessionArchive {
     return normalizeRecord(data);
   }
 
-  async loadAllDetailed() {
+  // markActive 仅在控制台启动恢复时开启：把上次异常退出留下的 active 标为 interrupted 并写回；
+  // 日常列表查询必须关闭，否则在册会话的存档会每个轮询周期被翻转重写。
+  async loadAllDetailed({ markActive = false } = {}) {
     const sessions = [];
     const errors = [];
     if (!this.root) return { sessions, errors };
@@ -110,7 +112,7 @@ export class SessionArchive {
       const id = name.replace(/\.json$/, '');
       try {
         const record = normalizeRecord(JSON.parse(readFileSync(path.join(this.root, name), 'utf8')));
-        if (record.endStatus === 'active') {
+        if (markActive && record.endStatus === 'active') {
           record.endStatus = 'interrupted';
           record.updatedAt = this.now().toISOString();
           try { this.#write(record); } catch { /* 写回失败只影响标记，不影响展示 */ }

@@ -34,7 +34,7 @@ test('loading marks still-active sessions as interrupted and persists the flag',
   const archive = new SessionArchive(home);
   await archive.save({ id: 'aaaaaaaa-0000-0000-0000-000000000001', project: '/p/a', messages: [], createdAt: '2026-11-15T01:00:00Z', updatedAt: '2026-11-15T01:00:00Z', closedAt: null, endStatus: 'active' });
   await archive.save({ id: 'aaaaaaaa-0000-0000-0000-000000000002', project: '/p/b', messages: [], createdAt: '2026-11-15T01:00:00Z', updatedAt: '2026-11-15T01:00:00Z', closedAt: '2026-11-15T02:00:00Z', endStatus: 'closed' });
-  const list = await archive.loadAll();
+  const { sessions: list } = await archive.loadAllDetailed({ markActive: true });
   const interrupted = list.find(item => item.id.endsWith('1'));
   const closed = list.find(item => item.id.endsWith('2'));
   assert.equal(interrupted.endStatus, 'interrupted', 'a session left active is evidence of a restart');

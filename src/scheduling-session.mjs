@@ -103,16 +103,28 @@ export class SchedulingSessionManager {
     // 会话存档：写穿到运行目录，重启后留档可继续；不可用时降级为纯内存。
     this.archive = archiveRoot ? new SessionArchive(archiveRoot) : null;
     this.archiveWarned = false;
+    this.bootMarked = false;
   }
 
   list() {
     return [...this.sessions.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(toPublicSession);
   }
 
+  async #ensureBootMarked() {
+    if (this.bootMarked || !this.archive) return;
+    this.bootMarked = true;
+    try { await this.archive.loadAllDetailed({ markActive: true }); }
+    catch { this.bootMarked = false; }
+  }
+
+  // 已存档列表排除仍在内存活跃的会话：它们的真相在上面的活跃组，避免同一会话两处展示。
   async listArchived() {
     if (!this.archive) return [];
-    try { return await this.archive.loadAll(); }
-    catch { return []; }
+    await this.#ensureBootMarked();
+    try {
+      const { sessions } = await this.archive.loadAllDetailed();
+      return sessions.filter(item => !this.sessions.has(item.id));
+    } catch { return []; }
   }
 
   // 用存档转录新建会话续跑（ACP 无法跨进程重连，只能新建）。
@@ -120,7 +132,7 @@ export class SchedulingSessionManager {
     if (!this.archive) throw new SchedulingSessionError('会话存档不可用（未配置运行目录）', { status: 503 });
     let record;
     try { record = await this.archive.read(id); }
-    catch (error) { throw new SchedulingSessionError(`会话存档不存在：${error.message}`, { status: 404 }); }
+    catch (error) { throw new SchedulingSessionError(`无法继续该会话：${error.message}`, { status: error.status || 400 }); }
     const prompt = await this.archive.buildContinuation(id);
     return this.start({ prompt, project: record.project, continuedFrom: record.id });
   }
@@ -193,6 +205,7 @@ export class SchedulingSessionManager {
       if (!this.sessions.has(record.id)) return;
       if (record.status !== 'closing' && record.status !== 'closed') {
         record.status = child.exitCode === 0 ? 'closed' : 'error';
+        this.#persist(record);
         if (record.status === 'error' && !record.error) {
         record.error = 'Codex ACP 进程已退出';
         const tail = stderrTail.trim();
@@ -238,7 +251,6 @@ export class SchedulingSessionManager {
     if (record.status === 'idle') {
       const message = this.#validatePrompt(raw);
       this.#pushMessage(record, 'user', message);
-      this.#persist(record);
       this.#runTurn(record, message);
       return toPublicSession(record);
     }
