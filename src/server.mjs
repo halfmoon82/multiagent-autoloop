@@ -58,13 +58,13 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/close$/))) return jsonResponse(res, 200, await config.schedulingSessions.close(decodeURIComponent(match[1])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/messages$/))) return jsonResponse(res, 200, await config.schedulingSessions.send(decodeURIComponent(match[1]), body.text, { interrupt: body.interrupt === true }));
   if (req.method === 'PUT' && (match = url.pathname.match(/^\/api\/rules\/([^/]+)$/))) return jsonResponse(res, 200, await saveRule(config, body, decodeURIComponent(match[1])));
-  if ((match = url.pathname.match(/^\/api\/rules\/([^/]+)\/(run|pause|resume)$/))) {
+  if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/rules\/([^/]+)\/(run|pause|resume)$/))) {
     const name = decodeURIComponent(match[1]); const action = match[2];
     const payload = action === 'run' ? { ...(body.subject ? { subject: String(body.subject) } : {}), ...(body.reason ? { reason: String(body.reason) } : {}) } : action === 'pause' ? { ...(body.reason ? { reason: String(body.reason) } : {}) } : {};
     return jsonResponse(res, 200, await hubRequest(config, `/v1/rules/${encodeURIComponent(name)}/${action}`, { method: 'POST', body: payload }));
   }
-  if ((match = url.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/))) return jsonResponse(res, 200, await hubRequest(config, `/v1/runs/${idOf(match[1])}/cancel`, { method: 'POST', body: {} }));
-  if ((match = url.pathname.match(/^\/api\/cards\/([^/]+)\/(answer|resolve)$/))) {
+  if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/))) return jsonResponse(res, 200, await hubRequest(config, `/v1/runs/${idOf(match[1])}/cancel`, { method: 'POST', body: {} }));
+  if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/cards\/([^/]+)\/(answer|resolve)$/))) {
     const id = idOf(match[1]); const action = match[2];
     const payload = action === 'answer' ? (body.choice !== undefined ? { choice: Number(body.choice) } : { text: String(body.text || '') }) : { reason: String(body.reason || '') };
     return jsonResponse(res, 200, await hubRequest(config, `/v1/cards/${id}/${action}`, { method: 'POST', body: payload }));

@@ -219,7 +219,15 @@ document.addEventListener('click', async event => {
       await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(itemId)}`, { method: 'DELETE', body: JSON.stringify({}) });
       if (action === 'queue-steer') {
         const input = liveFormInput('session-message', sessionId, 'message');
-        if (input) { input.value = input.value ? `${input.value}\n${text}` : text; autoGrow(input); input.focus(); }
+        if (input) {
+          if (input.value) { // 已有草稿：在光标处换行插入取回的消息（与 insertNewline 一致）
+            const start = input.selectionStart ?? input.value.length;
+            input.value = `${input.value.slice(0, start)}\n${text}${input.value.slice(start)}`;
+            input.selectionStart = input.selectionEnd = start + 1 + text.length;
+          } else input.value = text;
+          autoGrow(input);
+          input.focus();
+        }
         showNotice('已取回队列消息，可修改后重新发送。');
       } else showNotice('已删除队列消息。');
       await refresh();

@@ -102,6 +102,11 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     assert.equal(removed.status, 200);
     assert.equal((await removed.json()).queuedCount, 0);
 
+    const deleteRuleRun = await fetch(`${url}/api/rules/%E6%81%A2%E5%A4%8D%E6%B5%8B%E8%AF%95/run`, { method: 'DELETE', headers: writeHeaders, body: '{}' });
+    assert.equal(deleteRuleRun.status, 404, 'DELETE must not reach action routes that only accept POST');
+    const deleteCardAnswer = await fetch(`${url}/api/cards/9/answer`, { method: 'DELETE', headers: writeHeaders, body: '{}' });
+    assert.equal(deleteCardAnswer.status, 404, 'DELETE must not reach card routes that only accept POST');
+
     const putClose = await fetch(`${url}/api/scheduling-sessions/two/close`, { method: 'PUT', headers: writeHeaders, body: '{}' });
     assert.equal(putClose.status, 404, 'session routes must only accept POST');
 

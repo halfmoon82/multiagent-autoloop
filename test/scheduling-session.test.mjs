@@ -472,6 +472,7 @@ test('removeQueued drops only the chosen queued message and unknown ids are 404'
   const texts = manager.list()[0].messages.map(message => message.text);
   assert.ok(texts.includes('第二条') && !texts.includes('第一条'), 'removed queued message must never be delivered');
   await manager.close(id);
+  await assert.rejects(() => manager.removeQueued(id, 'whatever'), error => error.status === 404 && /不存在/.test(error.message), 'a closed session is destroyed, so removal must be a plain 404');
 });
 
 test('interrupt cancels the running turn and delivers the new message immediately after', async () => {
@@ -503,9 +504,11 @@ test('interrupt with an empty text stops the turn without sending a new prompt',
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
 
-  await manager.send(id, '', { interrupt: true });
+  const stopped = await manager.send(id, '', { interrupt: true });
   assert.ok(fake.requests.some(request => request.method === 'session/cancel'));
   assert.equal(fake.prompts.length, 1);
+  assert.equal(stopped.queuedCount, 0, 'a pure stop marker must not be exposed as a queued message');
+  assert.deepEqual(stopped.queued, [], 'a pure stop marker must not appear in the queued list');
 
   fake.endTurn(fake.prompts[0]);
   await waitFor(() => manager.list()[0].status === 'idle');
