@@ -26,6 +26,7 @@ const snapshot = {
 const rawRules = { sources: { local: { name: '本机' } }, agents: { fake: { name: '无模型 Agent', use: 'command', access: 'read' } }, rules: [{ name: '恢复测试', when: { source: 'local', types: ['recovery.*'] }, to: 'fake', cwd: root, prompt: '只验证控制台', resume: false }, { name: 'beta 巡检', when: { source: 'local', types: ['beta.*'] }, to: 'fake', cwd: '/elsewhere/beta', prompt: 'beta 项目巡检', resume: false }, { name: 'demo 巡检', when: { cron: '0 9 * * *' }, to: 'fake', cwd: demoRepo, prompt: 'demo 项目巡检', resume: false }], elsewhere: [] };
 const schedulingSessions = {
   records: [],
+  queueSeq: 0,
   archived: [{ id: 'deadbeef-aaaa-bbbb-cccc-ddddeeee0001', project: demoRepo, agent: 'Codex ACP', prompt: '旧的首轮调度说明', continuedFrom: null, messages: [{ role: 'user', text: '上次看到一半的计划', at: '2026-11-15T01:00:00Z' }, { role: 'agent', text: '计划草案已给出，待确认', at: '2026-11-15T01:01:00Z' }], createdAt: '2026-11-15T01:00:00Z', updatedAt: '2026-11-15T01:01:00Z', closedAt: null, endStatus: 'interrupted', truncated: false }],
   async listArchived() { return this.archived; },
   async continueSession(id) {
@@ -36,8 +37,18 @@ const schedulingSessions = {
   },
   async list() { return this.records; },
   async start({ prompt, project } = {}) {
-    const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
+    const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
     this.records.push(session); return session;
+  },
+  async removeQueued(id, itemId) {
+    const session = this.records.find(item => item.id === id);
+    if (!session) throw new Error('调度会话不存在');
+    session.removeCalls = session.removeCalls || [];
+    session.removeCalls.push(itemId);
+    session.queue = (session.queue || []).filter(item => item.id !== itemId);
+    session.queued = session.queue;
+    session.queuedCount = session.queue.length;
+    return session;
   },
   async send(id, text, { interrupt = false } = {}) {
     const session = this.records.find(item => item.id === id);
@@ -46,12 +57,13 @@ const schedulingSessions = {
     session.sendCalls = session.sendCalls || [];
     session.sendCalls.push({ text, interrupt });
     if (session.busy && !interrupt) {
-      session.queue = (session.queue || []).concat(text);
+      session.queue = (session.queue || []).concat({ id: `q${++this.queueSeq}`, text, at: '2026-11-14T00:03:00Z' });
+      session.queued = session.queue;
       session.queuedCount = session.queue.length;
       session.updatedAt = '2026-11-14T00:03:00Z';
       return session;
     }
-    if (interrupt) { session.queue = []; session.queuedCount = 0; session.busy = false; session.status = 'idle'; session.statusText = '待命'; }
+    if (interrupt) { session.queue = []; session.queued = []; session.queuedCount = 0; session.busy = false; session.status = 'idle'; session.statusText = '待命'; }
     if (text) {
       session.messages.push({ role: 'user', text, at: '2026-11-14T00:03:00Z' });
       session.messages.push({ role: 'agent', text: `收到：${text}`, at: '2026-11-14T00:03:05Z' });
@@ -278,7 +290,7 @@ try {
   await page.waitForTimeout(300);
   assert.deepEqual(record.sendCalls.at(-1), { text: '补充：先看 NAS 部署', interrupt: false }, 'busy 时发送默认排队，不打断当前轮');
   assert.ok((await page.locator('#notice').innerText()).includes('排队'), 'queued sends must say they will follow after the turn');
-  assert.ok((await sessionCard.innerText()).includes('已排队 1 条'), 'queued count must be visible on the card');
+  await page.getByRole('button', { name: '补充：先看 NAS 部署', exact: true }).waitFor({ timeout: 5000 });
   schedulingSessions.delayMs = 2300; // 真实网络节奏：打断请求跨过一次 2s 后台刷新
   await msgInput.fill('方向变了，停下');
   const draftNode = await msgInput.elementHandle();
@@ -298,6 +310,29 @@ try {
   await page.keyboard.press('Enter'); // 键盘可达性：按钮上的回车保持原生语义，必须是打断而不是发送
   await page.waitForTimeout(300);
   assert.deepEqual(record.sendCalls.at(-1), { text: '', interrupt: true }, 'Enter on the interrupt button must trigger interrupt, not a queued send');
+
+  // 队列可见、可 steer in（取回输入框编辑）、可单条删除（与 Codex 输入体验一致）
+  record.status = 'running'; record.busy = true; record.statusText = '运行中';
+  await msgInput.fill(''); // 解冻卡片
+  await page.waitForTimeout(2500);
+  const queueInput = page.getByLabel('发消息给会话 browser-session');
+  await queueInput.fill('队列消息一');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await queueInput.fill('队列消息二');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  const chipOne = page.getByRole('button', { name: '队列消息一', exact: true });
+  const chipTwo = page.getByRole('button', { name: '队列消息二', exact: true });
+  await chipOne.waitFor({ timeout: 5000 });
+  await chipTwo.waitFor({ timeout: 5000 });
+  await chipTwo.click(); // steer in：取回输入框编辑
+  await page.waitForTimeout(600);
+  assert.equal(await queueInput.inputValue(), '队列消息二', 'steer in must load the queued message into the input for editing');
+  assert.equal(record.queue.filter(item => item.text === '队列消息二').length, 0, 'steered-in message must leave the queue');
+  await page.getByRole('button', { name: /删除队列消息 队列消息一/ }).click(); // 单条删除
+  await page.waitForTimeout(600);
+  assert.equal(record.queue.filter(item => item.text === '队列消息一').length, 0, 'deleted queued message must leave the queue');
+  assert.equal(record.removeCalls.length, 2, 'each queue removal must hit the session API');
+  assert.equal(record.queue.length, 0);
 
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();

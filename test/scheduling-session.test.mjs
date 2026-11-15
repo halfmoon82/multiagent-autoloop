@@ -440,6 +440,9 @@ test('queues follow-up messages while the agent is running and flushes them in o
   assert.equal(fake.prompts.length, 1, 'queued messages must not interrupt the running turn');
   await manager.send(id, '再看 Phase1 门禁');
   assert.equal(manager.list()[0].queuedCount, 2);
+  const exposed = manager.list()[0].queued;
+  assert.deepEqual(exposed.map(item => item.text), ['补充：先看 NAS 部署', '再看 Phase1 门禁'], 'queued messages must be exposed with their texts in send order');
+  assert.ok(exposed.every(item => typeof item.id === 'string' && item.id.length > 0 && typeof item.at === 'string'), 'each queued item must carry a stable id and timestamp');
 
   fake.endTurn(fake.prompts[0]);
   await waitFor(() => fake.prompts.length === 2);
@@ -453,6 +456,31 @@ test('queues follow-up messages while the agent is running and flushes them in o
   const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 8)}`);
   assert.deepEqual(transcript, ['user:你是 Multi', 'agent:本轮回复', 'user:补充：先看 NA', 'agent:本轮回复', 'user:再看 Phase', 'agent:本轮回复'], 'queued user messages must land between turns in send order');
   await manager.close(id);
+});
+
+test('removeQueued drops only the chosen queued message and unknown ids are 404', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '第一条');
+  await manager.send(id, '第二条');
+  const listed = manager.list()[0];
+  const removed = await manager.removeQueued(id, listed.queued[0].id);
+  assert.deepEqual(removed.queued.map(item => item.text), ['第二条'], 'removeQueued must drop only the chosen message');
+  assert.equal(removed.queuedCount, 1);
+  await assert.rejects(() => manager.removeQueued(id, 'no-such-item'), error => error.status === 404, 'unknown queue item must be 404');
+  await assert.rejects(() => manager.removeQueued('no-such-session', listed.queued[0].id), error => error.status === 404, 'unknown session must be 404');
+  fake.endTurn(fake.prompts[0]);
+  await waitFor(() => fake.prompts.length === 2, 'the surviving queued message must be delivered after the turn');
+  assert.match(fake.prompts[1].params.prompt[0].text, /第二条/);
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => manager.list()[0].status === 'idle' && manager.list()[0].queuedCount === 0);
+  const texts = manager.list()[0].messages.map(message => message.text);
+  assert.ok(texts.includes('第二条') && !texts.includes('第一条'), 'removed queued message must never be delivered');
+  await manager.close(id);
+  await assert.rejects(() => manager.removeQueued(id, 'whatever'), error => error.status === 404 && /不存在/.test(error.message), 'a closed session is destroyed, so removal must be a plain 404');
 });
 
 test('interrupt cancels the running turn and delivers the new message immediately after', async () => {
@@ -484,9 +512,11 @@ test('interrupt with an empty text stops the turn without sending a new prompt',
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
 
-  await manager.send(id, '', { interrupt: true });
+  const stopped = await manager.send(id, '', { interrupt: true });
   assert.ok(fake.requests.some(request => request.method === 'session/cancel'));
   assert.equal(fake.prompts.length, 1);
+  assert.equal(stopped.queuedCount, 0, 'a pure stop marker must not be exposed as a queued message');
+  assert.deepEqual(stopped.queued, [], 'a pure stop marker must not appear in the queued list');
 
   fake.endTurn(fake.prompts[0]);
   await waitFor(() => manager.list()[0].status === 'idle');

@@ -106,7 +106,27 @@ export function renderSchedulingSessions(sessions = []) {
       form.append(input, submit);
       if (session.busy) form.append(button('打断', 'interrupt-session', session.id, 'danger'));
       card.append(form);
-      if (session.queuedCount) card.append(el('p', 'row-meta', `已排队 ${session.queuedCount} 条，本轮结束后自动跟进。`));
+      if (session.queued?.length) {
+        const queueList = el('div', 'queue-list');
+        queueList.setAttribute('aria-label', '排队消息');
+        for (const item of session.queued) {
+          const row = el('span', 'queue-item');
+          const chip = el('button', 'queue-chip', item.text);
+          chip.type = 'button';
+          chip.dataset.action = 'queue-steer';
+          chip.dataset.id = `${session.id}:${item.id}`;
+          chip.title = '取回输入框编辑（steer in），从队列移出';
+          const remove = el('button', 'queue-remove', '×');
+          remove.type = 'button';
+          remove.dataset.action = 'queue-delete';
+          remove.dataset.id = `${session.id}:${item.id}`;
+          remove.title = '从队列删除这条消息';
+          remove.setAttribute('aria-label', `删除队列消息 ${item.text}`);
+          row.append(chip, remove);
+          queueList.append(row);
+        }
+        card.append(queueList);
+      }
       const actions = el('div', 'actions');
       actions.append(button('关闭会话', 'close-session', session.id, 'danger'));
       card.append(actions);

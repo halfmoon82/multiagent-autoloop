@@ -79,6 +79,7 @@ function toPublicSession(record) {
     liveText: record.liveText,
     busy: record.status === 'running',
     queuedCount: (record.queue || []).filter(item => item !== null).length,
+    queued: (record.queue || []).filter(item => item !== null).map(item => ({ id: item.id, text: item.text, at: item.at })),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -258,7 +259,7 @@ export class SchedulingSessionManager {
     // 运行中/初始化中：与 Codex 输入体验一致——默认排队跟进，interrupt 取消当前轮。
     if (interrupt) {
       if (record.status === 'initializing') throw new SchedulingSessionError('会话初始化中，请稍候再试（打断只在运行中可用）', { status: 409 });
-      record.queue.unshift(raw || null); // null = 仅停止本轮，不发新消息
+      record.queue.unshift(raw ? { id: randomUUID(), text: raw, at: this.now().toISOString() } : null); // null = 仅停止本轮，不发新消息
       record.interruptRequested = true;
       record.updatedAt = this.now().toISOString();
       try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
@@ -267,7 +268,18 @@ export class SchedulingSessionManager {
     const message = this.#validatePrompt(raw);
     const pendingMessages = record.queue.filter(item => item !== null).length;
     if (pendingMessages >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
-    record.queue.push(message);
+    record.queue.push({ id: randomUUID(), text: message, at: this.now().toISOString() });
+    record.updatedAt = this.now().toISOString();
+    return toPublicSession(record);
+  }
+
+  async removeQueued(id, itemId) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    const index = record.queue.findIndex(item => item !== null && item.id === String(itemId || ''));
+    if (index === -1) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
+    record.queue.splice(index, 1);
     record.updatedAt = this.now().toISOString();
     return toPublicSession(record);
   }
@@ -398,8 +410,8 @@ export class SchedulingSessionManager {
     while (record.status === 'idle' && record.queue.length) {
       const next = record.queue.shift();
       if (next === null) continue; // 纯打断标记：消费后继续排后续消息
-      this.#pushMessage(record, 'user', next);
-      this.#runTurn(record, next);
+      this.#pushMessage(record, 'user', next.text);
+      this.#runTurn(record, next.text);
       break;
     }
   }
