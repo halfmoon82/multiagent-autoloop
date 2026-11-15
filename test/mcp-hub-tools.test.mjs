@@ -185,7 +185,7 @@ test('stdio server answers initialize, tools/list and tools/call over JSON-RPC',
     assert.equal(init.result.serverInfo.name, SERVER_NAME);
     assert.deepEqual(init.result.capabilities, { tools: {} });
     const toolList = responses.get(2).result.tools.map(tool => tool.name);
-    assert.deepEqual(toolList.sort(), ['list_cards', 'list_rules', 'list_runs', 'pause_rule', 'resume_rule', 'run_rule']);
+    assert.deepEqual(toolList.sort(), ['list_cards', 'list_rules', 'list_runs', 'pause_rule', 'read_console_doc', 'resume_rule', 'run_rule']);
     const cards = JSON.parse(responses.get(3).result.content[0].text);
     assert.deepEqual(cards.cards.map(card => card.id), [21, 23]);
     const bad = responses.get(4);
@@ -359,4 +359,42 @@ test('run_rule subject must be stable ASCII without spaces (scheduling contract 
     const ok = await handleToolCall('run_rule', { name: '开发', subject: 'demo-fix.v2_r1' }, { config, cooldowns: new Map() });
     assert.deepEqual(ok, { changed: true });
   } finally { await close(hub.server); }
+});
+
+test('read_console_doc returns whitelisted console docs without hub or config dependency', async () => {
+  const result = await handleToolCall('read_console_doc', { path: 'README.md' });
+  assert.equal(result.doc, 'README.md');
+  assert.ok(result.bytes > 0, 'bytes must be reported');
+  assert.match(result.content, /Autoloop|控制台/);
+});
+
+test('read_console_doc rejects traversal, absolute paths and non-whitelist files', async () => {
+  const bad = [
+    ['parent traversal', '../config.json'],
+    ['nested traversal', 'docs/../config.json'],
+    ['absolute path', '/etc/passwd'],
+    ['source file', 'src/config.mjs'],
+    ['env file', '.env'],
+    ['deep docs path', 'docs/superpowers/plans/x.md'],
+    ['empty', ''],
+  ];
+  for (const [label, docPath] of bad) {
+    const error = await handleToolCall('read_console_doc', { path: docPath }).catch(e => e);
+    assert.ok(error && error.code === -32602, `${label}: expected -32602, got ${error && error.code}`);
+  }
+});
+
+test('resolveConsoleDoc validates against a given root: happy path, missing and oversized docs', async () => {
+  const { resolveConsoleDoc } = await import('../src/mcp/hub-tools.mjs');
+  const root = mkdtempSync(path.join(tmpdir(), 'autoloop-doc-root-'));
+  mkdirSync(path.join(root, 'docs'), { recursive: true });
+  writeFileSync(path.join(root, 'docs', 'scheduling-contract.md'), '# 调度契约\n事件链不变量');
+  writeFileSync(path.join(root, 'docs', 'fat.md'), 'x'.repeat(20 * 1024));
+
+  const ok = resolveConsoleDoc(root, 'docs/scheduling-contract.md');
+  assert.equal(ok.rel, 'docs/scheduling-contract.md');
+  assert.ok(ok.absPath.startsWith(root));
+
+  await assert.rejects(() => Promise.resolve().then(() => resolveConsoleDoc(root, 'docs/nope.md')), /文档不存在/);
+  await assert.rejects(() => Promise.resolve().then(() => resolveConsoleDoc(root, 'docs/fat.md')), /超过上限/);
 });

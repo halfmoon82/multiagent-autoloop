@@ -6,7 +6,7 @@ import { HubError, hubRequest } from './hub.mjs';
 import { readRuleOptions, saveRule, RuleError } from './rules.mjs';
 import { modelLabels } from './models.mjs';
 import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-session.mjs';
-import { discoverGitProjects, readProjectDocs, readConsoleDocs } from './projects.mjs';
+import { discoverGitProjects } from './projects.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(MODULE_DIR, '..', 'public');
@@ -49,7 +49,7 @@ async function handleApi(config, req, res, url) {
     const project = String(body.project || '');
     const known = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).find(item => item.path === project);
     if (!known) throw new RequestError(400, '项目不在已发现的 Git 仓库列表中，请从下拉选择');
-    return jsonResponse(res, 201, await config.schedulingSessions.start({ prompt: body.prompt, project: known.path, projectContext: readProjectDocs(known.path), consoleContext: readConsoleDocs(CONSOLE_ROOT) }));
+    return jsonResponse(res, 201, await config.schedulingSessions.start({ prompt: body.prompt, project: known.path }));
   }
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   let match;

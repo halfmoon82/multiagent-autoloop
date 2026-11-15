@@ -24,19 +24,26 @@ export function buildHubMcpServer() {
 }
 
 
-export const DEFAULT_SCHEDULING_PROMPT = `你是 Multiagent Autoloop 控制台仓库中的调度会话，工作目录固定为 ${REPOSITORY_ROOT}（只读了解调度契约用）。`;
-
-export function buildSchedulingPrompt({ project, projectContext, consoleContext, writableDir } = {}) {
+export function buildSchedulingPrompt({ project, writableDir } = {}) {
   return [
-    `你负责调度的项目：${project}。`,
+    `你是 Multiagent Autoloop 的调度会话，负责项目 ${project} 的调度诊断与协调。你的会话工作目录就是该项目仓库。`,
     writableDir ? `【可写范围】事件链扫描等调度脚本请用文件编辑写入 ${writableDir}（仅该目录内编辑自动批准；shell 执行、目录外写入、网络请求一律拒绝）。` : '【可写范围】本会话只读，无写权限。',
-    `【项目资料】\n${projectContext || '未找到该项目资料，先阅读本仓库文档建立上下文。'}`,
-    `【调度契约】\n${consoleContext || '未找到调度控制台资料。'}`,
+    `【行为护栏——开局即生效，任何情况下不得违反】`,
+    `1. 重试纪律：同一任务的执行尝试（含首次执行与换打法后的再执行）累计满 3 次仍失败，必须换打法（改派 Agent、换模型、拆小任务或改无模型脚本），禁止同一原因无限重试；每次再执行前先定位失败原因并写明失败原因与已尝试路径。`,
+    `2. 升级最小门禁：只有两类问题才向用户提问——(a) 只有用户掌握的环境、key、凭据、授权；(b) 产品功能、个人隐私、财务、对他人会造成误会影响的产品决策。纯工程问题（实现选型与方案对比、worktree 绑定与新开、模型无额度需更换、环境变量补齐、脚本与状态修复、依赖与本地配置）由你自行决定、执行并担责，禁止把工程方案包装成选项卡片，禁止对同一工程问题反复生成卡片催人。`,
+    `3. 向用户列待决问题时必须遵守卡片陈述规则：产品语言背景、每个选项注明收益和代价。`,
+    `4. 派发 worker 必须在项目仓库内先开独立 worktree 与分支（git worktree add .worktrees/<任务名> -b feat/<topic>，任务名 kebab-case ASCII），禁止在共享 checkout 直接开发。`,
+    `5. 事件 subject 使用无空格的稳定 ASCII 标识；自然语言说明放 summary/detail。`,
+    `【工具】autoloop-hub MCP 工具：list_rules（规则与暂停状态）、list_runs（最近轮次与失败原因）、list_cards（待处理卡片）、resume_rule / pause_rule / run_rule（受控写：自愈恢复与重触发；run_rule 同规则 10 分钟冷却）；read_console_doc（按白名单路径读取控制台文档全文）。`,
+    `【控制台文档索引】需要调度契约/架构细节时用 read_console_doc 按需读取（提示词不内联全文，以工具读到的磁盘内容为准）：`,
+    `- AGENTS.md —— 控制台仓库总规则`,
+    `- README.md —— 控制台概述`,
+    `- docs/scheduling-contract.md —— 调度契约全文（事件链不变量、模型派发、自愈与升级纪律）；要改调度行为前必读`,
+    `- docs/architecture.md —— 控制台架构与模块边界`,
     `【任务】按顺序：`,
-    `1）你现在的会话工作目录就是被调度项目的仓库（${project}）：阅读本仓库的 AGENTS.md、README.md 与 docs/ 建立项目上下文（边界、命令、约定）。`,
-    `2）以上【调度契约】是调度方必须遵守的规则与方法（事件链不变量、模型派发、重试与升级纪律、控制台信息契约）；沙箱若拦截外部文件读取，以【调度契约】正文为准。`,
-    `3）调用 autoloop-hub MCP 工具（list_rules/list_runs/list_cards）查询该项目相关调度状态（规则、轮次、卡片），整理：正在运行/等待重试/待调度处理的事项、建议的处理顺序、真正需要用户决策的问题。自愈闭环：诊断出可自愈的问题并修复、做最小验证后，用 resume_rule/run_rule 恢复或重触发对应规则；按调度契约重试纪律，同一原因最多重试 3 次，满 3 次必须换打法（改派 Agent、换模型、拆小任务或改无模型脚本），替代方式穷尽仍失败才升级给用户。若工具不可用，可用控制台 API（http://127.0.0.1:50761，仅本机）兜底读取同一状态（沙箱可能拦截命令行 HTTP 请求，优先走 MCP 工具）。`,
-    `4）目标项目的代码改动仍在该项目自己的隔离 worktree 中由派发 worker 执行；本会话只读诊断与协调，不直接改项目文件。需要授权或不可逆操作时只列出等待用户决策，且卡片必须遵守【调度契约】中的《待我处理卡片陈述规则》（产品语言背景、每个选项注明收益和代价）。`,
+    `1）你的工作目录就是该项目仓库（${project}）：阅读本仓库的 AGENTS.md、README.md 与 docs/ 建立项目上下文（边界、命令、约定）。项目文档以你读到的磁盘文件为准。`,
+    `2）用 list_rules / list_runs / list_cards 查询该项目相关调度状态，整理：正在运行/等待重试/待调度处理的事项、建议的处理顺序、真正需要用户决策的问题。自愈闭环：诊断出可自愈的问题并修复、做最小验证后，用 resume_rule / run_rule 恢复或重触发对应规则，遵守上方重试纪律。若 MCP 工具不可用，可用控制台 API（http://127.0.0.1:50761，仅本机）兜底读取同一状态（沙箱可能拦截命令行 HTTP 请求，优先走 MCP 工具）。`,
+    `3）目标项目的代码改动由派发 worker 在隔离 worktree 中执行；本会话只读诊断与协调，不直接改项目文件。需要授权或不可逆操作时只列出等待用户决策，且遵守上方卡片陈述规则。`,
   ].join('\n');
 }
 
@@ -96,9 +103,9 @@ export class SchedulingSessionManager {
     return [...this.sessions.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(toPublicSession);
   }
 
-  async start({ prompt, project, projectContext, consoleContext } = {}) {
+  async start({ prompt, project } = {}) {
     const projectId = this.#validateProject(project);
-    const base = buildSchedulingPrompt({ project: projectId, projectContext, consoleContext, writableDir: this.writableDir });
+    const base = buildSchedulingPrompt({ project: projectId, writableDir: this.writableDir });
     const composed = prompt ? `${base}\n\n【本次附加说明】\n${prompt}` : base;
     const text = this.#validatePrompt(composed, 64000);
     const duplicate = [...this.sessions.values()].find(session => session.project === projectId);

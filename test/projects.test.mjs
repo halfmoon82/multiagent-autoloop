@@ -76,37 +76,3 @@ test('GET /api/projects lists discovered git projects', async () => {
     assert.deepEqual(body.projects.map(project => project.name), ['alpha', 'beta']);
   } finally { await close(server); }
 });
-
-test('readProjectDocs returns AGENTS.md and README content with size caps', async () => {
-  const { readProjectDocs } = await import('../src/projects.mjs');
-  const root = fixture();
-  const repo = path.join(root, 'alpha');
-  writeFileSync(path.join(repo, 'AGENTS.md'), '# 项目约定\n运行 npm test');
-  writeFileSync(path.join(repo, 'README.md'), 'x'.repeat(10 * 1024));
-  const docs = readProjectDocs(repo);
-  assert.match(docs, /# 项目约定/);
-  assert.match(docs, /运行 npm test/);
-  assert.ok(!docs.includes('x'.repeat(10 * 1024)), 'oversized README must be omitted');
-});
-
-test('readProjectDocs reports missing docs instead of throwing', async () => {
-  const { readProjectDocs } = await import('../src/projects.mjs');
-  const root = fixture();
-  assert.match(readProjectDocs(path.join(root, 'plain-dir')), /未找到/);
-  assert.match(readProjectDocs('/no/such/path'), /未找到/);
-});
-
-test('readConsoleDocs bundles AGENTS.md and scheduling contract with caps', async () => {
-  const { readConsoleDocs } = await import('../src/projects.mjs');
-  const root = mkdtempSync(path.join(tmpdir(), 'console-docs-'));
-  mkdirSync(path.join(root, 'docs'), { recursive: true });
-  writeFileSync(path.join(root, 'AGENTS.md'), '# 调度纪律\n重试最多 3 次');
-  writeFileSync(path.join(root, 'docs', 'scheduling-contract.md'), '# 调度契约\n事件链不变量');
-  writeFileSync(path.join(root, 'docs', 'architecture.md'), 'z'.repeat(20 * 1024));
-  const docs = readConsoleDocs(root);
-  assert.match(docs, /# 调度纪律/);
-  assert.match(docs, /重试最多 3 次/);
-  assert.match(docs, /事件链不变量/);
-  assert.ok(!docs.includes('z'.repeat(20 * 1024)), 'oversized architecture.md must be omitted');
-  assert.match(readConsoleDocs('/no/such/path'), /未找到/);
-});

@@ -98,28 +98,37 @@ test('starts a Codex ACP scheduling session in the configured project and closes
   assert.deepEqual(manager.list(), []);
 });
 
-test('injects console scheduling contract into the prompt after project context', async () => {
+test('keeps behavioral guardrails inline and routes console docs through read_console_doc', async () => {
   const fake = fakeAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
-  await manager.start({ project: '/workspace/demo', projectContext: '# 项目约定', consoleContext: '# 调度契约\n事件链不变量' });
+  await manager.start({ project: '/workspace/demo' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
   const text = fake.requests.find(request => request.method === 'session/prompt').params.prompt[0].text;
-  assert.match(text, /# 调度契约/);
-  assert.match(text, /事件链不变量/);
-  assert.ok(text.indexOf('# 项目约定') < text.indexOf('# 调度契约'), 'project context must precede console contract');
+  // 行为护栏必须在开局内联生效
+  assert.match(text, /重试/);
+  assert.match(text, /升级最小门禁/);
+  assert.match(text, /worktree/);
+  // 控制台文档不再内联全文，改为 read_console_doc 按需获取 + 文档索引
+  assert.match(text, /read_console_doc/);
+  assert.match(text, /docs\/scheduling-contract\.md/);
+  assert.match(text, /事件 subject 使用无空格的稳定 ASCII 标识/);
+  assert.ok(!text.includes('【项目资料】'), 'project docs must not be inlined anymore');
+  assert.ok(!text.includes('【调度契约】'), 'console contract must not be inlined anymore');
   await manager.close(manager.list()[0].id);
 });
 
-test('injects project docs into the default prompt and stays project-first', async () => {
+test('prompt stays slim: no doc injection parameters are accepted or required', async () => {
   const fake = fakeAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
-  await manager.start({ project: '/workspace/demo', projectContext: '# 项目约定\n每次改动先跑测试' });
+  await manager.start({ project: '/workspace/demo' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
   const text = fake.requests.find(request => request.method === 'session/prompt').params.prompt[0].text;
-  assert.match(text, /# 项目约定/);
-  assert.match(text, /每次改动先跑测试/);
-  assert.ok(text.indexOf('项目约定') < text.indexOf('调度状态'), 'project context must come before status analysis');
-  assert.match(text, /调度状态/);
+  assert.ok(text.length < 6000, `scheduling prompt should stay slim, got ${text.length} chars`);
+  // 项目上下文改为"cwd 即项目仓库，自己读盘"的指令
+  assert.match(text, /工作目录就是该项目仓库/);
+  assert.match(text, /AGENTS\.md/);
+  assert.ok(text.indexOf('项目仓库') < text.indexOf('list_rules'), 'project orientation must come before status analysis');
+  assert.match(text, /list_rules/);
   await manager.close(manager.list()[0].id);
 });
 
@@ -134,7 +143,7 @@ test('starts the session inside the project repo and falls back to the console c
     cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js',
     spawnFn: (command, args, options) => { seenCwd = options.cwd; return fake.process; },
   });
-  const started = await manager.start({ project: repo, projectContext: 'ctx' });
+  const started = await manager.start({ project: repo });
   assert.equal(seenCwd, repo, 'session must be spawned inside the project repo');
   assert.equal(started.cwd, repo);
   await manager.close(started.id);
@@ -242,7 +251,7 @@ test('enforces concurrency and prompt size without exposing process control to t
   await assert.rejects(manager.start({ prompt: '第二条', project: 'owner-beta/other' }), /最多/);
   await assert.rejects(manager.start({ prompt: 'x'.repeat(65000), project: 'owner-delta/big' }), /64000/);
   await manager.close(manager.list()[0].id);
-  const bigContext = await manager.start({ project: 'owner-gamma/big', projectContext: 'y'.repeat(5000) });
+  const bigContext = await manager.start({ project: 'owner-gamma/big', prompt: 'y'.repeat(5000) });
   assert.match(manager.list().find(session => session.id === bigContext.id).prompt, /y{100}/);
   await manager.close(bigContext.id);
   await assert.rejects(manager.close('missing'), SchedulingSessionError);
@@ -310,7 +319,7 @@ test('keeps a transcript and accepts follow-up messages while the agent is idle'
   let listed = manager.list()[0];
   assert.deepEqual(listed.messages.map(message => message.role), ['user', 'agent']);
   assert.match(listed.messages[0].text, /首轮调度分析/);
-  assert.match(listed.messages[1].text, /收到：你负责调度的项目/);
+  assert.match(listed.messages[1].text, /收到：你是 Multiagen/);
   assert.equal(listed.liveText, '');
   assert.equal(listed.busy, false);
 
@@ -352,14 +361,17 @@ test('session/new carries the autoloop-hub MCP server pointing at the bundled re
 test('scheduling prompt instructs native MCP tools first and keeps the console API as fallback', async () => {
   const fake = fakeAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
-  await manager.start({ project: '/workspace/demo', projectContext: 'ctx' });
+  await manager.start({ project: '/workspace/demo' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
   const text = fake.requests.find(request => request.method === 'session/prompt').params.prompt[0].text;
   assert.match(text, /autoloop-hub MCP 工具/);
-  assert.match(text, /list_rules\/list_runs\/list_cards/);
-  assert.match(text, /resume_rule\/run_rule/);
+  assert.match(text, /list_rules/);
+  assert.match(text, /list_runs/);
+  assert.match(text, /list_cards/);
+  assert.match(text, /read_console_doc/);
+  assert.match(text, /resume_rule/);
   assert.match(text, /自愈闭环/);
-  assert.match(text, /最多重试 3 次/);
+  assert.match(text, /满 3 次仍失败/);
   assert.doesNotMatch(text, /curl/);
   await manager.close(manager.list()[0].id);
 });
@@ -430,7 +442,7 @@ test('queues follow-up messages while the agent is running and flushes them in o
   await waitFor(() => manager.list()[0].status === 'idle' && manager.list()[0].queuedCount === 0);
 
   const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 8)}`);
-  assert.deepEqual(transcript, ['user:你负责调度的项目', 'agent:本轮回复', 'user:补充：先看 NA', 'agent:本轮回复', 'user:再看 Phase', 'agent:本轮回复'], 'queued user messages must land between turns in send order');
+  assert.deepEqual(transcript, ['user:你是 Multi', 'agent:本轮回复', 'user:补充：先看 NA', 'agent:本轮回复', 'user:再看 Phase', 'agent:本轮回复'], 'queued user messages must land between turns in send order');
   await manager.close(id);
 });
 
@@ -452,7 +464,7 @@ test('interrupt cancels the running turn and delivers the new message immediatel
   fake.endTurn(fake.prompts[1]);
   await waitFor(() => manager.list()[0].status === 'idle');
   const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 6)}`);
-  assert.deepEqual(transcript, ['user:你负责调度的', 'user:方向变了，停', 'agent:本轮回复'], 'an interrupted turn must not record a partial agent reply');
+  assert.deepEqual(transcript, ['user:你是 Mul', 'user:方向变了，停', 'agent:本轮回复'], 'an interrupted turn must not record a partial agent reply');
   await manager.close(id);
 });
 
@@ -500,7 +512,7 @@ test('a cancel-induced prompt rejection settles as interrupted, not error, and t
   await waitFor(() => manager.list()[0].status === 'idle');
   assert.equal(manager.list()[0].error, null, 'a cancel-induced rejection must not mark the session as error');
   const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 4)}`);
-  assert.deepEqual(transcript, ['user:你负责调', 'user:别跑了', 'agent:本轮回复'], 'the interrupted turn leaves no partial agent reply and the interrupt message is delivered');
+  assert.deepEqual(transcript, ['user:你是 M', 'user:别跑了', 'agent:本轮回复'], 'the interrupted turn leaves no partial agent reply and the interrupt message is delivered');
   await manager.close(id);
 });
 
