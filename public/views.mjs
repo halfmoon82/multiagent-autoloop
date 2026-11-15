@@ -1,5 +1,5 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
-import { splitRunSections, projectForRun, projectForCard, sessionProgress } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
@@ -133,28 +133,80 @@ export function renderCards(snapshot, rules = []) {
   });
 }
 
-export function renderSessionProgress(sessions = [], rules = [], snapshot = {}) {
-  if (!sessions.length) return [el('div', 'empty', '开启调度会话后，这里按项目汇总任务总进度。')];
-  return sessions.map(session => {
-    const progress = sessionProgress(session, rules, snapshot.lines || []);
+const STATUS_TEXT = { done: '完成', pending: '未开始', dev_dispatched: '开发中', in_progress: '进行中', in_review: '审阅中', review: '审阅中', rework: '返工中', external_in_progress: '外部验证中', blocked: '卡住' };
+
+// 项目任务进度：每行一个串行链（项目）。节点段可点击，浮层展示节点摘要。
+export function renderProjectProgress({ chains = [], sessions = [], rules = [], snapshot = {} } = {}) {
+  if (!chains.length) return [el('div', 'empty', '还没有节点计划。串行推进编排器写入 *-serial.json 后，这里按项目展示任务进度。')];
+  const openCards = (snapshot.cards || []).filter(card => card.state === 'open');
+  return chains.map(chain => {
+    const name = projectName(chain.project);
     const row = el('div', 'list-row');
-    const text = el('div');
-    text.append(el('div', 'row-title', `项目 · ${projectName(progress.project)}`));
-    const metaLine = el('div', 'row-meta');
-    if (progress.totalRounds === 0) {
-      metaLine.textContent = progress.ruleCount ? '该项目还没有产生执行轮次。' : '该项目还没有绑定调度规则。';
-    } else {
-      const cost = typeof progress.cost === 'number' ? ` · 今日费用 $${progress.cost.toFixed(2)}` : '';
-      metaLine.textContent = `运行中 ${progress.running} · 等待 ${progress.waiting} · 今日完成 ${progress.doneToday} · 累计完成 ${progress.finished}/${progress.totalRounds}${cost}`;
-      const track = el('div', 'progress-track');
-      const bar = el('progress', 'progress-bar');
-      bar.max = 100; bar.value = Math.round(progress.ratio * 100);
-      bar.setAttribute('aria-label', `${projectName(progress.project)} 总进度 ${Math.round(progress.ratio * 100)}%`);
-      track.append(bar);
-      text.append(track);
+    row.dataset.chain = name;
+    const main = el('div');
+    main.style.flex = '1';
+    main.style.minWidth = '0';
+
+    const head = el('div', 'progress-head');
+    head.append(el('span', 'row-title', name));
+    const session = sessions.find(item => matchesProject(item.project || '', chain.project));
+    if (session) head.append(badge(session.statusText || session.status || '未知', session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
+    head.append(el('span', 'progress-pct', `${Math.round(chain.percent)}%`));
+    main.append(head);
+
+    const track = el('div', 'node-track');
+    track.setAttribute('role', 'listbox');
+    track.setAttribute('aria-label', `${name} 节点进度`);
+    const byId = new Map(chain.nodes.map(node => [node.id, node]));
+    for (const id of chain.order) {
+      const node = byId.get(id);
+      if (!node) continue;
+      const seg = el('div', `node-seg ${node.kind}${node.id === chain.current?.id ? ' current' : ''}`);
+      seg.style.flex = String(node.weight);
+      seg.dataset.node = node.id;
+      seg.dataset.title = node.title;
+      seg.dataset.status = STATUS_TEXT[node.status] || node.status || '未知';
+      seg.dataset.percent = String(node.percent);
+      seg.dataset.summary = node.summary || '';
+      if (node.part) seg.dataset.part = node.part;
+      if (node.prUrl) seg.dataset.pr = node.prUrl;
+      seg.title = `${node.title} · ${STATUS_TEXT[node.status] || node.status}${node.id === chain.current?.id ? ` ${node.percent}%` : ''}`;
+      seg.setAttribute('role', 'option');
+      seg.setAttribute('aria-selected', node.id === chain.current?.id ? 'true' : 'false');
+      if (node.id === chain.current?.id && node.percent > 0) {
+        const fill = el('div', 'node-fill');
+        fill.style.width = `${node.percent}%`;
+        seg.append(fill);
+      }
+      seg.append(el('span', '', node.label));
+      track.append(seg);
     }
-    text.append(metaLine);
-    row.append(text, badge(session.statusText || session.status || '未知', session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
+    main.append(track);
+
+    const pop = el('div', 'node-pop');
+    pop.hidden = true;
+    main.append(pop);
+
+    if (chain.current) {
+      const line = el('div', 'current-line');
+      line.append(document.createTextNode('当前：'), el('strong', '', `${chain.current.title} · ${chain.current.part || (STATUS_TEXT[chain.current.status] || chain.current.status)} ${chain.current.percent}%`));
+      if (chain.current.summary) line.append(document.createTextNode(` — ${chain.current.summary.length > 80 ? `${chain.current.summary.slice(0, 80)}…` : chain.current.summary}`));
+      if (chain.current.prUrl) { const link = el('a', 'pr-link', 'PR'); link.href = chain.current.prUrl; link.rel = 'noreferrer'; line.append(link); }
+      main.append(line);
+    }
+
+    const activity = projectActivity(chain.project, rules, snapshot.lines || []);
+    const cardsHere = openCards.filter(card => matchesProject(projectForCard(card, rules), chain.project)).length;
+    const chips = el('div', 'row-meta chips-line');
+    const cost = typeof activity.cost === 'number' ? `$${activity.cost.toFixed(2)}` : '未上报';
+    chips.append(
+      el('span', 'chip', `等待重试 ${activity.waiting}`),
+      el('span', 'chip', `今日完成 ${activity.doneToday}`),
+      el('span', 'chip', `待您处理 ${cardsHere} 张`),
+      el('span', 'chip', `今日费用 ${cost}`),
+    );
+    main.append(chips);
+    row.append(main);
     return row;
   });
 }

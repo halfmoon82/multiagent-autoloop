@@ -97,10 +97,15 @@ export function timersForProject(timers = [], rules = [], filter = '') {
   return timers.filter(timer => matchesProject(ruleProject(rules, timer.rule), filter));
 }
 
-// 每个调度会话负责的项目任务总进度：只统计绑定到该项目工作目录的规则行。
-export function sessionProgress(session, rules = [], lines = []) {
-  const cwd = String(session?.project || '').trim();
-  const names = new Set(rules.filter(rule => cwd && matchesProject(rule.cwd, cwd)).map(rule => rule.name));
+// 一个项目（按 basename 匹配其规则）的当日活动聚合，供项目任务进度面板计数行使用。
+export function projectActivity(cwd, rules = [], lines = []) {
+  const target = String(cwd || '').trim();
+  const names = new Set(rules.filter(rule => target && matchesProject(rule.cwd, target)).map(rule => rule.name));
+  return aggregateLines(names, lines);
+}
+
+function aggregateLines(names, lines) {
+  lines = lines || [];
   const totals = { running: 0, queued: 0, retrying: 0, unknown: 0, done: 0, nothing: 0, doneToday: 0 };
   let tokens = 0, cost = 0, hasCost = false;
   for (const line of lines) {
@@ -114,7 +119,6 @@ export function sessionProgress(session, rules = [], lines = []) {
   const finished = totals.done + totals.nothing;
   const totalRounds = finished + totals.running + totals.queued + totals.retrying + totals.unknown;
   return {
-    project: cwd,
     ruleCount: names.size,
     running: totals.running,
     waiting: totals.queued + totals.retrying,
@@ -126,4 +130,10 @@ export function sessionProgress(session, rules = [], lines = []) {
     tokens,
     cost: hasCost ? cost : undefined,
   };
+}
+
+// 每个调度会话负责的项目任务总进度：只统计绑定到该项目工作目录的规则行。
+export function sessionProgress(session, rules = [], lines = []) {
+  const cwd = String(session?.project || '').trim();
+  return { project: cwd, ...projectActivity(cwd, rules, lines) };
 }

@@ -1,5 +1,5 @@
 import { openRuleForm } from './rule-form.mjs';
-import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSchedulingSessions, renderSessionProgress } from './views.mjs';
+import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSchedulingSessions, renderProjectProgress } from './views.mjs';
 import { projectName } from './format.mjs';
 import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject } from './status-sections.mjs';
 import { el } from './views.mjs';
@@ -19,7 +19,8 @@ export async function api(path, options = {}) {
 export async function refresh() {
   if (state.loading) return; state.loading = true;
   try {
-    const [snapshot, ruleData, sessions, projectData] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects')]);
+    const [snapshot, ruleData, sessions, projectData, serial] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => ({ chains: [] }))]);
+    state.serial = serial;
     snapshot.models = state.models || {}; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; state.models = ruleData.models || {}; setConnection(true, '已连接'); if (noticeError) { noticeError = false; showNotice(''); } render();
   } catch (error) { setConnection(false, '连接失败'); showErrorNotice(`无法更新：${error.message}`); }
   finally { state.loading = false; }
@@ -127,7 +128,7 @@ function render() {
   const spending = scopedSpending(view.snapshot, view.rules, filter);
   const summarySnapshot = scoped ? { ...view.snapshot, totals: scoped, spending: { today: spending } } : state.snapshot;
   replace('summary', renderSummary(summarySnapshot));
-  replace('progress-list', renderSessionProgress(view.sessions, view.rules, view.snapshot));
+  replace('progress-list', renderProjectProgress({ chains: (state.serial?.chains || []).filter(chain => matchesProject(chain.project, filter)), sessions: view.sessions, rules: state.rules, snapshot: view.snapshot }));
   const work = renderWorkSections(view.snapshot, view.rules);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
   replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', state.skipPinOnce); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
@@ -155,6 +156,40 @@ async function perform(action, id, body = {}) {
   if (!paths[action]) throw new Error('不支持的操作');
   await api(paths[action], { method: 'POST', body: JSON.stringify(body) }); showNotice('操作已完成，正在刷新状态。'); await refresh();
 }
+function closeNodePop(except) {
+  document.querySelectorAll('.node-pop').forEach(pop => { if (pop !== except) pop.hidden = true; });
+}
+document.addEventListener('click', event => {
+  const seg = event.target.closest('.node-seg');
+  if (seg) {
+    const row = seg.closest('.list-row');
+    const pop = row?.querySelector('.node-pop');
+    if (!pop) return;
+    if (!pop.hidden && pop.dataset.for === seg.dataset.node) { pop.hidden = true; return; }
+    closeNodePop(pop);
+    pop.replaceChildren();
+    pop.dataset.for = seg.dataset.node;
+    pop.append(el('div', 'node-pop-title', seg.dataset.title || seg.dataset.node));
+    pop.append(el('div', 'node-pop-meta', `${seg.dataset.part || seg.dataset.status} · 节点内 ${seg.dataset.percent}%`));
+    if (seg.dataset.summary) pop.append(el('div', 'node-pop-summary', seg.dataset.summary));
+    if (seg.dataset.pr) { const link = el('a', 'pr-link', '打开 PR'); link.href = seg.dataset.pr; link.rel = 'noreferrer'; pop.append(link); }
+    pop.hidden = false;
+    const track = seg.closest('.node-track');
+    const trackBox = track.getBoundingClientRect();
+    const segBox = seg.getBoundingClientRect();
+    const rowBox = row.getBoundingClientRect();
+    pop.style.left = '0px';
+    const popWidth = Math.min(360, rowBox.width - 16);
+    pop.style.maxWidth = `${popWidth}px`;
+    const left = segBox.left - rowBox.left + segBox.width / 2 - popWidth / 2;
+    pop.style.left = `${Math.max(8, Math.min(left, rowBox.width - popWidth - 8))}px`;
+    pop.style.top = `${trackBox.top - rowBox.top - 8}px`;
+    pop.style.transform = 'translateY(-100%)';
+    return;
+  }
+  if (!event.target.closest('.node-pop')) closeNodePop();
+});
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeNodePop(); });
 document.addEventListener('click', async event => {
   const button = event.target.closest('button[data-action]'); if (!button) return;
   const { action, id } = button.dataset;

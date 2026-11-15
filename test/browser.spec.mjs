@@ -177,9 +177,34 @@ try {
   assert.equal(await page.locator('#project-filter').inputValue(), 'demo-repo', 'starting a session must switch the project filter to the new session so the card stays visible');
   assert.equal(await page.locator('#clear-project-filter').getAttribute('hidden'), null, 'a clear-filter button must be shown while a filter is active');
   await page.getByRole('button', { name: '总览', exact: true }).click();
-  const progressRow = page.locator('#progress-list .list-row').filter({ hasText: '项目 · demo-repo' });
-  assert.ok((await progressRow.innerText()).includes('累计完成 3/3'), 'overview must show per-session project task progress');
-  assert.ok((await progressRow.innerText()).includes('$0.10'), 'session progress must show the project today cost');
+  // 项目任务进度：写入假串行状态文件，验证节点条、整体百分比与节点浮层
+  writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify({
+    project: demoRepo,
+    plan: ['n1', 'n2', 'n3'],
+    lastNode: 'n2',
+    lastEventAt: '2026-11-15T07:00:00Z',
+    nodes: {
+      n1: { status: 'done', title: '节点一', label: '一', summary: '交付了第一块功能' },
+      n2: { status: 'dev_dispatched', title: '节点二', label: '二', part: '联调', percent: 50, summary: '正在实现第二块功能', pr_url: 'https://github.com/halfmoon82/x/pull/9' },
+      n3: { status: 'pending', title: '节点三', label: '三' },
+    },
+  }));
+  await page.waitForTimeout(2600);
+  const progressRow = page.locator('#progress-list .list-row').filter({ hasText: 'demo-repo' });
+  await progressRow.waitFor();
+  const progressText = await progressRow.innerText();
+  assert.ok(progressText.includes('50%'), 'chain percent must be (done + current part) / total');
+  assert.ok(progressText.includes('当前：节点二 · 联调 50%'), 'current line uses the node title');
+  assert.equal(await progressRow.locator('.node-seg').count(), 3, 'one segment per node');
+  assert.ok(progressText.includes('当前：节点二 · 联调 50%'), 'current node line must show part and percent');
+  assert.ok(progressText.includes('待您处理') && progressText.includes('今日完成'), 'counts chips must stay');
+  await progressRow.locator('.node-seg').filter({ hasText: '二' }).click();
+  const pop = progressRow.locator('.node-pop');
+  assert.ok(await pop.isVisible(), 'node click must open the summary popover');
+  assert.ok((await pop.innerText()).includes('正在实现第二块功能'), 'popover must show the node summary');
+  assert.ok((await pop.innerText()).includes('联调 · 节点内 50%'), 'popover must show status and inner percent');
+  await page.keyboard.press('Escape');
+  assert.ok(!(await pop.isVisible()), 'Escape must close the popover');
   await page.locator('#clear-project-filter').click();
   assert.equal(await page.locator('#project-filter').inputValue(), '', 'clear-filter must reset the project filter');
   await page.getByRole('button', { name: '调度会话', exact: true }).click();
