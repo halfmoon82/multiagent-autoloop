@@ -44,7 +44,7 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
   if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
   if (req.method === 'GET' && url.pathname === '/api/serial-progress') return jsonResponse(res, 200, await loadChains({ root: config.root, rules: readRuleOptions(config).rules || [] }));
-  if (!['POST', 'PUT'].includes(req.method)) return false;
+  if (!['POST', 'PUT', 'DELETE'].includes(req.method)) return false;
   checkWrite(req); const body = await readJson(req);
   if (req.method === 'POST' && url.pathname === '/api/scheduling-sessions') {
     const project = String(body.project || '');
@@ -54,6 +54,7 @@ async function handleApi(config, req, res, url) {
   }
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   let match;
+  if (req.method === 'DELETE' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/([^/]+)$/))) return jsonResponse(res, 200, await config.schedulingSessions.removeQueued(decodeURIComponent(match[1]), decodeURIComponent(match[2])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/close$/))) return jsonResponse(res, 200, await config.schedulingSessions.close(decodeURIComponent(match[1])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/messages$/))) return jsonResponse(res, 200, await config.schedulingSessions.send(decodeURIComponent(match[1]), body.text, { interrupt: body.interrupt === true }));
   if (req.method === 'PUT' && (match = url.pathname.match(/^\/api\/rules\/([^/]+)$/))) return jsonResponse(res, 200, await saveRule(config, body, decodeURIComponent(match[1])));

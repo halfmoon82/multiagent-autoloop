@@ -211,6 +211,20 @@ document.addEventListener('click', async event => {
     if (action === 'close-session' && !confirm(`关闭调度会话“${id}”？`)) return;
     if (action === 'edit') { const rule = state.rules.find(item => item.name === id); openRuleForm({ rule, agents: state.agents, sources: state.sources, api, onSaved: refresh }); return; }
     if (action === 'answer-choice') { const split = id.lastIndexOf(':'); await api(`/api/cards/${id.slice(0, split)}/answer`, { method: 'POST', body: JSON.stringify({ choice: Number(id.slice(split + 1)) }) }); showNotice('回答已提交，任务将继续。'); await refresh(); return; }
+    if (action === 'queue-steer' || action === 'queue-delete') {
+      // 队列消息管理（与 Codex 输入体验一致）：steer in = 取回输入框编辑；删除 = 从队列移除
+      const split = id.lastIndexOf(':');
+      const sessionId = id.slice(0, split); const itemId = id.slice(split + 1);
+      const text = button.closest('.queue-item')?.querySelector('.queue-chip')?.textContent ?? '';
+      await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(itemId)}`, { method: 'DELETE', body: JSON.stringify({}) });
+      if (action === 'queue-steer') {
+        const input = liveFormInput('session-message', sessionId, 'message');
+        if (input) { input.value = input.value ? `${input.value}\n${text}` : text; autoGrow(input); input.focus(); }
+        showNotice('已取回队列消息，可修改后重新发送。');
+      } else showNotice('已删除队列消息。');
+      await refresh();
+      return;
+    }
     if (action === 'interrupt-session') {
       const form = button.closest('form');
       const text = (form?.elements?.message?.value ?? '').trim();

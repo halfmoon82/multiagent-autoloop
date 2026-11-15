@@ -43,6 +43,12 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
       if (id !== 'two') throw new SchedulingSessionError('调度会话不存在', { status: 404 });
       return { id: 'two', sessionId: 'acp-2', project: 'owner/demo', status: 'running', statusText: '运行中', messages: [{ role: 'user', text, at: '2026-11-14T00:02:00Z' }], liveText: '', busy: true };
     },
+    async removeQueued(id, itemId) {
+      calls.push(['removeQueued', id, itemId]);
+      if (id !== 'two') throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+      if (itemId !== 'q1') throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
+      return { id: 'two', status: 'running', statusText: '运行中', queued: [], queuedCount: 0 };
+    },
     async close(id) { calls.push(['close', id]); return { id, status: 'closed', statusText: '已关闭' }; },
   };
   const projectRoot = mkdtempSync(path.join(tmpdir(), 'api-projects-'));
@@ -86,13 +92,24 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     assert.equal(sentBody.busy, true);
     assert.equal(sentBody.messages.at(-1).text, '重点看卡片');
 
+    const queueMissingMarker = await fetch(`${url}/api/scheduling-sessions/two/queue/q1`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(queueMissingMarker.status, 403, 'queue removal must require the console request marker');
+
+    const queueMissingItem = await fetch(`${url}/api/scheduling-sessions/two/queue/none`, { method: 'DELETE', headers: writeHeaders, body: '{}' });
+    assert.equal(queueMissingItem.status, 404, 'unknown queue item must be 404');
+
+    const removed = await fetch(`${url}/api/scheduling-sessions/two/queue/q1`, { method: 'DELETE', headers: writeHeaders, body: '{}' });
+    assert.equal(removed.status, 200);
+    assert.equal((await removed.json()).queuedCount, 0);
+
     const putClose = await fetch(`${url}/api/scheduling-sessions/two/close`, { method: 'PUT', headers: writeHeaders, body: '{}' });
     assert.equal(putClose.status, 404, 'session routes must only accept POST');
 
     const closed = await fetch(`${url}/api/scheduling-sessions/two/close`, { method: 'POST', headers: writeHeaders, body: '{}' });
     assert.equal(closed.status, 200);
     assert.equal((await closed.json()).status, 'closed');
-    assert.deepEqual(calls.map(call => call[0]), ['list', 'start', 'send', 'send', 'close']);
+    assert.deepEqual(calls.map(call => call[0]), ['list', 'start', 'send', 'send', 'removeQueued', 'removeQueued', 'close']);
+    assert.deepEqual(calls[5], ['removeQueued', 'two', 'q1']);
     assert.equal(calls[1][1], '检查当前调度');
     assert.equal(calls[1][2], repo);
     assert.equal(calls[2][1], 'none');

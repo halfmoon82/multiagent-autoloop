@@ -52,5 +52,11 @@ progress.progress-bar::-moz-progress-bar{background:var(--accent);border-radius:
 .bubble.streaming .bubble-text::after{content:'▍';color:var(--accent);animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
 form.session-message{display:flex;gap:8px}
-form.session-message input,form.session-message textarea{flex:1;min-width:0}form.session-message textarea,.text-answer textarea{resize:none;overflow-y:auto;min-height:38px;max-height:132px}
+form.session-message input,form.session-message textarea{flex:1;min-width:0}
+.queue-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.queue-item{display:inline-flex;align-items:stretch;border:1px solid var(--line);border-radius:16px;background:#f0f3f2;overflow:hidden;max-width:100%}
+.queue-chip{border:0;background:none;color:var(--ink);font-size:12px;padding:4px 4px 4px 10px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+.queue-chip:hover{color:var(--accent-dark)}
+.queue-remove{border:0;background:none;color:var(--muted);font-size:13px;padding:0 8px;cursor:pointer}
+.queue-remove:hover{color:var(--danger)}form.session-message textarea,.text-answer textarea{resize:none;overflow-y:auto;min-height:38px;max-height:132px}
 form.session-message .button{white-space:nowrap}
