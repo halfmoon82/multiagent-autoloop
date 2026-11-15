@@ -34,6 +34,7 @@ const schedulingSessions = {
   async send(id, text, { interrupt = false } = {}) {
     const session = this.records.find(item => item.id === id);
     if (!session) throw new Error('调度会话不存在');
+    if (this.delayMs) await new Promise(resolve => setTimeout(resolve, this.delayMs)); // 模拟真实网络：await 跨过后台刷新周期
     session.sendCalls = session.sendCalls || [];
     session.sendCalls.push({ text, interrupt });
     if (session.busy && !interrupt) {
@@ -270,12 +271,18 @@ try {
   assert.deepEqual(record.sendCalls.at(-1), { text: '补充：先看 NAS 部署', interrupt: false }, 'busy 时发送默认排队，不打断当前轮');
   assert.ok((await page.locator('#notice').innerText()).includes('排队'), 'queued sends must say they will follow after the turn');
   assert.ok((await sessionCard.innerText()).includes('已排队 1 条'), 'queued count must be visible on the card');
+  schedulingSessions.delayMs = 2300; // 真实网络节奏：打断请求跨过一次 2s 后台刷新
   await msgInput.fill('方向变了，停下');
+  const draftNode = await msgInput.elementHandle();
   await page.getByRole('button', { name: '打断', exact: true }).click();
-  await page.waitForTimeout(300);
+  for (let i = 0; i < 50 && !record.sendCalls?.some(call => call.interrupt); i++) await page.waitForTimeout(200); // 等打断请求送达（含注入延迟）
+  assert.ok(record.sendCalls.some(call => call.interrupt), 'interrupt request must reach the session');
+  await page.waitForTimeout(2600); // 等响应返回 + 两轮刷新
   assert.deepEqual(record.sendCalls.at(-1), { text: '方向变了，停下', interrupt: true }, '打断按钮必须以 interrupt 立即送达');
   assert.ok((await sessionCard.innerText()).includes('方向变了，停下'), 'interrupt message must reach the conversation immediately');
-  assert.equal(await msgInput.inputValue(), '方向变了，停下', 'interrupt must return the just-sent message to the input for re-editing');
+  assert.equal(await page.evaluate(node => node.isConnected, draftNode), false, 'card must rebuild during the slow interrupt request (click focuses the button, so the draft does not pin it)');
+  assert.equal(await msgInput.inputValue(), '方向变了，停下', 'interrupt must return the just-sent message to the LIVE input for re-editing');
+  schedulingSessions.delayMs = 0;
   record.status = 'running'; record.busy = true; record.statusText = '运行中';
   await msgInput.fill(''); // 清空草稿解冻卡片，让运行中状态与打断按钮渲染出来
   await page.waitForTimeout(2500);
