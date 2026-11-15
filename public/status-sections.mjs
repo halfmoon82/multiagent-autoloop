@@ -11,8 +11,11 @@ export function projectForRun(run, rules = []) {
   const rule = rules.find(item => item.name === run.rule);
   return String(rule?.cwd || '').trim() || '未识别';
 }
-export function projectForCard(card) {
-  return String(card.project || card.cwd || '').trim() || '未识别';
+export function projectForCard(card, rules = []) {
+  const direct = String(card.project || card.cwd || '').trim();
+  if (direct) return direct;
+  const rule = rules.find(item => item.name === card.rule);
+  return String(rule?.cwd || '').trim() || '未识别';
 }
 export function runLine(run, models = {}, rules = []) {
   const text = run.error || run.summary || '暂无概要';
@@ -44,7 +47,7 @@ export function collectProjects({ rules = [], runs = [], cards = [], sessions = 
   const add = value => { const text = String(value || '').trim(); if (text && !projects.includes(text)) projects.push(text); };
   for (const rule of rules) add(rule.cwd);
   for (const run of runs) add(projectForRun(run, rules));
-  for (const card of cards) add(projectForCard(card));
+  for (const card of cards) add(projectForCard(card, rules));
   for (const session of sessions) add(session.project);
   return projects;
 }

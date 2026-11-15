@@ -31,7 +31,7 @@ function projectView() {
     snapshot: {
       ...state.snapshot,
       runs: (state.snapshot.runs || []).filter(run => matchesProject(projectForRun(run, state.rules), filter)),
-      cards: (state.snapshot.cards || []).filter(card => matchesProject(projectForCard(card), filter)),
+      cards: (state.snapshot.cards || []).filter(card => matchesProject(projectForCard(card, state.rules), filter)),
     },
     rules: state.rules.filter(rule => matchesProject(rule.cwd, filter)),
     sessions: state.sessions.filter(session => matchesProject(session.project, filter)),
@@ -120,7 +120,7 @@ function render() {
   replace('progress-list', renderSessionProgress(view.sessions, view.rules, view.snapshot));
   const work = renderWorkSections(view.snapshot, view.rules);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
-  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', state.skipPinOnce); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot), 'card', state.skipPinOnce); state.skipPinOnce = null;
+  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', state.skipPinOnce); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
   syncProjectFilter();
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) form.elements.answer.value = draftAnswers[form.dataset.id]; });
   document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) form.elements.message.value = draftMessages[form.dataset.id]; });

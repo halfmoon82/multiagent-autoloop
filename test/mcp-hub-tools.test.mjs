@@ -27,9 +27,9 @@ const SNAPSHOT = {
     { id: 10, rule: '开发', agent: 'codex', state: 'unknown', attempts: 5, summary: '失联', project: '/elsewhere/beta' },
   ],
   cards: [
-    { id: 21, state: 'open', title: '是否继续', text: '开放卡片一', options: ['继续'] },
+    { id: 21, state: 'open', title: '是否继续', text: '开放卡片一', options: ['继续'], rule: '开发' },
     { id: 22, state: 'closed', title: '已结案', text: '不应出现', options: [] },
-    { id: 23, state: 'open', title: '缺凭据', text: '开放卡片二' },
+    { id: 23, state: 'open', title: '缺凭据', text: '开放卡片二', rule: '部署' },
   ],
 };
 
@@ -103,13 +103,15 @@ test('list_runs resolves project from run data or rule workdir and summarizes er
   } finally { await close(hub.server); }
 });
 
-test('list_cards returns only open cards with id, title and text', async () => {
+test('list_cards returns only open cards with id, title, text and rule-derived project', async () => {
   const { hub, config } = await fixture();
   try {
     const result = await handleToolCall('list_cards', {}, { config });
     assert.deepEqual(result.cards.map(card => card.id), [21, 23]);
     assert.equal(result.cards[0].title, '是否继续');
     assert.equal(result.cards[0].text, '开放卡片一');
+    assert.equal(result.cards[0].project, 'demo', 'card project must fall back to the creating rule workdir');
+    assert.equal(result.cards[1].project, 'beta');
   } finally { await close(hub.server); }
 });
 

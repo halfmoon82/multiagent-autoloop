@@ -14,7 +14,7 @@ const output = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const snapshot = {
   seq: 1, totals: { running: 8, queued: 8, retrying: 8, unknown: 8, doneToday: 9 },
   spending: { today: { rounds: 4, tokens: 1234, cost: 0.12, missingCost: 0 } },
-  cards: [{ id: 9, state: 'open', title: '是否继续测试', text: '这是一个不产生模型费用的假卡片。', options: ['继续', '暂停'] }, { id: 10, state: 'open', title: '直接结案测试', text: '不需要继续执行。', options: [] }, { id: 11, state: 'open', title: '恢复测试', text: '规则同名卡片不得误认项目。', options: [] }],
+  cards: [{ id: 9, state: 'open', title: '是否继续测试', text: '这是一个不产生模型费用的假卡片。', options: ['继续', '暂停'], rule: 'beta 巡检', createdAt: '2026-11-14T05:00:00Z' }, { id: 10, state: 'open', title: '直接结案测试', text: '不需要继续执行。', options: [] }, { id: 11, state: 'open', title: '恢复测试', text: '规则同名卡片不得误认项目。', options: [] }],
   agents: [{ id: 'fake', name: '无模型 Agent', worker: 'test', online: true }], channels: [{ id: 'desktop', name: '桌面通知', online: true }],
   lines: [
     { name: '恢复测试', paused: null, totals: { running: 1, queued: 0, retrying: 0, unknown: 0, done: 4, nothing: 1, doneToday: 2 }, usage: { input: 800, output: 200, cost: 0.5 } },
@@ -107,6 +107,15 @@ try {
   await page.getByRole('button', { name: '待我处理', exact: false }).click();
   const collisionCard = page.locator('.decision-card').filter({ hasText: '规则同名卡片不得误认项目' });
   assert.ok((await collisionCard.innerText()).includes('项目 · 未识别'), 'decision cards must show their own project, never inferred from a rule name collision');
+  const betaCard = page.locator('.decision-card').filter({ hasText: '是否继续测试' });
+  assert.ok((await betaCard.innerText()).includes('项目 · beta'), 'a card must fall back to its creating rule project');
+  assert.ok((await betaCard.innerText()).includes('规则 · beta 巡检'), 'cards must show which rule created them');
+  assert.equal(await page.locator('.decision-card').count(), 3, '全部项目 shows every open card');
+  await page.locator('#project-filter').selectOption('beta');
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('.decision-card').count(), 1, 'cards view must filter by project');
+  assert.ok((await page.locator('.decision-card').first().innerText()).includes('是否继续测试'), 'only the beta project card stays visible');
+  await page.locator('#project-filter').selectOption('');
   const textAnswer=page.locator('form[data-action="answer-text"]').first().locator('input'); await textAnswer.fill('刷新后仍要保留'); await page.waitForTimeout(5500); assert.equal(await textAnswer.inputValue(), '刷新后仍要保留');
   await page.keyboard.type('追加输入');
   assert.equal(await page.locator('form[data-action="answer-text"]').first().locator('input').inputValue(), '刷新后仍要保留追加输入', 'typing must continue seamlessly across background refreshes');

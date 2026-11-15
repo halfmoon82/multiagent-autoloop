@@ -17,3 +17,12 @@ test('console contract requires task summaries to show their project', () => {
   const normalized = contract.replace(/\s+/g, '');
   assert.match(normalized, /任务概要必须展示该任务所属项目/);
 });
+
+test('cards shown to the owner must speak product language and carry benefit and cost per option', () => {
+  const normalized = contract.replace(/\s+/g, '');
+  assert.match(normalized, /##待我处理卡片陈述规则/);
+  assert.match(normalized, /产品经理能听懂/);
+  assert.match(normalized, /禁止.*函数名.*内部文件名/);
+  assert.match(normalized, /每个选项必须注明收益和代价/);
+  assert.match(normalized, /推荐理由/);
+});
