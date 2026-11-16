@@ -1,0 +1,6 @@
+{
+  "schema": "vibe/init@5.2.7",
+  "initialized": true,
+  "state_path": ".vibe/state.json",
+  "adapter": "codex"
+}

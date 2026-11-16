@@ -1,0 +1,9 @@
+{
+  "schema": "vibe/plan@5.2.7",
+  "plan_id": "demo-plan",
+  "version": 1,
+  "complexity_band": "complex",
+  "status": "draft",
+  "decisions": [],
+  "prd_path": ".vibe/plans/demo-plan/product-spec.input.json"
+}
