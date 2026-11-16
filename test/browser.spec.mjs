@@ -443,7 +443,9 @@ try {
   await page.getByRole('button', { name: /编辑排队消息 队列消息一/ }).click();
   const editor = page.locator('.queue-editor');
   const editorBox = await editor.boundingBox();
-  assert.ok(editorBox.height >= 60, `the queue inline editor must be tall enough to edit (>=60px, got ${editorBox.height})`);
+  const cardBox = await page.locator('#sessions-list .session-card .queue-item-editing').boundingBox();
+  assert.ok(editorBox.width >= cardBox.width * 0.55, `the queue editor must expand horizontally (>=55% of the row, got ${Math.round(editorBox.width / cardBox.width * 100)}%)`);
+  assert.ok(editorBox.height <= 80, `the queue editor height must cap at about 3 lines (<=80px, got ${editorBox.height})`);
   await editor.fill('队列消息一（改）');
   await editor.press('Enter'); // 对齐 Codex queue_edit：编辑框内回车保存（不能误提交主输入框）
   await page.waitForTimeout(600);
