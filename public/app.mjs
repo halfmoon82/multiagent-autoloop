@@ -133,7 +133,8 @@ function render() {
   const view = projectView();
   const draftAnswers = Object.fromEntries([...document.querySelectorAll('form[data-action="answer-text"]')].map(form => [form.dataset.id, form.elements.answer.value]));
   const draftMessages = Object.fromEntries([...document.querySelectorAll('form[data-action="session-message"]')].map(form => [form.dataset.id, form.elements.message.value]));
-  const chatScrolls = Object.fromEntries([...document.querySelectorAll('.session-card, .run-card.archived')].map(card => { const key = card.dataset.session || card.dataset.archive; if (!key) return null; const log = card.querySelector('.chat-log'); if (!log) return null; return [key, { top: log.scrollTop, atBottom: log.scrollHeight - log.scrollTop - log.clientHeight < 40 }]; }).filter(Boolean));
+  // 隐藏视图（display:none）的 scrollHeight/clientHeight 全为 0，会把 atBottom 误判为真并把 scrollTop 清零——跳过不采
+  const chatScrolls = Object.fromEntries([...document.querySelectorAll('.session-card, .run-card.archived')].map(card => { const key = card.dataset.session || card.dataset.archive; if (!key) return null; const log = card.querySelector('.chat-log'); if (!log || !log.offsetHeight) return null; return [key, { top: log.scrollTop, atBottom: log.scrollHeight - log.scrollTop - log.clientHeight < 40 }]; }).filter(Boolean));
   const filter = state.projectFilter;
   const scoped = scopedTotals(view.snapshot, view.rules, filter);
   const spending = scopedSpending(view.snapshot, view.rules, filter);
@@ -152,7 +153,7 @@ function render() {
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) { form.elements.answer.value = draftAnswers[form.dataset.id]; autoGrow(form.elements.answer); } });
   document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) { form.elements.message.value = draftMessages[form.dataset.id]; autoGrow(form.elements.message); } });
   document.querySelectorAll('.session-card, .run-card.archived').forEach(card => {
-    const log = card.querySelector('.chat-log'); if (!log) return;
+    const log = card.querySelector('.chat-log'); if (!log || !log.offsetHeight) return; // 隐藏视图不写 scrollTop（scrollHeight 为 0，写了就回到开头）
     const previous = chatScrolls[card.dataset.session || card.dataset.archive];
     if (!previous || previous.atBottom) { log.scrollTop = log.scrollHeight; return; }
     log.scrollTop = Math.min(previous.top, Math.max(log.scrollHeight - log.clientHeight, 0));
@@ -163,6 +164,8 @@ function render() {
 function showView(name) {
   state.view = name;
   document.querySelectorAll('.view').forEach(view => { view.hidden = view.id !== `view-${name}`; });
+  // 回到某个视图时把可见聊天框停到最新消息（隐藏期间的刷新不碰滚动位置，见 render 里的 offsetHeight 守卫）
+  requestAnimationFrame(() => { document.querySelectorAll(`#view-${name} .chat-log`).forEach(log => { log.scrollTop = log.scrollHeight; }); });
   document.querySelectorAll('.nav-item').forEach(item => { const active = item.dataset.view === name; item.classList.toggle('active', active); if (active) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current'); });
 }
 document.querySelectorAll('.nav-item').forEach(item => item.addEventListener('click', () => showView(item.dataset.view)));

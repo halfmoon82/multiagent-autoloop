@@ -466,6 +466,14 @@ try {
   await archiveLog.evaluate(node => { node.scrollTop = 40; });
   await page.waitForTimeout(4500); // 跨过后台刷新周期
   assert.equal(await archiveLog.evaluate(node => node.scrollTop), 40, 'archived transcript scroll position must survive background refreshes');
+  // 视图切换：离开再回来后转录框必须停在最新消息（隐藏视图零尺寸不能被误判为底部而重置）
+  await archiveLog.evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await page.getByRole('button', { name: '总览', exact: true }).click();
+  await page.waitForTimeout(4500); // 隐藏期间跨多次后台刷新
+  await page.getByRole('button', { name: '调度会话', exact: true }).click();
+  await page.waitForTimeout(400);
+  const atBottom = await archiveLog.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight < 40);
+  assert.equal(atBottom, true, 'returning to the sessions view must land the transcript at the latest message, not the top');
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
   await page.screenshot({ path: path.join(output, 'console-mobile.png'), fullPage: true });
