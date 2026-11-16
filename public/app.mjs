@@ -251,6 +251,7 @@ document.addEventListener('click', async event => {
       const editor = button.closest('.queue-item')?.querySelector('.queue-editor');
       await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(itemId)}`, { method: 'PUT', body: JSON.stringify({ text: editor?.value ?? '' }) });
       state.queueEditing = null;
+      editor?.blur(); // 焦点离开编辑器，避免钉住旧编辑态 DOM，让本轮刷新重建为芯片
       showNotice('已保存排队消息修改。');
       await refresh();
       return;
@@ -283,6 +284,13 @@ document.addEventListener('click', async event => {
 // 只处理 textarea 自身的回车：焦点在表单内按钮上时保持原生语义（Enter=click，打断还是打断）。
 document.addEventListener('keydown', event => {
   if (event.key !== 'Enter' || event.target.tagName !== 'TEXTAREA' || event.isComposing) return;
+  if (event.target.classList?.contains('queue-editor')) {
+    // 行内编辑队列消息（对齐 Codex queue_edit）：Enter 保存，Alt/Shift+Enter 换行
+    if (event.altKey || event.shiftKey) return;
+    event.preventDefault();
+    event.target.closest('.queue-item')?.querySelector('button[data-action="queue-save"]')?.click();
+    return;
+  }
   const form = event.target.closest?.('form[data-action="answer-text"], form[data-action="session-message"]');
   if (!form) return;
   event.preventDefault();

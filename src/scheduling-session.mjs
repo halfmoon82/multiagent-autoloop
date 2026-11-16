@@ -260,8 +260,8 @@ export class SchedulingSessionManager {
     // 运行中/初始化中：与 Codex 输入体验一致——默认排队跟进，interrupt 取消当前轮。
     if (interrupt) {
       if (record.status === 'initializing') throw new SchedulingSessionError('会话初始化中，请稍候再试（打断只在运行中可用）', { status: 409 });
-      // 与 Codex 原生 Stop 一致：只停止本轮并让队列保持暂停；不带文本、不动队列，
-      // 输入框草稿留在客户端，用户可编辑队列或点「恢复队列」继续跟进
+      // 与 Codex 原生 Stop 一致：只停止本轮并让队列保持暂停；不读取文本（调用方草稿留在客户端），不动队列。
+      // 注意：text 在此分支被有意忽略——控制台前端传空串；带文本调用属于旧 API 约定，不再送达
       record.queuePaused = true;
       record.interruptRequested = true; // cancel 引发的 prompt 拒绝按中断收尾，不算错误
       record.updatedAt = this.now().toISOString();
@@ -345,6 +345,7 @@ export class SchedulingSessionManager {
     const [item] = record.queue.splice(index, 1);
     record.queuePaused = false; // sendNow 语义：被 steer 的消息立即送达，队列恢复跟进
     record.queue.unshift({ id: randomUUID(), text: item.text, at: this.now().toISOString() });
+    record.interruptRequested = true; // cancel 引发的 prompt 拒绝按中断收尾，不算错误（与 send(interrupt) 同护）
     record.updatedAt = this.now().toISOString();
     try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
     this.#drainQueue(record);
@@ -474,9 +475,9 @@ export class SchedulingSessionManager {
   }
 
   #drainQueue(record) {
+    // 队列项恒为对象（null 纯打断标记随"打断=纯停止"语义已退役，不再入队）
     while (record.status === 'idle' && record.queue.length && !record.queuePaused) {
       const next = record.queue.shift();
-      if (next === null) continue; // 纯打断标记：消费后继续排后续消息
       this.#pushMessage(record, 'user', next.text);
       this.#runTurn(record, next.text);
       break;

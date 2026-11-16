@@ -608,6 +608,28 @@ test('a cancel-induced prompt rejection settles as interrupted, not error, and t
   await manager.close(id);
 });
 
+test('steer in survives a cancel-induced prompt rejection without erroring or losing the queue', async () => {
+  const fake = controlledAdapter({ rejectPromptOnCancel: true });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '排队一');
+  await manager.send(id, '排队二');
+  const listed = manager.list()[0];
+  await manager.steerQueued(id, listed.queued[1].id); // steer 触发 cancel，pending prompt 以拒绝结算
+  await waitFor(() => fake.prompts.length === 2, 2000); // steer 触发 cancel，pending prompt 以拒绝结算后，被 steer 的消息必须送达
+  assert.match(fake.prompts[1].params.prompt[0].text, /排队二/);
+  assert.equal(manager.list()[0].error, null, 'a cancel-induced rejection during steer must settle as interrupted, not error');
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => fake.prompts.length === 3, 2000); // finish 内同步 drain：idle 瞬态不可观测，改看下一条 prompt
+  assert.match(fake.prompts[2].params.prompt[0].text, /排队一/, 'the remaining queue must follow the steered message');
+  fake.endTurn(fake.prompts[2]);
+  await waitFor(() => manager.list()[0].status === 'idle' && manager.list()[0].queuedCount === 0, 2000);
+  assert.equal(manager.list()[0].error, null);
+  await manager.close(id);
+});
+
 test('steerQueued is rejected with 409 before touching the queue while initializing or in error', async () => {
   const fake = controlledAdapter({ holdInitialize: true });
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });

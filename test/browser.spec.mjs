@@ -409,9 +409,9 @@ try {
   await page.getByRole('button', { name: /编辑排队消息 队列消息一/ }).click();
   const editor = page.locator('.queue-editor');
   await editor.fill('队列消息一（改）');
-  await page.getByRole('button', { name: /保存编辑/ }).click();
+  await editor.press('Enter'); // 对齐 Codex queue_edit：编辑框内回车保存（不能误提交主输入框）
   await page.waitForTimeout(600);
-  assert.equal(record.editCalls.at(-1).text, '队列消息一（改）', 'saving the inline editor must update the queued message');
+  assert.equal(record.editCalls.at(-1).text, '队列消息一（改）', 'Enter in the inline editor must save the queued message edit');
   assert.deepEqual(record.queue.map(item => item.text), ['队列消息二', '队列消息一（改）']);
   // 上移（与 Codex queue_reorder 一致）
   await page.getByRole('button', { name: /上移排队消息 队列消息一/ }).click();
