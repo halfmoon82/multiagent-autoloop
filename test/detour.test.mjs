@@ -281,3 +281,11 @@ test('publicDetour keeps display fields and strips the probe command', () => {
   assert.equal(shown.probe, undefined);
   assert.equal(JSON.stringify(shown).includes('probe.sh'), false);
 });
+
+test('publicDetour returns null for malformed records instead of throwing', () => {
+  assert.equal(publicDetour(null), null);
+  assert.equal(publicDetour({ id: 'x' }), null); // 缺 rules 数组
+  assert.equal(publicDetour({ id: 'x', status: 'detoured', rules: [] }).id, 'x');
+  const partial = publicDetour({ id: 'x', status: 'detoured', rules: [{}] });
+  assert.equal(partial.rules[0].name, ''); // 缺字段兜底空串，不裸印 undefined
+});

@@ -318,17 +318,21 @@ export function renderRunSection(items, emptyText) {
 // 频限绕行条目：契约要求"等待重试/待调度处理"中显示"绕行中（原模型频限，核实恢复中）"及被拦模型/宿主；
 // 核实回归后按正常条目展示，不再出现在这里。
 function detourItems(detours, rules) {
-  return (detours || []).filter((detour) => detour.status === 'detoured').map((detour) => {
-    const blocked = detour.blockedModel ? `${detour.blockedAgent}/${detour.blockedModel}` : detour.blockedAgent;
-    const firstRule = detour.rules[0]?.name;
-    const project = firstRule ? ruleProject(rules, firstRule) : '';
-    return {
-      id: detour.id, rule: '频限绕行',
-      ...(project ? { project, projectName: projectName(project) } : {}),
-      status: '绕行中（原模型频限，核实恢复中）',
-      agent: detour.fallbackAgent, model: blocked, text: detour.evidence,
-    };
-  });
+  return (detours || []).filter((detour) => detour.status === 'detoured')
+    .slice() // 最旧在前 → 最新在前，与总览其他队列一致；展示契约每组最多 5 条
+    .sort((a, b) => String(b.blockedAt || '').localeCompare(String(a.blockedAt || '')))
+    .slice(0, 5)
+    .map((detour) => {
+      const blocked = detour.blockedModel ? `${detour.blockedAgent}/${detour.blockedModel}` : detour.blockedAgent;
+      const firstRule = detour.rules[0]?.name;
+      const project = firstRule ? ruleProject(rules, firstRule) : '';
+      return {
+        id: detour.id, rule: '频限绕行',
+        ...(project ? { project, projectName: projectName(project) } : {}),
+        status: '绕行中（原模型频限，核实恢复中）',
+        agent: detour.fallbackAgent || '未配置', model: blocked || '未配置', text: detour.evidence || '',
+      };
+    });
 }
 
 export function renderAttention(snapshot, rules = [], agentNames = {}, detours = []) {

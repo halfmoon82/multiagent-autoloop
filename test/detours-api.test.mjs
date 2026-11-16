@@ -49,3 +49,23 @@ test('GET /api/detours returns an empty list when nothing was recorded', async (
     assert.deepEqual((await response.json()).detours, []);
   } finally { await close(server); }
 });
+
+test('GET /api/detours survives one malformed record and maps a corrupt file to 502', async () => {
+  const root = fixture();
+  writeFileSync(path.join(root, 'detours.json'), JSON.stringify({ detours: [sample, { id: 'broken' }] }));
+  const server = createConsoleServer({ ...base, root, rulesFile: path.join(root, 'rules.json') });
+  const url = await listen(server);
+  try {
+    const ok = await fetch(`${url}/api/detours`);
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.json()).detours.length, 1); // 坏记录被跳过，好记录仍在
+  } finally { await close(server); }
+
+  writeFileSync(path.join(root, 'detours.json'), '{corrupt');
+  const server2 = createConsoleServer({ ...base, root, rulesFile: path.join(root, 'rules.json') });
+  const url2 = await listen(server2);
+  try {
+    const bad = await fetch(`${url2}/api/detours`);
+    assert.equal(bad.status, 502); // 前端 catch 降级为空列表，页面不挂
+  } finally { await close(server2); }
+});
