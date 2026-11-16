@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,7 @@ import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 import { SessionArchive } from './session-archive.mjs';
 import { listArtifacts, readArtifact } from './artifacts.mjs';
 import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
+import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -107,7 +109,7 @@ function summarizeUpdate(update) {
 }
 
 export class SchedulingSessionManager {
-  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500 } = {}) {
+  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null } = {}) {
     this.cwd = path.resolve(cwd);
     this.writableDir = writableDir ? path.resolve(writableDir) : null;
     this.adapterPath = adapterPath;
@@ -121,6 +123,9 @@ export class SchedulingSessionManager {
     // 打断后轮次收尾的等待窗口：cancel 是通知无回执，稍等再续跑队列，避开适配器取消中状态
     this.settleMs = settleMs;
     this.bootMarked = false;
+    // 会话专用 CODEX_HOME：默认放在运行目录 <archiveRoot>/codex-home；无运行目录时放系统临时目录。
+    this.codexHomeDir = codexHomeDir ? path.resolve(codexHomeDir) : path.join(archiveRoot || path.join(tmpdir(), 'autoloop-console'), 'codex-home');
+    this.userCodexHome = userCodexHome;
   }
 
   list() {
@@ -173,9 +178,13 @@ export class SchedulingSessionManager {
     if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
 
     const sessionCwd = this.#projectCwd(projectId);
+    // fail closed：专用 CODEX_HOME 准备失败就不启动，绝不回退到继承全局 approval_policy 的环境。
+    let codexHome;
+    try { codexHome = prepareSessionCodexHome({ targetDir: this.codexHomeDir, userCodexHome: this.userCodexHome || defaultUserCodexHome() }); }
+    catch (error) { throw new SchedulingSessionError(`无法准备会话专用 CODEX_HOME：${safeMessage(error)}`, { status: 500 }); }
     const child = this.spawnFn(process.execPath, [this.adapterPath], {
       cwd: sessionCwd,
-      env: { ...process.env, NO_BROWSER: process.env.NO_BROWSER || '1' },
+      env: { ...process.env, NO_BROWSER: process.env.NO_BROWSER || '1', CODEX_HOME: codexHome },
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
     });
