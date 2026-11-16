@@ -10,6 +10,7 @@ const INHERITED_KEYS = new Set([
   'model', 'model_provider', 'model_reasoning_effort', 'model_reasoning_summary', 'model_verbosity',
   'model_context_window', 'model_auto_compact_token_limit', 'model_catalog_json', 'web_search', 'preferred_auth_method',
 ]);
+// 取舍：model_providers.* 整段继承，可能带内联敏感头（如 api key）；专用配置文件 0600、目录 0700、位于控制台数据目录，不进 git。
 const INHERITED_TABLE = /^model_providers(\.|$)/;
 
 // 把 TOML 文本切成语句（顶层键值或表头），多行数组/内联表/多行字符串并入同一语句，避免续行被误判成顶层键。
@@ -63,13 +64,17 @@ export function mergeInheritedConfig(userToml) {
 }
 
 export function defaultUserCodexHome(env = process.env) {
-  return env.CODEX_HOME_USER || path.join(os.homedir(), '.codex');
+  return env.CODEX_HOME_USER || env.CODEX_HOME || path.join(os.homedir(), '.codex');
 }
 
 // 返回专用 CODEX_HOME 绝对路径；任何一步失败都抛错，由调用方拒绝启动（不回退全局配置）。
 export function prepareSessionCodexHome({ targetDir, userCodexHome = defaultUserCodexHome() } = {}) {
   if (!targetDir) throw new Error('未指定会话专用 CODEX_HOME 目录');
   const target = path.resolve(targetDir);
+  // 预置软链可能指向 ~/.codex，随后的重写/删凭据会波及用户全局配置：软链一律拒绝启动。
+  let existing = null;
+  try { existing = lstatSync(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (existing?.isSymbolicLink()) throw new Error(`会话专用 CODEX_HOME 不能是符号链接：${target}`);
   mkdirSync(target, { recursive: true, mode: 0o700 });
   let userToml = '';
   try { userToml = readFileSync(path.join(userCodexHome, 'config.toml'), 'utf8'); }

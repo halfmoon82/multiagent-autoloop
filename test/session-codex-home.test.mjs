@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SchedulingSessionManager } from '../src/scheduling-session.mjs';
-import { prepareSessionCodexHome } from '../src/session-codex-home.mjs';
+import { prepareSessionCodexHome, defaultUserCodexHome } from '../src/session-codex-home.mjs';
 import { fakeAcp } from './fake-acp.mjs';
 
 const USER_CONFIG = `model = "kimi-for-coding"
@@ -136,4 +136,20 @@ test('fails closed: when the dedicated home cannot be prepared the adapter is ne
   assert.equal(spawned, false);
   assert.equal(manager.list().length, 0);
   mkdirSync(path.join(base, 'ok'));
+});
+
+test('prepareSessionCodexHome refuses a symlinked target and leaves the link destination untouched', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'codexhome-link-'));
+  const global = path.join(root, 'global-codex'); mkdirSync(global);
+  writeFileSync(path.join(global, 'config.toml'), 'keep = 1\n'); writeFileSync(path.join(global, 'auth.json'), '{}');
+  const link = path.join(root, 'session-home'); symlinkSync(global, link);
+  assert.throws(() => prepareSessionCodexHome({ targetDir: link, userCodexHome: global }), /符号链接/);
+  assert.equal(readFileSync(path.join(global, 'config.toml'), 'utf8'), 'keep = 1\n');
+  assert.ok(existsSync(path.join(global, 'auth.json')));
+});
+
+test('defaultUserCodexHome prefers CODEX_HOME_USER, then CODEX_HOME, then ~/.codex', () => {
+  assert.equal(defaultUserCodexHome({ CODEX_HOME_USER: '/a', CODEX_HOME: '/b' }), '/a');
+  assert.equal(defaultUserCodexHome({ CODEX_HOME: '/b' }), '/b');
+  assert.match(defaultUserCodexHome({}), /\.codex$/);
 });
