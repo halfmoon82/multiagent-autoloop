@@ -83,9 +83,9 @@ export function scopedSpending(snapshot, rules = [], filter = '') {
   const lines = scopedLines(snapshot, rules, filter);
   let tokens = 0, cost = 0, hasCost = false, rounds = 0, missingRounds = 0;
   for (const line of lines) {
-    const usage = line.usage || {};
-    tokens += (usage.input || 0) + (usage.output || 0);
     const t = line.totals || {};
+    const usage = t.usage || line.usage || {}; // 真实 hub 形态：usage 归在 totals 下
+    tokens += (usage.input || 0) + (usage.output || 0);
     const finished = (t.done || 0) + (t.nothing || 0);
     rounds += finished;
     if (typeof usage.cost === 'number') { hasCost = true; cost += usage.cost; }
@@ -114,7 +114,7 @@ function aggregateLines(names, lines) {
     if (!names.has(line.name)) continue;
     const t = line.totals || {};
     for (const key of Object.keys(totals)) totals[key] += t[key] || 0;
-    const usage = line.usage || {};
+    const usage = t.usage || line.usage || {}; // 真实 hub 形态：usage 归在 totals 下
     tokens += (usage.input || 0) + (usage.output || 0);
     if (typeof usage.cost === 'number') { hasCost = true; cost += usage.cost; }
   }
@@ -132,6 +132,45 @@ function aggregateLines(names, lines) {
     tokens,
     cost: hasCost ? cost : undefined,
   };
+}
+
+// 链文件词干 → 规则名前缀（与 src/serial-progress.mjs mapChainProject 同一边界规则）：
+// 'v6' 命中 'V6串行推进'/'V6开发'，但不命中 'V6x串行推进'。
+export function chainRuleNames(sourceFile, rules = []) {
+  const stem = String(sourceFile || '').replace(/-serial\.json$/i, '').toLowerCase();
+  if (!stem) return new Set();
+  return new Set(rules.filter((rule) => {
+    const name = String(rule?.name || '').toLowerCase();
+    return name.startsWith(stem) && !/^[a-z0-9]/.test(name.slice(stem.length));
+  }).map((rule) => rule.name));
+}
+
+// 整条调度链从头到尾的累计 Token 与计费：只信 Hub 上报值，费用缺失如实标注。
+// 词干零命中（链文件名与规则名不同源，如 mtexec 链配 MT* 规则）时回退：
+// 该项目归属、且未被其他已加载链词干认领的规则。
+export function chainUsage(chain, rules = [], lines = [], allChains = []) {
+  let names = chainRuleNames(chain?.sourceFile, rules);
+  if (!names.size) {
+    const claimed = new Set();
+    for (const other of allChains) {
+      if (other === chain) continue;
+      for (const name of chainRuleNames(other?.sourceFile, rules)) claimed.add(name);
+    }
+    const project = String(chain?.project || '').trim();
+    names = new Set(rules.filter((rule) => project && matchesProject(rule.cwd, project) && !claimed.has(rule.name)).map((rule) => rule.name));
+  }
+  let tokens = 0, cost = 0, hasCost = false, rounds = 0, missingCostRounds = 0;
+  for (const line of lines || []) {
+    if (!names.has(line.name)) continue;
+    const t = line.totals || {};
+    const usage = t.usage || line.usage || {};
+    tokens += (usage.input || 0) + (usage.output || 0);
+    const finished = (t.done || 0) + (t.nothing || 0);
+    rounds += finished;
+    if (typeof usage.cost === 'number') { hasCost = true; cost += usage.cost; }
+    else missingCostRounds += finished;
+  }
+  return { tokens, cost: hasCost ? cost : undefined, rounds, missingCostRounds };
 }
 
 // 每个调度会话负责的项目任务总进度：只统计绑定到该项目工作目录的规则行。
