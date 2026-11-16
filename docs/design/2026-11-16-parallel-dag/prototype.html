@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Autoloop 并行 DAG · 设计稿</title>
+  <link rel="stylesheet" href="./prototype.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#" data-screen="overview" aria-label="返回总览"><span class="brand-mark">A</span><strong>Autoloop 控制台</strong></a>
+    <div class="header-actions">
+      <label class="project-picker"><span>项目</span><select aria-label="项目"><option>health-service</option><option>multiagent-autoloop</option></select></label>
+      <span class="connection"><i></i>已连接</span>
+      <button class="icon-button" aria-label="刷新" data-action="refresh">↻</button>
+    </div>
+  </header>
+  <nav class="navigation" aria-label="控制台工作区">
+    <button class="nav-item active" data-screen="overview">总览</button>
+    <button class="nav-item" data-action="existing">调度规则</button>
+    <button class="nav-item" data-screen="design">会话管理 <span class="nav-badge">6</span></button>
+    <button class="nav-item" data-action="existing">执行轮次</button>
+    <button class="nav-item" data-action="existing">待我处理 <span class="nav-badge danger">3</span></button>
+  </nav>
+  <div class="prototype-tools" aria-label="设计稿状态切换">
+    <span>设计稿</span>
+    <label>页面状态<select id="state-select"><option value="normal">正常</option><option value="empty">空状态</option><option value="loading">加载中</option><option value="error">加载失败</option><option value="blocked">阻塞</option></select></label>
+  </div>
+  <main>
+    <div id="state-banner" class="state-banner" hidden></div>
+
+    <section id="screen-overview" class="screen">
+      <div class="page-heading">
+        <div><p class="eyebrow">PILOT OVERVIEW</p><h1>今天的自动化</h1><p class="subtle">看见进展，只处理真正需要你的事。</p></div>
+        <button class="button primary" data-action="new-session"><span class="button-icon">＋</span>新建会话</button>
+      </div>
+      <div class="summary-grid">
+        <article class="metric"><span class="metric-label">正在运行</span><strong>8</strong><small>Agent 正在处理</small></article>
+        <article class="metric"><span class="metric-label">等待重试</span><strong>2</strong><small>排队或等待下一次尝试</small></article>
+        <article class="metric"><span class="metric-label">今日完成</span><strong>9</strong><small>输入与输出合计 1,234 Token</small></article>
+        <article class="metric attention"><span class="metric-label">需要您处理</span><strong>3</strong><small>仅产品、凭据与穷尽失败</small></article>
+      </div>
+      <section class="panel project-progress-panel">
+        <div class="panel-heading">
+          <div><h2>项目任务进度</h2><p class="subtle">串行链与并行 DAG 在同一项目中汇总 · 点击节点看详情</p></div>
+          <span class="subtle">2 个项目</span>
+        </div>
+        <article class="project-progress dag-project">
+          <div class="project-heading-row"><div><div class="title-with-badge"><h3>health-service</h3><span class="status good">并行 DAG</span></div><p data-dag-node-summary>多租户计费拆分 · 8 个节点 · 第 2/3 波</p></div><button class="text-button" data-screen="dag">查看运行详情 →</button></div>
+          <div class="project-usage"><div><span>今日费用</span><strong>$2.84</strong></div><div><span>累计费用</span><strong>$18.62</strong></div><div><span>今日 Token</span><strong>182K</strong><small>入 131K / 出 51K</small></div><div><span>累计 Token</span><strong>1.24M</strong><small>入 886K / 出 354K</small></div></div>
+          <div class="dag-visual">
+            <div class="donut-wrap">
+              <div class="dag-donut" role="img" aria-label="DAG 总进度 25%，8 个节点，逐节点分段"><div><strong>25%</strong><span>总进度</span></div></div>
+              <div class="donut-legend"><span><i class="wave-1"></i>第 1 波</span><span><i class="wave-2"></i>第 2 波</span><span><i class="wave-3"></i>第 3 波</span><small>颜色 = 波次 · 深浅 = 状态</small></div>
+            </div>
+            <div class="progress-waves">
+              <div class="progress-wave"><div class="progress-wave-label"><span>第 1 波</span><small>2 个已完成</small></div><div><button class="progress-node w1 done" data-screen="dag"><strong>✓ 账户模型</strong><small>已合并</small><p class="node-task-summary">租户账户关系已迁移，越权测试通过</p><em class="node-agent">Codex · K3.1 Pro</em></button><button class="progress-node w1 done" data-screen="dag"><strong>✓ 租户配置</strong><small>已合并</small><p class="node-task-summary">租户配置隔离已合入基线</p><em class="node-agent">Codex · K3.1 Pro</em></button></div></div>
+              <div class="progress-wave"><div class="progress-wave-label"><span>第 2 波</span><small>3 路在途 · 1 项阻塞</small></div><div><button class="progress-node w2 active" data-screen="dag"><strong>● 计费规则</strong><small>开发中 · 槽位 1</small><p class="node-task-summary">正在拆分租户规则并跑越权测试 12/16</p><em class="node-agent">WorkBuddy · K3</em></button><button class="progress-node w2 review" data-screen="dag"><strong>◐ 账单 API</strong><small>审阅中 · 槽位 2</small><p class="node-task-summary">Reviewer 正在核对租户过滤与 PR #418</p><em class="node-agent">Claude · Sonnet 5.5</em></button><button class="progress-node w2 blocked" data-screen="dag"><strong>! 发票导出</strong><small>产品决策</small><p class="node-task-summary">等待选择 CSV 或 PDF，暂不派发</p><em class="node-agent">待派发 · 模型待选择</em></button></div></div>
+              <div class="progress-wave"><div class="progress-wave-label"><span>第 3 波</span><small>等待上游合并</small></div><div><button class="progress-node w3 pending" data-screen="dag"><strong>○ 汇总报表</strong><small>未开始</small><p class="node-task-summary">等待计费规则和账单 API 合并</p><em class="node-agent">待派发 · 模型待选择</em></button><button class="progress-node w3 pending" data-screen="dag"><strong>○ 整合审查</strong><small>最后执行</small><p class="node-task-summary">等待全部业务节点 accepted</p><em class="node-agent">待派发 · 独立 Reviewer</em></button></div></div>
+            </div>
+          </div>
+          <div class="capacity-note"><span class="info-icon">i</span><span>4/5 路占用（含 1 个隔离槽位）· 专用 worker 容量 8 · 只有 PR 合并后下游才启动。</span></div>
+        </article>
+        <article class="project-progress serial-project">
+          <div class="project-heading-row"><div><div class="title-with-badge"><h3>vibeguide</h3><span class="status">串行链</span></div><p>V6 适配监工 · 5/11 节点完成 · 按执行顺序排列</p></div><button class="text-button" data-action="view-history">查看全部节点 →</button></div>
+          <div class="project-usage"><div><span>今日费用</span><strong>$0.92</strong></div><div><span>累计费用</span><strong>$12.40</strong></div><div><span>今日 Token</span><strong>86K</strong><small>入 61K / 出 25K</small></div><div><span>累计 Token</span><strong>640K</strong><small>入 448K / 出 192K</small></div></div>
+          <div class="dag-visual serial-visual">
+            <div class="donut-wrap">
+              <div class="dag-donut serial-donut" role="img" aria-label="串行链总进度 45%，11 个节点"><div><strong>45%</strong><span>总进度</span></div></div>
+              <div class="donut-legend"><span><i class="wave-1"></i>串行序列</span><small>同一色相 · 深浅 = 状态</small></div>
+            </div>
+            <div class="progress-waves">
+              <div class="progress-wave"><div class="progress-wave-label"><span>已完成</span><small>前 5 个节点</small></div><div><button class="progress-node w1 done" data-action="view-history"><strong>✓ 授权恢复</strong><small>已完成</small><p class="node-task-summary">授权恢复路径已验证</p><em class="node-agent">Codex · K3.1 Pro</em></button><button class="progress-node w1 done" data-action="view-history"><strong>✓ 状态迁移</strong><small>已完成</small><p class="node-task-summary">旧状态已迁移并保留证据</p><em class="node-agent">Claude · Sonnet 5.5</em></button><button class="text-button more-nodes" data-action="view-history">另有 3 个已完成 →</button></div></div>
+              <div class="progress-wave"><div class="progress-wave-label"><span>当前</span><small>第 6 个节点</small></div><div><button class="progress-node w1 current" data-action="view-history"><strong>● P1b 上下文</strong><small>开发中 · 65%</small><p class="node-task-summary">正在压缩续接上下文并补回归测试</p><em class="node-agent">WorkBuddy · K3</em></button><button class="progress-node w1 pending" data-action="view-history"><strong>○ P1c 返工接力</strong><small>下一个</small><p class="node-task-summary">等待 P1b 审阅合并后启动</p><em class="node-agent">待派发 · 模型待选择</em></button></div></div>
+            </div>
+          </div>
+        </article>
+      </section>
+    </section>
+
+    <section id="screen-design" class="screen session-management-screen">
+      <div class="page-heading compact-heading session-page-heading">
+        <div><p class="eyebrow">SESSIONS</p><h1>会话管理</h1><p class="subtle">普通对话、调度协调与 PRD 设计，在同一个项目工作区里各就其位。</p></div>
+        <button class="button primary" data-action="new-session"><span class="button-icon">＋</span>新建会话</button>
+      </div>
+      <div class="session-layout panel">
+        <aside class="session-sidebar">
+          <div class="session-search"><input type="search" placeholder="搜索会话" aria-label="搜索会话"></div>
+          <div class="session-kind-tabs" role="tablist" aria-label="会话类型">
+            <button class="active" data-kind="normal" role="tab">普通 <span>3</span></button>
+            <button data-kind="scheduling" role="tab">调度 <span>2</span></button>
+            <button data-kind="design" role="tab">设计 <span>1</span></button>
+          </div>
+          <div id="session-list" class="session-list">
+            <article class="session-item" data-kind="normal" data-session="api-analysis">
+              <div class="session-item-main"><button class="session-select" data-session="api-analysis"><strong>账单 API 依赖分析</strong><span>health-service · 11-16</span><small>只读分析了账单模块的依赖关系…</small></button></div>
+              <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
+            </article>
+            <article class="session-item" data-kind="normal" data-session="css-review">
+              <div class="session-item-main"><button class="session-select" data-session="css-review"><strong>控制台样式检查</strong><span>multiagent-autoloop · 11-15</span><small>检查移动端卡片间距与溢出…</small></button></div>
+              <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
+            </article>
+            <article class="session-item" data-kind="normal" data-session="readme-question">
+              <div class="session-item-main"><button class="session-select" data-session="readme-question"><strong>README 安装步骤问答</strong><span>vibeguide · 11-14</span><small>解释初始化与能力登记的区别…</small></button></div>
+              <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
+            </article>
+            <article class="session-item" data-kind="scheduling" data-session="scheduler-v6" hidden>
+              <div class="session-item-main"><button class="session-select" data-session="scheduler-v6"><strong>V6 调度与恢复</strong><span>vibeguide · 11-16</span><small>正在核实审阅规则频限绕行…</small></button></div>
+              <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
+            </article>
+            <article class="session-item" data-kind="scheduling" data-session="scheduler-health" hidden>
+              <div class="session-item-main"><button class="session-select" data-session="scheduler-health"><strong>健康服务调度</strong><span>health-service · 11-13</span><small>部署分支与开发事件链已解耦…</small></button></div>
+              <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
+            </article>
+            <article class="session-item active" data-kind="design" data-session="design-tenant" hidden>
+              <div class="session-item-main"><button class="session-select" data-session="design-tenant"><strong>多租户计费拆分</strong><span>health-service · 11-16</span><small>PRD 已闭合，Spec 与 DAG 待确认…</small></button></div>
+              <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
+            </article>
+          <article class="session-item" data-kind="normal" data-session="archived-settle" data-archived="true" hidden>
+              <div class="session-item-main"><button class="session-select" data-session="archived-settle"><strong>旧版结算讨论</strong><span>health-service · 11-08</span><small>旧流程保留到迁移完成，期间双写…</small></button></div>
+              <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
+            </article>
+            <article class="session-item" data-kind="normal" data-session="archived-permission" data-archived="true" hidden>
+              <div class="session-item-main"><button class="session-select" data-session="archived-permission"><strong>权限方案评估</strong><span>health-service · 11-05</span><small>角色权限拆分需回归越权用例…</small></button></div>
+              <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
+            </article>
+          </div>
+          <div class="archived-sessions"><button data-action="toggle-archived">已归档与历史 <span id="archived-count">2</span><span class="archive-chevron">⌄</span></button><div id="archived-list" hidden><p class="history-note">默认折叠 · 可查看 · 可恢复 · 不自动清理</p><div class="archived-entry" data-archived-session="archived-settle"><span class="archived-entry-title">旧版结算讨论 · health-service</span><span class="archived-entry-actions"><button data-action="view-archived">查看</button><button data-action="restore">恢复</button></span></div><div class="archived-entry" data-archived-session="archived-permission"><span class="archived-entry-title">权限方案评估 · health-service</span><span class="archived-entry-actions"><button data-action="view-archived">查看</button><button data-action="restore">恢复</button></span></div></div></div>
+        </aside>
+        <section class="session-workspace">
+          <header class="session-header"><div><div class="title-with-badge"><h2 id="session-title">多租户计费拆分</h2><span id="session-mode" class="mode-badge">▣ 计划模式</span><span id="session-access" class="mode-badge muted-badge">只读</span></div><p id="session-project">health-service · 设计会话 · 今天 10:18 创建</p></div><div class="session-header-actions"><button class="icon-button" title="归档" data-action="archive-current">□</button><button class="icon-button" title="更多" data-action="session-more">···</button></div></header>
+          <div id="session-transcript" class="session-transcript">
+            <div class="session-date-divider"><span>今天</span></div>
+            <div id="session-messages" class="messages"></div>
+          </div>
+          <div class="session-bottom">
+            <div id="design-session-progress" class="design-session-progress"><span>PRD 已闭合</span><span>Spec/DAG 校验通过</span><button class="text-button" data-screen="authorize">确认执行范围 →</button></div>
+            <div class="codex-composer"><textarea id="design-input" aria-label="会话输入" placeholder="继续补充产品要求…"></textarea><div class="codex-composer-footer"><div><button class="composer-tool" data-action="attach">＋</button><span id="composer-context">health-service</span><span class="composer-separator">·</span><span id="composer-mode">Plan · 只读</span></div><button class="composer-send" aria-label="发送" data-action="send">↑</button></div></div>
+            <p id="session-footnote" class="session-footnote">Codex 原生 Plan Mode 已核验 ·  vibe 仅负责 PRD/Spec/DAG 规划与校验</p>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="screen-dag" class="screen" hidden>
+      <div class="page-heading compact-heading">
+        <div><p class="eyebrow">PARALLEL DAG RUN</p><div class="title-with-badge"><h1>多租户计费拆分</h1><span class="status good">运行中</span></div><p class="subtle">run-01J9…7K2 · health-service · 计划 7f3a…9c21</p></div>
+        <div class="heading-actions"><button class="button secondary" data-action="run-report">运行报告</button><button class="button danger-outline" data-action="cancel-run">取消运行</button></div>
+      </div>
+      <div class="run-metrics"><div><span>当前波次</span><strong>2 / 3</strong></div><div><span>业务槽位</span><strong>4 / 5</strong></div><div><span>已完成</span><strong>2 / 7</strong></div><div><span>返工</span><strong>1 次</strong></div><div><span>隔离槽位</span><strong class="warning-text">1 个</strong></div></div>
+      <div class="dag-layout">
+        <section class="panel waves-panel">
+          <div class="panel-heading"><div><h2>执行波次</h2><p class="subtle">只有 PR 合并后，下游节点才会启动</p></div><span class="subtle">点击查看节点</span></div>
+          <div class="wave"><div class="wave-label"><span>第 1 波</span><small>已完成</small></div><div class="wave-nodes"><button class="dag-node done" data-node="account"><span class="node-status-icon">✓</span><strong>账户模型</strong><small>PR #412 已合并</small><p class="node-task-summary">租户账户关系已迁移，越权测试通过</p><em class="node-agent">Codex · K3.1 Pro</em></button><button class="dag-node done" data-node="tenant"><span class="node-status-icon">✓</span><strong>租户配置</strong><small>PR #415 已合并</small><p class="node-task-summary">租户配置隔离已合入基线</p><em class="node-agent">Codex · K3.1 Pro</em></button></div></div>
+          <div class="wave"><div class="wave-label"><span>第 2 波</span><small>4 路在途</small></div><div class="wave-nodes"><button class="dag-node active selected" data-node="billing"><span class="node-status-icon">●</span><strong>计费规则</strong><small>开发中 · 槽位 1</small><p class="node-task-summary">拆分租户规则并跑越权测试 12/16</p><em class="node-agent">WorkBuddy · K3</em></button><button class="dag-node review" data-node="api"><span class="node-status-icon">◐</span><strong>账单 API</strong><small>独立审阅 · 槽位 2</small><p class="node-task-summary">Reviewer 正在核对租户过滤与 PR #418</p><em class="node-agent">Claude · Sonnet 5.5</em></button><button class="dag-node active" data-node="audit"><span class="node-status-icon">●</span><strong>审计日志</strong><small>开发中 · 槽位 3</small><p class="node-task-summary">补齐越权拒绝与配置变化审计记录</p><em class="node-agent">Codex · K3.1 Pro</em></button><button class="dag-node blocked" data-node="invoice"><span class="node-status-icon">!</span><strong>发票导出</strong><small>等待产品决策</small><p class="node-task-summary">等待选择 CSV 或 PDF，暂不派发</p><em class="node-agent">待派发 · 模型待选择</em></button></div></div>
+          <div class="wave"><div class="wave-label"><span>第 3 波</span><small>未开始</small></div><div class="wave-nodes"><button class="dag-node" data-node="report"><span class="node-status-icon">○</span><strong>汇总报表</strong><small>依赖计费规则、账单 API</small><p class="node-task-summary">等待上游合并后的新基线</p><em class="node-agent">待派发 · 模型待选择</em></button><button class="dag-node" data-node="integration"><span class="node-status-icon">○</span><strong>整合审查</strong><small>全部业务节点后</small><p class="node-task-summary">等待业务节点完成后只读整合审查</p><em class="node-agent">待派发 · 独立 Reviewer</em></button></div></div>
+        </section>
+        <aside class="dag-sidebar">
+          <section class="panel node-detail" id="node-detail"><div class="panel-heading"><h3>计费规则</h3><span class="status good">开发中</span></div><dl class="fact-list"><div><dt>槽位</dt><dd>dag-slot-1</dd></div><div><dt>阶段</dt><dd>离线测试 · 12/16</dd></div><div><dt>分支</dt><dd><code>feat/run-01-billing</code></dd></div><div><dt>执行 Agent</dt><dd id="detail-agent">WorkBuddy</dd></div><div><dt>模型</dt><dd id="detail-model">K3</dd></div><div><dt>证据</dt><dd><a href="#" data-action="evidence">查看测试与交付</a></dd></div></dl><div class="node-contract"><strong>当前任务摘要</strong><p id="detail-summary">正在拆分租户计费规则并运行越权测试 12/16。</p></div><div class="node-contract"><strong>节点契约</strong><p id="detail-contract">按租户应用计费规则；越权访问必须拒绝并留下审计记录。</p></div></section>
+          <section class="panel side-card"><div class="panel-heading"><h3>发布器</h3><span class="status good">串行</span></div><p class="side-copy">prepare / commit-pr / verify / merge / slot-release</p><div class="publish-step done">✓ 账单 API · PR #418 已创建</div><div class="publish-step active">● 汇总报表 · 等待上游合并</div></section>
+          <section class="panel side-card"><div class="panel-heading"><h3>隔离槽位</h3><span class="status warn">1 个</span></div><p class="side-copy">dag-slot-5 · run 失联 18 分钟，旧回执已作废，仍占 1 路名额。</p><button class="button secondary full" data-screen="preflight">查看恢复条件</button></section>
+        </aside>
+      </div>
+      <section class="panel history-runs"><button data-action="toggle-run-history"><span>历史 DAG 运行</span><small>已完成 6 个 · 默认折叠 · 不自动清理</small><span>⌄</span></button><div id="run-history-list" hidden><button data-action="view-history"><strong>订单模块改造</strong><span>已完成 · 11-14 · 8 节点</span><span class="history-usage">费用 $4.28 · Token 182K</span><span>查看报告 →</span></button><button data-action="view-history"><strong>权限模型迁移</strong><span>已完成 · 11-11 · 5 节点</span><span class="history-usage">费用 $2.16 · Token 96K</span><span>查看报告 →</span></button></div></section>
+    </section>
+
+    <section id="screen-preflight" class="screen" hidden>
+      <div class="page-heading compact-heading"><div><p class="eyebrow">PROJECT ONBOARDING</p><h1>接入并行 DAG 前的检查</h1><p class="subtle">health-service · 只新建规则与槽位，不修改现有串行链</p></div><span class="status warn">6 / 7 项通过</span></div>
+      <div class="preflight-layout">
+        <section class="panel checklist-panel">
+          <div class="panel-heading"><div><h2>环境与权限</h2><p class="subtle">所有检查通过后才会创建活跃 DAG</p></div></div>
+          <div class="preflight-row good"><span class="check-icon">✓</span><div><strong>vibe CLI 5.2.7</strong><p>与已验证的输出契约夹具一致</p></div><span class="status good">通过</span></div>
+          <div class="preflight-row good"><span class="check-icon">✓</span><div><strong>规划环境已初始化</strong><p>.vibe/state.json 存在，产物留在目标项目</p></div><span class="status good">通过</span></div>
+          <div class="preflight-row warn"><span class="check-icon">!</span><div><strong>Codex 能力记录需要更新</strong><p>现有记录已超过 72 小时。请在真实 Codex 会话中执行一次 <code>vibe attest</code>，控制台不会代写能力证据。</p><button class="text-button" data-action="attest-help">查看操作说明 →</button></div><span class="status warn">需处理</span></div>
+          <div class="preflight-row good"><span class="check-icon">✓</span><div><strong>5 个固定槽位 + 1 个整合基线</strong><p>槽位目录隔离，主 checkout 只读；没有脏工作区</p></div><span class="status good">通过</span></div>
+          <div class="preflight-row good"><span class="check-icon">✓</span><div><strong>DAG 专用 worker · 容量 8</strong><p>5 路业务 + 发布器 + 控制器 + 门禁；旧链使用原 worker</p></div><span class="status good">通过</span></div>
+          <div class="preflight-row good"><span class="check-icon">✓</span><div><strong>事件与规则组无冲突</strong><p>项目事件类型、通配订阅和组名均已检查</p></div><span class="status good">通过</span></div>
+          <div class="preflight-row good"><span class="check-icon">✓</span><div><strong>离线测试可运行</strong><p>verify 使用固定命令；prepare 不执行依赖安装脚本</p></div><span class="status good">通过</span></div>
+        </section>
+        <aside class="preflight-sidebar">
+          <section class="panel side-card"><div class="panel-heading"><h3>将要创建</h3></div><ul class="plain-list"><li>10 条槽位开发/审阅规则</li><li>1 条串行发布器规则</li><li>1 组控制器与门禁规则</li><li>5 个开发槽位 + 1 个整合基线</li></ul><p class="side-copy">不会修改 V6、MT、执行波等现有规则。</p></section>
+          <section class="panel side-card"><div class="panel-heading"><h3>清理清单</h3><span class="status good">已确认</span></div><p class="side-copy">仅清理本 DAG 的证据、构建与缓存目录；WIP 先保存到 refs/dag-wip，保留 30 天。</p><button class="text-button" data-action="cleanup-list">查看目录清单 →</button></section>
+          <button class="button primary full" data-action="finish-preflight">处理剩余 1 项后完成接入</button>
+        </aside>
+      </div>
+    </section>
+
+    <section id="screen-authorize" class="screen" hidden>
+      <div class="page-heading compact-heading"><div><p class="eyebrow">EXECUTION CONFIRMATION</p><h1>确认 PRD、DAG 与执行范围</h1><p class="subtle">这是进入 Hub 事件链的唯一授权确认，不使用 vibe 监工授权卡</p></div><span class="mode-badge">planDigest 7f3a…9c21</span></div>
+      <div class="authorize-layout">
+        <section class="panel authorization-main">
+          <div class="confirmation-summary"><div><span>项目</span><strong>health-service</strong></div><div><span>节点</span><strong>7 业务 + 1 整合审查</strong></div><div><span>最大并行</span><strong>5 路</strong></div><div><span>合并策略</span><strong>独立审阅后 squash</strong></div></div>
+          <div class="authorization-section"><h2>本次允许</h2><div class="permission-grid"><label><input type="checkbox" checked disabled><span><strong>独立 worktree 与离线测试</strong><small>5 个固定槽位，互不写入</small></span></label><label><input type="checkbox" checked disabled><span><strong>推送分支并创建 PR</strong><small>仅推送到 halfmoon82/health-service</small></span></label><label><input type="checkbox" checked disabled><span><strong>独立审阅与 P0–P2 返工</strong><small>三次未收敛先换打法，再决定是否升级</small></span></label><label><input type="checkbox" checked disabled><span><strong>审阅通过后 squash 合并</strong><small>远端 head 必须等于已审 commit</small></span></label><label><input type="checkbox" checked disabled><span><strong>替代旧 attempt 的 PR</strong><small>仅关闭本 DAG 登记的 PR并附说明</small></span></label></div></div>
+          <div class="authorization-section excluded"><h2>始终不包含</h2><div class="excluded-tags"><span>部署</span><span>发布</span><span>生产数据写入</span><span>新建或读取其他凭据</span><span>对外通信</span><span>修改存量串行链</span></div></div>
+          <div class="authorization-section"><h2>PRD / Spec / DAG 摘要</h2><div class="digest-box"><p>多租户账单隔离；7 个业务节点分 3 波执行，外加 1 个整合审查节点；发票导出等待“CSV 或 PDF”产品决策，其他节点不受影响。</p><div><span>product-spec</span><code>4b81…a02e</code><span>plan + nodes</span><code>7f3a…9c21</code></div></div></div>
+        </section>
+        <aside class="authorize-sidebar">
+          <section class="panel confirm-card"><div class="panel-heading"><h3>确认前请阅读</h3></div><p>确认后，ready 节点会立即进入 Hub 事件链。每个节点仍需独立审阅，合并不代表部署。</p><label class="confirm-check"><input id="authorize-check" type="checkbox"><span>我已阅读 PRD、Spec、DAG 和上述执行范围。</span></label><button id="authorize-button" class="button primary full" data-action="authorize" disabled>确认并进入事件链</button><button class="button secondary full" data-screen="design">返回设计会话</button><small class="confirm-footnote">确认动作与计划摘要一起写入 authorizationSnapshot。</small></section>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <dialog id="new-session-dialog" class="new-session-dialog" aria-labelledby="new-session-title">
+    <div class="dialog-heading"><div><p class="eyebrow">NEW SESSION</p><h2 id="new-session-title">新建会话</h2><p class="subtle">根据第一句话的语义推荐会话类型，您也可以手动更改。</p></div><button class="icon-button" aria-label="关闭" data-action="close-new-session">×</button></div>
+    <label class="form-field">项目工作区<select id="new-session-project"><option>health-service</option><option>multiagent-autoloop</option><option>vibeguide</option></select></label>
+    <label class="form-field">您想做什么？<textarea id="new-session-request" placeholder="例如：分析一下账单 API 的依赖；排查失败的调度任务；设计一个多租户计费方案…"></textarea></label>
+    <div class="session-classification">
+      <div class="classification-top"><span>语义判断</span><span id="classification-method">vibe-entry 改造版 · S0/S1 + 意图</span></div>
+      <div class="classification-result"><span id="classification-icon">○</span><div><strong id="classification-title">等待输入</strong><p id="classification-reason">普通问答/分析、调度协调、复杂 PRD 设计会进入不同会话协议。</p></div></div>
+      <div class="classification-override" role="radiogroup" aria-label="手动选择会话类型"><button class="active" data-type-override="auto">自动</button><button data-type-override="normal">普通</button><button data-type-override="scheduling">调度</button><button data-type-override="design">设计</button></div>
+    </div>
+    <div id="classification-contract" class="classification-contract">普通会话：直接创建于项目工作区，不组装额外提示词。</div>
+    <div class="dialog-actions"><button class="button secondary" data-action="close-new-session">取消</button><button class="button primary" data-action="create-session" disabled>创建会话</button></div>
+  </dialog>
+  <dialog id="delete-session-dialog" class="delete-session-dialog"><h2>删除这条会话？</h2><p>删除会移除会话入口与本地转录，且不可恢复。若只是暂时不用，建议归档。</p><div class="dialog-actions"><button class="button secondary" data-action="cancel-delete">取消</button><button class="button danger-outline" data-action="confirm-delete">确认删除</button></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script type="module" src="./prototype.mjs"></script>
+</body>
+</html>
