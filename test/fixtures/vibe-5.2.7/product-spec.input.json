@@ -1,0 +1,5 @@
+{
+  "title": "多租户计费",
+  "objective": "租户账单隔离",
+  "decisions": [{"id": "d1", "selected": "CSV", "status": "approved"}]
+}

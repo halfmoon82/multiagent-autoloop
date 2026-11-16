@@ -1,0 +1,17 @@
+[
+  {
+    "id": "account-model", "title": "账户模型", "depends_on": [], "integration_after": [], "parallel_group": null,
+    "status": "planned",
+    "contract": {"input": "现有账户", "output": "租户账户", "error_behavior": "越权拒绝", "acceptance_example": "跨租户读取返回 403", "files": ["src/account.ts"]}
+  },
+  {
+    "id": "billing-api", "title": "账单 API", "depends_on": ["account-model"], "integration_after": [], "parallel_group": null,
+    "status": "planned",
+    "contract": {"input": "租户账户", "output": "账单查询", "error_behavior": "越权拒绝", "acceptance_example": "只能读取本租户账单", "files": ["src/billing.ts"]}
+  },
+  {
+    "id": "integration-review", "title": "整合审查", "depends_on": ["billing-api"], "integration_after": [], "parallel_group": null,
+    "status": "planned",
+    "contract": {"input": "全部交付", "output": "只读审查", "error_behavior": "发现即阻塞", "acceptance_example": "P0-P2 清零", "files": ["src/account.ts", "src/billing.ts"]}
+  }
+]
