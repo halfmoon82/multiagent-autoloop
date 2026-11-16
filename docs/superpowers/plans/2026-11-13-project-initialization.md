@@ -2,7 +2,7 @@
 
 > 执行方式：当前 Codex 会话原生执行；PR 创建后派发独立只读 reviewer。
 > 设计基线：`docs/2026-11-13-project-initialization-design.md`。
-> 项目根目录：`/Volumes/Storage/auto调度`。
+> 项目根目录：`<本机仓库路径>`。
 
 ## 文件地图
 

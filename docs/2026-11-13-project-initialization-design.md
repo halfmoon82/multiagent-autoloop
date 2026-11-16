@@ -1,7 +1,7 @@
 # Multiagent Autoloop 项目初始化设计
 
 日期：2026-11-13
-项目根目录：`/Volumes/Storage/auto调度`
+项目根目录：`<本机仓库路径>`
 公开仓库：`<owner>/multiagent-autoloop`
 
 ## 目标

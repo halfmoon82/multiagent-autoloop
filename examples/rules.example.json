@@ -47,7 +47,6 @@
     {
       "name": "示例调度自愈",
       "when": {
-        "source": "schedule",
         "cron": "*/30 * * * *"
       },
       "to": "codex-full",
@@ -69,7 +68,6 @@
     {
       "name": "示例串行控制器",
       "when": {
-        "source": "schedule",
         "cron": "*/15 * * * *"
       },
       "to": "demo-controller",
@@ -79,7 +77,6 @@
     {
       "name": "示例只读分析",
       "when": {
-        "source": "schedule",
         "cron": "0 * * * *"
       },
       "to": "codex",

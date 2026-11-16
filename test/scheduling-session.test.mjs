@@ -284,8 +284,8 @@ test('rejects control characters in project and prefers duplicate message over c
   await assert.rejects(manager.start({ project: 'owner/other' }), /最多同时开启/);
   await assert.rejects(manager.start({ project: 'bad\x00project' }), /控制字符/);
   await manager.close(manager.list()[0].id);
-  const spaced = await manager.start({ project: '/Volumes/Storage/Home/Desktop/AI project/socialmore' });
-  assert.equal(spaced.project, '/Volumes/Storage/Home/Desktop/AI project/socialmore');
+  const spaced = await manager.start({ project: '/home/alice/projects/AI project demo' });
+  assert.equal(spaced.project, '/home/alice/projects/AI project demo');
   await manager.close(spaced.id);
 });
 
@@ -294,8 +294,8 @@ test('rejects a second active session for the same project but allows other proj
   const second = fakeAdapter();
   let n = 0;
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => (++n === 1 ? first.process : second.process) });
-  await manager.start({ project: '/Volumes/Storage/auto调度' });
-  await assert.rejects(manager.start({ project: '/Volumes/Storage/auto调度' }), /已有进行中的调度会话/);
+  await manager.start({ project: '/home/alice/projects/console' });
+  await assert.rejects(manager.start({ project: '/home/alice/projects/console' }), /已有进行中的调度会话/);
   const other = await manager.start({ project: 'owner/other' });
   assert.equal(manager.list().length, 2);
   for (const session of manager.list()) await manager.close(session.id);
