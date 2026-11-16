@@ -71,9 +71,14 @@ async function handleApi(config, req, res, url) {
     const project = String(body.project || '');
     const known = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).find(item => item.path === project);
     if (!known) throw new RequestError(400, '项目不在已发现的 Git 仓库列表中，请从下拉选择');
-    const kind = body.kind === undefined || body.kind === null || body.kind === '' ? 'scheduling' : String(body.kind);
-    if (!['normal', 'scheduling', 'design'].includes(kind)) throw new RequestError(400, '会话类型必须是 normal、scheduling 或 design');
-    return jsonResponse(res, 201, await config.schedulingSessions.start({ kind, prompt: body.prompt, project: known.path }));
+    // 创建流：首轮提示词必填，创建完成前会话不执行任何轮次；kind 缺省时按首轮语义分类，显式 kind 视为用户覆盖。
+    const prompt = String(body.prompt ?? '').trim();
+    if (!prompt) throw new RequestError(400, '请先输入首轮提示词，再创建会话');
+    const explicit = body.kind === undefined || body.kind === null || body.kind === '' ? null : String(body.kind);
+    if (explicit && !['normal', 'scheduling', 'design'].includes(explicit)) throw new RequestError(400, '会话类型必须是 normal、scheduling 或 design');
+    const kind = explicit || classifySessionRequest(prompt).kind;
+    if (!kind) throw new RequestError(400, '无法判定会话类型，请补充首轮提示词');
+    return jsonResponse(res, 201, await config.schedulingSessions.start({ kind, prompt, project: known.path }));
   }
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   let match;

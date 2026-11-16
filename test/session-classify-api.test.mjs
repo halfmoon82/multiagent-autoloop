@@ -37,9 +37,23 @@ test('classify endpoint recommends normal, scheduling or design from the first s
     assert.equal(started.status, 201);
     assert.equal(calls.at(-1)[3], 'design', 'kind must be passed through to the session manager');
 
-    const defaulted = await fetch(`${url}/api/scheduling-sessions`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ prompt: '检查调度', project: repo }) });
-    assert.equal(defaulted.status, 201);
-    assert.equal(calls.at(-1)[3], 'scheduling', 'kind defaults to scheduling for backwards compatibility');
+    const post = body => fetch(`${url}/api/scheduling-sessions`, { method: 'POST', headers: writeHeaders, body: JSON.stringify(body) });
+    // 创建流：未指定 kind 时由服务端按首轮提示词语义分类，不再默认 scheduling。
+    assert.equal((await post({ prompt: '检查调度', project: repo })).status, 201);
+    assert.equal(calls.at(-1)[3], 'scheduling', 'scheduling-intent prompt classifies as scheduling');
+    assert.equal((await post({ prompt: '分析一下账单 API 的依赖关系', project: repo })).status, 201);
+    assert.deepEqual(calls.at(-1).slice(1), ['分析一下账单 API 的依赖关系', repo, 'normal'], 'normal prompt is passed verbatim with classified kind');
+    // 用户覆盖优先于分类建议。
+    assert.equal((await post({ prompt: '分析一下账单 API 的依赖关系', project: repo, kind: 'scheduling' })).status, 201);
+    assert.equal(calls.at(-1)[3], 'scheduling');
+    // 空首轮提示词：不开会话，只返回提示（含显式 kind 也不例外）。
+    const callsBeforeEmpty = calls.length;
+    for (const body of [{ project: repo }, { project: repo, prompt: '   ' }, { project: repo, prompt: '', kind: 'scheduling' }]) {
+      const empty = await post(body);
+      assert.equal(empty.status, 400);
+      assert.match((await empty.json()).error, /首轮提示词/);
+    }
+    assert.equal(calls.length, callsBeforeEmpty, 'empty first prompt must never reach the session manager');
 
     const invalid = await fetch(`${url}/api/scheduling-sessions`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ prompt: 'x', project: repo, kind: 'superuser' }) });
     assert.equal(invalid.status, 400, 'unknown session kinds must be rejected');
