@@ -51,6 +51,7 @@ function makeRunner({ existingPr = null, failGh = false } = {}) {
   const calls = [];
   const runner = async (command, args, options = {}) => {
     calls.push({ command, args, cwd: options.cwd, env: options.env });
+    if (command === fakeVibe) return { stdout: execFileSync(command, args, { cwd: options.cwd, encoding: 'utf8', env: options.env }) };
     if (command === 'git') return { stdout: execFileSync('git', args, { cwd: options.cwd, encoding: 'utf8', env: options.env }) };
     if (command === 'gh') {
       if (failGh) throw new Error('gh boom');
@@ -72,6 +73,7 @@ test('publish snapshot is server-built, whitelisted, and refuses deploy/release/
   assert.deepEqual(snap.actions, PUBLISH_ACTIONS);
   assert.deepEqual([...PUBLISH_ACTIONS], ['push-branch', 'create-pr']);
   assert.equal(snap.branch, 'docs/demo-plan');
+  assert.throws(() => buildPublishSnapshot({ planId: 'demo-plan', baseBranch: 'HEAD' }), /游离 HEAD/);
   assert.throws(() => buildPublishSnapshot({ planId: 'demo-plan', baseBranch: 'main', actions: ['push-branch', 'deploy'] }), /禁止/);
   assert.throws(() => buildPublishSnapshot({ planId: 'demo-plan', baseBranch: 'main', actions: ['merge'] }), /授权/);
   assert.throws(() => buildPublishSnapshot({ planId: '../x', baseBranch: 'main' }), /planId/);
@@ -131,6 +133,8 @@ test('publish pushes docs/<planId> from a temp worktree, opens a PR, and leaves 
   assert.ok(!pushes.some(p => p.args.some(a => /(^|[:/])main$/.test(a) || a.includes('--force'))));
   const gh = calls.filter(c => c.command === 'gh').map(c => c.args.slice(0, 2).join(' '));
   assert.deepEqual(gh, ['pr list', 'pr create']);
+  const vibePlan = calls.find(c => c.command === fakeVibe && c.args[0] === 'plan');
+  assert.ok(vibePlan, 'vibe plan 应经注入 runner 执行');
   const create = calls.find(c => c.command === 'gh' && c.args[1] === 'create');
   assert.deepEqual([create.args[create.args.indexOf('--base') + 1], create.args[create.args.indexOf('--head') + 1]], ['main', 'docs/demo-plan']);
   assert.equal(r.authorizationSnapshot.targetRepository, undefined);
@@ -156,6 +160,14 @@ test('publish refuses when the current branch is detached or equals the publish 
   git(root, 'checkout', '-b', 'docs/demo-plan');
   let r = await publishProductSpec(base(root, makeRunner().runner));
   assert.equal(r.error.code, 'invalid_base_branch');
+  git(root, 'checkout', 'main');
+  git(root, 'checkout', '--detach');
+  const detached = makeRunner();
+  r = await publishProductSpec(base(root, detached.runner));
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'invalid_base_branch');
+  assert.ok(!detached.calls.some(c => c.command === 'git' && c.args[0] === 'push'));
+  assert.ok(!detached.calls.some(c => c.command === 'gh'));
   git(root, 'checkout', 'main');
   r = await publishProductSpec(base(root, makeRunner({ failGh: true }).runner));
   assert.equal(r.ok, false);
