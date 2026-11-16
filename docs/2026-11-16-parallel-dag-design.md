@@ -25,7 +25,8 @@
 - 创建时服务端 vibe 路由；simple/light 返回评分，complex 建 draft planId 并启动 Plan Mode 会话。
 - 设计会话使用专用 PRD 引导提示词，不复用 buildSchedulingPrompt 的可写/派发 worker 文案；kind=design 不挂载 Hub MCP，并读取用户配置后对每个 mcp_servers.<name> 显式设置 enabled=false；启动后必须核验工具列表无任何 MCP 工具，任何残余 MCP 权限请求一律取消。
 - 设计会话以约定 JSON 块输出 product-spec；服务端从会话转录提取并计算 specDigest，浏览器只能提交 specDigest + confirm，不能直接提交可信 spec 内容。
-- 确认后服务端把该转录原文写到 .vibe/plans/<planId>/product-spec.input.json，再执行 vibe plan --from-prd；产物留在目标项目，不进入控制台仓库，也不自动提交目标项目 Git。
+- 确认后服务端把该转录原文写到 .vibe/plans/<planId>/product-spec.input.json，再执行 vibe plan --from-prd；vibe 产物留在目标项目 .vibe/，不进入控制台仓库。
+- **publish（决策 #4）**：确认后由服务端代行落地，设计会话自身仍 read-only。服务端先校验能力记录，再在目标项目临时 worktree 中从当前基线分支建 `docs/<planId>`，仅提交 `docs/prd/<planId>/{product-spec,plan,nodes}.json`，推送该分支并创建 PR（已有同分支 open PR 则复用，全流程幂等）。授权快照由服务端生成，只含 push-branch 与 create-pr，明确排除 merge/deploy/release/生产写入/凭据/对外通信；不直推基线分支、不 force push、不 merge。实现见 src/design-publish.mjs。
 - vibe 产物中的 execution_engine=vibeguide_monitor 和授权卡均为副产物，不作为本链执行引擎或授权事实。
 - planDigest 覆盖 product-spec.input.json、plan.json、nodes.json 和服务端生成的 authorizationSnapshot。创建运行时把全部节点契约快照写入 run.json；worker 从 run.json 快照和绝对证据路径获取合同。计划变化须重新确认。
 
