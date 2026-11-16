@@ -53,7 +53,13 @@ Codex / WorkBuddy / Claude Code 等执行平台
 
 - 输入：服务端固定启动 `@agentclientprotocol/codex-acp`，工作目录为被调度项目的本地仓库（项目须是已发现的本机 Git 仓；无法识别时回退本仓库根目录），浏览器不能指定工作目录。
 - 输出：本地 ACP 会话 ID、状态、Codex 适配器信息和关闭结果。
-- 安全：浏览器不能指定启动命令、工作目录或环境变量；ACP 权限请求仅自动批准允许脚本目录（AGENT_AUTOLOOP_HOME/scripts）内的文件编辑，其余一律取消，不自动代批。
+- 安全：浏览器不能指定启动命令、工作目录或环境变量。
+- 专用 CODEX_HOME（`src/session-codex-home.mjs`）：派生会话不继承用户全局 `~/.codex/config.toml` 的 `approval_policy`（事故：全局 `never` 旁路权限门）。控制台在 `<AGENT_AUTOLOOP_HOME>/codex-home/` 每次开会话前重写配置：强制 `approval_policy="on-request"`、`sandbox_mode="workspace-write"`，只白名单继承 model/model_provider/model_providers 等模型供应商项，不继承 notify 钩子、MCP、项目信任；`auth.json` 软链沿用登录态。启动时显式传 `CODEX_HOME`，准备失败拒绝启动（fail closed）。用户全局策略仍归其自有 CLI worker。
+- 按 kind 权限矩阵（`src/session-permission.mjs`，`#decidePermission` 调用）：只选 `allow_once`，无法识别的请求一律取消。
+  - normal：项目工作区内写 + shell + 网络；禁止推 main/master 等非 feat|fix|hotfix|… 前缀分支、force/delete/mirror 推送、裸 `git push`、工作目录越界；`gh pr create`、feature 分支 push、用户授权后的 `gh pr merge` 可走通。首轮另附分支纪律提示块（用户消息保持逐字）。模式 `workspace-write`。
+  - design：全量取消（read-only + Plan Mode，保持不变）。
+  - scheduling：仅 `AGENT_AUTOLOOP_HOME/scripts` 内文件编辑 + `autoloop-hub` 的读工具与 resume/pause/run_rule（及预留 dispatch_task）；shell、网络、项目写入、合并一律取消。模式 `read-only`，创建前设置并核验，失败即拒绝创建。
+- 审计：每次裁定追加到 `<AGENT_AUTOLOOP_HOME>/permission-audit.jsonl`（时间、kind、项目、工具类型、命令、路径、结论、原因），拒绝同时写 stderr。
 - 生命周期：控制台进程持有连接；关闭会话会发送 `session/close` 并终止适配器进程。
 
 ### HTTP 服务 `src/server.mjs`

@@ -28,6 +28,7 @@
 | `src/hub.mjs` | Autoloop Hub 请求、超时和错误转换 | 路由级参数校验、任意 URL 代理 |
 | `src/rules.mjs` | 规则表单转换、草稿校验和原子替换 | Agent 权限定义、目标项目执行 |
 | `src/scheduling-session.mjs` | 本地 Codex ACP 调度会话启动、状态与关闭 | 浏览器直接启动进程、自动审批权限 |
+| `src/session-permission.mjs` / `src/session-codex-home.mjs` | 按 kind 的权限裁定矩阵；会话专用 CODEX_HOME（强制 on-request） | 不继承用户全局 approval_policy，不信任提示词护栏 |
 | `src/session-archive.mjs` | 调度会话写穿存档（console-sessions/）与继续提示词拼装 | ACP 进程恢复、会话业务逻辑 |
 | `src/models.mjs` | 本机模型标签的只读发现与默认文案 | 模型计费推断、凭证采集 |
 | `src/serial-progress.mjs` | 串行编排状态文件（`*-serial.json`）读取、项目映射与进度计算 | 编排状态写入、节点计划定义 |
