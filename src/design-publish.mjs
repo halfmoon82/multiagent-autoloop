@@ -27,8 +27,8 @@ export function publishBranchName(planId) {
 /** 授权快照由服务端按白名单生成；调用方传入的 actions 只用于校验，超出白名单一律拒绝。 */
 export function buildPublishSnapshot({ planId, baseBranch, actions = PUBLISH_ACTIONS }) {
   const branch = publishBranchName(planId);
-  if (!BRANCH.test(String(baseBranch || '')) || baseBranch === branch || baseBranch.startsWith('docs/')) {
-    throw new Error(`发布基线分支无效（不能是 docs/ 发布分支）：${String(baseBranch)}`);
+  if (!BRANCH.test(String(baseBranch || '')) || baseBranch === branch || baseBranch === 'HEAD' || baseBranch.startsWith('docs/')) {
+    throw new Error(`发布基线分支无效（不能是游离 HEAD 或 docs/ 发布分支）：${String(baseBranch)}`);
   }
   for (const action of actions) {
     if (FORBIDDEN_ACTION.test(String(action))) throw new Error(`授权快照包含永远禁止的动作：${action}`);
@@ -64,7 +64,7 @@ export async function publishProductSpec({
   const prdPath = path.join(planDir, 'product-spec.input.json');
   mkdirSync(planDir, { recursive: true });
   writeFileSync(prdPath, json(extracted.productSpec));
-  const planned = await runVibe('plan', { projectRoot: root, prdPath, command: vibeCommand, env });
+  const planned = await runVibe('plan', { projectRoot: root, prdPath, command: vibeCommand, env, runner: (argv, o = {}) => runner(o.command ?? vibeCommand, argv, { cwd: root, env: o.env }) });
   if (!planned.ok) return planned;
   let loaded;
   try { loaded = loadVibePlan({ projectRoot: root, planId }); }
