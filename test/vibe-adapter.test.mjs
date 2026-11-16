@@ -270,13 +270,12 @@ test('runVibe init refuses without explicit confirm and requires initialized sta
   const refused = await runVibe('init', { projectRoot: root, command: fakeBin });
   assert.equal(refused.ok, false);
   assert.equal(refused.error.code, 'confirmation_required');
-  const uninitialized = await runVibe('init', { projectRoot: root, command: fakeBin, confirm: true });
-  assert.equal(uninitialized.ok, false);
-  assert.equal(uninitialized.error.code, 'initialization_required');
-  const ready = makeGitRoot();
-  const ok = await runVibe('init', { projectRoot: ready, command: fakeBin, confirm: true });
-  assert.equal(ok.ok, true);
-  assert.equal(ok.data.initialized, true);
+  const initialized = await runVibe('init', { projectRoot: root, command: fakeBin, confirm: true });
+  assert.equal(initialized.ok, true, 'init 本身就是初始化动作，不受 initialization_required 预检拦截');
+  assert.equal(initialized.data.initialized, true);
+  const blocked = await runVibe('scan', { projectRoot: makeGitRoot(), command: fakeBin });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.code, 'initialization_required');
 });
 
 test('runVibe plan pins --from-prd inside .vibe/plans and requires initialized project', async () => {
