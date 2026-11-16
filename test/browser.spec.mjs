@@ -36,7 +36,8 @@ const schedulingSessions = {
     return session;
   },
   async list() { return this.records; },
-  async start({ prompt, project } = {}) {
+  async start({ prompt, project, kind } = {}) {
+    (this.startCalls ||= []).push({ prompt, project, kind });
     const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
     this.records.push(session); return session;
   },
@@ -257,9 +258,17 @@ try {
   const saved = JSON.parse(readFileSync(rulesFile, 'utf8')); assert.equal(saved.rules.at(-1).name, '手机创建测试');
   await page.getByRole('button', { name: '调度会话', exact: true }).click();
   await page.getByLabel('项目标识').selectOption(demoRepo);
-  await page.getByRole('button', { name: '开启调度会话', exact: true }).click();
+  // 创建流全链：输入首轮提示词 → 分类建议 → 确认前不创建会话 → 确认后一次性发送首轮。
+  await page.getByLabel('首轮提示词').fill('排查失败任务并恢复调度规则');
+  await page.getByRole('button', { name: '分析首轮提示词', exact: true }).click();
+  await page.locator('#session-suggest').waitFor();
+  assert.ok((await page.locator('#session-suggest-reason').innerText()).includes('调度会话'), 'classification suggestion must be shown');
+  assert.equal(await page.getByLabel('会话类型').inputValue(), 'scheduling');
+  assert.equal(schedulingSessions.startCalls?.length || 0, 0, 'no session turn may run before the user confirms');
+  await page.getByRole('button', { name: '确认并发送首轮', exact: true }).click();
   const sessionCard = page.locator('#sessions-list .run-card').filter({ hasText: 'browser-' });
   await sessionCard.waitFor();
+  assert.deepEqual(schedulingSessions.startCalls, [{ prompt: '排查失败任务并恢复调度规则', project: demoRepo, kind: 'scheduling' }], 'first turn must be sent once with the confirmed kind');
   assert.ok((await sessionCard.innerText()).includes('项目 · demo-repo'), 'scheduling session must show its bound project name');
   const chatInput = page.getByLabel('发消息给会话 browser-session');
   await chatInput.fill('草稿在，节点就要在'); // 有草稿才钉住卡片；空输入框按期重建不损失任何东西
@@ -332,7 +341,8 @@ try {
   assert.equal(await page.locator('#project-filter').inputValue(), '', 'clear-filter must reset the project filter');
   await page.getByRole('button', { name: '调度会话', exact: true }).click();
   await page.locator('#session-project').selectOption({ index: 0 });
-  await page.getByRole('button', { name: '开启调度会话', exact: true }).click();
+  await page.getByLabel('首轮提示词').fill('占位项目测试');
+  await page.getByRole('button', { name: '分析首轮提示词', exact: true }).click();
   await page.waitForTimeout(300);
   assert.ok((await page.locator('#notice').innerText()).includes('请先从列表选择'), 'placeholder selection must be rejected before starting a session');
   assert.equal(await page.locator('#sessions-list .run-card').count(), 1, 'no session must be created for placeholder selection');
