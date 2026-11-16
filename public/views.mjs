@@ -1,5 +1,5 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
-import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
@@ -315,16 +315,33 @@ export function renderRunSection(items, emptyText) {
   if (!items.length) return [el('div', 'empty', emptyText)];
   return items.map(runRow);
 }
-export function renderAttention(snapshot, rules = [], agentNames = {}) {
-  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules, agentNames);
-  return renderRunSection(sections.needsAttention, '没有等待调度处理的事。');
+// 频限绕行条目：契约要求"等待重试/待调度处理"中显示"绕行中（原模型频限，核实恢复中）"及被拦模型/宿主；
+// 核实回归后按正常条目展示，不再出现在这里。
+function detourItems(detours, rules) {
+  return (detours || []).filter((detour) => detour.status === 'detoured').map((detour) => {
+    const blocked = detour.blockedModel ? `${detour.blockedAgent}/${detour.blockedModel}` : detour.blockedAgent;
+    const firstRule = detour.rules[0]?.name;
+    const project = firstRule ? ruleProject(rules, firstRule) : '';
+    return {
+      id: detour.id, rule: '频限绕行',
+      ...(project ? { project, projectName: projectName(project) } : {}),
+      status: '绕行中（原模型频限，核实恢复中）',
+      agent: detour.fallbackAgent, model: blocked, text: detour.evidence,
+    };
+  });
 }
-export function renderWorkSections(snapshot, rules = [], agentNames = {}) {
+
+export function renderAttention(snapshot, rules = [], agentNames = {}, detours = []) {
   const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules, agentNames);
+  return renderRunSection([...detourItems(detours, rules), ...sections.needsAttention], '没有等待调度处理的事。');
+}
+export function renderWorkSections(snapshot, rules = [], agentNames = {}, detours = []) {
+  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules, agentNames);
+  const retrying = [...detourItems(detours, rules), ...sections.retrying];
   return {
     running: renderRunSection(sections.running, '没有正在运行的任务。'),
-    retrying: renderRunSection(sections.retrying, '没有等待重试的任务。'),
+    retrying: renderRunSection(retrying, '没有等待重试的任务。'),
     doneToday: renderRunSection(sections.doneToday, '今天还没有完成任务。'),
-    attention: renderAttention(snapshot, rules, agentNames),
+    attention: renderAttention(snapshot, rules, agentNames, detours),
   };
 }

@@ -19,11 +19,11 @@ export async function api(path, options = {}) {
 export async function refresh() {
   if (state.loading) return; state.loading = true;
   try {
-    const [snapshot, ruleData, sessions, projectData, serial, archives] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null), api('/api/session-archives').catch(() => ({ sessions: [] }))]);
+    const [snapshot, ruleData, sessions, projectData, serial, archives, detourData] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null), api('/api/session-archives').catch(() => ({ sessions: [] })), api('/api/detours').catch(() => ({ detours: [] }))]);
     state.serial = serial || { chains: [] };
     state.archived = archives?.sessions || [];
     state.serialFailed = !serial;
-    state.models = ruleData.models || {}; snapshot.models = state.models; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; setConnection(true, '已连接'); if (noticeError) { noticeError = false; showNotice(''); } render();
+    state.detours = detourData?.detours || []; state.models = ruleData.models || {}; snapshot.models = state.models; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; setConnection(true, '已连接'); if (noticeError) { noticeError = false; showNotice(''); } render();
   } catch (error) { setConnection(false, '连接失败'); showErrorNotice(`无法更新：${error.message}`); }
   finally { state.loading = false; }
 }
@@ -145,7 +145,7 @@ function render() {
     const seg = document.querySelector(`.list-row[data-chain="${CSS.escape(openNode.chain)}"] [data-node="${CSS.escape(openNode.node)}"]`);
     if (seg) openNodePop(seg);
   }
-  const work = renderWorkSections(view.snapshot, view.rules, Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)));
+  const work = renderWorkSections(view.snapshot, view.rules, Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)), state.detours || []);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
   replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', state.skipPinOnce); replace('archived-sessions-list', renderArchivedSessions((state.archived || []).filter(item => matchesProject(item.project, state.projectFilter)), state.projects)); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
   syncProjectFilter();

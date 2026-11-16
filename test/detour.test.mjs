@@ -263,3 +263,21 @@ test('saveRule holds the lock across a slow draft check; a concurrent detour in 
   assert.equal(detoured.to, 'claude'); // 两种变更都存活
   assert.ok(added);
 });
+
+// ---- 控制台展示：公开序列化 ----
+import { publicDetour } from '../src/detour.mjs';
+
+test('publicDetour keeps display fields and strips the probe command', () => {
+  const { config } = fixture();
+  const record = recordDetour(config, { ...input, probe: { command: ['/secret/path/probe.sh', '--key', 'abc'], cooldownMinutes: 15 } }, T0);
+  const shown = publicDetour(record);
+  assert.equal(shown.id, 'wb-hy4-1');
+  assert.equal(shown.status, 'detoured');
+  assert.equal(shown.blockedAgent, 'workbuddy');
+  assert.equal(shown.blockedModel, 'hy4free');
+  assert.equal(shown.fallbackAgent, 'claude');
+  assert.equal(shown.evidence, record.evidence);
+  assert.deepEqual(shown.rules, [{ name: '开发', originalTo: 'workbuddy' }, { name: '审阅', originalTo: 'workbuddy' }]);
+  assert.equal(shown.probe, undefined);
+  assert.equal(JSON.stringify(shown).includes('probe.sh'), false);
+});

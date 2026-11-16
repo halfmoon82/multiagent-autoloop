@@ -89,6 +89,11 @@ const schedulingSessions = {
   async close(id) { this.records = this.records.filter(session => session.id !== id); return { id, status: 'closed', statusText: '已关闭' }; },
 };
 const rulesFile = path.join(root, 'rules.json'); writeFileSync(rulesFile, JSON.stringify(rawRules));
+const detourSample = {
+  detoured: { id: 'wb-hy4-browser', status: 'detoured', blockedAt: '2026-11-15T00:24:04.000Z', blockedAgent: 'workbuddy', blockedModel: 'hy4free', evidence: 'WP8 连续 5 次 refusal（429 配额）', fallbackAgent: 'claude', rules: [{ name: 'demo 巡检', originalTo: 'workbuddy' }], probe: { command: ['/secret/probe.sh'], cooldownMinutes: 30 }, lastProbeAt: null, lastProbeOk: null, history: [] },
+  reverted: { id: 'wb-hy4-old', status: 'reverted', blockedAt: '2026-11-14T00:00:00.000Z', revertedAt: '2026-11-15T01:00:00.000Z', blockedAgent: 'workbuddy', blockedModel: 'hy4free', evidence: '旧绕行已回归', fallbackAgent: 'claude', rules: [{ name: 'demo 巡检', originalTo: 'workbuddy' }], probe: { command: ['/secret/probe.sh'], cooldownMinutes: 30 }, lastProbeAt: '2026-11-15T01:00:00.000Z', lastProbeOk: true, history: [] },
+};
+writeFileSync(path.join(root, 'detours.json'), JSON.stringify({ detours: [detourSample.detoured, detourSample.reverted] }));
 const cliPath = path.join(root, 'check.sh'); writeFileSync(cliPath, '#!/bin/sh\nexit 0\n'); chmodSync(cliPath, 0o700);
 const hub = await fakeHub((req, res) => {
   if (req.url === '/v1/state') return json(res, snapshot);
@@ -139,7 +144,8 @@ try {
   assert.ok((await page.locator('#running-list').innerText()).includes(`项目 · ${path.basename(root)}`), 'overview task summary must show its short project name');
   assert.ok((await page.locator('#running-list').innerText()).includes('执行 · 无模型 Agent'), 'overview items must show which agent executes them');
   assert.ok(!(await page.locator('#attention-list').innerText()).includes('是否继续测试'), 'open decision cards must not sit in the scheduling-handled queue');
-  assert.match(await page.locator('#attention-list').innerText(), /没有等待调度处理的事/, 'scheduling queue only lists scheduling-handleable items');
+  const attentionBefore = await page.locator('#attention-list').innerText();
+  assert.ok(attentionBefore.includes('wb-hy4-browser') || attentionBefore.includes('没有等待调度处理的事'), 'scheduling queue only lists scheduling-handleable items (detours count as scheduling-handled)');
   const metric = async index => page.locator('#summary .metric').nth(index).innerText();
   assert.match(await metric(2), /9/, 'unfiltered summary uses the hub totals');
   await page.locator('#project-filter').selectOption(path.basename(root));
@@ -151,6 +157,13 @@ try {
   assert.match(await metric(3), /未上报/, 'a project without reported cost must not fabricate one');
   assert.ok(!(await page.locator('#running-list').innerText()).includes('恢复测试'), 'project filter must hide other projects from running list');
   assert.ok((await page.locator('#retrying-list').innerText()).includes('beta 项目等待重试'), 'project filter must keep the matching retrying run');
+  const retryingText = await page.locator('#retrying-list').innerText();
+  assert.ok(retryingText.includes('绕行中'), 'an active detour must show in the retrying section');
+  assert.ok(retryingText.includes('workbuddy/hy4free'), 'the detour row must name the blocked agent/model');
+  assert.ok(retryingText.includes('核实恢复中'), 'the detour row must say verification is pending');
+  assert.ok(!retryingText.includes('wb-hy4-old'), 'a reverted detour must not be listed anymore');
+  const attentionText = await page.locator('#attention-list').innerText();
+  assert.ok(attentionText.includes('绕行中'), 'the scheduling-handled queue must surface the active detour too');
   await page.locator('#project-filter').selectOption('');
   assert.ok((await page.locator('#running-list').innerText()).includes('恢复测试'), 'clearing the project filter restores the full overview');
   await page.screenshot({ path: path.join(output, 'console-desktop.png'), fullPage: true });
