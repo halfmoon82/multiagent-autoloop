@@ -1,0 +1,88 @@
+{
+  "sources": {
+    "local": {
+      "name": "本机"
+    },
+    "schedule": {
+      "name": "定时"
+    }
+  },
+  "agents": {
+    "codex": {
+      "name": "Codex",
+      "worker": "<worker 名：agent-autoloop up 注册的本机名>",
+      "use": "codex",
+      "program": "<启动 codex 的包装脚本绝对路径>",
+      "access": "read"
+    },
+    "codex-full": {
+      "name": "Codex 可写调度",
+      "worker": "<worker 名>",
+      "use": "codex",
+      "program": "<同上包装脚本>",
+      "access": "full"
+    },
+    "workbuddy": {
+      "name": "示例可写执行端",
+      "worker": "<worker 名>",
+      "use": "acp",
+      "command": [
+        "<ACP 桥接命令>",
+        "--acp"
+      ],
+      "access": "full"
+    },
+    "demo-controller": {
+      "name": "示例无模型控制器",
+      "worker": "<worker 名>",
+      "use": "command",
+      "command": [
+        "node",
+        "<串行控制器脚本绝对路径>"
+      ],
+      "access": "read"
+    }
+  },
+  "rules": [
+    {
+      "name": "示例调度自愈",
+      "when": {
+        "cron": "*/30 * * * *"
+      },
+      "to": "codex-full",
+      "cwd": "<被调度项目的绝对路径>",
+      "prompt": "你是调度自愈者。读取 AGENT_AUTOLOOP_HOME 下的 status/why/runs 与相关日志，逐项判断失败原因。可自愈的本地配置、脚本、状态问题直接修复并做最小验证，然后恢复或重触发相关规则；修复完成并核实后处理对应卡片。涉及设计决策、密钥、外部授权的不自行扩权。最后给出每项异常的处理结果。\n\n【发卡纪律】① ask 仅限六类：产品功能、个人隐私、财务、对外影响、只有本人掌握的凭据与授权、换打法满3次仍失败。② 写权限、通道与配置、模型与额度、返工与复审安排、worktree/分支、环境依赖、脚本与状态、规则启停等工程问题一律自行处理或换打法，不得 ask，不得让本人代跑工程命令。③ 同一阻塞已有 open 卡不得重发 ask；同问题发过卡未解决必须换打法。"
+    },
+    {
+      "name": "示例门禁处理",
+      "when": {
+        "source": "local",
+        "types": [
+          "demo.gate"
+        ]
+      },
+      "to": "codex-full",
+      "cwd": "<被调度项目的绝对路径>",
+      "prompt": "你是门禁调度。收到 demo.gate：读取事件 detail 与串行状态文件，判断授权性质。若事件 answers 为空：用 ask 卡片请示本人（产品语言、选项注明利弊、有推荐项说明理由）。若 answers 非空：把授权结论写入状态节点（note 记录授权原文与时刻；status 改为 done、gateSent=false），不在本规则里执行实机变更。除授权点外的问题自行推进，不打扰本人。\n\n【发卡纪律】同上：工程问题不得 ask；open 卡存在不得重发；发现「要求写但通道只读」的契约错配，汇报首行写「契约错配：<规则名>」，由调度方改派，不向本人发卡。"
+    },
+    {
+      "name": "示例串行控制器",
+      "when": {
+        "cron": "*/15 * * * *"
+      },
+      "to": "demo-controller",
+      "cwd": "<被调度项目的绝对路径>",
+      "prompt": "无模型读取串行状态；同一时刻最多一个开发或审阅节点。"
+    },
+    {
+      "name": "示例只读分析",
+      "when": {
+        "cron": "0 * * * *"
+      },
+      "to": "codex",
+      "cwd": "<被调度项目的绝对路径>",
+      "prompt": "只读巡检：读取运行状态与日志，发现异常先自行核实，需要本人决策的按发卡纪律发 ask，其余写入汇报。"
+    }
+  ],
+  "elsewhere": []
+}

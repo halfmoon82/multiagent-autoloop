@@ -236,7 +236,7 @@ try {
     lastEventAt: '2026-11-15T07:00:00Z',
     nodes: {
       n1: { status: 'done', title: '节点一', label: '一', summary: '交付了第一块功能' },
-      n2: { status: 'dev_dispatched', title: '节点二', label: '二', part: '联调', percent: 50, summary: '正在实现第二块功能', pr_url: 'https://github.com/halfmoon82/x/pull/9' },
+      n2: { status: 'dev_dispatched', title: '节点二', label: '二', part: '联调', percent: 50, summary: '正在实现第二块功能', pr_url: 'https://github.com/example-org/x/pull/9' },
       n3: { status: 'pending', title: '节点三', label: '三' },
     },
   }));
