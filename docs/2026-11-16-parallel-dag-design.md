@@ -65,8 +65,8 @@
 - 结构阻塞（depends_on 未满足）不是异常：readyNodes 随依赖完成天然恢复，控制器无需干预。
 - run 级 blocked_unknown 是**唯一异常终态**，复活唯一通道是 `createAttempt(prevRunId, {reason})`，reason 仅接受 `blocked-resolved`（阻塞证据已消失，同打法重试）或 `change-approach`（换打法）；无原因或其他原因一律 `REVIVE_REASON_REQUIRED` 拒绝，防无依据的静默复活。
 - 控制器周期复查 blocked_unknown run 的阻塞证据（进入终态的 cause、相关授权卡状态、前置节点/PR 状态）；证据消失即复活重派——**无需 gate、无需用户介入**。这是旧串行链「blocked+gateSent 贴纸无人撕、控制器每 15 分钟空转跳过」（2026-11-16 b7 事件）的根治。
-- 复活计一次执行尝试（attempt+1，满 3 必须 change-approach，generation ≤10，穷尽转 gate 给用户）；授权快照逐字继承（planDigest 不一致即拒），不得借复活换授权；新 run 记 revivedFrom/reviveReason，旧 run 保持终态、晚到回执作废不重复计数。
-- done 的语义是「本轮回合结束」（rework 回执同样落 done），由调度方按需 createAttempt 重派，不属复活、不加原因限制；abandoned 维持既有「调度方判断」口径。
+- 复活计一次执行尝试（attempt+1，满 3 必须 change-approach，generation ≤10，穷尽转 gate 给用户）；授权快照逐字继承（继承无输入面可篡改；快照 digest 在加载时经 snapshotIntact 校验，不一致 fail closed），不得借复活换授权；新 run 记 revivedFrom/reviveReason，旧 run 保持终态、晚到回执作废不重复计数。
+- done 的语义是「本轮回合结束」（rework 回执同样落 done），由调度方按需 createAttempt 重派，不属复活、不加原因限制（attempt 满 3 仍按 R10 需 change-approach）；abandoned 维持既有「调度方判断」口径。
 - 本地 Hub 事件为首期主通道；GitHub 用于分支/PR/审阅证据，Webhook 后续可选。
 
 ## 控制台接口与展示
