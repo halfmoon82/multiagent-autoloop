@@ -60,6 +60,13 @@
 - run.json 位于 AGENT_AUTOLOOP_HOME/dag-runs/<runId>.json；只有控制器迁移状态，控制台创建/取消通过命令文件交接。节点契约、授权快照、当前 generation、event/runId、PR/证据均在快照内。
 - 按当前 generation 的 runId 判断状态；控制器定时读取 GET /v1/events/<eventId>，同时核对 run 状态及其 emitted 事件。queued/unknown 表示 Hub 在重试或租约失联观察期，控制器不重复派发；同一 run 的 attempts 达到 3 时，若仍 queued 则取消（queued 可取消）并换打法。**unknown 不可取消**：超过 15 分钟将槽位标为 quarantined，不重派到该槽位；节点可在空闲槽位以新 attempt 分支继续，quarantined 中的旧 run 在控制器自己的 5 路计数里仍占一个名额直到终态；若旧分支已有 PR，publish 关闭旧 PR并注明被新 attempt 替代，再创建新 PR并记录链接。旧 run 晚到 advance 因 attempt 不符作废。旧 run 进入终态或确认进程退出后才允许 slot-release 隔离槽位。cancelled 计一次失败（同一 run 因 attempts=3 换打法而取消时不重复计数）；run 已 done 但没有合法 advance、回执类型错误或 id 不符，也按一次失败尝试计数并重派。
 - 每个 advance 的期望事件 id 由控制器写进派发提示词，回执必须逐字一致；跨 generation 复用或伪造 id 视为无效。单节点回退不影响其他节点，审阅不被其他节点全局阻塞；重复 advance 幂等，畸形/伪造 detail 或损坏状态进入 blocked_unknown。
+
+### 阻塞解除自动恢复（2026-11-16 b7 教训入契约）
+- 结构阻塞（depends_on 未满足）不是异常：readyNodes 随依赖完成天然恢复，控制器无需干预。
+- run 级 blocked_unknown 是**唯一异常终态**，复活唯一通道是 `createAttempt(prevRunId, {reason})`，reason 仅接受 `blocked-resolved`（阻塞证据已消失，同打法重试）或 `change-approach`（换打法）；无原因或其他原因一律 `REVIVE_REASON_REQUIRED` 拒绝，防无依据的静默复活。
+- 控制器周期复查 blocked_unknown run 的阻塞证据（进入终态的 cause、相关授权卡状态、前置节点/PR 状态）；证据消失即复活重派——**无需 gate、无需用户介入**。这是旧串行链「blocked+gateSent 贴纸无人撕、控制器每 15 分钟空转跳过」（2026-11-16 b7 事件）的根治。
+- 复活计一次执行尝试（attempt+1，满 3 必须 change-approach，generation ≤10，穷尽转 gate 给用户）；授权快照逐字继承（继承无输入面可篡改；快照 digest 在加载时经 snapshotIntact 校验，不一致 fail closed），不得借复活换授权；新 run 记 revivedFrom/reviveReason，旧 run 保持终态、晚到回执作废不重复计数。
+- done 的语义是「本轮回合结束」（rework 回执同样落 done），由调度方按需 createAttempt 重派，不属复活、不加原因限制（attempt 满 3 仍按 R10 需 change-approach）；abandoned 维持既有「调度方判断」口径。
 - 本地 Hub 事件为首期主通道；GitHub 用于分支/PR/审阅证据，Webhook 后续可选。
 
 ## 控制台接口与展示
@@ -74,7 +81,7 @@
 - 授权：vibe 卡片 deny 不阻塞也不构成授权；未确认远端动作时禁止 push/PR/merge；快照篡改被拒绝。
 - DAG：未决决策、环/未知依赖/契约、写范围、整合审查、accepted=已合并、下游基线、5 路上限。
 - 事件：双项目不串投、通配订阅冲突、大写/超长 slug、第 2 代返工可派发、超过 8 层仍完成、事件/generation 上限、subject 长度/字符、event/runId 精确匹配。
-- 控制器：6 ready 先 5 后补 1；并行审阅；单节点失联；blocked 隔离；换打法后才 gate；两控制器互斥。
+- 控制器：6 ready 先 5 后补 1；并行审阅；单节点失联；blocked 隔离；换打法后才 gate；两控制器互斥；blocked_unknown 复活需注明原因（blocked-resolved/change-approach，其他拒）、复活快照逐字继承、复活计 attempt 满 3 换打法、旧 run 晚到回执作废不重复计数、done（含 rework）维持无原因重派口径。
 - 槽位与原生交付：假 worker 写主 checkout/兄弟槽位被沙箱拒绝；同节点失败后可带改动重派；换模型时 refs/dag-wip 精确保留；换节点遇脏槽位阻塞；取消/gate 后 slot-release 恢复 5 槽位且 WIP 含新文件可找回；claimed/queued 未终态时 slot-release 必须等待；1 个 quarantine + 6 ready 只派 4 个；旧 PR 仅在本链登记且快照允许时关闭，新 PR 链接写回，旧 attempt 晚到回执无效；unknown 超 24 小时且有依据可 slot-release、恢复名额、abandoned 晚到回执无效；unknown 未满 24 小时/queued/在线 claimed 均拒绝；控制器执行前发现 run 恢复则放弃释放；快照永不出现 deploy/release 发布动作；3 个 publish 事件各有独立 run，一个失败不影响其他回执且重试幂等；review(read) 不改槽位/不跑测试；远端 head 不一致拒绝 merge；queued attempts=3 取消并换打法；unknown 不可取消、只隔离槽位、旧回执作废；cancelled/无 advance/类型错误/id 复用计失败；重复回执幂等。
 - 假 Hub API：(project,kind) 查重、发布确认、重复 DAG 409、取消、密钥不泄漏、旧接口不变。
 - 浏览器：全部设计页面与状态、Plan Mode 标识、授权范围页、DAG 分组、旧总览、移动端、安全文本。
