@@ -1,0 +1,8 @@
+{
+  "scanner": "codex",
+  "schema": "vibe/scan@5.2.7",
+  "project_type": "node",
+  "languages": ["javascript"],
+  "git": { "clean": true, "branch": "main" },
+  "recommendation": "plan"
+}

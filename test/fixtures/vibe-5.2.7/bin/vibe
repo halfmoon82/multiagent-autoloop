@@ -1,0 +1,40 @@
+#!/usr/bin/env node
+// vibe v5.2.7 假 CLI：录制真实 5.2.7 JSON 响应形态，供服务端适配器测试注入。
+// 仅服务白名单子命令；其余一律拒绝。通过 VIBE_FAKE_RECORD=<path> 把收到的 argv/env 落盘供断言。
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const cliDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli');
+const argv = process.argv.slice(2);
+
+if (process.env.VIBE_FAKE_RECORD) {
+  writeFileSync(process.env.VIBE_FAKE_RECORD, JSON.stringify({ argv, env: { ...process.env } }, null, 2));
+}
+
+const respond = (file) => {
+  process.stdout.write(JSON.stringify(JSON.parse(readFileSync(path.join(cliDir, file), 'utf8'))));
+};
+
+const [sub, ...rest] = argv;
+if (sub === '--version') { process.stdout.write('vibe 5.2.7\n'); process.exit(0); }
+
+const ALLOWED = {
+  scan: { file: 'scan.json', tail: ['--adapter', 'codex', '--project-root'] },
+  plan: { file: 'plan.json', tail: ['--from-prd'] },
+  init: { file: 'init.json', tail: ['--confirm', '--adapter', 'codex', '--project-root'] },
+};
+
+if (!sub || !ALLOWED[sub]) {
+  process.stderr.write(JSON.stringify({ error: `unknown subcommand: ${sub ?? '(none)'}` }));
+  process.exit(1);
+}
+if (sub === 'init' && !rest.includes('--confirm')) {
+  process.stderr.write(JSON.stringify({ error: 'init requires --confirm' }));
+  process.exit(2);
+}
+if (!rest.includes('--adapter') || !rest.includes('--project-root')) {
+  process.stderr.write(JSON.stringify({ error: '--adapter/--project-root are mandatory' }));
+  process.exit(2);
+}
+respond(ALLOWED[sub].file);
