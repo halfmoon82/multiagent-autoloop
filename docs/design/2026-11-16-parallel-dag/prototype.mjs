@@ -61,6 +61,67 @@ const nodeDetails = {
   integration: ['整合审查', '未开始', 'dag-baseline', '等待全部业务节点', 'detached 基线', '只读审查完整交付，不包含部署。', '等待业务节点完成后只读整合审查。', '待派发', '独立 Reviewer'],
 };
 
+// 单一节点数据源：总览环形图、节点计数与 DAG 详情共用，避免多处硬编码不一致。
+const dagRunNodes = [
+  { id: 'account', wave: 1, status: 'done' },
+  { id: 'tenant', wave: 1, status: 'done' },
+  { id: 'billing', wave: 2, status: 'active' },
+  { id: 'api', wave: 2, status: 'review' },
+  { id: 'audit', wave: 2, status: 'active' },
+  { id: 'invoice', wave: 2, status: 'blocked' },
+  { id: 'report', wave: 3, status: 'pending' },
+  { id: 'integration', wave: 3, status: 'pending' },
+];
+const serialChainNodes = [
+  { title: '授权恢复', status: 'done' },
+  { title: '状态迁移', status: 'done' },
+  { title: '规则核对', status: 'done' },
+  { title: '导出回归', status: 'done' },
+  { title: '文档同步', status: 'done' },
+  { title: 'P1b 上下文', status: 'current' },
+  { title: 'P1c 返工接力', status: 'pending' },
+  { title: 'P2 快照', status: 'pending' },
+  { title: 'P3 清理', status: 'pending' },
+  { title: '验收合并', status: 'pending' },
+  { title: '发布检查', status: 'pending' },
+];
+// 波次色相 × 状态明暗；阻塞统一琥珀色（节点卡片另有图标，不只依赖颜色）。
+const DAG_NODE_COLORS = {
+  1: { done: '#157a65' },
+  2: { active: '#4f8fb9', review: '#8ab2ce', blocked: '#d59a37' },
+  3: { pending: '#d8d2e7' },
+};
+const SERIAL_NODE_COLORS = { done: '#157a65', current: '#79b5a4', pending: '#e2ebe7' };
+
+function nodeColor(node) {
+  if (node.status === 'blocked') return '#d59a37';
+  if (node.wave) return (DAG_NODE_COLORS[node.wave] || {})[node.status] || '#d8d2e7';
+  return SERIAL_NODE_COLORS[node.status] || '#e2ebe7';
+}
+
+// 每个节点独立分段，相邻同色也不合并；段数、进度与 aria 文案全部由数据生成。
+function buildSegmentedDonut(selector, nodes, label) {
+  const donut = document.querySelector(selector);
+  if (!donut) return;
+  const share = 100 / nodes.length;
+  const stops = nodes.map((node, index) => {
+    const from = (index * share).toFixed(3);
+    const to = ((index + 1) * share).toFixed(3);
+    return `${nodeColor(node)} ${from}% ${to}%`;
+  });
+  donut.style.backgroundImage = `conic-gradient(${stops.join(',')})`;
+  donut.dataset.segments = String(nodes.length);
+  const done = nodes.filter(node => node.status === 'done').length;
+  const percent = Math.round((done / nodes.length) * 100);
+  donut.setAttribute('aria-label', `${label}总进度 ${percent}%，${nodes.length} 个节点，逐节点分段`);
+  donut.querySelector('strong').textContent = `${percent}%`;
+}
+
+buildSegmentedDonut('#screen-overview .dag-donut:not(.serial-donut)', dagRunNodes, 'DAG ');
+buildSegmentedDonut('#screen-overview .serial-donut', serialChainNodes, '串行链');
+const dagNodeSummary = document.querySelector('[data-dag-node-summary]');
+if (dagNodeSummary) dagNodeSummary.textContent = `多租户计费拆分 · ${dagRunNodes.length} 个节点 · 第 2/3 波`;
+
 function selectNode(id) {
   const detail = nodeDetails[id];
   if (!detail) return;
@@ -86,7 +147,7 @@ const sessionData = {
       ['user', '希望把单租户账单改成多租户，允许三个工作包并行开发，先不要动部署。', '10:18'],
       ['agent', '收到。先确认成功标准：每个租户只能看到自己的账单，计费规则可独立灰度；本期不做发票自动推送，对吗？', '10:19 · 仅读取代码与文档'],
       ['user', '对。发票导出保留手动，权限边界不能变。', '10:20'],
-      ['agent', 'PRD 已闭合。建议拆成 7 个节点：账户模型、租户配置先行，计费规则、账单 API、审计日志可并行；发票导出依赖“导出格式”产品决策。', '10:24 · 等待您确认 Spec 与 DAG'],
+      ['agent', 'PRD 已闭合。建议拆成 8 个节点：账户模型、租户配置先行；计费规则、账单 API、审计日志并行；发票导出依赖“导出格式”产品决策；汇总报表等上游合并；最后整合审查只读兜底。', '10:24 · 等待您确认 Spec 与 DAG'],
     ],
   },
   'api-analysis': {
@@ -107,6 +168,14 @@ const sessionData = {
   'scheduler-v6': {
     kind: 'scheduling', title: 'V6 调度与恢复', project: 'vibeguide', created: '今天 08:30', mode: '调度协议', access: '项目协调', composer: 'Default · 调度会话', footnote: '调度会话 · 读取规则、失败原因和卡片，按契约自愈与升级',
     messages: [['user', '继续处理审阅规则的频限绕行。', '08:30'], ['agent', '已读取频限证据和冷却状态。先用最小成本核实原模型是否恢复，不反复全量派发。', '08:31 · 调度诊断']],
+  },
+  'archived-settle': {
+    kind: 'normal', title: '旧版结算讨论', project: 'health-service', created: '11-08 15:40', mode: '默认模式', access: '无附加提示词', composer: 'Default · 项目工作区', footnote: '已归档 · 只读保留，不自动清理',
+    messages: [['user', '旧的结算流程还能用多久？', '15:40'], ['agent', '旧流程保留到迁移完成，期间数据双写。', '15:42']],
+  },
+  'archived-permission': {
+    kind: 'normal', title: '权限方案评估', project: 'health-service', created: '11-05 11:12', mode: '默认模式', access: '无附加提示词', composer: 'Default · 项目工作区', footnote: '已归档 · 只读保留，不自动清理',
+    messages: [['user', '评估一下角色权限拆分的风险。', '11:12'], ['agent', '拆分后需回归越权用例，建议放在独立节点执行。', '11:15']],
   },
   'scheduler-health': {
     kind: 'scheduling', title: '健康服务调度', project: 'health-service', created: '11-13 14:12', mode: '调度协议', access: '项目协调', composer: 'Default · 调度会话', footnote: '调度会话 · 读取规则、失败原因和卡片，按契约自愈与升级',
@@ -146,10 +215,55 @@ function selectSession(id) {
   renderMessages(data);
 }
 
+function updateArchivedCount() {
+  const count = document.querySelectorAll('#archived-list .archived-entry').length;
+  document.querySelector('#archived-count').textContent = String(count);
+}
+
+function archiveSession(item) {
+  if (!item || item.dataset.archived === 'true') return;
+  const id = item.dataset.session;
+  const data = sessionData[id];
+  item.dataset.archived = 'true';
+  item.hidden = true;
+  const entry = document.createElement('div');
+  entry.className = 'archived-entry';
+  entry.dataset.archivedSession = id;
+  const title = document.createElement('span');
+  title.className = 'archived-entry-title';
+  title.textContent = data ? `${data.title} · ${data.project}` : (item.querySelector('strong')?.textContent || '已归档会话');
+  const actions = document.createElement('span');
+  actions.className = 'archived-entry-actions';
+  const viewButton = document.createElement('button');
+  viewButton.dataset.action = 'view-archived';
+  viewButton.textContent = '查看';
+  const restoreButton = document.createElement('button');
+  restoreButton.dataset.action = 'restore';
+  restoreButton.textContent = '恢复';
+  actions.append(viewButton, restoreButton);
+  entry.append(title, actions);
+  document.querySelector('#archived-list').append(entry);
+  updateArchivedCount();
+  showToast('已归档；转录保留，可在“已归档与历史”查看或恢复');
+}
+
+function restoreSession(entry) {
+  const id = entry?.dataset.archivedSession;
+  const item = id ? document.querySelector(`.session-item[data-session="${id}"]`) : null;
+  entry?.remove();
+  if (item) {
+    delete item.dataset.archived;
+    selectKind(item.dataset.kind);
+    selectSession(id);
+  }
+  updateArchivedCount();
+  showToast('会话已恢复到列表');
+}
+
 function selectKind(kind) {
   currentKind = kind;
   document.querySelectorAll('.session-kind-tabs button').forEach(button => button.classList.toggle('active', button.dataset.kind === kind));
-  document.querySelectorAll('.session-item').forEach(item => { item.hidden = item.dataset.kind !== kind; });
+  document.querySelectorAll('.session-item').forEach(item => { item.hidden = item.dataset.archived === 'true' || item.dataset.kind !== kind; });
   const visible = [...document.querySelectorAll('.session-item')].find(item => !item.hidden);
   if (visible) selectSession(visible.dataset.session);
 }
@@ -227,7 +341,14 @@ document.addEventListener('click', event => {
   else if (action === 'collapse' && item) item.classList.toggle('collapsed');
   else if ((action === 'archive' || action === 'archive-current')) {
     const target = item || document.querySelector(`.session-item[data-session="${currentSession}"]`);
-    if (target) { target.hidden = true; showToast('已归档；转录保留，可从“已归档”恢复'); }
+    archiveSession(target);
+  }
+  else if (action === 'restore') {
+    restoreSession(event.target.closest('.archived-entry'));
+  }
+  else if (action === 'view-archived') {
+    const entry = event.target.closest('.archived-entry');
+    if (entry) { selectSession(entry.dataset.archivedSession); showToast('归档会话只读查看，不自动清理'); }
   }
   else if (action === 'toggle-archived') {
     const list = document.querySelector('#archived-list'); list.hidden = !list.hidden;
@@ -283,4 +404,5 @@ setState(params.get('state') || 'normal');
 setScreen(currentScreen, false);
 selectKind('design');
 selectSession('design-tenant');
+updateArchivedCount();
 if (params.get('newSession') === '1') openNewSession();

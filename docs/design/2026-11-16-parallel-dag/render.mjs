@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
 
-const require = createRequire('/Volumes/Storage/auto调度/package.json');
+const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 const here = path.dirname(fileURLToPath(import.meta.url));
 const out = path.join(here, 'renders');
@@ -51,6 +51,15 @@ try {
         assert((await page.locator('.project-usage').first().textContent()).includes('累计 Token'), `${device} 总览缺少项目费用/Token`);
         assert(await page.locator('.progress-node .node-task-summary').count() >= 10, `${device} 总览节点缺少任务摘要`);
         assert(await page.locator('.progress-node .node-agent').count() >= 10, `${device} 总览节点缺少 Agent/模型`);
+        const dagDonut = page.locator('#screen-overview .dag-donut:not(.serial-donut)');
+        assert((await dagDonut.getAttribute('data-segments')) === '8', `${device} DAG 环形图未按节点逐段分段`);
+        assert((await dagDonut.evaluate(el => (el.style.backgroundImage.match(/(#[0-9a-f]{3,8}|rgba?\()/g) || []).length)) === 16, `${device} DAG 环形图分段颜色数与节点数不符`);
+        assert((await dagDonut.getAttribute('aria-label')).includes('8 个节点'), `${device} DAG 环形图 aria 节点数与详情不一致`);
+        const serialDonut = page.locator('#screen-overview .serial-donut');
+        assert((await serialDonut.getAttribute('data-segments')) === '11', `${device} 串行环形图未按节点逐段分段`);
+        assert((await serialDonut.evaluate(el => (el.style.backgroundImage.match(/(#[0-9a-f]{3,8}|rgba?\()/g) || []).length)) === 22, `${device} 串行环形图分段颜色数与节点数不符`);
+        assert((await serialDonut.getAttribute('aria-label')).includes('11 个节点'), `${device} 串行环形图 aria 节点数与详情不一致`);
+        assert((await page.locator('[data-dag-node-summary]').textContent()).includes('8 个节点'), `${device} 总览节点计数与 DAG 详情不一致`);
       }
       if (screen === 'dag') {
         assert(await page.locator('.dag-node .node-task-summary').count() === 8, `${device} 运行详情节点缺少任务摘要`);
@@ -66,6 +75,28 @@ try {
     await page.locator('#new-session-dialog').waitFor({ state: 'visible' });
     assert((await page.locator('#classification-title').textContent()).includes('设计会话'), `${device} 复杂需求未识别为设计会话`);
     await page.screenshot({ path: path.join(out, `session-new-${device}.png`), fullPage: false });
+    await page.locator('[data-action="create-session"]').click();
+    assert((await page.locator('#session-mode').textContent()) === '▣ 计划模式', `${device} 设计会话创建后未进入 Plan Mode`);
+    assert((await page.locator('#session-access').textContent()) === '只读', `${device} 设计会话创建后未标注只读`);
+    assert((await page.locator('#composer-mode').textContent()) === 'Plan · 只读', `${device} 设计会话输入区未固定 Plan · 只读`);
+    assert(await page.locator('#design-session-progress').isVisible(), `${device} 设计会话缺少 Spec/DAG 进度入口`);
+    assert(await page.locator('#session-messages').isVisible(), `${device} 会话转录区不可见`);
+    assert(await page.locator('#design-input').isVisible(), `${device} 会话输入框不可见`);
+    assert(await page.locator('.composer-send').isVisible(), `${device} 会话发送按钮不可见`);
+    assert(await page.locator('.archived-sessions').isVisible(), `${device} 会话管理缺少已归档与历史入口`);
+    await page.locator('#screen-design .page-heading [data-action="new-session"]').click();
+    await page.locator('#new-session-request').fill('分析一下账单 API 的依赖关系');
+    await page.locator('[data-action="create-session"]').click();
+    assert((await page.locator('#session-mode').textContent()) === '默认模式', `${device} 普通会话创建后不是默认模式`);
+    assert((await page.locator('#session-access').textContent()) === '无附加提示词', `${device} 普通会话不应组装额外提示词`);
+    assert((await page.locator('#composer-mode').textContent()).startsWith('Default'), `${device} 普通会话输入区未沿用默认布局`);
+    assert(await page.locator('#design-session-progress').isHidden(), `${device} 普通会话不应显示 Spec/DAG 进度`);
+    await page.locator('#screen-design .page-heading [data-action="new-session"]').click();
+    await page.locator('#new-session-request').fill('排查失败任务并恢复调度规则');
+    await page.locator('[data-action="create-session"]').click();
+    assert((await page.locator('#session-mode').textContent()) === '调度协议', `${device} 调度会话创建后未沿用调度协议`);
+    assert((await page.locator('#session-access').textContent()) === '项目协调', `${device} 调度会话创建后未标注项目协调`);
+    assert((await page.locator('#session-messages').textContent()).includes('排查失败任务'), `${device} 调度会话转录未包含原始输入`);
   }
 
   await page.setViewportSize(sizes.desktop);
@@ -114,6 +145,21 @@ try {
   await page.locator('[data-type-override="design"]').click();
   assert((await page.locator('#classification-title').textContent()).includes('手动指定'), '手动覆盖会话类型无效');
   await page.locator('[data-action="close-new-session"]').first().click();
+  await page.goto(`${base}?screen=design`, { waitUntil: 'load' });
+  await page.locator('[data-action="toggle-archived"]').click();
+  assert(await page.locator('#archived-list').isVisible(), '已归档列表应可展开');
+  assert((await page.locator('#archived-count').textContent()) === '2', '初始归档计数应为 2');
+  await page.locator('.session-kind-tabs [data-kind="normal"]').click();
+  await page.locator('.session-item[data-session="css-review"] [data-action="archive"]').click();
+  assert(await page.locator('.session-item[data-session="css-review"]').isHidden(), '归档后会话条目应移出当前列表');
+  assert(await page.locator('#archived-list .archived-entry[data-archived-session="css-review"]').count() === 1, '归档条目未加入已归档列表');
+  assert((await page.locator('#archived-count').textContent()) === '3', '归档后计数未递增');
+  await page.locator('#archived-list .archived-entry[data-archived-session="css-review"] [data-action="restore"]').click();
+  assert(await page.locator('.session-item[data-session="css-review"]').isVisible(), '恢复后会话条目应回到列表');
+  assert(await page.locator('#archived-list .archived-entry[data-archived-session="css-review"]').count() === 0, '恢复后归档条目应移除');
+  assert((await page.locator('#archived-count').textContent()) === '2', '恢复后计数未回落');
+  await page.locator('#archived-list .archived-entry[data-archived-session="archived-settle"] [data-action="view-archived"]').click();
+  assert((await page.locator('#session-title').textContent()) === '旧版结算讨论', '归档会话应可只读查看');
   await page.goto(`${base}?screen=overview`, { waitUntil: 'load' });
   await page.locator('#screen-overview .page-heading [data-action="new-session"]').click();
   assert(await page.locator('#screen-design').isVisible(), '总览新建会话入口不可达');

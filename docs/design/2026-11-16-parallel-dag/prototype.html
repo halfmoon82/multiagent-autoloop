@@ -46,11 +46,11 @@
           <span class="subtle">2 个项目</span>
         </div>
         <article class="project-progress dag-project">
-          <div class="project-heading-row"><div><div class="title-with-badge"><h3>health-service</h3><span class="status good">并行 DAG</span></div><p>多租户计费拆分 · 7 个节点 · 第 2/3 波</p></div><button class="text-button" data-screen="dag">查看运行详情 →</button></div>
+          <div class="project-heading-row"><div><div class="title-with-badge"><h3>health-service</h3><span class="status good">并行 DAG</span></div><p data-dag-node-summary>多租户计费拆分 · 8 个节点 · 第 2/3 波</p></div><button class="text-button" data-screen="dag">查看运行详情 →</button></div>
           <div class="project-usage"><div><span>今日费用</span><strong>$2.84</strong></div><div><span>累计费用</span><strong>$18.62</strong></div><div><span>今日 Token</span><strong>182K</strong><small>入 131K / 出 51K</small></div><div><span>累计 Token</span><strong>1.24M</strong><small>入 886K / 出 354K</small></div></div>
           <div class="dag-visual">
             <div class="donut-wrap">
-              <div class="dag-donut" role="img" aria-label="DAG 总进度 29%，7 个节点"><div><strong>29%</strong><span>总进度</span></div></div>
+              <div class="dag-donut" role="img" aria-label="DAG 总进度 25%，8 个节点，逐节点分段"><div><strong>25%</strong><span>总进度</span></div></div>
               <div class="donut-legend"><span><i class="wave-1"></i>第 1 波</span><span><i class="wave-2"></i>第 2 波</span><span><i class="wave-3"></i>第 3 波</span><small>颜色 = 波次 · 深浅 = 状态</small></div>
             </div>
             <div class="progress-waves">
@@ -116,8 +116,16 @@
               <div class="session-item-main"><button class="session-select" data-session="design-tenant"><strong>多租户计费拆分</strong><span>health-service · 11-16</span><small>PRD 已闭合，Spec 与 DAG 待确认…</small></button></div>
               <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
             </article>
+          <article class="session-item" data-kind="normal" data-session="archived-settle" data-archived="true" hidden>
+              <div class="session-item-main"><button class="session-select" data-session="archived-settle"><strong>旧版结算讨论</strong><span>health-service · 11-08</span><small>旧流程保留到迁移完成，期间双写…</small></button></div>
+              <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
+            </article>
+            <article class="session-item" data-kind="normal" data-session="archived-permission" data-archived="true" hidden>
+              <div class="session-item-main"><button class="session-select" data-session="archived-permission"><strong>权限方案评估</strong><span>health-service · 11-05</span><small>角色权限拆分需回归越权用例…</small></button></div>
+              <div class="session-item-actions"><button title="折叠会话" data-action="collapse">⌃</button><button title="归档会话" data-action="archive">□</button><button title="删除会话" data-action="delete">×</button></div>
+            </article>
           </div>
-          <div class="archived-sessions"><button data-action="toggle-archived">已归档与历史 <span id="archived-count">4</span><span class="archive-chevron">⌄</span></button><div id="archived-list" hidden><p class="history-note">默认折叠 · 可查看 · 不自动清理</p><button class="archived-item" data-action="view-history">旧版结算讨论 <span>查看</span></button><button class="archived-item" data-action="view-history">权限方案评估 <span>查看</span></button></div></div>
+          <div class="archived-sessions"><button data-action="toggle-archived">已归档与历史 <span id="archived-count">2</span><span class="archive-chevron">⌄</span></button><div id="archived-list" hidden><p class="history-note">默认折叠 · 可查看 · 可恢复 · 不自动清理</p><div class="archived-entry" data-archived-session="archived-settle"><span class="archived-entry-title">旧版结算讨论 · health-service</span><span class="archived-entry-actions"><button data-action="view-archived">查看</button><button data-action="restore">恢复</button></span></div><div class="archived-entry" data-archived-session="archived-permission"><span class="archived-entry-title">权限方案评估 · health-service</span><span class="archived-entry-actions"><button data-action="view-archived">查看</button><button data-action="restore">恢复</button></span></div></div></div>
         </aside>
         <section class="session-workspace">
           <header class="session-header"><div><div class="title-with-badge"><h2 id="session-title">多租户计费拆分</h2><span id="session-mode" class="mode-badge">▣ 计划模式</span><span id="session-access" class="mode-badge muted-badge">只读</span></div><p id="session-project">health-service · 设计会话 · 今天 10:18 创建</p></div><div class="session-header-actions"><button class="icon-button" title="归档" data-action="archive-current">□</button><button class="icon-button" title="更多" data-action="session-more">···</button></div></header>
@@ -184,7 +192,7 @@
           <div class="confirmation-summary"><div><span>项目</span><strong>health-service</strong></div><div><span>节点</span><strong>6 业务 + 1 整合审查</strong></div><div><span>最大并行</span><strong>5 路</strong></div><div><span>合并策略</span><strong>独立审阅后 squash</strong></div></div>
           <div class="authorization-section"><h2>本次允许</h2><div class="permission-grid"><label><input type="checkbox" checked disabled><span><strong>独立 worktree 与离线测试</strong><small>5 个固定槽位，互不写入</small></span></label><label><input type="checkbox" checked disabled><span><strong>推送分支并创建 PR</strong><small>仅推送到 halfmoon82/health-service</small></span></label><label><input type="checkbox" checked disabled><span><strong>独立审阅与 P0–P2 返工</strong><small>三次未收敛先换打法，再决定是否升级</small></span></label><label><input type="checkbox" checked disabled><span><strong>审阅通过后 squash 合并</strong><small>远端 head 必须等于已审 commit</small></span></label><label><input type="checkbox" checked disabled><span><strong>替代旧 attempt 的 PR</strong><small>仅关闭本 DAG 登记的 PR并附说明</small></span></label></div></div>
           <div class="authorization-section excluded"><h2>始终不包含</h2><div class="excluded-tags"><span>部署</span><span>发布</span><span>生产数据写入</span><span>新建或读取其他凭据</span><span>对外通信</span><span>修改存量串行链</span></div></div>
-          <div class="authorization-section"><h2>PRD / Spec / DAG 摘要</h2><div class="digest-box"><p>多租户账单隔离；6 个业务节点分 3 波执行；发票导出等待“CSV 或 PDF”产品决策，其他节点不受影响。</p><div><span>product-spec</span><code>4b81…a02e</code><span>plan + nodes</span><code>7f3a…9c21</code></div></div></div>
+          <div class="authorization-section"><h2>PRD / Spec / DAG 摘要</h2><div class="digest-box"><p>多租户账单隔离；7 个业务节点分 3 波执行，外加 1 个整合审查节点；发票导出等待“CSV 或 PDF”产品决策，其他节点不受影响。</p><div><span>product-spec</span><code>4b81…a02e</code><span>plan + nodes</span><code>7f3a…9c21</code></div></div></div>
         </section>
         <aside class="authorize-sidebar">
           <section class="panel confirm-card"><div class="panel-heading"><h3>确认前请阅读</h3></div><p>确认后，ready 节点会立即进入 Hub 事件链。每个节点仍需独立审阅，合并不代表部署。</p><label class="confirm-check"><input id="authorize-check" type="checkbox"><span>我已阅读 PRD、Spec、DAG 和上述执行范围。</span></label><button id="authorize-button" class="button primary full" data-action="authorize" disabled>确认并进入事件链</button><button class="button secondary full" data-screen="design">返回设计会话</button><small class="confirm-footnote">确认动作与计划摘要一起写入 authorizationSnapshot。</small></section>
