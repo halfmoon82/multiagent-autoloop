@@ -25,6 +25,7 @@ test('save and load round-trips session records with transcripts', async () => {
   await archive.save(record);
   const loaded = await archive.read(record.id);
   assert.equal(loaded.project, '/workspace/demo');
+  assert.equal(loaded.kind, 'scheduling', 'legacy archives default to scheduling');
   assert.equal(loaded.messages.length, 2);
   assert.equal(loaded.endStatus, 'active');
 });
@@ -74,7 +75,7 @@ test('corrupt archive files are skipped with a note instead of crashing the list
   assert.match(errors[0], /dddddddd/);
 });
 
-test('retention keeps the newest sessions and prunes the rest', async () => {
+test('completed history is retained and never pruned automatically', async () => {
   const home = root();
   const archive = new SessionArchive(home, { retention: 3 });
   for (let i = 0; i < 5; i++) {
@@ -82,7 +83,7 @@ test('retention keeps the newest sessions and prunes the rest', async () => {
     await archive.save({ id, project: `/p/${i}`, messages: [], createdAt: `2026-11-1${i}T01:00:00Z`, updatedAt: `2026-11-1${i}T01:00:00Z`, closedAt: null, endStatus: 'closed' });
   }
   const files = readdirSync(path.join(home, 'console-sessions')).filter(name => name.endsWith('.json') && name !== 'index.json');
-  assert.equal(files.length, 3, 'only the newest retention count survives');
+  assert.equal(files.length, 5, 'completed sessions remain available even beyond the old retention count');
 });
 
 test('continuation prompt carries the last turns and a resume instruction', async () => {
