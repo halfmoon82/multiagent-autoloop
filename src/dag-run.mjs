@@ -50,10 +50,11 @@ export function snapshotDigest(snapshot) {
 }
 
 export function buildAuthorizationSnapshot({ project, repo, mergeStrategy, planDigest, confirmedActionIds }) {
+  // 与 run 字段同口径（text() 归一），digest 数据源统一，避免带空白输入导致读取时 digest 失配。
   const allowedActions = [...new Set(confirmedActionIds)].sort();
   const snapshot = {
-    schema: 1, project, repo: repo ?? null, mergeStrategy: mergeStrategy || 'squash',
-    planDigest, allowedActions, createdAt: new Date().toISOString(),
+    schema: 1, project: text(project), repo: repo == null ? null : text(repo), mergeStrategy: text(mergeStrategy) || 'squash',
+    planDigest: text(planDigest), allowedActions, createdAt: new Date().toISOString(),
   };
   return { ...snapshot, digest: snapshotDigest(snapshot) };
 }
@@ -130,7 +131,13 @@ export function evaluateSlotRelease(run, evidence = {}) {
 }
 
 // publish 只能关闭 run.json 中登记且属于同一 runId/nodeId 的 PR（纯判定）。
+// 快照 digest 不一致（被篡改）一律拒绝，fail closed。
+export function snapshotIntact(snapshot) {
+  return Boolean(snapshot) && typeof snapshot.digest === 'string' && snapshot.digest === snapshotDigest(snapshot);
+}
+
 export function canClosePr(run, nodeId, prUrl) {
+  if (!snapshotIntact(run.authorizationSnapshot)) return { ok: false, reason: 'snapshot-digest-mismatch' };
   const pr = (run.prs || []).find(entry => entry.prUrl === prUrl);
   if (!pr || pr.nodeId !== nodeId) return { ok: false, reason: 'pr-not-registered' };
   if ((run.authorizationSnapshot?.allowedActions || []).includes('close-superseded-pr')) return { ok: true, pr };
@@ -150,8 +157,9 @@ export function createRunStore({ directory } = {}) {
   if (!existsSync(directory)) mkdirSync(directory, { recursive: true });
   const runFile = runId => path.join(directory, `${runId}.json`);
   let tmpCounter = 0;
-  // 每 run 互斥锁：两个控制器同时推进同一 run 时，后到者直接报 RUN_LOCKED（API 层重试），
-  // 保证 run.json 读-改-写原子完成；全部操作为同步实现，锁不跨事件循环持有。
+  // 每 run 互斥锁（仅进程内）：locked 是本进程内存 Set，只能防同一进程内的重入/并发推进，
+  // 防不了跨进程竞态。跨进程一致性靠 saveRun 的原子写（tmp + rename）与 advance 的
+  // expectedAdvanceId 乐观校验（回执必须逐字匹配，过期/重复回执作废）；未引入文件锁。
   const locked = new Set();
   const withRunLock = (runId, fn) => {
     if (locked.has(runId)) throw new DagRunError('RUN_LOCKED', `run ${runId} 正被另一控制器推进，请稍后重试`);
@@ -164,6 +172,7 @@ export function createRunStore({ directory } = {}) {
     try { raw = JSON.parse(readFileSync(file, 'utf8')); }
     catch (error) { throw new DagRunError('CORRUPT_STATE', `run 状态文件损坏（blocked_unknown 语义）：${error.message}`); }
     if (!raw || typeof raw !== 'object' || !text(raw.runId)) throw new DagRunError('CORRUPT_STATE', 'run 状态文件损坏：缺少 runId');
+    if (!snapshotIntact(raw.authorizationSnapshot)) throw new DagRunError('CORRUPT_STATE', `run ${raw.runId} 授权快照 digest 校验失败（被篡改或缺失），fail closed`);
     return raw;
   };
   const getRun = runId => loadFile(runFile(text(runId)));
@@ -178,8 +187,8 @@ export function createRunStore({ directory } = {}) {
     if (!existsSync(directory)) return [];
     return readdirSync(directory)
       .filter(name => name.endsWith('.json') && !name.startsWith('.'))
-      .map(name => { try { return loadFile(path.join(directory, name)); } catch { return null; } })
-      .filter(Boolean);
+      // 与 getRun 一致 fail closed：损坏文件直接抛 CORRUPT_STATE，不得让损坏 run 从槽位占用/查重中消失。
+      .map(name => loadFile(path.join(directory, name)));
   };
   const nodeKey = run => `${run.project}${run.planId}${run.nodeId}:${run.role}`;
   const currentRunFor = (project, planId, nodeId, role) => {
@@ -252,6 +261,8 @@ export function createRunStore({ directory } = {}) {
     markUnknown(runId, { at } = {}) {
       return withRunLock(runId, () => {
         const run = getRun(runId);
+        // 只在首次进入 unknown 时记 unknownSince，重复调用不刷新（观察期从首次起算）。
+        if (run.status === 'unknown' && Number.isFinite(run.unknownSince)) return run;
         if (run.status === 'unknown') return saveRun({ ...run, unknownSince: Number.isFinite(at) ? at : Date.now() });
         return saveRun({ ...transition(run, 'unknown'), unknownSince: Number.isFinite(at) ? at : Date.now() });
       });
@@ -297,9 +308,14 @@ export function createRunStore({ directory } = {}) {
         if (current && current.runId !== prev.runId) {
           throw new DagRunError('STALE_RUN', `节点 ${prev.nodeId}:${prev.role} 已有更新的 run ${current.runId}，旧 run 不得再派生 attempt`);
         }
-        const needNewGeneration = prev.attempt >= MAX_ATTEMPTS - 1;
+        // 已被用户/控制器取消的 run 不得再派生活跃 attempt；仅 attempts-exhausted 取消（换打法路径）可继续。
+        if (prev.status === 'cancelled' && prev.cancelReason !== 'attempts-exhausted') {
+          throw new DagRunError('RUN_CANCELLED', `run ${prev.runId} 已取消（${prev.cancelReason ?? '无原因'}），不得再派生 attempt`);
+        }
+        // R10 契约：同一任务累计满 3 次（attempt >= MAX_ATTEMPTS）必须换打法。
+        const needNewGeneration = prev.attempt >= MAX_ATTEMPTS;
         if (needNewGeneration && reason !== 'change-approach') {
-          throw new DagRunError('CHANGE_APPROACH_REQUIRED', `同一任务已连续失败 ${MAX_ATTEMPTS - 1} 次，必须换打法（change-approach：换模型/换 Agent/拆小任务）再重派`);
+          throw new DagRunError('CHANGE_APPROACH_REQUIRED', `同一任务累计已满 ${MAX_ATTEMPTS} 次，必须换打法（change-approach：换模型/换 Agent/拆小任务）再重派`);
         }
         const generation = needNewGeneration ? prev.generation + 1 : prev.generation;
         if (generation > MAX_GENERATION) throw new DagRunError('GENERATION_LIMIT', `generation 超过上限 ${MAX_GENERATION}，节点转 gate`);
@@ -320,7 +336,9 @@ export function createRunStore({ directory } = {}) {
     advance(runId, receipt) {
       return withRunLock(runId, () => {
         const run = getRun(runId);
-        // 重复 advance 幂等：同 id 重放返回相同结果，不重复计数。
+        // 重复 advance 幂等：同 id 重放返回相同结果，不重复计数。口径：仅成功回执（apply）会写入
+        // appliedAdvance，因此只有成功回执的重放返回 duplicate；失败/无效回执重放因 expectedAdvanceId
+        // 已不匹配或 run 已终态，按 stale/invalid 处理，不会二次生效（invalid 的失败计数每次回执计一次）。
         if (run.appliedAdvance && receipt && typeof receipt === 'object' && receipt.advanceId === run.appliedAdvance.advanceId) {
           return { verdict: 'duplicate', failures: run.failures, result: run.appliedAdvance.result };
         }

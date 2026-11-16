@@ -101,7 +101,7 @@ const fillSlots = (store, project) => {
   const ids = [store.createRun(baseInput({ project })).runId];
   while (ids.length < MAX_SLOTS) {
     const prev = store.getRun(ids[ids.length - 1]);
-    const needApproach = prev.attempt >= MAX_ATTEMPTS - 1;
+    const needApproach = prev.attempt >= MAX_ATTEMPTS;
     ids.push(store.createAttempt(prev.runId, needApproach ? { reason: 'change-approach' } : {}).runId);
   }
   return ids;
@@ -202,14 +202,17 @@ test('换打法：新 generation/attempt 的 run 创建后旧 run 晚到 advance
   const run = store.createRun(baseInput());
   store.claim(run.runId, { slot: 1 });
   store.advance(run.runId, { ...validReceipt(store.getRun(run.runId)), outcome: 'rework', detail: {} });
-  const next = store.createAttempt(run.runId, { reason: 'change-approach' });
+  const next = store.createAttempt(run.runId, { reason: 'retry' });
   assert.equal(next.attempt, 2);
   assert.equal(next.generation, 1);
   const stale = store.advance(run.runId, validReceipt(store.getRun(run.runId)));
   assert.equal(stale.verdict, 'stale');
   assert.equal(store.getRun(next.runId).failures, 0, '旧 run 晚到回执不得给新 attempt 计失败');
-  assert.throws(() => store.createAttempt(next.runId, { reason: 'same-approach' }), /换打法/);
-  const gen2 = store.createAttempt(next.runId, { reason: 'change-approach' });
+  // 契约（R10）：同一任务累计满 3 次才必须换打法；第 2→3 次仍可同打法重派。
+  const third = store.createAttempt(next.runId, { reason: 'same-approach' });
+  assert.equal(third.attempt, 3);
+  assert.throws(() => store.createAttempt(third.runId, { reason: 'same-approach' }), /换打法/);
+  const gen2 = store.createAttempt(third.runId, { reason: 'change-approach' });
   assert.equal(gen2.generation, 2);
   assert.equal(gen2.attempt, 1);
   const crossGen = store.advance(run.runId, { ...validReceipt(store.getRun(gen2.runId)), advanceId: store.getRun(gen2.runId).expectedAdvanceId || 'x' });
@@ -246,9 +249,12 @@ test('slot-release 判定：queued/在线 claimed 拒绝；未满 24 小时拒�
   const tooSoon = evaluateSlotRelease(store.getRun(unknownRun.runId), { processGroupVerified: true, now });
   assert.equal(tooSoon.allowed, false, '未满 24 小时拒绝');
 
-  store.markUnknown(unknownRun.runId, { at: now - 25 * 3600 * 1000 });
-  assert.equal(evaluateSlotRelease(store.getRun(unknownRun.runId), { now }).allowed, false, '进程组核实依据缺失 fail closed');
-  const ok = evaluateSlotRelease(store.getRun(unknownRun.runId), { processGroupVerified: true, now });
+  // unknownSince 只在首次进入 unknown 时记录（重复 markUnknown 不刷新），25h 场景用独立 run。
+  const longUnknown = store.createRun(baseInput({ nodeId: 'lu', project: 'rel-e', planId: 'plan-lu' }));
+  store.claim(longUnknown.runId, { slot: 4 });
+  store.markUnknown(longUnknown.runId, { at: now - 25 * 3600 * 1000 });
+  assert.equal(evaluateSlotRelease(store.getRun(longUnknown.runId), { now }).allowed, false, '进程组核实依据缺失 fail closed');
+  const ok = evaluateSlotRelease(store.getRun(longUnknown.runId), { processGroupVerified: true, now });
   assert.equal(ok.allowed, true);
 
   const offlineClaimed = store.createRun(baseInput({ nodeId: 'oc', project: 'rel-d', planId: 'plan-oc' }));
@@ -260,11 +266,11 @@ test('slot-release 判定：queued/在线 claimed 拒绝；未满 24 小时拒�
   });
   assert.equal(allowedOffline.allowed, true, 'claimed 且 worker 离线超 24h 且有核实依据允许');
 
-  store.releaseSlot(unknownRun.runId, { processGroupVerified: true, now });
-  assert.equal(store.getRun(unknownRun.runId).status, 'abandoned');
-  assert.equal(store.slotUsage('rel-c'), 0, 'abandoned 后槽位释放');
+  store.releaseSlot(longUnknown.runId, { processGroupVerified: true, now });
+  assert.equal(store.getRun(longUnknown.runId).status, 'abandoned');
+  assert.equal(store.slotUsage('rel-e'), 0, 'abandoned 后槽位释放');
   assert.equal(store.slotUsage('rel-d'), 1, '仍占用的槽位继续计数');
-  const late = store.advance(unknownRun.runId, { runId: unknownRun.runId, advanceId: 'whatever' });
+  const late = store.advance(longUnknown.runId, { runId: longUnknown.runId, advanceId: 'whatever' });
   assert.notEqual(late.verdict, 'apply', 'abandoned 后晚到回执一律作废');
 });
 
@@ -306,4 +312,73 @@ test('run.json 原子落盘：注入目录、可重读、无临时残留、损�
   assert.ok(corrupt, '损坏状态文件必须报错');
   assert.match(corrupt.message, /损坏|blocked/);
   assert.equal(corrupt.code, 'CORRUPT_STATE');
+});
+
+// ---- PR #44 返工回归（reviewer P1-1 / P2-1 / P2-3 / P3）----
+import { writeFileSync as fsWrite } from 'node:fs';
+import { canClosePr, buildAuthorizationSnapshot } from '../src/dag-run.mjs';
+
+test('P1-1 授权快照被篡改（allowedActions 加项）后 digest 校验失败，publish 与读取 fail closed', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'dag-run-tamper-'));
+  const store = createRunStore({ directory });
+  const run = store.createRun(baseInput({ confirmedActionIds: ['worktree', 'run-tests'] }));
+  store.registerPr(run.runId, 'node-a', 'https://github.com/o/r/pull/1');
+  const file = path.join(directory, `${run.runId}.json`);
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  raw.authorizationSnapshot.allowedActions.push('close-superseded-pr');
+  fsWrite(file, JSON.stringify(raw));
+  assert.equal(canClosePr(raw, 'node-a', 'https://github.com/o/r/pull/1').ok, false, '纯判定也必须拒绝被篡改快照');
+  assert.throws(() => store.publishClosePr(run.runId, 'node-a', 'https://github.com/o/r/pull/1'), error => ['CORRUPT_STATE', 'PR_ACTION_NOT_AUTHORIZED'].includes(error.code));
+  assert.throws(() => store.getRun(run.runId), error => error.code === 'CORRUPT_STATE');
+});
+
+test('P3-2 快照输入与 run 字段同口径归一（带空白 project/planDigest 不致 digest 失配）', () => {
+  const store = setup();
+  const run = store.createRun(baseInput({ project: '  demo-project ', planDigest: ' sha256:plandigest\n' }));
+  assert.equal(run.authorizationSnapshot.project, 'demo-project');
+  assert.equal(run.authorizationSnapshot.planDigest, 'sha256:plandigest');
+  assert.equal(run.authorizationSnapshot.digest, snapshotDigest(run.authorizationSnapshot));
+  assert.equal(store.getRun(run.runId).project, run.authorizationSnapshot.project);
+  assert.equal(buildAuthorizationSnapshot({ project: ' x ', planDigest: ' d ', confirmedActionIds: ['worktree'] }).project, 'x');
+});
+
+test('P2-1 换打法按契约：第 2 次失败仍可同打法重派，满 3 次才要求 change-approach', () => {
+  const store = setup();
+  const r1 = store.createRun(baseInput());
+  const r2 = store.createAttempt(r1.runId);
+  assert.equal(r2.attempt, 2);
+  const r3 = store.createAttempt(r2.runId);
+  assert.equal(r3.attempt, 3);
+  assert.throws(() => store.createAttempt(r3.runId), error => error.code === 'CHANGE_APPROACH_REQUIRED' && /3/.test(error.message));
+  assert.equal(store.createAttempt(r3.runId, { reason: 'change-approach' }).generation, 2);
+});
+
+test('P2-3 listRuns 遇损坏 run 文件 fail closed：不得静默忽略而放行第二个 DAG/第 6 路', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'dag-run-corrupt-list-'));
+  const store = createRunStore({ directory });
+  store.createRun(baseInput());
+  fsWrite(path.join(directory, 'dagrun-broken.json'), '{broken');
+  assert.throws(() => store.listRuns(), error => error.code === 'CORRUPT_STATE');
+  assert.throws(() => store.createRun(baseInput({ project: 'demo-project', planId: 'plan-2' })), error => error.code === 'CORRUPT_STATE');
+  assert.throws(() => store.slotUsage('demo-project'), error => error.code === 'CORRUPT_STATE');
+});
+
+test('P3 createAttempt 前置状态守卫：用户取消的 run 不得再派生 attempt；attempts-exhausted 取消仍可换打法', () => {
+  const store = setup();
+  const run = store.createRun(baseInput());
+  store.cancel(run.runId, { reason: 'user-request' });
+  assert.throws(() => store.createAttempt(run.runId), error => error.code === 'RUN_CANCELLED');
+  const other = setup();
+  const r1 = other.createRun(baseInput());
+  const r2 = other.createAttempt(r1.runId); const r3 = other.createAttempt(r2.runId);
+  other.cancel(r3.runId, { reason: 'attempts-exhausted' });
+  assert.equal(other.createAttempt(r3.runId, { reason: 'change-approach' }).generation, 2);
+});
+
+test('P3 markUnknown 重复调用不刷新 unknownSince（观察期从首次进入起算）', () => {
+  const store = setup();
+  const run = store.createRun(baseInput());
+  store.markUnknown(run.runId, { at: 1000 });
+  const again = store.markUnknown(run.runId, { at: 999999 });
+  assert.equal(again.unknownSince, 1000);
 });
