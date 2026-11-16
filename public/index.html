@@ -42,7 +42,8 @@
       <div id="rules-list" class="rule-grid"></div>
     </section>
     <section id="view-sessions" class="view" hidden aria-labelledby="sessions-title">
-      <div class="page-heading"><div><p class="eyebrow">COORDINATION</p><h1 id="sessions-title">调度会话</h1><p class="subtle">每个项目一个会话，从本地 Git 仓库选择；开始时会读取目标项目的 AGENTS.md 等文件。</p></div><div class="session-start"><select id="session-project" aria-label="项目标识"></select><button id="start-session" class="button primary" type="button">开启调度会话</button></div></div>
+      <div class="page-heading"><div><p class="eyebrow">COORDINATION</p><h1 id="sessions-title">调度会话</h1><p class="subtle">每个项目一个会话，从本地 Git 仓库选择；开始时会读取目标项目的 AGENTS.md 等文件。</p></div><div class="session-start"><select id="session-project" aria-label="项目标识"></select><textarea id="session-prompt" rows="3" aria-label="首轮提示词" placeholder="先输入首轮提示词，系统会判定会话类型"></textarea><button id="classify-session" class="button" type="button">分析首轮提示词</button></div></div>
+      <div id="session-suggest" class="session-suggest" hidden><span id="session-suggest-reason" class="subtle"></span><label>会话类型 <select id="session-kind" aria-label="会话类型"><option value="normal">普通会话</option><option value="scheduling">调度会话</option><option value="design">设计会话</option></select></label><button id="start-session" class="button primary" type="button">确认并发送首轮</button><button id="cancel-session-suggest" class="button" type="button">返回修改</button></div>
       <div id="sessions-list" class="run-list"></div>
       <h2 class="section-sub">已存档会话</h2>
       <p class="subtle">控制台重启不会丢失：转录完整保留，可一键继续（继续会新建会话并消耗模型额度）。</p>

@@ -417,17 +417,43 @@ document.addEventListener('submit', async event => {
   catch (error) { showNotice(error.message); }
 });
 $('new-rule').addEventListener('click', () => openRuleForm({ agents: state.agents, sources: state.sources, api, onSaved: refresh }));
+// 创建流：输入首轮提示词 → 服务端语义分类 → 用户确认/覆盖 kind → 一次性发送首轮。确认前不创建会话。
+const KIND_NAMES = { normal: '普通会话', scheduling: '调度会话', design: '设计会话' };
+let suggestedPrompt = null;
+function resetSessionSuggest() { suggestedPrompt = null; $('session-suggest').hidden = true; $('classify-session').hidden = false; }
+$('session-prompt').addEventListener('input', () => { if (suggestedPrompt !== null && $('session-prompt').value.trim() !== suggestedPrompt) resetSessionSuggest(); });
+$('cancel-session-suggest').addEventListener('click', resetSessionSuggest);
+$('classify-session').addEventListener('click', async () => {
+  const project = $('session-project').value.trim();
+  if (!project) { showNotice('请先从列表选择被调度的项目。'); return; }
+  const text = $('session-prompt').value.trim();
+  if (!text) { showNotice('请先输入首轮提示词。'); return; }
+  try {
+    const result = await api('/api/session-classify', { method: 'POST', body: JSON.stringify({ text }) });
+    if (!result.kind) { showNotice(result.reason || '无法判定会话类型，请补充提示词。'); return; }
+    suggestedPrompt = text;
+    $('session-kind').value = result.kind;
+    $('session-suggest-reason').textContent = `建议：${KIND_NAMES[result.kind]}。${result.reason}`;
+    $('session-suggest').hidden = false;
+    $('classify-session').hidden = true;
+  } catch (error) { showNotice(error.message); }
+});
 $('start-session').addEventListener('click', async event => {
   const button = event.currentTarget;
   const project = $('session-project').value.trim();
+  const prompt = $('session-prompt').value.trim();
+  const kind = $('session-kind').value;
   if (!project) { showNotice('请先从列表选择被调度的项目。'); return; }
-  if (!confirm(`为项目 ${project} 开启 Codex 调度会话？这会启动 Codex，并可能消耗模型额度。`)) return;
+  if (!prompt) { showNotice('请先输入首轮提示词。'); return; }
+  if (!confirm(`为项目 ${project} 开启${KIND_NAMES[kind]}并发送首轮？这会启动 Codex，并可能消耗模型额度。`)) return;
   button.disabled = true;
   try {
-    const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project }) });
-    showNotice(`调度会话 ${session.id} 已开启。`);
+    const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project, prompt, kind }) });
+    showNotice(`${KIND_NAMES[session.kind] || '会话'} ${session.id} 已开启。`);
     state.projectFilter = projectName(session.project || '');
     $('session-project').selectedIndex = 0;
+    $('session-prompt').value = '';
+    resetSessionSuggest();
     await refresh();
   } catch (error) { showNotice(error.message); }
   finally { button.disabled = false; }

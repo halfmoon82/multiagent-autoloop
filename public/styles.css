@@ -88,3 +88,6 @@ form.session-message input,form.session-message textarea{flex:1;min-width:0}
 .md-view blockquote.md-quote{border-left:3px solid var(--accent);margin:7px 0;padding:2px 12px;color:var(--muted)}
 .md-view a{color:var(--accent-dark)}form.session-message textarea,.text-answer textarea{resize:none;overflow-y:auto;min-height:38px;max-height:132px}
 form.session-message .button{white-space:nowrap}
+
+.session-start textarea{min-width:220px;resize:vertical}.session-suggest{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}
+.session-suggest[hidden]{display:none}
