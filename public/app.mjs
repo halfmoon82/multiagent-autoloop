@@ -92,7 +92,8 @@ function replaceKeyedPreserving(containerId, freshNodes, keyAttr, skipKey) {
     }
     // 聚焦元素在容器内但不在任何卡片里：pinned 保持 null，照常替换（与旧语义一致）
   }
-  // 进行中的文本选区同样钉住卡片：否则 2s 重建 DOM 把选区打散，聊天框文字无法精确选定复制
+  // 进行中的文本选区同样钉住卡片：否则 2s 重建 DOM 把选区打散，聊天框文字无法精确选定复制。
+  // 优先级：草稿/组词钉住 > 选区钉住（A 卡有草稿时 B 卡的选区会被重建打散，属可接受取舍）
   if (!pinned) {
     const selection = document.getSelection?.();
     const anchor = selection && !selection.isCollapsed ? selection.anchorNode : null;
@@ -400,8 +401,9 @@ function insertNewline(node) {
 }
 function autoGrow(node) {
   if (!node || node.tagName !== 'TEXTAREA') return;
+  const cap = Number(node.dataset.autogrowMax) || 132; // 队列编辑器可经 data-autogrow-max 提高上限
   node.style.height = 'auto';
-  node.style.height = `${Math.min(node.scrollHeight, 132)}px`;
+  node.style.height = `${Math.min(node.scrollHeight, cap)}px`;
 }
 document.addEventListener('input', event => { if (event.target?.dataset?.autogrow !== undefined) autoGrow(event.target); });
 document.addEventListener('submit', async event => {

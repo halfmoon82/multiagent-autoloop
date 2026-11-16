@@ -123,6 +123,7 @@ export function renderSchedulingSessions(sessions = [], queueEditing = null, art
             editor.value = item.text;
             editor.rows = 2;
             editor.dataset.autogrow = '';
+            editor.dataset.autogrowMax = '200';
             editor.setAttribute('aria-label', '编辑排队消息内容');
             const ops = el('span', 'queue-ops');
             ops.append(
