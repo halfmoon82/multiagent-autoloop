@@ -133,7 +133,7 @@ function render() {
   const view = projectView();
   const draftAnswers = Object.fromEntries([...document.querySelectorAll('form[data-action="answer-text"]')].map(form => [form.dataset.id, form.elements.answer.value]));
   const draftMessages = Object.fromEntries([...document.querySelectorAll('form[data-action="session-message"]')].map(form => [form.dataset.id, form.elements.message.value]));
-  const chatScrolls = Object.fromEntries([...document.querySelectorAll('.session-card')].map(card => { if (!card.dataset.session) return null; const log = card.querySelector('.chat-log'); if (!log) return null; return [card.dataset.session, { top: log.scrollTop, atBottom: log.scrollHeight - log.scrollTop - log.clientHeight < 40 }]; }).filter(Boolean));
+  const chatScrolls = Object.fromEntries([...document.querySelectorAll('.session-card, .run-card.archived')].map(card => { const key = card.dataset.session || card.dataset.archive; if (!key) return null; const log = card.querySelector('.chat-log'); if (!log) return null; return [key, { top: log.scrollTop, atBottom: log.scrollHeight - log.scrollTop - log.clientHeight < 40 }]; }).filter(Boolean));
   const filter = state.projectFilter;
   const scoped = scopedTotals(view.snapshot, view.rules, filter);
   const spending = scopedSpending(view.snapshot, view.rules, filter);
@@ -151,9 +151,9 @@ function render() {
   syncProjectFilter();
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) { form.elements.answer.value = draftAnswers[form.dataset.id]; autoGrow(form.elements.answer); } });
   document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) { form.elements.message.value = draftMessages[form.dataset.id]; autoGrow(form.elements.message); } });
-  document.querySelectorAll('.session-card').forEach(card => {
+  document.querySelectorAll('.session-card, .run-card.archived').forEach(card => {
     const log = card.querySelector('.chat-log'); if (!log) return;
-    const previous = chatScrolls[card.dataset.session];
+    const previous = chatScrolls[card.dataset.session || card.dataset.archive];
     if (!previous || previous.atBottom) { log.scrollTop = log.scrollHeight; return; }
     log.scrollTop = Math.min(previous.top, Math.max(log.scrollHeight - log.clientHeight, 0));
   });
@@ -290,7 +290,6 @@ document.addEventListener('click', async event => {
       return;
     }
     if (action === 'artifact-close') { $('artifact-dialog').close(); return; }
-    if (action === 'queue-resume') { await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/queue/resume`, { method: 'POST', body: JSON.stringify({}) }); showNotice('队列已恢复，本轮结束后继续跟进。'); await refresh(); return; }
     if (action === 'queue-clear') {
       if (!confirm('清空队列中的全部消息？')) return;
       await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/queue/clear`, { method: 'POST', body: JSON.stringify({}) });

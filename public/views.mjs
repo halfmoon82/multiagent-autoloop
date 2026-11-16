@@ -107,9 +107,13 @@ export function renderSchedulingSessions(sessions = [], queueEditing = null, art
     if (!closed) {
       const form = el('form', 'session-message');
       form.dataset.action = 'session-message'; form.dataset.id = session.id;
-      // 排队消息与输入框一体（与 Codex 原生一致：芯片排在输入框上方，暂停时显示恢复/清空条）
+      // 排队消息与输入框一体（与 Codex 原生一致：芯片排在输入框上方，头部提供整批清空）
       if (session.queued?.length) {
         const queueList = el('div', 'queue-list');
+        const queueHead = el('div', 'queue-head');
+        queueHead.append(el('span', 'queue-head-label', `排队中的消息 ${session.queued.length}`));
+        queueHead.append(queueOp('清空队列', 'queue-clear', session.id, null));
+        queueList.append(queueHead);
         queueList.setAttribute('aria-label', '排队中的消息');
         for (const item of session.queued) {
           const row = el('div', 'queue-item');
@@ -129,7 +133,7 @@ export function renderSchedulingSessions(sessions = [], queueEditing = null, art
             chip.type = 'button';
             chip.dataset.action = 'queue-steer';
             chip.dataset.id = `${session.id}:${item.id}`;
-            chip.title = '立即发送这条（steer in：打断当前轮马上送达）';
+            chip.title = '立即发送这条（steer in：注入当前轮，agent 马上看到）';
             const ops = el('span', 'queue-ops');
             ops.append(
               queueOp('编辑', 'queue-edit', `${session.id}:${item.id}`, `编辑排队消息 ${item.text}`),
@@ -148,15 +152,6 @@ export function renderSchedulingSessions(sessions = [], queueEditing = null, art
           queueList.append(row);
         }
         form.append(queueList);
-      }
-      if (session.queuePaused) {
-        const paused = el('div', 'queue-paused');
-        paused.append(el('span', 'queue-paused-text', '队列已暂停'));
-        paused.append(
-          queueOp('恢复队列', 'queue-resume', session.id, null),
-          queueOp('清空队列', 'queue-clear', session.id, null),
-        );
-        form.append(paused);
       }
       const input = el('textarea'); input.name = 'message'; input.required = true; input.rows = 1; input.dataset.autogrow = '';
       input.placeholder = session.busy ? '排队跟进：本轮结束后自动发送；需要立即介入请点「打断」' : '继续指挥这次调度，例如：现在重点看哪一项？回车发送，Alt/Shift+回车换行';
@@ -215,6 +210,7 @@ export function renderArchivedSessions(archived = [], discoveredProjects = []) {
   const known = new Set(discoveredProjects.map(project => projectName(project.path)));
   return archived.map(record => {
     const card = el('article', 'run-card archived');
+    card.dataset.archive = record.id; // 供后台刷新时恢复转录滚动位置
     const top = el('div', 'run-top');
     const title = el('div');
     title.append(

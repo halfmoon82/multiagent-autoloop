@@ -77,7 +77,6 @@ async function handleApi(config, req, res, url) {
   }
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   let match;
-  if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/resume$/))) return jsonResponse(res, 200, await config.schedulingSessions.resumeQueue(decodeURIComponent(match[1])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/clear$/))) return jsonResponse(res, 200, await config.schedulingSessions.clearQueued(decodeURIComponent(match[1])));
   if (req.method === 'PUT' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/([^/]+)$/))) return jsonResponse(res, 200, await config.schedulingSessions.updateQueued(decodeURIComponent(match[1]), decodeURIComponent(match[2]), String(body.text ?? '')));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/([^/]+)\/move$/))) return jsonResponse(res, 200, await config.schedulingSessions.moveQueued(decodeURIComponent(match[1]), decodeURIComponent(match[2]), String(body.direction || '')));

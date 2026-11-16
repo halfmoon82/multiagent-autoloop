@@ -386,10 +386,12 @@ test('scheduling prompt instructs native MCP tools first and keeps the console A
 });
 
 // 受控适配器：session/prompt 的响应由测试手动释放，用来覆盖运行中排队/打断语义。
-function controlledAdapter({ holdInitialize = false, rejectPromptOnCancel = false } = {}) {
+function controlledAdapter({ holdInitialize = false, rejectPromptOnCancel = false, failSteering = false } = {}) {
   const requests = [];
   const prompts = [];
+  const steers = [];
   const heldInitializes = [];
+  let turnActive = false;
   const stdin = new PassThrough(); const stdout = new PassThrough(); const stderr = new PassThrough();
   let buffer = '';
   const proc = { stdin, stdout, stderr, pid: 77, kill() { stdout.end(); } };
@@ -408,11 +410,18 @@ function controlledAdapter({ holdInitialize = false, rejectPromptOnCancel = fals
         else respond(request, initializeResult(request));
       }
       else if (request.method === 'session/new') respond(request, { sessionId: 'ctrl-session' });
-      else if (request.method === 'session/prompt') prompts.push(request);
+      else if (request.method === 'session/prompt') { prompts.push(request); turnActive = true; }
+      else if (request.method === '_session/steering') {
+        steers.push(request);
+        if (failSteering) stdout.write(jsonLine({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'connection reset by peer' } }));
+        else if (turnActive) respond(request, { outcome: 'steeredActiveTurn' });
+        else respond(request, { error: { code: -32602, message: 'no active turn to steer' } });
+      }
       else if (request.method === 'session/cancel') {
         respond(request, {});
         if (rejectPromptOnCancel && prompts.length) {
           const pending = prompts[prompts.length - 1];
+          turnActive = false;
           stdout.write(jsonLine({ jsonrpc: '2.0', id: pending.id, error: { code: -32800, message: 'request cancelled' } }));
         }
       }
@@ -420,11 +429,12 @@ function controlledAdapter({ holdInitialize = false, rejectPromptOnCancel = fals
     }
   });
   const endTurn = (request, text = '本轮回复') => {
+    turnActive = false;
     stdout.write(jsonLine({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'ctrl-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } }));
     respond(request, { stopReason: 'end_turn' });
   };
   const releaseInitialize = () => { for (const request of heldInitializes.splice(0)) respond(request, initializeResult(request)); };
-  return { process: proc, requests, prompts, endTurn, releaseInitialize };
+  return { process: proc, requests, prompts, steers, endTurn, releaseInitialize };
 }
 
 test('queues follow-up messages while the agent is running and flushes them in order after the turn', async () => {
@@ -507,7 +517,7 @@ test('updateQueued edits in place, moveQueued reorders within bounds, clearQueue
   await manager.close(id);
 });
 
-test('steer in delivers the chosen queued message immediately and keeps the remaining queue order', async () => {
+test('steer in injects the queued message into the live turn via _session/steering, without cancelling', async () => {
   const fake = controlledAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
@@ -517,47 +527,122 @@ test('steer in delivers the chosen queued message immediately and keeps the rema
   await manager.send(id, '第二条');
   const listed = manager.list()[0];
   const steered = await manager.steerQueued(id, listed.queued[1].id);
-  assert.deepEqual(steered.queued.map(item => item.text), ['第二条', '第一条'], 'steered-in message must jump to the queue head for immediate delivery, remaining order unchanged');
-  assert.ok(fake.requests.some(request => request.method === 'session/cancel'), 'steer in must cancel the running turn like an interrupt');
+  assert.deepEqual(steered.queued.map(item => item.text), ['第一条'], 'steered-in message leaves the queue and enters the live turn');
+  assert.equal(fake.steers.length, 1, 'steer in must call the native _session/steering method');
+  assert.match(fake.steers[0].params.prompt[0].text, /第二条/);
+  assert.ok(!fake.requests.some(request => request.method === 'session/cancel'), 'steer in must NOT cancel the running turn');
+  assert.equal(fake.prompts.length, 1, 'steering injects into the live turn without starting a new one');
   await assert.rejects(() => manager.steerQueued(id, 'no-such-item'), error => error.status === 404, 'steering an unknown item must be 404');
   fake.endTurn(fake.prompts[0]);
-  await waitFor(() => fake.prompts.length === 2);
-  assert.match(fake.prompts[1].params.prompt[0].text, /第二条/, 'steered-in message must be delivered first, ahead of the remaining queue');
+  await waitFor(() => fake.prompts.length === 2, 2000);
+  assert.match(fake.prompts[1].params.prompt[0].text, /第一条/, 'the remaining queue continues automatically after the steered turn ends');
   fake.endTurn(fake.prompts[1]);
-  await waitFor(() => fake.prompts.length === 3);
-  assert.match(fake.prompts[2].params.prompt[0].text, /第一条/, 'remaining queue must keep its order');
-  fake.endTurn(fake.prompts[2]);
-  await waitFor(() => manager.list()[0].status === 'idle');
+  await waitFor(() => manager.list()[0].status === 'idle', 2000);
   await manager.close(id);
 });
 
-test('interrupt is a pure stop that pauses the queue like Codex; resume delivers in order', async () => {
-  const fake = controlledAdapter();
+test('a steering transport failure reports 502 and restores the message to the queue', async () => {
+  const fake = controlledAdapter({ failSteering: true });
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '第一条');
+  await manager.send(id, '第二条');
+  const listed = manager.list()[0];
+  await assert.rejects(() => manager.steerQueued(id, listed.queued[1].id), error => error.status === 502, 'a steering transport failure must be 502');
+  const after = manager.list()[0];
+  assert.deepEqual(after.queued.map(item => item.text), ['第二条', '第一条'], 'a failed steer must restore the message to the queue head');
+  await manager.close(id);
+});
+
+test('a send during the settle window wins and the settle timer then no-ops', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 120 });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '排队一');
+  await manager.send(id, '', { interrupt: true });
+  fake.endTurn(fake.prompts[0]);
+  await new Promise(resolve => setTimeout(resolve, 10)); // finish 已跑、settle 定时器（120ms）未到期
+  await manager.send(id, '插队新消息'); // settle 窗口内直接发送：立即开轮
+  await waitFor(() => fake.prompts.length === 2, 2000);
+  assert.match(fake.prompts[1].params.prompt[0].text, /插队新消息/);
+  await new Promise(resolve => setTimeout(resolve, 200)); // settle 定时器触发：会话在运行，必须空转不抢跑
+  assert.equal(fake.prompts.length, 2, 'the settle timer must no-op when a new turn already started');
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => fake.prompts.length === 3, 2000);
+  assert.match(fake.prompts[2].params.prompt[0].text, /排队一/, 'the queued message must continue automatically after the intervening turn');
+  fake.endTurn(fake.prompts[2]);
+  await waitFor(() => manager.list()[0].status === 'idle', 2000);
+  await manager.close(id);
+});
+
+test('closing during the settle window is safe when the timer fires', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 40 });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '排队一');
+  await manager.send(id, '', { interrupt: true });
+  fake.endTurn(fake.prompts[0]);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await manager.close(id);
+  await new Promise(resolve => setTimeout(resolve, 120)); // settle 定时器在已销毁会话上触发：必须静默兜底
+  assert.ok(manager.list().length === 0, 'the session stays closed after the settle timer fires');
+});
+
+test('steer in with no active turn starts a new turn immediately and keeps the remaining queue', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 200 });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '第一条');
+  await manager.send(id, '第二条');
+  await manager.send(id, '', { interrupt: true });
+  fake.endTurn(fake.prompts[0]);
+  await new Promise(resolve => setTimeout(resolve, 20)); // finish 已跑（微任务）、settle 窗口（200ms）未到期：会话空闲且队列仍在
+  const listed = manager.list()[0];
+  assert.equal(listed.status, 'idle');
+  assert.equal(listed.queued.length, 2, '队列在 settle 窗口内保持待送达');
+  const steered = await manager.steerQueued(id, listed.queued[1].id);
+  assert.equal(fake.steers.length, 0, '会话已不在运行，不应走 steering 注入');
+  assert.deepEqual(steered.queued.map(item => item.text), ['第一条'], 'steered-in message leaves the queue');
+  await waitFor(() => fake.prompts.length === 2, 2000);
+  assert.match(fake.prompts[1].params.prompt[0].text, /第二条/, 'with no active turn the steered message must start a new turn immediately');
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => fake.prompts.length === 3, 2000);
+  assert.match(fake.prompts[2].params.prompt[0].text, /第一条/, 'remaining queue keeps its order');
+  fake.endTurn(fake.prompts[2]);
+  await waitFor(() => manager.list()[0].status === 'idle', 2000);
+  await manager.close(id);
+});
+
+test('interrupt is a pure stop and the queue continues automatically after the turn settles', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 30 });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
   await manager.send(id, '排队一');
   await manager.send(id, '排队二');
-  // 与 Codex 原生 Stop 一致：打断不携带文本、不动队列，队列转为暂停态，草稿留在客户端
+  // 与 Codex 原生 Stop 一致：纯停止本轮、不动队列；轮次收尾后队列自动按序续跑
   const interrupted = await manager.send(id, '', { interrupt: true });
-  assert.equal(interrupted.queuePaused, true, 'interrupt must pause the queue');
+  assert.equal(interrupted.queuePaused, undefined, 'interrupt must not pause the queue');
   assert.equal(interrupted.queuedCount, 2, 'interrupt must not consume or inject queue items');
   assert.ok(fake.requests.some(request => request.method === 'session/cancel'), 'interrupt must call session/cancel');
   fake.endTurn(fake.prompts[0]);
-  await waitFor(() => manager.list()[0].status === 'idle');
-  assert.equal(fake.prompts.length, 1, 'a paused queue must not drain after the turn stops');
-  const resumed = await manager.resumeQueue(id);
-  assert.equal(resumed.queuePaused, false, 'resume must clear the paused state');
-  await waitFor(() => fake.prompts.length === 2);
+  await waitFor(() => fake.prompts.length === 2, 2000); // settle 窗口后自动续跑，无需手动恢复
   assert.match(fake.prompts[1].params.prompt[0].text, /排队一/);
   fake.endTurn(fake.prompts[1]);
-  await waitFor(() => fake.prompts.length === 3);
+  await waitFor(() => fake.prompts.length === 3, 2000);
   assert.match(fake.prompts[2].params.prompt[0].text, /排队二/);
   fake.endTurn(fake.prompts[2]);
-  await waitFor(() => manager.list()[0].status === 'idle');
+  await waitFor(() => manager.list()[0].status === 'idle' && manager.list()[0].queuedCount === 0, 2000);
   await manager.close(id);
-  await assert.rejects(() => manager.resumeQueue(id), error => error.status === 404, 'resuming a destroyed session must be 404');
 });
 
 test('interrupt with an empty text stops the turn without sending a new prompt', async () => {
@@ -594,39 +679,20 @@ test('a genuine turn failure still marks the session as error instead of hiding 
 
 test('a cancel-induced prompt rejection settles as interrupted, not error, and the queue still drains', async () => {
   const fake = controlledAdapter({ rejectPromptOnCancel: true });
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 30 });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
 
-  await manager.send(id, '别跑了', { interrupt: true }); // 纯停止：文本被忽略，队列转暂停
-  await waitFor(() => manager.list()[0].status === 'idle');
-  assert.equal(manager.list()[0].error, null, 'a cancel-induced rejection must not mark the session as error');
-  assert.equal(manager.list()[0].queuePaused, true, 'the queue must stay paused after a cancel-induced stop');
-  const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 4)}`);
-  assert.deepEqual(transcript, ['user:你是 M'], 'the interrupted turn leaves no partial agent reply and no phantom interrupt message');
-  await manager.close(id);
-});
-
-test('steer in survives a cancel-induced prompt rejection without erroring or losing the queue', async () => {
-  const fake = controlledAdapter({ rejectPromptOnCancel: true });
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
-  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
-  await waitFor(() => fake.prompts.length === 1);
-  const id = started.id;
   await manager.send(id, '排队一');
-  await manager.send(id, '排队二');
-  const listed = manager.list()[0];
-  await manager.steerQueued(id, listed.queued[1].id); // steer 触发 cancel，pending prompt 以拒绝结算
-  await waitFor(() => fake.prompts.length === 2, 2000); // steer 触发 cancel，pending prompt 以拒绝结算后，被 steer 的消息必须送达
-  assert.match(fake.prompts[1].params.prompt[0].text, /排队二/);
-  assert.equal(manager.list()[0].error, null, 'a cancel-induced rejection during steer must settle as interrupted, not error');
+  await manager.send(id, '', { interrupt: true }); // 纯停止：文本被忽略
+  await waitFor(() => fake.prompts.length === 2, 2000); // cancel 拒绝结算 → settle → 队列自动续跑
+  assert.match(fake.prompts[1].params.prompt[0].text, /排队一/);
+  assert.equal(manager.list()[0].error, null, 'a cancel-induced rejection must not mark the session as error');
+  const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 4)}`);
+  assert.deepEqual(transcript, ['user:你是 M', 'user:排队一'], 'the interrupted turn leaves no partial agent reply and no phantom interrupt message');
   fake.endTurn(fake.prompts[1]);
-  await waitFor(() => fake.prompts.length === 3, 2000); // finish 内同步 drain：idle 瞬态不可观测，改看下一条 prompt
-  assert.match(fake.prompts[2].params.prompt[0].text, /排队一/, 'the remaining queue must follow the steered message');
-  fake.endTurn(fake.prompts[2]);
-  await waitFor(() => manager.list()[0].status === 'idle' && manager.list()[0].queuedCount === 0, 2000);
-  assert.equal(manager.list()[0].error, null);
+  await waitFor(() => manager.list()[0].status === 'idle', 2000);
   await manager.close(id);
 });
 

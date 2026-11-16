@@ -57,6 +57,10 @@ progress.progress-bar::-moz-progress-bar{background:var(--accent);border-radius:
 form.session-message{display:flex;gap:8px}
 form.session-message input,form.session-message textarea{flex:1;min-width:0}
 .queue-list{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+.queue-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.queue-head-label{font-size:11px;color:var(--muted)}
+.queue-head .queue-op{border:0;color:var(--danger);font-weight:600}
+.queue-head .queue-op:hover{background:#fbeaea;border-radius:5px}
 .queue-item{display:flex;align-items:stretch;gap:0;border:1px solid var(--line);border-radius:10px;background:#f0f3f2;overflow:hidden;max-width:100%}
 .queue-chip{border:0;background:none;color:var(--ink);font-size:12px;padding:5px 4px 5px 10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
 .queue-chip:hover{color:var(--accent-dark)}
