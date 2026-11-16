@@ -65,7 +65,16 @@ function chatBubble(message) {
   bubble.append(el('div', 'bubble-text', message.text), el('div', 'bubble-time', formatTime(message.at)));
   return bubble;
 }
-export function renderSchedulingSessions(sessions = []) {
+function queueOp(text, action, id, ariaLabel) {
+  const node = el('button', 'queue-op', text);
+  node.type = 'button';
+  node.dataset.action = action;
+  node.dataset.id = id;
+  if (ariaLabel) node.setAttribute('aria-label', ariaLabel);
+  return node;
+}
+
+export function renderSchedulingSessions(sessions = [], queueEditing = null) {
   if (!sessions.length) return [el('div', 'empty', '还没有开启的调度会话。')];
   return sessions.map(session => {
     const card = el('article', 'run-card session-card');
@@ -98,6 +107,57 @@ export function renderSchedulingSessions(sessions = []) {
     if (!closed) {
       const form = el('form', 'session-message');
       form.dataset.action = 'session-message'; form.dataset.id = session.id;
+      // 排队消息与输入框一体（与 Codex 原生一致：芯片排在输入框上方，暂停时显示恢复/清空条）
+      if (session.queued?.length) {
+        const queueList = el('div', 'queue-list');
+        queueList.setAttribute('aria-label', '排队中的消息');
+        for (const item of session.queued) {
+          const row = el('div', 'queue-item');
+          if (queueEditing && queueEditing.sessionId === session.id && queueEditing.itemId === item.id) {
+            const editor = el('textarea', 'queue-editor');
+            editor.value = item.text;
+            editor.rows = 1;
+            editor.setAttribute('aria-label', '编辑排队消息内容');
+            const ops = el('span', 'queue-ops');
+            ops.append(
+              queueOp('保存', 'queue-save', `${session.id}:${item.id}`, '保存编辑'),
+              queueOp('取消', 'queue-cancel', `${session.id}:${item.id}`, '取消编辑'),
+            );
+            row.append(editor, ops);
+          } else {
+            const chip = el('button', 'queue-chip', item.text);
+            chip.type = 'button';
+            chip.dataset.action = 'queue-steer';
+            chip.dataset.id = `${session.id}:${item.id}`;
+            chip.title = '立即发送这条（steer in：打断当前轮马上送达）';
+            const ops = el('span', 'queue-ops');
+            ops.append(
+              queueOp('编辑', 'queue-edit', `${session.id}:${item.id}`, `编辑排队消息 ${item.text}`),
+              queueOp('↑', 'queue-move', `${session.id}:${item.id}:up`, `上移排队消息 ${item.text}`),
+              queueOp('↓', 'queue-move', `${session.id}:${item.id}:down`, `下移排队消息 ${item.text}`),
+            );
+            const remove = el('button', 'queue-op queue-remove', '×');
+            remove.type = 'button';
+            remove.dataset.action = 'queue-delete';
+            remove.dataset.id = `${session.id}:${item.id}`;
+            remove.title = '从队列删除这条消息';
+            remove.setAttribute('aria-label', `删除队列消息 ${item.text}`);
+            ops.append(remove);
+            row.append(chip, ops);
+          }
+          queueList.append(row);
+        }
+        form.append(queueList);
+      }
+      if (session.queuePaused) {
+        const paused = el('div', 'queue-paused');
+        paused.append(el('span', 'queue-paused-text', '队列已暂停'));
+        paused.append(
+          queueOp('恢复队列', 'queue-resume', session.id, null),
+          queueOp('清空队列', 'queue-clear', session.id, null),
+        );
+        form.append(paused);
+      }
       const input = el('textarea'); input.name = 'message'; input.required = true; input.rows = 1; input.dataset.autogrow = '';
       input.placeholder = session.busy ? '排队跟进：本轮结束后自动发送；需要立即介入请点「打断」' : '继续指挥这次调度，例如：现在重点看哪一项？回车发送，Alt/Shift+回车换行';
       input.setAttribute('aria-label', `发消息给会话 ${session.id}`);
@@ -106,27 +166,6 @@ export function renderSchedulingSessions(sessions = []) {
       form.append(input, submit);
       if (session.busy) form.append(button('打断', 'interrupt-session', session.id, 'danger'));
       card.append(form);
-      if (session.queued?.length) {
-        const queueList = el('div', 'queue-list');
-        queueList.setAttribute('aria-label', '排队消息');
-        for (const item of session.queued) {
-          const row = el('span', 'queue-item');
-          const chip = el('button', 'queue-chip', item.text);
-          chip.type = 'button';
-          chip.dataset.action = 'queue-steer';
-          chip.dataset.id = `${session.id}:${item.id}`;
-          chip.title = 'steer in：立即追加发送这条（打断当前轮马上送达）';
-          const remove = el('button', 'queue-remove', '×');
-          remove.type = 'button';
-          remove.dataset.action = 'queue-delete';
-          remove.dataset.id = `${session.id}:${item.id}`;
-          remove.title = '从队列删除这条消息';
-          remove.setAttribute('aria-label', `删除队列消息 ${item.text}`);
-          row.append(chip, remove);
-          queueList.append(row);
-        }
-        card.append(queueList);
-      }
       const actions = el('div', 'actions');
       actions.append(button('关闭会话', 'close-session', session.id, 'danger'));
       card.append(actions);

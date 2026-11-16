@@ -78,8 +78,9 @@ function toPublicSession(record) {
     messages: record.messages.map(message => ({ ...message })),
     liveText: record.liveText,
     busy: record.status === 'running',
-    queuedCount: (record.queue || []).filter(item => item !== null).length,
-    queued: (record.queue || []).filter(item => item !== null).map(item => ({ id: item.id, text: item.text, at: item.at })),
+    queuePaused: !!record.queuePaused,
+    queuedCount: (record.queue || []).length,
+    queued: (record.queue || []).map(item => ({ id: item.id, text: item.text, at: item.at })),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -259,16 +260,64 @@ export class SchedulingSessionManager {
     // 运行中/初始化中：与 Codex 输入体验一致——默认排队跟进，interrupt 取消当前轮。
     if (interrupt) {
       if (record.status === 'initializing') throw new SchedulingSessionError('会话初始化中，请稍候再试（打断只在运行中可用）', { status: 409 });
-      record.queue.unshift(raw ? { id: randomUUID(), text: raw, at: this.now().toISOString() } : null); // null = 仅停止本轮，不发新消息
-      record.interruptRequested = true;
+      // 与 Codex 原生 Stop 一致：只停止本轮并让队列保持暂停；不读取文本（调用方草稿留在客户端），不动队列。
+      // 注意：text 在此分支被有意忽略——控制台前端传空串；带文本调用属于旧 API 约定，不再送达
+      record.queuePaused = true;
+      record.interruptRequested = true; // cancel 引发的 prompt 拒绝按中断收尾，不算错误
       record.updatedAt = this.now().toISOString();
       try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
       return toPublicSession(record);
     }
     const message = this.#validatePrompt(raw);
-    const pendingMessages = record.queue.filter(item => item !== null).length;
+    const pendingMessages = record.queue.length;
     if (pendingMessages >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
     record.queue.push({ id: randomUUID(), text: message, at: this.now().toISOString() });
+    record.updatedAt = this.now().toISOString();
+    return toPublicSession(record);
+  }
+
+  async updateQueued(id, itemId, text) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    const item = record.queue.find(entry => entry.id === String(itemId || ''));
+    if (!item) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
+    item.text = this.#validatePrompt(String(text ?? '').trim());
+    item.at = this.now().toISOString();
+    record.updatedAt = this.now().toISOString();
+    return toPublicSession(record);
+  }
+
+  async moveQueued(id, itemId, direction) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    const index = record.queue.findIndex(entry => entry.id === String(itemId || ''));
+    if (index === -1) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
+    const delta = direction === 'up' ? -1 : direction === 'down' ? 1 : null;
+    if (delta === null) throw new SchedulingSessionError('方向无效（只支持 up/down）', { status: 400 });
+    const target = index + delta;
+    if (target >= 0 && target < record.queue.length) [record.queue[index], record.queue[target]] = [record.queue[target], record.queue[index]];
+    record.updatedAt = this.now().toISOString();
+    return toPublicSession(record);
+  }
+
+  async resumeQueue(id) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    record.queuePaused = false;
+    record.updatedAt = this.now().toISOString();
+    this.#drainQueue(record);
+    return toPublicSession(record);
+  }
+
+  async clearQueued(id) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    record.queue = [];
+    record.queuePaused = false;
     record.updatedAt = this.now().toISOString();
     return toPublicSession(record);
   }
@@ -291,12 +340,16 @@ export class SchedulingSessionManager {
     // 与 send(interrupt) 同一套状态前置校验：必须先拦下，避免消息已从队列摘除但发送被拒而丢失
     if (record.status === 'initializing') throw new SchedulingSessionError('会话初始化中，请稍候再试', { status: 409 });
     if (record.status === 'error') throw new SchedulingSessionError('会话处于异常状态，请关闭后重新开启', { status: 409 });
-    const index = record.queue.findIndex(item => item !== null && item.id === String(itemId || ''));
+    const index = record.queue.findIndex(item => item.id === String(itemId || ''));
     if (index === -1) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
     const [item] = record.queue.splice(index, 1);
+    record.queuePaused = false; // sendNow 语义：被 steer 的消息立即送达，队列恢复跟进
+    record.queue.unshift({ id: randomUUID(), text: item.text, at: this.now().toISOString() });
+    record.interruptRequested = true; // cancel 引发的 prompt 拒绝按中断收尾，不算错误（与 send(interrupt) 同护）
     record.updatedAt = this.now().toISOString();
-    // steer in = 立即追加发送：以该消息为内容打断当前轮，剩余队列顺序不变
-    return this.send(record.id, item.text, { interrupt: true });
+    try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
+    this.#drainQueue(record);
+    return toPublicSession(record);
   }
 
   async close(id) {
@@ -422,9 +475,9 @@ export class SchedulingSessionManager {
   }
 
   #drainQueue(record) {
-    while (record.status === 'idle' && record.queue.length) {
+    // 队列项恒为对象（null 纯打断标记随"打断=纯停止"语义已退役，不再入队）
+    while (record.status === 'idle' && record.queue.length && !record.queuePaused) {
       const next = record.queue.shift();
-      if (next === null) continue; // 纯打断标记：消费后继续排后续消息
       this.#pushMessage(record, 'user', next.text);
       this.#runTurn(record, next.text);
       break;

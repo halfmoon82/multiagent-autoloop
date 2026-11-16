@@ -3,7 +3,7 @@ import { renderSummary, renderAttention, renderEnvironment, renderTimers, render
 import { projectName } from './format.mjs';
 import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject } from './status-sections.mjs';
 import { el } from './views.mjs';
-const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null };
+const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null, queueEditing: null };
 const $ = id => document.getElementById(id);
 function replace(id, nodes) { $(id).replaceChildren(...nodes); }
 let noticeError = false;
@@ -147,7 +147,7 @@ function render() {
   }
   const work = renderWorkSections(view.snapshot, view.rules, Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)), state.detours || []);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
-  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions), 'session', state.skipPinOnce); replace('archived-sessions-list', renderArchivedSessions((state.archived || []).filter(item => matchesProject(item.project, state.projectFilter)), state.projects)); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
+  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions, state.queueEditing), 'session', state.skipPinOnce); replace('archived-sessions-list', renderArchivedSessions((state.archived || []).filter(item => matchesProject(item.project, state.projectFilter)), state.projects)); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
   syncProjectFilter();
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) { form.elements.answer.value = draftAnswers[form.dataset.id]; autoGrow(form.elements.answer); } });
   document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) { form.elements.message.value = draftMessages[form.dataset.id]; autoGrow(form.elements.message); } });
@@ -237,18 +237,38 @@ document.addEventListener('click', async event => {
       return;
     }
     if (action === 'interrupt-session') {
-      const form = button.closest('form');
-      const text = (form?.elements?.message?.value ?? '').trim();
-      if (text && !confirm(`打断当前回复，立即发送「${text.length > 30 ? `${text.slice(0, 30)}…` : text}」？`)) return;
-      if (!text && !confirm('停止本轮调度？已排队的消息会在停止后继续跟进。')) return;
-      await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/messages`, { method: 'POST', body: JSON.stringify({ text, interrupt: true }) });
-      // 消息已随打断送出；退回实发内容（trim 后）便于修改重新发送。必须写回 live 节点：
-      // 慢请求期间卡片可能已被后台刷新重建，这里捕获的 form 引用可能已脱离文档
-      const restored = liveFormInput('session-message', id, 'message');
-      // 只有输入框仍保持原草稿才退回覆盖；慢请求期间用户已继续输入则不打扰
-      if (restored && restored.value.trim() === text) { restored.value = text; autoGrow(restored); }
+      // 与 Codex 原生 Stop 一致：纯停止本轮，队列转暂停；不带草稿文本、不动输入框
+      if (!confirm('停止本轮调度？队列将暂停，可编辑消息或点「恢复队列」继续跟进。')) return;
+      await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/messages`, { method: 'POST', body: JSON.stringify({ text: '', interrupt: true }) });
       await refresh();
-      showNotice(text ? '已打断当前回复，新消息立即送出。' : '已停止本轮，排队消息将继续跟进。');
+      showNotice('已停止本轮，队列已暂停，可点「恢复队列」继续跟进。');
+      return;
+    }
+    if (action === 'queue-edit') { const split = id.lastIndexOf(':'); state.queueEditing = { sessionId: id.slice(0, split), itemId: id.slice(split + 1) }; render(); return; }
+    if (action === 'queue-cancel') { state.queueEditing = null; render(); return; }
+    if (action === 'queue-save') {
+      const split = id.lastIndexOf(':'); const sessionId = id.slice(0, split); const itemId = id.slice(split + 1);
+      const editor = button.closest('.queue-item')?.querySelector('.queue-editor');
+      await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(itemId)}`, { method: 'PUT', body: JSON.stringify({ text: editor?.value ?? '' }) });
+      state.queueEditing = null;
+      editor?.blur(); // 焦点离开编辑器，避免钉住旧编辑态 DOM，让本轮刷新重建为芯片
+      showNotice('已保存排队消息修改。');
+      await refresh();
+      return;
+    }
+    if (action === 'queue-move') {
+      const dSplit = id.lastIndexOf(':'); const direction = id.slice(dSplit + 1); const rest = id.slice(0, dSplit);
+      const split = rest.lastIndexOf(':'); const sessionId = rest.slice(0, split); const itemId = rest.slice(split + 1);
+      await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(itemId)}/move`, { method: 'POST', body: JSON.stringify({ direction }) });
+      await refresh();
+      return;
+    }
+    if (action === 'queue-resume') { await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/queue/resume`, { method: 'POST', body: JSON.stringify({}) }); showNotice('队列已恢复，本轮结束后继续跟进。'); await refresh(); return; }
+    if (action === 'queue-clear') {
+      if (!confirm('清空队列中的全部消息？')) return;
+      await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/queue/clear`, { method: 'POST', body: JSON.stringify({}) });
+      showNotice('队列已清空。');
+      await refresh();
       return;
     }
     let body = {};
@@ -264,6 +284,14 @@ document.addEventListener('click', async event => {
 // 只处理 textarea 自身的回车：焦点在表单内按钮上时保持原生语义（Enter=click，打断还是打断）。
 document.addEventListener('keydown', event => {
   if (event.key !== 'Enter' || event.target.tagName !== 'TEXTAREA' || event.isComposing) return;
+  if (event.target.classList?.contains('queue-editor')) {
+    // 行内编辑队列消息（对齐 Codex queue_edit）：Enter 保存，Alt/Shift+Enter 手动插换行
+    // （Chrome 不会为 Alt+Enter 插换行，与主输入框同走 insertNewline）
+    if (event.altKey || event.shiftKey) { event.preventDefault(); insertNewline(event.target); return; }
+    event.preventDefault();
+    event.target.closest('.queue-item')?.querySelector('button[data-action="queue-save"]')?.click();
+    return;
+  }
   const form = event.target.closest?.('form[data-action="answer-text"], form[data-action="session-message"]');
   if (!form) return;
   event.preventDefault();
