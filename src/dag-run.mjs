@@ -368,6 +368,43 @@ export function createRunStore({ directory } = {}) {
       });
     },
 
+    // 控制器为同一 DAG 的其他节点派生 run：继承根 run 的授权快照，不受“每项目一个活跃 DAG”限制。
+    createNodeRun(rootRunId, { nodeId, role } = {}) {
+      const root = getRun(rootRunId);
+      if (!text(nodeId)) throw new DagRunError('BAD_INPUT', '缺少 nodeId');
+      if (!['dev', 'review'].includes(role)) throw new DagRunError('BAD_INPUT', `role 必须是 dev/review：${role}`);
+      if (currentRunFor(root.project, root.planId, nodeId, role)) throw new DagRunError('NODE_EXISTS', `节点 ${nodeId}:${role} 的 run 已存在`);
+      return saveRun({
+        schema: 1, runId: newRunId(), project: root.project, planId: root.planId,
+        planDigest: root.planDigest, nodeId, role, generation: 1, attempt: 1, status: 'queued',
+        slot: null, expectedAdvanceId: null, failures: 0, outcome: null, prs: [], appliedAdvance: null,
+        supersededBy: null, unknownSince: null, quarantine: false, nodes: root.nodes,
+        authorizationSnapshot: root.authorizationSnapshot, rootRunId: root.rootRunId || root.runId,
+        createdAt: iso(), updatedAt: iso(),
+      });
+    },
+
+    // 只允许写 publish 子对象（提交/测试/PR/WIP 引用等运行记录），状态与授权字段不可经此修改。
+    updateRun(runId, patch = {}) {
+      return withRunLock(runId, () => {
+        const bad = Object.keys(patch).filter(key => key !== 'publish');
+        if (bad.length) throw new DagRunError('FIELD_NOT_ALLOWED', `updateRun 不允许修改字段：${bad.join(',')}`);
+        const run = getRun(runId);
+        return saveRun({ ...run, publish: { ...(run.publish || {}), ...(patch.publish || {}) } });
+      });
+    },
+
+    markPrMerged(runId, prUrl, { mergeCommit } = {}) {
+      return withRunLock(runId, () => {
+        const run = getRun(runId);
+        const pr = (run.prs || []).find(entry => entry.prUrl === prUrl);
+        if (!pr) throw new DagRunError('PR_NOT_REGISTERED', `PR ${prUrl} 未登记`);
+        if (pr.state === 'merged') return pr;
+        const prs = run.prs.map(entry => entry.prUrl === prUrl ? { ...entry, state: 'merged', mergeCommit: mergeCommit ?? null, mergedAt: iso() } : entry);
+        return saveRun({ ...run, prs }).prs.find(entry => entry.prUrl === prUrl);
+      });
+    },
+
     registerPr(runId, nodeId, prUrl) {
       return withRunLock(runId, () => {
         const run = getRun(runId);
