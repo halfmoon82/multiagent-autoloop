@@ -40,3 +40,14 @@ test('markPrMerged 只作用于已登记 PR 且幂等', () => {
   assert.deepEqual([pr.state, pr.mergeCommit], ['merged', 'm1']);
   assert.equal(store.markPrMerged(run.runId, 'https://x/pr/1', { mergeCommit: 'm2' }).mergeCommit, 'm1');
 });
+
+test('updateRun 允许写 hub 记录；finishRoot 只终结根 run', () => {
+  const store = setup();
+  const root = store.createRun({ ...input, nodeId: '__root__' });
+  const node = store.createNodeRun(root.runId, { nodeId: 'a', role: 'dev' });
+  assert.equal(store.updateRun(node.runId, { hub: { hubRunId: 7 } }).hub.hubRunId, 7);
+  assert.throws(() => store.finishRoot(node.runId, 'done'), /根 run/);
+  assert.equal(store.finishRoot(root.runId, 'done').status, 'done');
+  store.cancel(node.runId, { reason: 'dag-finished' });
+  assert.equal(store.createRun({ ...input, nodeId: '__root__' }).status, 'queued'); // 终态后项目可再建
+});

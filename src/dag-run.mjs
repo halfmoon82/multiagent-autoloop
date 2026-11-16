@@ -10,6 +10,7 @@ export const ALLOWED_ACTIONS = Object.freeze([
   'independent-review', 'rework-p0-p2', 'squash-merge', 'close-superseded-pr',
 ]);
 export const DENIED_ACTIONS = Object.freeze(['deploy', 'release', 'production-write', 'credentials', 'external-communication']);
+export const ROOT_NODE = '__root__';
 export const MAX_SLOTS = 5;
 export const MAX_ATTEMPTS = 3;
 export const MAX_GENERATION = 10;
@@ -387,10 +388,21 @@ export function createRunStore({ directory } = {}) {
     // 只允许写 publish 子对象（提交/测试/PR/WIP 引用等运行记录），状态与授权字段不可经此修改。
     updateRun(runId, patch = {}) {
       return withRunLock(runId, () => {
-        const bad = Object.keys(patch).filter(key => key !== 'publish');
+        const bad = Object.keys(patch).filter(key => !['publish', 'hub'].includes(key));
         if (bad.length) throw new DagRunError('FIELD_NOT_ALLOWED', `updateRun 不允许修改字段：${bad.join(',')}`);
         const run = getRun(runId);
-        return saveRun({ ...run, publish: { ...(run.publish || {}), ...(patch.publish || {}) } });
+        return saveRun({ ...run, publish: { ...(run.publish || {}), ...(patch.publish || {}) }, hub: { ...(run.hub || {}), ...(patch.hub || {}) } });
+      });
+    },
+
+    // 根 run（DAG 本身）终结：不走节点迁移表，仅允许 done/cancelled，且只作用于根 run。
+    finishRoot(runId, status) {
+      return withRunLock(runId, () => {
+        const run = getRun(runId);
+        if (run.nodeId !== ROOT_NODE) throw new DagRunError('NOT_ROOT', `${runId} 不是 DAG 根 run`);
+        if (!['done', 'cancelled'].includes(status)) throw new DagRunError('BAD_INPUT', `根 run 只能终结为 done/cancelled：${status}`);
+        if (isTerminal(run.status)) return run;
+        return saveRun({ ...run, status });
       });
     },
 
