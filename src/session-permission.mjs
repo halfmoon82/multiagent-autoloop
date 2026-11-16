@@ -5,7 +5,7 @@ import path from 'node:path';
 
 export const HUB_SERVER = 'autoloop-hub';
 export const HUB_READ_TOOLS = ['list_rules', 'list_runs', 'list_cards', 'read_console_doc'];
-// 受控写：自愈恢复/暂停/重触发；dispatch_task 为后续派发工具预留（工具上线前不会有该请求）。
+// 受控写：自愈恢复/暂停/重触发；dispatch_task 为后续派发工具预留（工具上线前不会有该请求）；工具上线之日需同步收紧此处裁定。
 export const HUB_WRITE_TOOLS = ['resume_rule', 'pause_rule', 'run_rule', 'dispatch_task'];
 
 // 普通会话允许直推的分支前缀；其余（main/master/release/裸 HEAD/tag 等）一律拒绝。
@@ -162,7 +162,10 @@ export function decideByKind({ kind, params, known, workspace, writableDir }) {
   if (!allowOnce) return result(deny('请求没有 allow_once 选项（不选 allow_always）'));
   if (kind === 'design') return result(deny('设计会话只读：权限请求一律取消'));
 
-  const mcp = /^mcp\.([^.\s]+)\.(\S+)$/.exec(text(call.title));
+  // 标题可被工具自报：带 command 的请求是 shell 执行，不论标题怎么写都必须落入 execute 分析，不能按 MCP 放行。
+  const rawInput = call.rawInput ?? call.input;
+  const hasCommand = rawInput && typeof rawInput === 'object' && rawInput.command != null && rawInput.command !== '';
+  const mcp = hasCommand ? null : /^mcp\.([^.\s]+)\.(\S+)$/.exec(text(call.title));
   if (mcp) {
     if (kind === 'scheduling' && mcp[1] === HUB_SERVER && [...HUB_READ_TOOLS, ...HUB_WRITE_TOOLS].includes(mcp[2])) return result(permit(`Hub 工具 ${mcp[2]}`));
     return result(deny(`${kind} 会话不允许 MCP 工具 ${mcp[1]}.${mcp[2]}`));

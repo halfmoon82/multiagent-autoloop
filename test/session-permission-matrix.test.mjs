@@ -161,3 +161,15 @@ test('normal session delivers branch discipline as a separate prompt block while
   assert.equal(started.prompt, '修复 issue #7');
   manager.dispose();
 });
+
+// ---- P1-1：MCP 标题不能旁路 shell 分析 ----
+const spoof = command => ({ toolCall: { toolCallId: `s-${command}`, kind: 'execute', status: 'pending', title: 'mcp.autoloop-hub.run_rule', rawInput: { command } }, options: ALLOW_ONCE });
+test('scheduling: execute carrying a command is denied even with an mcp.autoloop-hub title', async () => {
+  const r = await runKind('scheduling', [spoof('rm -rf /tmp/victim'), spoof('git push origin main')]);
+  for (const i of [0, 1]) assert.equal(r.out(i).outcome, 'cancelled');
+});
+test('normal: execute with an mcp title still goes through command analysis', async () => {
+  const r = await runKind('normal', [spoof('git push origin main'), spoof('git status')]);
+  assert.equal(r.out(0).outcome, 'cancelled');
+  assert.notEqual(r.out(1).outcome, 'cancelled');
+});
