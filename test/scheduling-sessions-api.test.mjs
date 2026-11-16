@@ -66,11 +66,6 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
       if (id !== 'two' || itemId !== 'q1') throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
       return { id: 'two', status: 'running', queued: [], queuedCount: 0 };
     },
-    async resumeQueue(id) {
-      calls.push(['resumeQueue', id]);
-      if (id !== 'two') throw new SchedulingSessionError('调度会话不存在', { status: 404 });
-      return { id: 'two', status: 'running', queuePaused: false };
-    },
     async clearQueued(id) {
       calls.push(['clearQueued', id]);
       if (id !== 'two') throw new SchedulingSessionError('调度会话不存在', { status: 404 });
@@ -160,11 +155,6 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     assert.equal(editMissing.status, 404, 'editing an unknown queue item must be 404');
     const moved = await fetch(`${url}/api/scheduling-sessions/two/queue/q1/move`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ direction: 'up' }) });
     assert.equal(moved.status, 200);
-    const resumed = await fetch(`${url}/api/scheduling-sessions/two/queue/resume`, { method: 'POST', headers: writeHeaders, body: '{}' });
-    assert.equal(resumed.status, 200);
-    assert.equal((await resumed.json()).queuePaused, false);
-    const resumedMissing = await fetch(`${url}/api/scheduling-sessions/none/queue/resume`, { method: 'POST', headers: writeHeaders, body: '{}' });
-    assert.equal(resumedMissing.status, 404);
     const cleared = await fetch(`${url}/api/scheduling-sessions/two/queue/clear`, { method: 'POST', headers: writeHeaders, body: '{}' });
     assert.equal(cleared.status, 200);
     assert.equal((await cleared.json()).queuedCount, 0);
@@ -193,14 +183,13 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     const closed = await fetch(`${url}/api/scheduling-sessions/two/close`, { method: 'POST', headers: writeHeaders, body: '{}' });
     assert.equal(closed.status, 200);
     assert.equal((await closed.json()).status, 'closed');
-    assert.deepEqual(calls.map(call => call[0]), ['list', 'start', 'send', 'send', 'removeQueued', 'removeQueued', 'steerQueued', 'steerQueued', 'updateQueued', 'updateQueued', 'moveQueued', 'resumeQueue', 'resumeQueue', 'clearQueued', 'listSessionArtifacts', 'listSessionArtifacts', 'readSessionArtifact', 'readSessionArtifact', 'readSessionArtifact', 'close']);
-    assert.deepEqual(calls[16], ['readSessionArtifact', 'two', '../../etc/passwd']);
-    assert.deepEqual(calls[17], ['readSessionArtifact', 'two', 'missing.md']);
+    assert.deepEqual(calls.map(call => call[0]), ['list', 'start', 'send', 'send', 'removeQueued', 'removeQueued', 'steerQueued', 'steerQueued', 'updateQueued', 'updateQueued', 'moveQueued', 'clearQueued', 'listSessionArtifacts', 'listSessionArtifacts', 'readSessionArtifact', 'readSessionArtifact', 'readSessionArtifact', 'close']);
+    assert.deepEqual(calls[14], ['readSessionArtifact', 'two', '../../etc/passwd']);
+    assert.deepEqual(calls[15], ['readSessionArtifact', 'two', 'missing.md']);
     assert.deepEqual(calls[8], ['updateQueued', 'two', 'q1', '改后文本']);
     assert.deepEqual(calls[9], ['updateQueued', 'two', 'none', 'x']);
     assert.deepEqual(calls[10], ['moveQueued', 'two', 'q1', 'up']);
-    assert.deepEqual(calls[11], ['resumeQueue', 'two']);
-    assert.deepEqual(calls[13], ['clearQueued', 'two']);
+    assert.deepEqual(calls[11], ['clearQueued', 'two']);
     assert.equal(calls[1][1], '检查当前调度');
     assert.equal(calls[1][2], repo);
     assert.equal(calls[2][1], 'none');

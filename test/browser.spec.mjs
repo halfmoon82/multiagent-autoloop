@@ -27,7 +27,7 @@ const rawRules = { sources: { local: { name: '本机' } }, agents: { fake: { nam
 const schedulingSessions = {
   records: [],
   queueSeq: 0,
-  archived: [{ id: 'deadbeef-aaaa-bbbb-cccc-ddddeeee0001', project: demoRepo, agent: 'Codex ACP', prompt: '旧的首轮调度说明', continuedFrom: null, messages: [{ role: 'user', text: '上次看到一半的计划', at: '2026-11-15T01:00:00Z' }, { role: 'agent', text: '计划草案已给出，待确认', at: '2026-11-15T01:01:00Z' }], createdAt: '2026-11-15T01:00:00Z', updatedAt: '2026-11-15T01:01:00Z', closedAt: null, endStatus: 'interrupted', truncated: false }],
+  archived: [{ id: 'deadbeef-aaaa-bbbb-cccc-ddddeeee0001', project: demoRepo, agent: 'Codex ACP', prompt: '旧的首轮调度说明', continuedFrom: null, messages: [...Array.from({ length: 8 }, (_, index) => [{ role: 'user', text: `第 ${index + 1} 轮调度指令`, at: '2026-11-15T00:00:00Z' }, { role: 'agent', text: `第 ${index + 1} 轮回复：` + '内容较长需要换行展示。'.repeat(6), at: '2026-11-15T00:05:00Z' }]).flat(), { role: 'user', text: '上次看到一半的计划', at: '2026-11-15T01:00:00Z' }, { role: 'agent', text: '计划草案已给出，待确认。' + '收尾补充说明。'.repeat(20), at: '2026-11-15T01:01:00Z' }], createdAt: '2026-11-15T01:00:00Z', updatedAt: '2026-11-15T01:01:00Z', closedAt: null, endStatus: 'interrupted', truncated: false }],
   async listArchived() { return this.archived; },
   async continueSession(id) {
     const original = this.archived.find(item => item.id === id);
@@ -69,19 +69,16 @@ const schedulingSessions = {
   async steerQueued(id, itemId) {
     const session = this.records.find(item => item.id === id);
     if (!session) throw new Error('调度会话不存在');
-    session.steerCalls = session.steerCalls || [];
-    session.steerCalls.push(itemId);
     const item = (session.queue || []).find(entry => entry.id === itemId);
     if (!item) {
       const error = new Error('队列消息不存在或已送达'); error.status = 404;
       throw error;
     }
     session.queue = (session.queue || []).filter(entry => entry.id !== itemId);
-    session.queuePaused = false;
-    session.queue.unshift({ id: `q${++this.queueSeq}`, text: item.text, at: '2026-11-14T00:03:00Z' });
     session.queued = session.queue;
     session.queuedCount = session.queue.length;
-    session.sendCalls.push({ text: item.text, interrupt: true, steer: true });
+    if (session.busy) session.steerCalls = (session.steerCalls || []).concat({ text: item.text }); // 原生 steering：注入当前轮
+    else { session.queue.unshift({ id: `q${++this.queueSeq}`, text: item.text, at: '2026-11-14T00:03:00Z' }); session.queued = session.queue; session.queuedCount = session.queue.length; session.sendCalls.push({ text: item.text, interrupt: true, steer: true }); }
     return session;
   },
   async updateQueued(id, itemId, text) {
@@ -131,7 +128,7 @@ const schedulingSessions = {
       session.updatedAt = '2026-11-14T00:03:00Z';
       return session;
     }
-    if (interrupt) { session.queuePaused = true; session.busy = false; session.status = 'idle'; session.statusText = '待命'; }
+    if (interrupt) { session.busy = false; session.status = 'idle'; session.statusText = '待命'; }
     if (text) {
       session.messages.push({ role: 'user', text, at: '2026-11-14T00:03:00Z' });
       session.messages.push({ role: 'agent', text: `收到：${text}`, at: '2026-11-14T00:03:05Z' });
@@ -391,7 +388,6 @@ try {
   assert.deepEqual(record.sendCalls.at(-1), { text: '', interrupt: true }, '打断必须是纯停止：不带草稿文本，Codex 原生 Stop 语义');
   assert.equal(await page.evaluate(node => node.isConnected, draftNode), false, 'card must rebuild during the slow interrupt request (click focuses the button, so the draft does not pin it)');
   assert.equal(await msgInput.inputValue(), '方向变了，停下', 'a pure stop must leave the draft untouched for re-editing');
-  assert.equal(record.queuePaused, true, 'interrupt must pause the queue like Codex');
   schedulingSessions.delayMs = 0;
   record.status = 'running'; record.busy = true; record.statusText = '运行中';
   await msgInput.fill(''); // 清空草稿解冻卡片，让运行中状态与打断按钮渲染出来
@@ -415,11 +411,10 @@ try {
   const chipTwo = page.getByRole('button', { name: '队列消息二', exact: true });
   await chipOne.waitFor({ timeout: 5000 });
   await chipTwo.waitFor({ timeout: 5000 });
-  await chipTwo.click(); // steer in：立即追加发送（打断当前轮马上送达这条）
+  await chipTwo.click(); // steer in：原生 steering 注入当前轮（不打断、不新开轮）
   await page.waitForTimeout(600);
-  assert.equal(record.sendCalls.at(-1).steer, true, 'steer in must call the steer API');
-  assert.equal(record.sendCalls.at(-1).interrupt, true, 'steer in must deliver the queued message immediately like an interrupt');
-  assert.deepEqual(record.queue.map(item => item.text), ['队列消息二', '队列消息一'], 'steered-in message must jump to the queue head for immediate delivery, remaining order kept');
+  assert.deepEqual(record.steerCalls.map(call => call.text), ['队列消息二'], 'steer in must inject the queued message into the live turn via the steer API');
+  assert.deepEqual(record.queue.map(item => item.text), ['队列消息一'], 'steered-in message leaves the queue and enters the live turn');
   assert.equal(await queueInput.inputValue(), '', 'steer in must not touch the input draft');
   // 编辑（行内原位编辑，与 Codex queue_edit 一致）
   await page.getByRole('button', { name: /编辑排队消息 队列消息一/ }).click();
@@ -428,29 +423,15 @@ try {
   await editor.press('Enter'); // 对齐 Codex queue_edit：编辑框内回车保存（不能误提交主输入框）
   await page.waitForTimeout(600);
   assert.equal(record.editCalls.at(-1).text, '队列消息一（改）', 'Enter in the inline editor must save the queued message edit');
-  assert.deepEqual(record.queue.map(item => item.text), ['队列消息二', '队列消息一（改）']);
-  // 上移（与 Codex queue_reorder 一致）
-  await page.getByRole('button', { name: /上移排队消息 队列消息一/ }).click();
-  await page.waitForTimeout(600);
-  assert.deepEqual(record.queue.map(item => item.text), ['队列消息一（改）', '队列消息二'], 'moving a queued message up must swap order');
-  // 单条删除
-  await page.getByRole('button', { name: /删除队列消息 队列消息二/ }).click(); // 单条删除
-  await page.waitForTimeout(600);
-  assert.deepEqual(record.queue.map(item => item.text), ['队列消息一（改）'], 'deleted queued message must leave the queue');
-  assert.equal(record.removeCalls.length, 1, 'only the explicit deletion may call the remove API');
-  // 打断 = 纯停止 + 队列暂停；恢复队列（与 Codex queue_resume / pausedQueueSubmit 一致）
+  assert.deepEqual(record.queue.map(item => item.text), ['队列消息一（改）']);
+  // 打断 = 纯停止：不带草稿、不动队列，轮次收尾后队列自动续跑（后端 settle 语义，单测覆盖）
   await page.getByRole('button', { name: '打断', exact: true }).click();
   await page.waitForTimeout(600);
-  assert.equal(record.queuePaused, true, 'interrupt must pause the queue');
-  await page.getByRole('button', { name: '恢复队列', exact: true }).click();
-  await page.waitForTimeout(600);
-  assert.equal(record.queuePaused, false, 'resume must clear the paused state');
-  assert.equal(record.resumeCalls, 1, 'resume must call the resume API');
-  // 暂停时也可整批清空（打断后会话回待命，需重新置为运行中才能再次打断）
+  assert.deepEqual(record.sendCalls.at(-1), { text: '', interrupt: true }, 'interrupt must be a pure stop: no draft text, no queued send');
+  assert.deepEqual(record.queue.map(item => item.text), ['队列消息一（改）'], 'interrupt must leave the queue untouched for automatic continuation');
+  // 重新置为运行中，验证整批清空
   record.status = 'running'; record.busy = true; record.statusText = '运行中';
   await page.waitForTimeout(2500);
-  await page.getByRole('button', { name: '打断', exact: true }).click();
-  await page.waitForTimeout(600);
   await page.getByRole('button', { name: '清空队列', exact: true }).click(); // 确认弹窗由全局 dialog handler 接受
   await page.waitForTimeout(600);
   assert.equal(record.queue.length, 0, 'clear must empty the queue');
@@ -488,6 +469,10 @@ try {
   await archivedCard.getByRole('button', { name: '继续调度', exact: true }).click();
   await page.locator('#sessions-list .run-card').filter({ hasText: '项目 · demo-repo' }).waitFor();
   assert.ok(await archivedCard.count() >= 1, 'the archive entry stays after continuing');
+  const archiveLog = archivedCard.locator('.chat-log').first();
+  await archiveLog.evaluate(node => { node.scrollTop = 40; });
+  await page.waitForTimeout(4500); // 跨过后台刷新周期
+  assert.equal(await archiveLog.evaluate(node => node.scrollTop), 40, 'archived transcript scroll position must survive background refreshes');
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
   await page.screenshot({ path: path.join(output, 'console-mobile.png'), fullPage: true });
