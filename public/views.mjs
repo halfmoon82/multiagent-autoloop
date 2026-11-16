@@ -1,5 +1,5 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
-import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
@@ -201,6 +201,14 @@ function countsChips(activity, cardsHere) {
   return chips;
 }
 
+// 整条链累计口径与计费优先级契约一致：已上报费用 → Token +「费用未上报」→「暂无用量」。
+function chainUsageText(usage) {
+  const tokens = (usage.tokens || 0).toLocaleString('en-US');
+  if (typeof usage.cost === 'number') return `链累计 · ${tokens} Token · $${usage.cost.toFixed(2)}`;
+  if (usage.tokens > 0) return `链累计 · ${tokens} Token · 费用未上报`;
+  return '链累计 · 暂无用量';
+}
+
 // 项目任务进度：每行一个项目（串行链或有活动但无链文件）。节点段可点击，展开卡显示节点摘要。
 export function renderProjectProgress({ chains: rawChains = [], sessions = [], rules = [], snapshot = {}, loadError = false } = {}) {
   const chains = latestChainsByProject(rawChains); // 同一项目多条链只显示最近更新的一条
@@ -296,7 +304,9 @@ function renderChainRow(chain, sessions, rules, openCards, lines) {
 
     const activity = projectActivity(chain.project, rules, lines);
     const cardsHere = openCards.filter(card => matchesProject(projectForCard(card, rules), chain.project)).length;
-    main.append(countsChips(activity, cardsHere));
+    const chips = countsChips(activity, cardsHere);
+    chips.append(el('span', 'chip chain-usage', chainUsageText(chainUsage(chain, rules, lines))));
+    main.append(chips);
     row.append(main);
     return row;
 }

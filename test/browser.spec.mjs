@@ -19,7 +19,7 @@ const snapshot = {
   lines: [
     { name: '恢复测试', paused: null, totals: { running: 1, queued: 0, retrying: 0, unknown: 0, done: 4, nothing: 1, doneToday: 2 }, usage: { input: 800, output: 200, cost: 0.5 } },
     { name: 'beta 巡检', paused: null, totals: { running: 0, queued: 2, retrying: 0, unknown: 0, done: 1, nothing: 0, doneToday: 1 }, usage: { input: 10, output: 5 } },
-    { name: 'demo 巡检', paused: null, totals: { running: 0, queued: 0, retrying: 0, unknown: 0, done: 3, nothing: 0, doneToday: 1 }, usage: { input: 10, output: 5, cost: 0.1 } },
+    { name: 'demo 巡检', paused: null, totals: { running: 0, queued: 0, retrying: 0, unknown: 0, done: 3, nothing: 0, doneToday: 1, usage: { input: 1234, output: 432, cost: 0.21 } } },
   ],
   runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '' }, { id: 4, rule: 'beta 巡检', agent: 'fake', state: 'queued', attempts: 2, project: '/elsewhere/beta', createdAt: '2026-11-14T01:00:00Z', summary: 'beta 项目等待重试' }], timers: [],
 };
@@ -249,6 +249,9 @@ try {
   assert.equal(await progressRow.locator('.node-seg').count(), 3, 'one segment per node');
   assert.ok(progressText.includes('当前：节点二 · 联调 50%'), 'current node line must show part and percent');
   assert.ok(progressText.includes('待您处理') && progressText.includes('今日完成'), 'counts chips must stay');
+  assert.ok(progressText.includes('链累计'), 'chain row must show cumulative chain usage');
+  assert.ok(progressText.includes('1,666 Token'), 'chain usage sums input+output tokens of the whole chain');
+  assert.ok(progressText.includes('$0.21'), 'chain usage must show reported cost');
   const segTwo = progressRow.locator('.node-seg').filter({ hasText: '二' });
   await segTwo.click();
   const pop = progressRow.locator('.node-pop');

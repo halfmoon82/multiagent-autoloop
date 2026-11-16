@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitRunSections, runLine, projectForRun, projectForCard, matchesProject, collectProjects, ruleProject, scopedTotals, scopedSpending, timersForProject, sessionProgress, latestChainsByProject } from '../public/status-sections.mjs';
+import { splitRunSections, runLine, projectForRun, projectForCard, matchesProject, collectProjects, ruleProject, scopedTotals, scopedSpending, timersForProject, sessionProgress, projectActivity, latestChainsByProject, chainUsage } from '../public/status-sections.mjs';
 import { formatCost } from '../public/format.mjs';
 const snapshot = { models: { claude: '默认模型' }, runs: [
   { id: 1, rule: '开发', state: 'claimed', summary: '正在改' },
@@ -81,8 +81,8 @@ test('ruleProject resolves a rule line to its workdir project', () => {
 test('scopedTotals and scopedSpending aggregate hub rule lines for one project only', () => {
   const rules = [{ name: '开发', cwd: '/workspace/demo' }, { name: '部署', cwd: '/elsewhere/beta' }];
   const snapshot = { lines: [
-    { name: '开发', totals: { running: 1, queued: 2, retrying: 1, unknown: 0, done: 2, nothing: 1, doneToday: 3 }, usage: { input: 900, output: 100, cost: 0.5 } },
-    { name: '部署', totals: { running: 5, queued: 5, retrying: 5, unknown: 1, done: 1, nothing: 0, doneToday: 9 }, usage: { input: 7, output: 3 } },
+    { name: '开发', totals: { running: 1, queued: 2, retrying: 1, unknown: 0, done: 2, nothing: 1, doneToday: 3, usage: { input: 900, output: 100, cost: 0.5 } } },
+    { name: '部署', totals: { running: 5, queued: 5, retrying: 5, unknown: 1, done: 1, nothing: 0, doneToday: 9, usage: { input: 7, output: 3 } } },
   ] };
   assert.deepEqual(scopedTotals(snapshot, rules, 'owner/demo'), { running: 1, queued: 2, retrying: 1, unknown: 0, doneToday: 3 });
   assert.deepEqual(scopedSpending(snapshot, rules, 'owner/demo'), { tokens: 1000, rounds: 3, cost: 0.5, missingCost: 0 });
@@ -103,8 +103,8 @@ test('timersForProject keeps only timers of rules inside the filtered project', 
 test('sessionProgress aggregates the tasks owned by one scheduling session project', () => {
   const rules = [{ name: '开发', cwd: '/workspace/demo' }, { name: '部署', cwd: '/elsewhere/beta' }];
   const lines = [
-    { name: '开发', totals: { running: 1, queued: 1, retrying: 0, unknown: 0, done: 4, nothing: 1, doneToday: 2 }, usage: { input: 100, output: 20, cost: 0.25 } },
-    { name: '部署', totals: { running: 9, queued: 9, retrying: 9, unknown: 9, done: 9, nothing: 9, doneToday: 9 }, usage: { input: 9, output: 9, cost: 9 } },
+    { name: '开发', totals: { running: 1, queued: 1, retrying: 0, unknown: 0, done: 4, nothing: 1, doneToday: 2, usage: { input: 100, output: 20, cost: 0.25 } } },
+    { name: '部署', totals: { running: 9, queued: 9, retrying: 9, unknown: 9, done: 9, nothing: 9, doneToday: 9, usage: { input: 9, output: 9, cost: 9 } } },
   ];
   const progress = sessionProgress({ project: 'owner/demo' }, rules, lines);
   assert.equal(progress.finished, 5);
@@ -122,8 +122,8 @@ test('sessionProgress aggregates the tasks owned by one scheduling session proje
 test('scopedSpending keeps per-line unreported rounds mixed with reported cost', () => {
   const rules = [{ name: '开发', cwd: '/workspace/demo' }, { name: '联调', cwd: '/workspace/demo' }];
   const snapshot = { lines: [
-    { name: '开发', totals: { done: 2, nothing: 0 }, usage: { input: 100, output: 10, cost: 0.5 } },
-    { name: '联调', totals: { done: 1, nothing: 2 }, usage: { input: 7, output: 3 } },
+    { name: '开发', totals: { done: 2, nothing: 0, usage: { input: 100, output: 10, cost: 0.5 } } },
+    { name: '联调', totals: { done: 1, nothing: 2, usage: { input: 7, output: 3 } } },
   ] };
   const spending = scopedSpending(snapshot, rules, 'demo');
   assert.equal(spending.rounds, 5);
@@ -168,4 +168,50 @@ test('run lines name the executing agent and never pad unknown models with a def
   assert.equal(missing.agent, '');
   const sections = splitRunSections({ runs: [{ id: 16, rule: '开发', agent: 'codex', state: 'claimed' }] }, { codex: 'kimi-for-coding' }, new Date(), [], { codex: 'Codex' });
   assert.equal(sections.running[0].agent, 'Codex');
+});
+
+// ---- 链级累计用量（2026-11-16）：Hub 真实形态是 totals.usage ----
+
+test('aggregateLines reads usage from totals.usage, the real hub state shape', () => {
+  const rules = [{ name: '开发', cwd: '/workspace/demo' }];
+  const lines = [
+    { name: '开发', totals: { running: 0, queued: 0, retrying: 0, unknown: 0, done: 2, nothing: 0, doneToday: 1, usage: { input: 300, output: 50, cost: 0.7 } } },
+  ];
+  const activity = projectActivity('/workspace/demo', rules, lines);
+  assert.equal(activity.tokens, 350);
+  assert.ok(Math.abs(activity.cost - 0.7) < 1e-9);
+});
+
+test('chainUsage sums only the rules of one serial chain by file-stem prefix', () => {
+  const rules = [
+    { name: 'V6串行推进', cwd: '/workspace/v6' }, { name: 'V6开发', cwd: '/workspace/v6' },
+    { name: 'V6审阅', cwd: '/workspace/v6' }, { name: 'V6x实验', cwd: '/elsewhere' },
+    { name: 'MT开发', cwd: '/workspace/v6' },
+  ];
+  const lines = [
+    { name: 'V6串行推进', totals: { done: 1, nothing: 0, usage: { input: 100, output: 20, cost: 0.1 } } },
+    { name: 'V6开发', totals: { done: 2, nothing: 0, usage: { input: 200, output: 40, cost: 0.2 } } },
+    { name: 'V6审阅', totals: { done: 3, nothing: 0, usage: { input: 300, output: 60, cost: 0.3 } } },
+    { name: 'V6x实验', totals: { done: 9, nothing: 0, usage: { input: 900, output: 90, cost: 9 } } },
+    { name: 'MT开发', totals: { done: 9, nothing: 0, usage: { input: 900, output: 90, cost: 9 } } },
+  ];
+  const usage = chainUsage({ sourceFile: 'v6-serial.json' }, rules, lines);
+  assert.equal(usage.tokens, 720);
+  assert.ok(Math.abs(usage.cost - 0.6) < 1e-9);
+  assert.equal(usage.rounds, 6);
+});
+
+test('chainUsage marks cost unreported when no matched line ever reported one', () => {
+  const rules = [{ name: 'V6开发', cwd: '/workspace/v6' }];
+  const lines = [{ name: 'V6开发', totals: { done: 2, nothing: 1, usage: { input: 100, output: 10 } } }];
+  const usage = chainUsage({ sourceFile: 'v6-serial.json' }, rules, lines);
+  assert.equal(usage.tokens, 110);
+  assert.equal(usage.cost, undefined);
+  assert.equal(usage.missingCostRounds, 3);
+});
+
+test('chainUsage of an unknown chain file reports zero without throwing', () => {
+  const usage = chainUsage({ sourceFile: 'nope-serial.json' }, [{ name: 'V6开发' }], [{ name: 'V6开发', totals: { usage: { input: 1 } } }]);
+  assert.equal(usage.tokens, 0);
+  assert.equal(usage.cost, undefined);
 });
