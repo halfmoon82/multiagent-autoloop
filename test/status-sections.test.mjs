@@ -215,3 +215,36 @@ test('chainUsage of an unknown chain file reports zero without throwing', () => 
   assert.equal(usage.tokens, 0);
   assert.equal(usage.cost, undefined);
 });
+
+test('chainUsage falls back to unclaimed project rules when the stem matches nothing', () => {
+  const health = '/workspace/health';
+  const rules = [
+    { name: 'Phase1开发', cwd: health }, { name: 'Phase1审阅', cwd: health },
+    { name: 'MT开发', cwd: health }, { name: 'MT审阅', cwd: health },
+    { name: '执行波开发', cwd: health }, { name: 'Intervals凭据门禁', cwd: health },
+    { name: 'V6开发', cwd: '/workspace/v6' },
+  ];
+  const lines = [
+    { name: 'Phase1开发', totals: { done: 1, nothing: 0, usage: { input: 100, output: 10, cost: 1 } } },
+    { name: 'MT开发', totals: { done: 1, nothing: 0, usage: { input: 200, output: 20, cost: 2 } } },
+    { name: '执行波开发', totals: { done: 1, nothing: 0, usage: { input: 400, output: 40, cost: 4 } } },
+    { name: 'Intervals凭据门禁', totals: { done: 1, nothing: 0, usage: { input: 800, output: 80, cost: 8 } } },
+    { name: 'V6开发', totals: { done: 1, nothing: 0, usage: { input: 900, output: 90, cost: 9 } } },
+  ];
+  const chains = [
+    { sourceFile: 'phase1-serial.json', project: health },
+    { sourceFile: 'mtexec-serial.json', project: health },
+  ];
+  const phase1 = chainUsage(chains[0], rules, lines, chains);
+  assert.equal(phase1.tokens, 110); // 词干命中，只算 Phase1*
+  const mtexec = chainUsage(chains[1], rules, lines, chains);
+  assert.equal(mtexec.tokens, 220 + 440 + 880); // 回退：项目剩余（MT* + 执行波* + Intervals*），不含 Phase1* 与别的项目
+  assert.ok(Math.abs(mtexec.cost - 14) < 1e-9);
+});
+
+test('chainUsage fallback without sibling chains takes all project rules', () => {
+  const rules = [{ name: '执行波开发', cwd: '/workspace/health' }];
+  const lines = [{ name: '执行波开发', totals: { done: 1, nothing: 0, usage: { input: 50, output: 5, cost: 0.5 } } }];
+  const usage = chainUsage({ sourceFile: 'mtexec-serial.json', project: '/workspace/health' }, rules, lines, []);
+  assert.equal(usage.tokens, 55);
+});

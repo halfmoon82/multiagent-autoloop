@@ -146,8 +146,19 @@ export function chainRuleNames(sourceFile, rules = []) {
 }
 
 // 整条调度链从头到尾的累计 Token 与计费：只信 Hub 上报值，费用缺失如实标注。
-export function chainUsage(chain, rules = [], lines = []) {
-  const names = chainRuleNames(chain?.sourceFile, rules);
+// 词干零命中（链文件名与规则名不同源，如 mtexec 链配 MT* 规则）时回退：
+// 该项目归属、且未被其他已加载链词干认领的规则。
+export function chainUsage(chain, rules = [], lines = [], allChains = []) {
+  let names = chainRuleNames(chain?.sourceFile, rules);
+  if (!names.size) {
+    const claimed = new Set();
+    for (const other of allChains) {
+      if (other === chain) continue;
+      for (const name of chainRuleNames(other?.sourceFile, rules)) claimed.add(name);
+    }
+    const project = String(chain?.project || '').trim();
+    names = new Set(rules.filter((rule) => project && matchesProject(rule.cwd, project) && !claimed.has(rule.name)).map((rule) => rule.name));
+  }
   let tokens = 0, cost = 0, hasCost = false, rounds = 0, missingCostRounds = 0;
   for (const line of lines || []) {
     if (!names.has(line.name)) continue;

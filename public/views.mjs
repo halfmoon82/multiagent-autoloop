@@ -219,7 +219,7 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
 
   // 有串行状态文件的项目：完整任务条
   for (const chain of chains) {
-    rows.push(renderChainRow(chain, sessions, rules, openCards, lines));
+    rows.push(renderChainRow(chain, sessions, rules, openCards, lines, chains));
   }
 
   // 有活动但没有链文件的项目：只显示计数行（会话绑定项目 + 有今日活动的规则项目）
@@ -247,7 +247,7 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
   return rows;
 }
 
-function renderChainRow(chain, sessions, rules, openCards, lines) {
+function renderChainRow(chain, sessions, rules, openCards, lines, allChains = []) {
     const name = projectName(chain.project);
     const row = el('div', 'list-row');
     row.dataset.chain = name;
@@ -305,7 +305,7 @@ function renderChainRow(chain, sessions, rules, openCards, lines) {
     const activity = projectActivity(chain.project, rules, lines);
     const cardsHere = openCards.filter(card => matchesProject(projectForCard(card, rules), chain.project)).length;
     const chips = countsChips(activity, cardsHere);
-    chips.append(el('span', 'chip chain-usage', chainUsageText(chainUsage(chain, rules, lines))));
+    chips.append(el('span', 'chip chain-usage', chainUsageText(chainUsage(chain, rules, lines, allChains))));
     main.append(chips);
     row.append(main);
     return row;
