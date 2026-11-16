@@ -6,6 +6,7 @@ import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 import { SessionArchive } from './session-archive.mjs';
+import { listArtifacts, readArtifact } from './artifacts.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -350,6 +351,22 @@ export class SchedulingSessionManager {
     try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
     this.#drainQueue(record);
     return toPublicSession(record);
+  }
+
+  async listSessionArtifacts(id) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    return listArtifacts(record.cwd);
+  }
+
+  async readSessionArtifact(id, relPath) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    try {
+      return readArtifact(record.cwd, relPath);
+    } catch (error) {
+      throw new SchedulingSessionError(error.message, { status: /越界|不支持|过大/.test(error.message) ? 400 : 404 });
+    }
   }
 
   async close(id) {

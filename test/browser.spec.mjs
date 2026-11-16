@@ -40,6 +40,22 @@ const schedulingSessions = {
     const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, queuePaused: false, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
     this.records.push(session); return session;
   },
+  async listSessionArtifacts(id) {
+    const session = this.records.find(item => item.id === id);
+    if (!session) { const error = new Error('调度会话不存在'); error.status = 404; throw error; }
+    session.artifactListCalls = (session.artifactListCalls || 0) + 1;
+    return [
+      { path: 'docs/调度报告.md', name: '调度报告.md', size: 210, at: '2026-11-16T00:00:00Z' },
+      { path: 'docs/看板.html', name: '看板.html', size: 120, at: '2026-11-16T00:00:00Z' },
+    ];
+  },
+  async readSessionArtifact(id, relPath) {
+    const session = this.records.find(item => item.id === id);
+    if (!session) { const error = new Error('调度会话不存在'); error.status = 404; throw error; }
+    if (relPath === 'docs/调度报告.md') return { path: relPath, name: '调度报告.md', content: '# 调度报告\n\n- **事项一**：已修复\n- 事项二：跟进中\n\n> 引用：队列已暂停' };
+    if (relPath === 'docs/看板.html') return { path: relPath, name: '看板.html', content: '<h1>数据看板</h1><p>实时</p>' };
+    const error = new Error('产物文件不存在：' + relPath); error.status = 404; throw error;
+  },
   async removeQueued(id, itemId) {
     const session = this.records.find(item => item.id === id);
     if (!session) throw new Error('调度会话不存在');
@@ -246,8 +262,8 @@ try {
   await page.getByRole('button', { name: '调度规则', exact: true }).click(); await page.getByRole('button', { name: '新建规则', exact: true }).click();
   await page.getByLabel('规则名称').fill('手机创建测试'); await page.getByLabel('Cron 表达式').fill('0 9 * * *'); await page.getByLabel('工作目录').fill(root); await page.getByLabel('处理说明').fill('验证手机表单');
   await page.getByRole('button', { name: '创建规则', exact: true }).click();
-  try { await page.locator('dialog').waitFor({ state: 'hidden', timeout: 5000 }); }
-  catch (error) { console.log('DIALOG DIAGNOSTIC:', await page.locator('dialog').innerText()); console.log('HUB REQUESTS:', hub.requests.map(x => x.url)); throw error; }
+  try { await page.locator('#rule-dialog').waitFor({ state: 'hidden', timeout: 5000 }); }
+  catch (error) { console.log('DIALOG DIAGNOSTIC:', await page.locator('#rule-dialog').innerText()); console.log('HUB REQUESTS:', hub.requests.map(x => x.url)); throw error; }
   const saved = JSON.parse(readFileSync(rulesFile, 'utf8')); assert.equal(saved.rules.at(-1).name, '手机创建测试');
   await page.getByRole('button', { name: '调度会话', exact: true }).click();
   await page.getByLabel('项目标识').selectOption(demoRepo);
@@ -439,6 +455,24 @@ try {
   await page.waitForTimeout(600);
   assert.equal(record.queue.length, 0, 'clear must empty the queue');
   assert.equal(record.clearCalls, 1, 'clear must call the clear API');
+
+  // 会话产物：md/html 直接在会话界面打开查看
+  await page.getByRole('button', { name: '产物', exact: true }).click();
+  await page.getByRole('button', { name: /调度报告\.md/ }).waitFor({ timeout: 5000 });
+  await page.getByRole('button', { name: /看板\.html/ }).waitFor({ timeout: 5000 });
+  await page.getByRole('button', { name: /调度报告\.md/ }).click(); // md → 客户端渲染
+  await page.locator('#artifact-dialog').waitFor({ state: 'visible', timeout: 5000 });
+  assert.equal(await page.locator('#artifact-title').innerText(), '调度报告.md');
+  assert.equal(await page.locator('.md-view h1').innerText(), '调度报告');
+  assert.equal(await page.locator('.md-view li strong').innerText(), '事项一');
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.locator('#artifact-dialog').waitFor({ state: 'hidden', timeout: 5000 });
+  await page.getByRole('button', { name: /看板\.html/ }).click(); // html → sandbox iframe
+  await page.locator('#artifact-dialog').waitFor({ state: 'visible', timeout: 5000 });
+  const frame = page.locator('.artifact-frame');
+  assert.equal(await frame.getAttribute('sandbox'), '', 'HTML artifacts must render in a sandboxed iframe');
+  assert.equal(await frame.getAttribute('srcdoc'), '<h1>数据看板</h1><p>实时</p>');
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
 
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();

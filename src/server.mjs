@@ -45,6 +45,9 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
   if (req.method === 'GET' && url.pathname === '/api/session-archives') return jsonResponse(res, 200, { sessions: await config.schedulingSessions.listArchived() });
   if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
+  let sessionMatch;
+  if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/artifacts$/))) return jsonResponse(res, 200, { files: await config.schedulingSessions.listSessionArtifacts(decodeURIComponent(sessionMatch[1])) });
+  if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/file$/))) return jsonResponse(res, 200, await config.schedulingSessions.readSessionArtifact(decodeURIComponent(sessionMatch[1]), String(url.searchParams.get('path') || '')));
   if (req.method === 'GET' && url.pathname === '/api/detours') return jsonResponse(res, 200, { detours: readDetours(config).map(publicDetour).filter(Boolean) });
   if (req.method === 'GET' && url.pathname === '/api/serial-progress') return jsonResponse(res, 200, await loadChains({ root: config.root, rules: readRuleOptions(config).rules || [] }));
   if (!['POST', 'PUT', 'DELETE'].includes(req.method)) return false;

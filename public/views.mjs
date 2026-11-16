@@ -74,7 +74,7 @@ function queueOp(text, action, id, ariaLabel) {
   return node;
 }
 
-export function renderSchedulingSessions(sessions = [], queueEditing = null) {
+export function renderSchedulingSessions(sessions = [], queueEditing = null, artifactsPanel = null) {
   if (!sessions.length) return [el('div', 'empty', '还没有开启的调度会话。')];
   return sessions.map(session => {
     const card = el('article', 'run-card session-card');
@@ -166,7 +166,23 @@ export function renderSchedulingSessions(sessions = [], queueEditing = null) {
       form.append(input, submit);
       if (session.busy) form.append(button('打断', 'interrupt-session', session.id, 'danger'));
       card.append(form);
+      if (artifactsPanel && artifactsPanel.sessionId === session.id) {
+        const panel = el('div', 'artifact-panel');
+        panel.setAttribute('aria-label', '会话产物文件');
+        if (!artifactsPanel.files.length) panel.append(el('p', 'row-meta', '没有找到 md/html 产物文件。'));
+        for (const file of artifactsPanel.files) {
+          const item = el('button', 'artifact-file', file.path);
+          item.type = 'button';
+          item.dataset.action = 'artifact-view';
+          item.dataset.id = session.id;
+          item.dataset.path = file.path;
+          item.title = `${file.name} · ${Math.max(1, Math.round(file.size / 1024))}KB · 点击打开查看`;
+          panel.append(item);
+        }
+        card.append(panel);
+      }
       const actions = el('div', 'actions');
+      actions.append(button('产物', 'artifact-list', session.id, 'secondary'));
       actions.append(button('关闭会话', 'close-session', session.id, 'danger'));
       card.append(actions);
     }
