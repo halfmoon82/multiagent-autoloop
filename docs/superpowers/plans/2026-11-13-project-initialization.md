@@ -58,7 +58,7 @@ npm test
 
 ## Task 5：公开仓库、PR、独立审阅与合并
 
-1. 用已登录的 `halfmoon82` 账号创建公开仓库 `multiagent-autoloop`，添加远端。
+1. 用已登录的 GitHub 账号创建公开仓库 `multiagent-autoloop`，添加远端。
 2. 推送基线 `main`（仅仓库初始化提交）和功能分支；不为初始化以外的变更直推 `main`。
 3. 创建初始化 PR 并附加到当前 Codex 会话。
 4. 派发独立只读 reviewer 审查 PR diff，按 P0/P1/P2/P3 分级；重点检查秘密泄露、调度边界、测试有效性和迁移回归。

@@ -10,7 +10,7 @@
 
 串行推进编排器（V6串行推进、Phase1串行推进等规则的运行 Agent）**已经在维护**机器可读的节点状态文件，位于 `AGENT_AUTOLOOP_HOME`（config.root）顶层：
 
-- `v6-serial.json`：顶层含 `project: /Users/macmini/Desktop/vibeguide`、`nodes`（11 个节点，status 含 done/dev_dispatched/pending，节点带 title/summary/pr_url/review_findings/dispatched_at 等）、`lastNode`、`lastEventAt`
+- `v6-serial.json`：顶层含 `project: <本机示例项目路径>`、`nodes`（11 个节点，status 含 done/dev_dispatched/pending，节点带 title/summary/pr_url/review_findings/dispatched_at 等）、`lastNode`、`lastEventAt`
 - `phase1-serial.json`：nodes（8 个节点，status 含 done/external_in_progress/blocked）、`lastNode`、`lastEventAt`、`meta`（**无 project 字段**）
 
 控制台只读这些文件并渲染，编排器继续按既有方式维护，不需要新进程。
@@ -66,7 +66,7 @@
 每行 = 一个项目（有串行状态文件，或今天有活动）。逐行展示：
 
 ```
-vibeguide                                        会话·待命   30%
+guide-app（示例）                                        会话·待命   30%
 ┌──────┬──────┬──────┬────────────┬─────┬─────┬─────┬─────┬─────┬────┐
 │ 404✓ │ 405✓ │ 406✓ │ ▓▓▓░░ 责任闭环 │ P1a │ P1b │ P1c │ P2  │ P2a │ …  │
 └──────┴──────┴──────┴────────────┴─────┴─────┴─────┴─────┴─────┴────┘
@@ -133,7 +133,7 @@ vibeguide                                        会话·待命   30%
 ## 验收
 
 - 总览页每项目一行：任务条分段着色、整体百分比、当前节点+部分+一句话概要一目了然。
-- vibeguide（11 节点）与 health-service-core（8 节点）真实数据当天可见。
+- 示例链 guide-app（11 节点）与 health-core（8 节点）形态的真实数据当天可见。
 - 项目筛选联动；等待重试/今日完成/待您处理/费用口径不变。
 - npm test 与 npm run test:browser 全绿；控制台无报错。
 

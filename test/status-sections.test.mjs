@@ -43,12 +43,12 @@ test('decision cards never infer project from a title collision with a rule name
 });
 
 test('decision cards fall back to their creating rule workdir so cards can be grouped by project', () => {
-  const rules = [{ name: 'V6开发', cwd: '/Users/macmini/Desktop/vibeguide' }, { name: 'V6审阅', cwd: '/Users/macmini/Desktop/vibeguide' }];
-  assert.equal(projectForCard({ title: '责任闭环怎么拆', rule: 'V6开发' }, rules), '/Users/macmini/Desktop/vibeguide', 'cards created by a rule belong to that rule project');
-  assert.equal(projectForCard({ title: '另一个项目', rule: 'V6审阅' }, rules), '/Users/macmini/Desktop/vibeguide');
+  const rules = [{ name: 'V6开发', cwd: '/home/alice/projects/guide-app' }, { name: 'V6审阅', cwd: '/home/alice/projects/guide-app' }];
+  assert.equal(projectForCard({ title: '责任闭环怎么拆', rule: 'V6开发' }, rules), '/home/alice/projects/guide-app', 'cards created by a rule belong to that rule project');
+  assert.equal(projectForCard({ title: '另一个项目', rule: 'V6审阅' }, rules), '/home/alice/projects/guide-app');
   assert.equal(projectForCard({ title: '未知规则', rule: '不存在的规则' }, rules), '未识别');
   assert.equal(projectForCard({ title: '标题撞名但不是同规则', rule: 'V6开发', project: '/explicit/elsewhere' }, rules), '/explicit/elsewhere', 'explicit card project still wins');
-  assert.equal(matchesProject(projectForCard({ rule: 'V6开发' }, rules), 'vibeguide'), true, 'the rule-derived project must match the project filter by basename');
+  assert.equal(matchesProject(projectForCard({ rule: 'V6开发' }, rules), 'guide-app'), true, 'the rule-derived project must match the project filter by basename');
 });
 
 test('project filter matches by project basename across identifier styles', () => {
@@ -136,7 +136,7 @@ test('latestChainsByProject keeps only the most recently updated chain per proje
   const chains = [
     { sourceFile: 'phase1-serial.json', project: '/repos/health', percent: 100, updatedAt: '2026-11-15T09:58:00.000Z' },
     { sourceFile: 'mt-serial.json', project: '/repos/health', percent: 0, updatedAt: '2026-11-15T12:00:00.000Z' },
-    { sourceFile: 'v6-serial.json', project: '/repos/vibeguide', percent: 40, updatedAt: '2026-11-15T11:00:00.000Z' },
+    { sourceFile: 'v6-serial.json', project: '/repos/guide-app', percent: 40, updatedAt: '2026-11-15T11:00:00.000Z' },
   ];
   const result = latestChainsByProject(chains);
   assert.deepEqual(result.map(chain => chain.sourceFile), ['mt-serial.json', 'v6-serial.json']);
@@ -161,8 +161,8 @@ test('latestChainsByProject keeps a single chain per project untouched and toler
 test('run lines name the executing agent and never pad unknown models with a default label', () => {
   const named = runLine({ id: 13, rule: '开发', agent: 'codex', state: 'claimed', summary: '正在改' }, { codex: 'kimi-for-coding' }, [], { codex: 'Codex' });
   assert.equal(named.agent, 'Codex');
-  const raw = runLine({ id: 14, rule: '巡检', agent: 'liuxue-scan', state: 'claimed', summary: '扫描中' }, {}, []);
-  assert.equal(raw.agent, 'liuxue-scan');
+  const raw = runLine({ id: 14, rule: '巡检', agent: 'demo-scan', state: 'claimed', summary: '扫描中' }, {}, []);
+  assert.equal(raw.agent, 'demo-scan');
   assert.equal(raw.model, '未配置');
   const missing = runLine({ id: 15, rule: '旧数据', state: 'claimed', summary: '无 agent 字段' }, {}, []);
   assert.equal(missing.agent, '');

@@ -44,11 +44,11 @@ test('overall percent counts done nodes plus the current node inner progress', (
 });
 
 test('project mapping falls back project field, meta.project, then filename-to-rule prefix', () => {
-  const rules = [{ name: 'V6串行推进', cwd: '/Users/macmini/Desktop/vibeguide' }, { name: 'Phase1串行推进', cwd: '/Volumes/Storage/health-service-core' }];
-  assert.equal(mapChainProject('v6-serial.json', { project: '/explicit/vibeguide' }, rules), '/explicit/vibeguide');
+  const rules = [{ name: 'V6串行推进', cwd: '/home/alice/projects/guide-app' }, { name: 'Phase1串行推进', cwd: '/opt/example/health-core' }];
+  assert.equal(mapChainProject('v6-serial.json', { project: '/explicit/guide-app' }, rules), '/explicit/guide-app');
   assert.equal(mapChainProject('x-serial.json', { meta: { project: '/meta/path' } }, rules), '/meta/path');
-  assert.equal(mapChainProject('v6-serial.json', {}, rules), '/Users/macmini/Desktop/vibeguide');
-  assert.equal(mapChainProject('phase1-serial.json', {}, rules), '/Volumes/Storage/health-service-core');
+  assert.equal(mapChainProject('v6-serial.json', {}, rules), '/home/alice/projects/guide-app');
+  assert.equal(mapChainProject('phase1-serial.json', {}, rules), '/opt/example/health-core');
   assert.equal(mapChainProject('mystery-serial.json', {}, rules), '未识别');
 });
 
@@ -135,8 +135,8 @@ test('done nodes after the current node do not widen the percent', () => {
 });
 
 test('filename prefix matching stops at a word boundary', () => {
-  const rules = [{ name: 'V6x串行推进', cwd: '/wrong/v6x' }, { name: 'V6串行推进', cwd: '/right/vibeguide' }];
-  assert.equal(mapChainProject('v6-serial.json', {}, rules), '/right/vibeguide', 'v6 must not match V6x just because of ordering');
+  const rules = [{ name: 'V6x串行推进', cwd: '/wrong/v6x' }, { name: 'V6串行推进', cwd: '/right/guide-app' }];
+  assert.equal(mapChainProject('v6-serial.json', {}, rules), '/right/guide-app', 'v6 must not match V6x just because of ordering');
   assert.equal(mapChainProject('phase1-serial.json', {}, [{ name: 'Phase1串行推进', cwd: '/p/hs' }]), '/p/hs');
 });
 

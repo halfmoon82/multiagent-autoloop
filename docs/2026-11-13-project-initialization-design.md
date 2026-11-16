@@ -2,7 +2,7 @@
 
 日期：2026-11-13
 项目根目录：`/Volumes/Storage/auto调度`
-公开仓库：`halfmoon82/multiagent-autoloop`
+公开仓库：`<owner>/multiagent-autoloop`
 
 ## 目标
 
@@ -69,7 +69,7 @@
 ## 验收标准
 
 - 当前目录成为 Git 仓库，稳定分支为 `main`，功能分支承载本次初始化。
-- 公开仓库 `halfmoon82/multiagent-autoloop` 创建成功并包含 `.gitignore`。
+- 公开仓库 `<owner>/multiagent-autoloop` 创建成功并包含 `.gitignore`。
 - 原控制台源码和调度要求完整迁入，无密钥、数据库、真实项目配置或个人路径。
 - `npm test` 23 项基线及新增回归全部通过；Playwright 浏览器回归通过且不调用真实模型。
 - GitHub Actions 可复现测试。
