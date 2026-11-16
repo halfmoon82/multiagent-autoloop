@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 import { SessionArchive } from './session-archive.mjs';
 import { listArtifacts, readArtifact } from './artifacts.mjs';
+import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -57,10 +58,7 @@ export function buildSchedulingPrompt({ project, writableDir } = {}) {
     `- README.md —— 控制台概述`,
     `- docs/scheduling-contract.md —— 调度契约全文（调度方职责、模型派发规则、事件链不变量、自愈与升级纪律）；派发 worker、选择模型或调整调度行为前必读`,
     `- docs/architecture.md —— 控制台架构与模块边界`,
-    `【任务】按顺序：`,
-    `1）你的工作目录就是该项目仓库（${project}）：阅读本仓库的 AGENTS.md、README.md 与 docs/ 建立项目上下文（边界、命令、约定）。项目文档以你读到的磁盘文件为准。`,
-    `2）用 list_rules / list_runs / list_cards 查询该项目相关调度状态，整理：正在运行/等待重试/待调度处理的事项、建议的处理顺序、真正需要用户决策的问题。自愈闭环：诊断出可自愈的问题并修复（限本地调度脚本/配置/状态/规则，不动项目代码）、做最小验证后，用 resume_rule / run_rule 恢复或重触发对应规则，遵守上方重试纪律。若 MCP 工具不可用，可用控制台 API（http://127.0.0.1:50761，仅本机）兜底读取同一状态（沙箱可能拦截命令行 HTTP 请求，优先走 MCP 工具）。`,
-    `3）目标项目的代码改动由派发 worker 在隔离 worktree 中执行；本会话只读诊断与协调，不直接改项目文件（实现边界见上方第 6 条）。需要授权或不可逆操作时只列出等待用户决策，且遵守上方卡片陈述规则。`,
+    ...buildOpenItemsTasks({ project }),
   ].join('\n');
 }
 
