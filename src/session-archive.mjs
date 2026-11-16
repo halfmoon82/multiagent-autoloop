@@ -1,6 +1,6 @@
 // 调度会话存档：写穿 JSON 到 <AGENT_AUTOLOOP_HOME>/console-sessions/，
 // 控制台重启后会话留档可回溯、可一键继续。只接受 UUID 文件名，加载做形状校验。
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 
 export class ArchiveError extends Error {
@@ -13,6 +13,7 @@ const MAX_MESSAGE_BYTES = 4096;
 const MAX_ARCHIVE_BYTES = 1024 * 1024;
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+const SESSION_KINDS = ['normal', 'scheduling', 'design'];
 const iso = value => (typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : null);
 const text = (value, max) => String(value ?? '').slice(0, max);
 
@@ -28,6 +29,7 @@ function normalizeRecord(input) {
   return {
     version: ARCHIVE_VERSION,
     id,
+    kind: SESSION_KINDS.includes(input.kind) ? input.kind : 'scheduling',
     project: text(input.project, 500),
     agent: text(input.agent, 120) || 'Codex ACP',
     prompt: text(input.prompt, 4000),
@@ -50,7 +52,8 @@ function truncateMessages(record) {
 }
 
 export class SessionArchive {
-  constructor(root, { retention = 20, now = () => new Date() } = {}) {
+  // retention 参数仅作兼容保留：已完成历史默认折叠、可查看，绝不按保留条数自动删除（2026-11-16 已确认决策 7）。
+  constructor(root, { retention = null, now = () => new Date() } = {}) {
     this.root = root ? path.join(root, 'console-sessions') : null;
     this.retention = retention;
     this.now = now;
@@ -68,21 +71,6 @@ export class SessionArchive {
     const tmp = `${file}.tmp-${process.pid}`;
     writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 });
     renameSync(tmp, file);
-    this.#prune();
-  }
-
-  #prune() {
-    let files;
-    try { files = readdirSync(this.root).filter(name => ID_PATTERN.test(name.replace(/\.json$/, '')) && name.endsWith('.json')); }
-    catch { return; }
-    if (files.length <= this.retention) return;
-    const dated = files.map(name => {
-      try { return { name, at: JSON.parse(readFileSync(path.join(this.root, name), 'utf8')).createdAt || '' }; }
-      catch { return { name, at: '' }; }
-    }).sort((a, b) => String(b.at).localeCompare(String(a.at)));
-    for (const { name } of dated.slice(this.retention)) {
-      try { unlinkSync(path.join(this.root, name)); } catch { /* 清理失败不阻断 */ }
-    }
   }
 
   async save(input) {
