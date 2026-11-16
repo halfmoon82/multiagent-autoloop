@@ -392,3 +392,52 @@ test('P3 markUnknown 重复调用不刷新 unknownSince（观察期从首次进�
   const again = store.markUnknown(run.runId, { at: 999999 });
   assert.equal(again.unknownSince, 1000);
 });
+
+test('阻塞解除自动恢复（2026-11-16 b7 教训入契约）：blocked_unknown 经 createAttempt 复活', () => {
+  const store = setup();
+  const run = store.createRun(baseInput());
+  store.claim(run.runId, { slot: 1 });
+  const blocked = store.advance(run.runId, { ...validReceipt(store.getRun(run.runId)), detail: '{"bad":"not an object"}' });
+  assert.equal(blocked.verdict, 'invalid');
+  assert.equal(store.getRun(run.runId).status, 'blocked_unknown');
+
+  // 复活必须注明原因：blocked-resolved（阻塞证据已消失）或 change-approach（换打法）。
+  assert.throws(() => store.createAttempt(run.runId), error => error.code === 'REVIVE_REASON_REQUIRED');
+  assert.throws(() => store.createAttempt(run.runId, { reason: 'retry' }), error => error.code === 'REVIVE_REASON_REQUIRED', 'blocked_unknown 不是普通重派，retry 不构成复活依据');
+
+  // blocked-resolved 复活：同 generation、attempt+1（复活计一次执行尝试）、授权快照逐字继承、留痕。
+  const revived = store.createAttempt(run.runId, { reason: 'blocked-resolved' });
+  assert.equal(revived.status, 'queued');
+  assert.equal(revived.generation, 1);
+  assert.equal(revived.attempt, 2);
+  assert.equal(revived.revivedFrom, run.runId);
+  assert.equal(revived.reviveReason, 'blocked-resolved');
+  assert.deepEqual(revived.authorizationSnapshot, store.getRun(run.runId).authorizationSnapshot, '复活不得变更授权快照，借复活换授权即拒');
+
+  // 复活后的旧 run 保持终态：晚到回执作废、不重复计数（evaluateAdvance terminal-run 口径）。
+  const late = store.advance(run.runId, validReceipt(store.getRun(run.runId)));
+  assert.equal(late.verdict, 'stale');
+  assert.equal(store.getRun(revived.runId).failures, 0, '旧 run 晚到回执不得给复活 run 计失败');
+});
+
+test('终态复活白名单：blocked_unknown 满 3 次必须 change-approach；done/abandoned 永不复活', () => {
+  const store = setup();
+  const r1 = store.createRun(baseInput());
+  store.claim(r1.runId, { slot: 1 });
+  store.advance(r1.runId, { ...validReceipt(store.getRun(r1.runId)), detail: 'malformed' });
+  const r2 = store.createAttempt(r1.runId, { reason: 'blocked-resolved' });
+  store.claim(r2.runId, { slot: 1 });
+  store.advance(r2.runId, { ...validReceipt(store.getRun(r2.runId)), detail: 'malformed' });
+  const r3 = store.createAttempt(r2.runId, { reason: 'blocked-resolved' });
+  assert.equal(r3.attempt, 3);
+  assert.throws(() => store.createAttempt(r3.runId, { reason: 'blocked-resolved' }), error => error.code === 'CHANGE_APPROACH_REQUIRED', '复活计入执行尝试，满 3 次必须换打法，防无限复活循环');
+  assert.equal(store.createAttempt(r3.runId, { reason: 'change-approach' }).generation, 2);
+
+  // done 的语义是「本轮回合结束」（rework 回执同样落 done 并由调度方重派），允许无原因重派，不属复活。
+  const doneStore = setup();
+  const doneRun = doneStore.createRun(baseInput());
+  doneStore.claim(doneRun.runId, { slot: 1 });
+  doneStore.advance(doneRun.runId, validReceipt(doneStore.getRun(doneRun.runId)));
+  assert.equal(doneStore.getRun(doneRun.runId).status, 'done');
+  assert.equal(doneStore.createAttempt(doneRun.runId).attempt, 2, 'done（含 rework 落 done）维持既有重派口径');
+});

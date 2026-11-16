@@ -314,6 +314,13 @@ export function createRunStore({ directory } = {}) {
         if (prev.status === 'cancelled' && prev.cancelReason !== 'attempts-exhausted') {
           throw new DagRunError('RUN_CANCELLED', `run ${prev.runId} 已取消（${prev.cancelReason ?? '无原因'}），不得再派生 attempt`);
         }
+        // 2026-11-16 b7 教训入契约：blocked_unknown 复活必须注明原因。done 在此状态机语义是
+        // 「本轮回合结束」（rework 回执同样落 done 并由调度方 createAttempt 重派），不得拦截；
+        // abandoned 维持既有「不拦截、由调度方判断」口径。blocked_unknown 是唯一异常终态，
+        // 无原因的静默复活会重演旧串行链「blocked 贴纸没人撕」的交接缺口。
+        if (prev.status === 'blocked_unknown' && !['blocked-resolved', 'change-approach'].includes(reason)) {
+          throw new DagRunError('REVIVE_REASON_REQUIRED', 'blocked_unknown run 复活必须注明原因：blocked-resolved（阻塞证据已消失，同打法重试）或 change-approach（换打法）');
+        }
         // R10 契约：同一任务累计满 3 次（attempt >= MAX_ATTEMPTS）必须换打法。
         const needNewGeneration = prev.attempt >= MAX_ATTEMPTS;
         if (needNewGeneration && reason !== 'change-approach') {
@@ -330,6 +337,8 @@ export function createRunStore({ directory } = {}) {
           unknownSince: null, quarantine: false, nodes: prev.nodes,
           authorizationSnapshot: prev.authorizationSnapshot,
           supersedes: prev.runId, attemptReason: reason ?? null,
+          revivedFrom: ['blocked_unknown'].includes(prev.status) ? prev.runId : null,
+          reviveReason: ['blocked_unknown'].includes(prev.status) ? (reason ?? null) : null,
           createdAt: iso(), updatedAt: iso(),
         });
       });
