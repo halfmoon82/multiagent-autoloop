@@ -32,6 +32,7 @@
 | `src/models.mjs` | 本机模型标签的只读发现与默认文案 | 模型计费推断、凭证采集 |
 | `src/serial-progress.mjs` | 串行编排状态文件（`*-serial.json`）读取、项目映射与进度计算 | 编排状态写入、节点计划定义 |
 | `src/detour.mjs` | 频限绕行登记（`detours.json`）、冷却核实、rules.json 原子回归与状态锁（`withStateLock`，rules.mjs 表单保存共用） | 探测命令实现、Hub 事件、规则表单校验 |
+| `src/design-publish.mjs` | product-spec 确认后在目标项目 `docs/<planId>` 分支提交 PRD 并创建 PR（授权快照、幂等、临时 worktree） | HTTP 路由、merge、deploy/release、凭据 |
 | `src/server.mjs` | 本机 HTTP API、静态资源、安全校验和路由允许列表 | 调度业务状态存储 |
 | `public/` | 状态展示、表单和交互 | 密钥、直接 Hub 访问、业务文件写入 |
 | `scripts/` | 通用启动入口、`detour.mjs` 频限绕行 CLI | 真实试点绝对路径或项目部署逻辑 |
