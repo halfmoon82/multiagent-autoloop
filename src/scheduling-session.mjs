@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
-import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { appendFileSync } from 'node:fs';
+import { decideByKind, mergeCall } from './session-permission.mjs';
 import { randomUUID } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +33,14 @@ export function buildDesignPrompt({ project } = {}) {
     '【边界】本会话只做规划与设计：不执行实现、不触碰部署、不修改真实调度规则；实现由后续事件链按授权快照派发。',
   ].join('\n');
 }
+
+// 普通会话分支纪律：作为首轮的独立提示块送达，用户输入保持逐字；机械约束在权限层（session-permission.mjs）。
+export const BRANCH_DISCIPLINE_PROMPT = [
+  '【分支纪律】',
+  '- 不直推 main/master 等受保护分支；任何改动先建分支：热修复走 fix/<topic> 分支，或在独立 worktree（git worktree add .worktrees/<名> -b fix/<topic>）里做。',
+  '- 单个 issue 的闭环：读 issue → 建分支 → 改代码 → 跑测试 → 提交 → git push -u origin <分支> → gh pr create 开 PR → 等 reviewer 闭环 → 仅在用户明确授权后合并。',
+  '- 禁止 force push、禁止删除远端分支；写入范围限本项目工作区。以上由控制台权限层强制，违反的请求会被拒绝并记入审计。',
+].join('\n');
 
 export function buildHubMcpServer() {
   return {
@@ -126,6 +136,8 @@ export class SchedulingSessionManager {
     // 会话专用 CODEX_HOME：默认放在运行目录 <archiveRoot>/codex-home；无运行目录时放系统临时目录。
     this.codexHomeDir = codexHomeDir ? path.resolve(codexHomeDir) : path.join(archiveRoot || path.join(tmpdir(), 'autoloop-console'), 'codex-home');
     this.userCodexHome = userCodexHome;
+    this.auditFile = archiveRoot ? path.join(archiveRoot, 'permission-audit.jsonl') : null;
+    this.auditWarned = false;
   }
 
   list() {
@@ -215,6 +227,7 @@ export class SchedulingSessionManager {
       connection: null,
       promptTurn: null,
       closed: false,
+      knownCalls: new Map(),
     };
     this.sessions.set(record.id, record);
 
@@ -227,6 +240,10 @@ export class SchedulingSessionManager {
       .onNotification(methods.client.session.update, notification => {
         const update = notification?.params?.update || {};
         touch(summarizeUpdate(update));
+        if ((update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') && update.toolCallId) {
+          record.knownCalls.set(update.toolCallId, mergeCall(record.knownCalls.get(update.toolCallId), update));
+          if (record.knownCalls.size > 500) record.knownCalls.delete(record.knownCalls.keys().next().value);
+        }
         if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
           record.liveText += update.content.text;
         }
@@ -266,10 +283,11 @@ export class SchedulingSessionManager {
       record.sessionId = session.sessionId;
       // 设计会话：首个 prompt 前必须完成 read-only + 原生 Plan Mode 并核验，任一失败即创建失败，不降级。
       if (sessionKind === 'design') await this.#applyDesignGuards(record);
+      else await this.#applySandboxMode(record, sessionKind === 'normal' ? 'workspace-write' : 'read-only');
       record.status = 'idle';
 
       this.#pushMessage(record, 'user', text);
-      this.#runTurn(record, text);
+      this.#runTurn(record, text, sessionKind === 'normal' ? [BRANCH_DISCIPLINE_PROMPT] : []);
       return toPublicSession(record);
     } catch (error) {
       record.status = 'error';
@@ -439,23 +457,6 @@ export class SchedulingSessionManager {
     for (const record of this.sessions.values()) this.#destroyRecord(record);
   }
 
-  #insideWritableDir(target) {
-    if (!target) return false;
-    let root;
-    try { root = realpathSync(this.writableDir); } catch { return false; }
-    try {
-      if (lstatSync(target).isSymbolicLink()) return false;
-      const resolved = realpathSync(target);
-      return resolved === root || resolved.startsWith(root + path.sep);
-    } catch (error) {
-      if (error.code !== 'ENOENT') return false;
-      try {
-        const resolved = path.join(realpathSync(path.dirname(target)), path.basename(target));
-        return resolved === root || resolved.startsWith(root + path.sep);
-      } catch { return false; }
-    }
-  }
-
   // 设计会话护栏：set_mode(read-only) → set_config_option(collaboration_mode=plan)，逐个核验返回的 configOptions。
   async #applyDesignGuards(record) {
     const mode = await record.connection.agent.request(methods.agent.session.setMode, { sessionId: record.sessionId, modeId: 'read-only' });
@@ -466,17 +467,36 @@ export class SchedulingSessionManager {
     if (!planOptions.some(option => option.id === 'collaboration_mode' && option.currentValue === 'plan')) throw new Error('无法将协作模式设置为 plan');
   }
 
+  // 沙箱模式机械化：调度=read-only，普通=workspace-write；设置并核验失败即拒绝创建，不降级。
+  async #applySandboxMode(record, modeId) {
+    const mode = await record.connection.agent.request(methods.agent.session.setMode, { sessionId: record.sessionId, modeId });
+    const options = Array.isArray(mode?.configOptions) ? mode.configOptions : [];
+    if (!options.some(option => option.id === 'mode' && option.currentValue === modeId)) throw new Error(`无法将会话设置为 ${modeId} 模式`);
+  }
+
+  // 按 kind 的权限矩阵裁定（逻辑见 session-permission.mjs），每次裁定写审计留痕。
   #decidePermission(params, record = null) {
-    const toolCall = params?.toolCall || {};
-    // 设计会话不得直接写项目：权限层全量取消作为 ACP read-only 之外的第二道防线（含 switch_mode 等非 edit 请求）。
-    if ((record?.kind || 'scheduling') === 'design') return { outcome: 'cancelled' };
-    if (!this.writableDir || toolCall.kind !== 'edit') return { outcome: 'cancelled' };
-    const locations = Array.isArray(toolCall.locations) ? toolCall.locations : [];
-    if (!locations.length) return { outcome: 'cancelled' };
-    const inside = locations.every(location => this.#insideWritableDir(String(location?.path || '')));
-    if (!inside) return { outcome: 'cancelled' };
-    const allow = (params.options || []).find(option => option?.kind === 'allow_once');
-    return allow ? { outcome: 'selected', optionId: allow.optionId } : { outcome: 'cancelled' };
+    const kind = record?.kind || 'scheduling';
+    let decision;
+    try {
+      decision = decideByKind({ kind, params, known: record?.knownCalls?.get(params?.toolCall?.toolCallId), workspace: record?.cwd, writableDir: this.writableDir });
+    } catch (error) {
+      decision = { allow: false, reason: `裁定异常：${safeMessage(error)}`, optionId: null, toolKind: null, command: '', paths: [], title: '' };
+    }
+    this.#auditPermission(record, params, decision);
+    return decision.allow ? { outcome: 'selected', optionId: decision.optionId } : { outcome: 'cancelled' };
+  }
+
+  #auditPermission(record, params, decision) {
+    const entry = {
+      at: this.now().toISOString(), kind: record?.kind || 'scheduling', project: record?.project, session: record?.id,
+      toolCallId: params?.toolCall?.toolCallId, toolKind: decision.toolKind, title: decision.title, command: decision.command,
+      paths: decision.paths, decision: decision.allow ? 'allowed' : 'denied', reason: decision.reason,
+    };
+    if (!decision.allow) console.error(`[permission] 拒绝 ${entry.kind}/${entry.toolKind || 'unknown'}：${entry.reason}`);
+    if (!this.auditFile) return;
+    try { appendFileSync(this.auditFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 }); }
+    catch { if (!this.auditWarned) { this.auditWarned = true; console.error('[permission] 审计日志写入失败'); } }
   }
 
   #projectCwd(project) {
@@ -525,13 +545,13 @@ export class SchedulingSessionManager {
     });
   }
 
-  #runTurn(record, text) {
+  #runTurn(record, text, extraBlocks = []) {
     record.liveText = '';
     record.status = 'running';
     record.updatedAt = this.now().toISOString();
     record.promptTurn = record.connection.agent.request(methods.agent.session.prompt, {
       sessionId: record.sessionId,
-      prompt: [{ type: 'text', text }],
+      prompt: [{ type: 'text', text }, ...extraBlocks.map(block => ({ type: 'text', text: block }))],
     });
     const finish = (reply, stopReason, error) => {
       const interrupted = record.interruptRequested;

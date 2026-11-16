@@ -22,11 +22,11 @@ const mcpApproval = id => ({ toolCall: { toolCallId: id, kind: 'execute', status
 
 async function runKind(kind, permissions, { updates = [], extra = {} } = {}) {
   const e = env();
-  const fake = fakeAcp({ permissions: typeof permissions === 'function' ? permissions(e) : permissions, updates, ...extra });
+  const list = typeof permissions === 'function' ? permissions(e) : permissions;
+  const fake = fakeAcp({ permissions: list, updates, ...extra });
   const manager = new SchedulingSessionManager({ cwd: e.project, adapterPath: '/fixed/acp.js', spawnFn: () => fake.child, writableDir: e.scripts, archiveRoot: e.home, userCodexHome: e.userCodex });
   await manager.start({ kind, project: e.project, prompt: '开始' });
-  const count = (typeof permissions === 'function' ? permissions(e) : permissions).length;
-  await waitFor(() => Object.keys(fake.outcomes).length >= count);
+  await waitFor(() => Object.keys(fake.outcomes).length >= list.length);
   const audit = existsSync(path.join(e.home, 'permission-audit.jsonl')) ? readFileSync(path.join(e.home, 'permission-audit.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
   manager.dispose();
   return { e, fake, audit, out: i => fake.outcomes[`perm-${i}`] };
@@ -102,8 +102,9 @@ test('normal: feature/fix/hotfix branch push, commits and PR create/merge (autho
   for (let i = 0; i < 8; i++) assert.deepEqual(r.out(i), { outcome: 'selected', optionId: 'allow' }, `request ${i}`);
 });
 test('normal: a shell cwd outside the project workspace is cancelled', async () => {
-  const r = await runKind('normal', e => [{ toolCall: { toolCallId: 'c1', kind: 'execute', status: 'pending', input: { command: 'ls', cwd: path.dirname(e.root) } }, options: ALLOW_ONCE }, { toolCall: { toolCallId: 'c2', kind: 'execute', status: 'pending', input: { command: 'ls', cwd: path.join(e.project, 'sub') } }, options: ALLOW_ONCE }]);
+  const r = await runKind('normal', e => [{ toolCall: { toolCallId: 'c1', kind: 'execute', status: 'pending', rawInput: { command: 'ls', cwd: path.dirname(e.root) } }, options: ALLOW_ONCE }, { toolCall: { toolCallId: 'c2', kind: 'execute', status: 'pending', rawInput: { command: 'ls', cwd: path.join(e.project, 'sub') } }, options: ALLOW_ONCE }]);
   assert.equal(r.out(0).outcome, 'cancelled'); assert.equal(r.out(1).outcome, 'selected');
+  assert.match(r.audit[0].reason, /工作目录越出项目工作区/, 'must be denied for the cwd, not for an unrelated fail-closed reason');
 });
 test('started commands whose approval request omits kind/command are judged from the earlier tool_call update', async () => {
   const startCmd = (id, command) => ({ sessionUpdate: 'tool_call', toolCallId: id, kind: 'execute', title: command, rawInput: { command }, status: 'pending' });
