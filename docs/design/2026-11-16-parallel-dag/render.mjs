@@ -103,6 +103,9 @@ try {
   await page.goto(`${base}?screen=design`, { waitUntil: 'load' });
   await page.locator('[data-screen="authorize"]').first().click();
   assert(await page.locator('#screen-authorize').isVisible(), 'Spec/DAG 确认入口未进入授权页');
+  const authorizeText = await page.locator('#screen-authorize').textContent();
+  assert(authorizeText.includes('7 业务 + 1 整合审查'), '授权页确认摘要节点数与 DAG 数据源不一致');
+  assert(authorizeText.includes('7 个业务节点'), '授权页计划摘要节点数与 DAG 数据源不一致');
   assert(await page.locator('#authorize-button').isDisabled(), '未阅读确认前授权按钮应禁用');
   await page.locator('#authorize-check').check();
   assert(await page.locator('#authorize-button').isEnabled(), '勾选阅读确认后授权按钮应启用');
