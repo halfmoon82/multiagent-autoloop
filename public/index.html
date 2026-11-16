@@ -58,6 +58,12 @@
     </section>
   </main>
   <dialog id="rule-dialog" aria-labelledby="rule-dialog-title"><div id="rule-form-container"></div></dialog>
+  <dialog id="artifact-dialog" class="artifact-dialog">
+    <div class="artifact-viewer">
+      <div class="artifact-viewer-top"><strong id="artifact-title"></strong><button type="button" class="queue-op" data-action="artifact-close">关闭</button></div>
+      <div id="artifact-body" class="artifact-body"></div>
+    </div>
+  </dialog>
   <script type="module" src="/app.mjs"></script>
 </body>
 </html>

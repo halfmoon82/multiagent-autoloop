@@ -76,6 +76,18 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
       if (id !== 'two') throw new SchedulingSessionError('调度会话不存在', { status: 404 });
       return { id: 'two', status: 'running', queued: [], queuedCount: 0 };
     },
+    async listSessionArtifacts(id) {
+      calls.push(['listSessionArtifacts', id]);
+      if (id !== 'two') throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+      return [{ path: 'docs/report.md', name: 'report.md', size: 12, at: '2026-11-16T00:00:00Z' }];
+    },
+    async readSessionArtifact(id, relPath) {
+      calls.push(['readSessionArtifact', id, relPath]);
+      if (id !== 'two') throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+      if (relPath === '../../etc/passwd') throw new SchedulingSessionError('路径越界：只允许会话工作目录内的相对路径', { status: 400 });
+      if (relPath !== 'docs/report.md') throw new SchedulingSessionError('产物文件不存在：' + relPath, { status: 404 });
+      return { path: relPath, name: 'report.md', content: '# 报告\n内容' };
+    },
     async close(id) { calls.push(['close', id]); return { id, status: 'closed', statusText: '已关闭' }; },
   };
   const projectRoot = mkdtempSync(path.join(tmpdir(), 'api-projects-'));
@@ -157,6 +169,19 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     assert.equal(cleared.status, 200);
     assert.equal((await cleared.json()).queuedCount, 0);
 
+    const artifactsMissing = await fetch(`${url}/api/scheduling-sessions/none/artifacts`);
+    assert.equal(artifactsMissing.status, 404);
+    const artifacts = await fetch(`${url}/api/scheduling-sessions/two/artifacts`);
+    assert.equal(artifacts.status, 200);
+    assert.equal((await artifacts.json()).files[0].path, 'docs/report.md');
+    const fileTraversal = await fetch(`${url}/api/scheduling-sessions/two/file?path=..%2F..%2Fetc%2Fpasswd`);
+    assert.equal(fileTraversal.status, 400, 'artifact file reads must reject traversal');
+    const fileMissing = await fetch(`${url}/api/scheduling-sessions/two/file?path=missing.md`);
+    assert.equal(fileMissing.status, 404);
+    const fileOk = await fetch(`${url}/api/scheduling-sessions/two/file?path=${encodeURIComponent('docs/report.md')}`);
+    assert.equal(fileOk.status, 200);
+    assert.match((await fileOk.json()).content, /# 报告/);
+
     const deleteRuleRun = await fetch(`${url}/api/rules/%E6%81%A2%E5%A4%8D%E6%B5%8B%E8%AF%95/run`, { method: 'DELETE', headers: writeHeaders, body: '{}' });
     assert.equal(deleteRuleRun.status, 404, 'DELETE must not reach action routes that only accept POST');
     const deleteCardAnswer = await fetch(`${url}/api/cards/9/answer`, { method: 'DELETE', headers: writeHeaders, body: '{}' });
@@ -168,7 +193,9 @@ test('scheduling session API lists, starts and closes local ACP sessions', async
     const closed = await fetch(`${url}/api/scheduling-sessions/two/close`, { method: 'POST', headers: writeHeaders, body: '{}' });
     assert.equal(closed.status, 200);
     assert.equal((await closed.json()).status, 'closed');
-    assert.deepEqual(calls.map(call => call[0]), ['list', 'start', 'send', 'send', 'removeQueued', 'removeQueued', 'steerQueued', 'steerQueued', 'updateQueued', 'updateQueued', 'moveQueued', 'resumeQueue', 'resumeQueue', 'clearQueued', 'close']);
+    assert.deepEqual(calls.map(call => call[0]), ['list', 'start', 'send', 'send', 'removeQueued', 'removeQueued', 'steerQueued', 'steerQueued', 'updateQueued', 'updateQueued', 'moveQueued', 'resumeQueue', 'resumeQueue', 'clearQueued', 'listSessionArtifacts', 'listSessionArtifacts', 'readSessionArtifact', 'readSessionArtifact', 'readSessionArtifact', 'close']);
+    assert.deepEqual(calls[16], ['readSessionArtifact', 'two', '../../etc/passwd']);
+    assert.deepEqual(calls[17], ['readSessionArtifact', 'two', 'missing.md']);
     assert.deepEqual(calls[8], ['updateQueued', 'two', 'q1', '改后文本']);
     assert.deepEqual(calls[9], ['updateQueued', 'two', 'none', 'x']);
     assert.deepEqual(calls[10], ['moveQueued', 'two', 'q1', 'up']);

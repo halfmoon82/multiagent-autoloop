@@ -3,7 +3,7 @@ import { renderSummary, renderAttention, renderEnvironment, renderTimers, render
 import { projectName } from './format.mjs';
 import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject } from './status-sections.mjs';
 import { el } from './views.mjs';
-const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null, queueEditing: null };
+const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null, queueEditing: null, artifactsPanel: null };
 const $ = id => document.getElementById(id);
 function replace(id, nodes) { $(id).replaceChildren(...nodes); }
 let noticeError = false;
@@ -147,7 +147,7 @@ function render() {
   }
   const work = renderWorkSections(view.snapshot, view.rules, Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)), state.detours || []);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
-  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions, state.queueEditing), 'session', state.skipPinOnce); replace('archived-sessions-list', renderArchivedSessions((state.archived || []).filter(item => matchesProject(item.project, state.projectFilter)), state.projects)); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
+  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions, state.queueEditing, state.artifactsPanel), 'session', state.skipPinOnce); replace('archived-sessions-list', renderArchivedSessions((state.archived || []).filter(item => matchesProject(item.project, state.projectFilter)), state.projects)); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
   syncProjectFilter();
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) { form.elements.answer.value = draftAnswers[form.dataset.id]; autoGrow(form.elements.answer); } });
   document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) { form.elements.message.value = draftMessages[form.dataset.id]; autoGrow(form.elements.message); } });
@@ -263,6 +263,33 @@ document.addEventListener('click', async event => {
       await refresh();
       return;
     }
+    if (action === 'artifact-list') {
+      if (state.artifactsPanel?.sessionId === id) { state.artifactsPanel = null; render(); return; }
+      const data = await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/artifacts`);
+      state.artifactsPanel = { sessionId: id, files: data.files || [] };
+      render();
+      return;
+    }
+    if (action === 'artifact-view') {
+      const filePath = button.dataset.path || '';
+      const file = await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(filePath)}`);
+      const dialog = $('artifact-dialog');
+      $('artifact-title').textContent = file.name;
+      const body = $('artifact-body');
+      body.replaceChildren();
+      if (/\.html?$/i.test(file.name)) {
+        // HTML 产物：sandbox 内联展示（无脚本、不透明源，不能触碰控制台同源）
+        const frame = el('iframe', 'artifact-frame');
+        frame.setAttribute('sandbox', '');
+        frame.srcdoc = file.content;
+        body.append(frame);
+      } else {
+        body.append(renderMarkdown(file.content));
+      }
+      dialog.showModal();
+      return;
+    }
+    if (action === 'artifact-close') { $('artifact-dialog').close(); return; }
     if (action === 'queue-resume') { await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/queue/resume`, { method: 'POST', body: JSON.stringify({}) }); showNotice('队列已恢复，本轮结束后继续跟进。'); await refresh(); return; }
     if (action === 'queue-clear') {
       if (!confirm('清空队列中的全部消息？')) return;
@@ -280,6 +307,55 @@ document.addEventListener('click', async event => {
     await perform(action, id, body);
   } catch (error) { showNotice(error.message); } finally { button.disabled = false; }
 });
+// 极简 Markdown 渲染：标题/列表/代码块/引用/链接/粗斜体/行内代码，全部走 textContent，无 HTML 注入面
+function renderMarkdown(text) {
+  const container = el('div', 'md-view');
+  let list = null; let code = null;
+  const flushList = () => { if (list) { container.append(list); list = null; } };
+  const inline = (parent, str) => {
+    const pattern = /(\*\*[^*]+\*\*)|(\*[^*]+\*)|(`[^`]+`)|(\[[^\]]+\]\([^)]+\))/g;
+    let last = 0; let match;
+    while ((match = pattern.exec(str))) {
+      if (match.index > last) parent.append(document.createTextNode(str.slice(last, match.index)));
+      const token = match[0];
+      if (token.startsWith('**')) parent.append(el('strong', '', token.slice(2, -2)));
+      else if (token.startsWith('`')) parent.append(el('code', '', token.slice(1, -1)));
+      else if (token.startsWith('*')) parent.append(el('em', '', token.slice(1, -1)));
+      else {
+        // 协议白名单：产物 md 不可信，javascript:/data: 等一律文本化（点击 XSS 防护）
+        const label = token.slice(1, token.indexOf(']'));
+        const url = token.slice(token.indexOf('(') + 1, -1);
+        if (/^(https?:|mailto:|#)/i.test(url) || !/^[a-z][a-z0-9+.-]*:/i.test(url)) {
+          const link = el('a', '', label); link.href = url; link.target = '_blank'; link.rel = 'noreferrer'; parent.append(link);
+        } else parent.append(document.createTextNode(`${label}（${url}）`));
+      }
+      last = match.index + token.length;
+    }
+    if (last < str.length) parent.append(document.createTextNode(str.slice(last)));
+  };
+  for (const rawLine of String(text).split('\n')) {
+    const line = rawLine.replace(/\s+$/, '');
+    if (line.startsWith('```')) { if (code) { container.append(code); code = null; } else code = el('pre', 'md-code'); continue; }
+    if (code) { code.append(document.createTextNode(rawLine + '\n')); continue; }
+    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    if (heading) { flushList(); const node = el(`h${Math.min(4, heading[1].length)}`); inline(node, heading[2]); container.append(node); continue; }
+    const quote = line.match(/^>\s?(.*)$/);
+    if (quote) { flushList(); const node = el('blockquote', 'md-quote'); inline(node, quote[1]); container.append(node); continue; }
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (bullet) { if (!list || list.dataset.kind !== 'ul') { flushList(); list = el('ul'); list.dataset.kind = 'ul'; } const item = el('li'); inline(item, bullet[1]); list.append(item); continue; }
+    const numbered = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (numbered) { if (!list || list.dataset.kind !== 'ol') { flushList(); list = el('ol'); list.dataset.kind = 'ol'; } const item = el('li'); inline(item, numbered[1]); list.append(item); continue; }
+    if (!line.trim()) { flushList(); continue; }
+    flushList();
+    const para = el('p');
+    inline(para, line);
+    container.append(para);
+  }
+  flushList();
+  if (code) container.append(code);
+  return container;
+}
+
 // 输入体验与 Codex 对齐：Alt 或 Shift+回车在输入框内换行，其余 Enter 直接发送（输入法组词中的回车除外）。
 // 只处理 textarea 自身的回车：焦点在表单内按钮上时保持原生语义（Enter=click，打断还是打断）。
 document.addEventListener('keydown', event => {
