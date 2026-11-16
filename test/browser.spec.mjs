@@ -356,6 +356,26 @@ try {
   assert.equal(await newlineInput.inputValue(), '第三行\n第四行', 'Shift+Enter must also insert a newline in the textarea');
   assert.equal(schedulingSessions.records[0].sendCalls.filter(call => call.text.includes('第二行') || call.text.includes('第四行')).length, 0, 'Alt/Shift+Enter must not send the message');
   assert.ok((await sessionCard.innerText()).includes('收到：重点看执行轮次'), 'agent reply must appear in the conversation');
+  // 聊天框文本选定：进行中的文本选区必须跨后台刷新存活（否则无法精确复制）
+  await page.getByLabel('发消息给会话 browser-session').fill(''); // 清掉草稿解冻卡片，模拟纯阅读选区场景
+  await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    const log = document.querySelector('#sessions-list .session-card .chat-log');
+    const bubble = [...log.querySelectorAll('.bubble-text')].pop();
+    const range = document.createRange();
+    range.setStart(bubble.firstChild, 0);
+    range.setEnd(bubble.firstChild, Math.min(6, bubble.firstChild.length));
+    const selection = document.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+  await page.waitForTimeout(2500); // 跨过至少一次 2s 后台刷新
+  const selectionAlive = await page.evaluate(() => {
+    const selection = document.getSelection();
+    return !selection.isCollapsed && !!selection.anchorNode && selection.anchorNode.isConnected;
+  });
+  assert.equal(selectionAlive, true, 'an in-progress text selection in the chat log must survive background refreshes');
+  await page.evaluate(() => document.getSelection().removeAllRanges());
 
   // busy 时输入保持可用：发送默认排队，「打断」立即送达（与 Codex 输入体验一致）
   await newlineInput.fill(''); // 清空草稿，让卡片解除钉住、按期重建，及时反映运行中状态
@@ -412,6 +432,8 @@ try {
   // 编辑（行内原位编辑，与 Codex queue_edit 一致）
   await page.getByRole('button', { name: /编辑排队消息 队列消息一/ }).click();
   const editor = page.locator('.queue-editor');
+  const editorBox = await editor.boundingBox();
+  assert.ok(editorBox.height >= 60, `the queue inline editor must be tall enough to edit (>=60px, got ${editorBox.height})`);
   await editor.fill('队列消息一（改）');
   await editor.press('Enter'); // 对齐 Codex queue_edit：编辑框内回车保存（不能误提交主输入框）
   await page.waitForTimeout(600);

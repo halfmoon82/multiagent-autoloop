@@ -92,6 +92,19 @@ function replaceKeyedPreserving(containerId, freshNodes, keyAttr, skipKey) {
     }
     // 聚焦元素在容器内但不在任何卡片里：pinned 保持 null，照常替换（与旧语义一致）
   }
+  // 进行中的文本选区同样钉住卡片：否则 2s 重建 DOM 把选区打散，聊天框文字无法精确选定复制
+  if (!pinned) {
+    const selection = document.getSelection?.();
+    const anchor = selection && !selection.isCollapsed ? selection.anchorNode : null;
+    if (anchor && list.contains(anchor)) {
+      const host = anchor.nodeType === 1 ? anchor : anchor.parentElement;
+      const card = host?.closest?.(`[data-${keyAttr}]`);
+      if (card) {
+        const key = card.dataset[keyAttr];
+        if (key !== skipKey && freshNodes.some(node => node.dataset?.[keyAttr] === key)) pinned = card;
+      }
+    }
+  }
   if (!pinned) { list.replaceChildren(...freshNodes); return; }
   const pinnedKey = pinned.dataset[keyAttr];
   const ordered = freshNodes.map(node => node.dataset?.[keyAttr] === pinnedKey ? pinned : node);
