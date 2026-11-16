@@ -70,6 +70,16 @@ test('createRun 同项目已有活跃 run 返回 409 语义错误（code=CONFLIC
   assert.equal(second.status, 'queued');
 });
 
+test('createRun 查重按归一后的 project：\' demo \' 与 \'demo\' 视为同项目冲突', () => {
+  const store = setup();
+  const first = store.createRun(baseInput({ project: 'demo' }));
+  assert.equal(first.project, 'demo');
+  let conflict = null;
+  try { store.createRun(baseInput({ project: '  demo ', planId: 'plan-2' })); } catch (error) { conflict = error; }
+  assert.ok(conflict, '带空白的同项目名不得绕过活跃查重');
+  assert.equal(conflict.code, 'CONFLICT');
+});
+
 test('状态机：queued→claimed→done 合法，非法迁移报错不静默纠正', () => {
   const store = setup();
   const run = store.createRun(baseInput());

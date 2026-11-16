@@ -224,8 +224,10 @@ export function createRunStore({ directory } = {}) {
       return listRuns().filter(run => run.project === project && run.slot != null && !isTerminal(run.status)).length;
     },
 
-    createRun(input) {
-      validateCreateInput(input);
+    createRun(rawInput) {
+      validateCreateInput(rawInput);
+      // 入口先归一 project/planId：查重、落盘、快照共用同一归一值，避免带空白输入绕过 CONFLICT。
+      const input = { ...rawInput, project: text(rawInput.project), planId: text(rawInput.planId) };
       // 活跃 run 查重键为纯 project 级（设计文档「每项目最多一个活跃 DAG」）：同项目存在任何
       // 非终态 run 即拒绝创建，与 planId 是否相同无关；DAG 内并行/重派走 createAttempt，不受此限。
       const active = listRuns().find(run => run.project === input.project && !isTerminal(run.status));
