@@ -12,23 +12,25 @@ const text = (value, label, { optional = false } = {}) => {
 };
 
 // 契约错配防护（2026-11-16 机制事故）：提示词要求写状态/文件却绑只读通道，运行期必死锁并反复打扰店主。
-// 只匹配明确的写意图信号，且跳过「不要/不得/禁止」等否定语境，避免误伤只读汇报类提示词。
+// 启发式边界：只匹配「写动词 + 状态对象」的明确信号；否定豁免仅认紧邻动词（≤2 字）的
+// 「不要/不得/禁止/勿/别」，跨逗号或带肯定桥接词的否定不算（如「别犹豫，把授权写入台账」仍判写意图）。
 const WRITE_INTENT_RULES = [
-  { re: /state\.nodes/, label: '写入 state.nodes' },
-  { re: /[a-z0-9-]*-?serial\.json/, label: '写串行台账（serial.json）' },
-  { re: /(写入|写进|写回)[^。；，\n]{0,16}(state|台账|json|配置|文件)/, label: '写入状态/文件' },
-  { re: /(修改|改动)[^。；，\n]{0,12}(rules\.json|补丁)/, label: '修改规则配置/补丁' },
-  { re: /落地补丁|直接修复/, label: '落地修复' },
+  { re: /(写入|写进|写回|更新|追加|登记)[^。；，\n]{0,12}state\.nodes/g, label: '写入 state.nodes' },
+  { re: /(写入|写进|写回|更新|追加|登记|修改)[^。；，\n]{0,12}[a-z0-9-]*-?serial\.json/g, label: '写串行台账（serial.json）' },
+  { re: /(写入|写进|写回)[^。；，\n]{0,16}(state|台账|json|配置|文件)/g, label: '写入状态/文件' },
+  { re: /(修改|改动)[^。；，\n]{0,12}(rules\.json|补丁)/g, label: '修改规则配置/补丁' },
+  { re: /落地补丁|直接修复/g, label: '落地修复' },
 ];
-const NEGATED = /(不要|不得|禁止|勿|别)[^。；\n]{0,8}$/;
+const NEGATED = /(不要|不得|禁止|勿|别)$/;
 export function writeIntentSignals(prompt) {
   const signals = [];
   for (const { re, label } of WRITE_INTENT_RULES) {
-    const match = prompt.match(re);
-    if (!match) continue;
-    const before = prompt.slice(Math.max(0, match.index - 12), match.index);
-    if (NEGATED.test(before)) continue;
-    signals.push(label);
+    for (const match of prompt.matchAll(re)) {
+      const before = prompt.slice(Math.max(0, match.index - 2), match.index);
+      if (NEGATED.test(before)) continue;
+      if (!signals.includes(label)) signals.push(label);
+      break;
+    }
   }
   return signals;
 }
