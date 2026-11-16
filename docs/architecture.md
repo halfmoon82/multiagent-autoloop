@@ -56,7 +56,7 @@ Codex / WorkBuddy / Claude Code 等执行平台
 - 安全：浏览器不能指定启动命令、工作目录或环境变量。
 - 专用 CODEX_HOME（`src/session-codex-home.mjs`）：派生会话不继承用户全局 `~/.codex/config.toml` 的 `approval_policy`（事故：全局 `never` 旁路权限门）。控制台在 `<AGENT_AUTOLOOP_HOME>/codex-home/` 每次开会话前重写配置：强制 `approval_policy="on-request"`、`sandbox_mode="workspace-write"`，只白名单继承 model/model_provider/model_providers 等模型供应商项，不继承 notify 钩子、MCP、项目信任；`auth.json` 软链沿用登录态。启动时显式传 `CODEX_HOME`，准备失败拒绝启动（fail closed）。用户全局策略仍归其自有 CLI worker。
 - 按 kind 权限矩阵（`src/session-permission.mjs`，`#decidePermission` 调用）：只选 `allow_once`，无法识别的请求一律取消。
-  - normal：项目工作区内写 + shell + 网络；禁止推 main/master 等非 feat|fix|hotfix|… 前缀分支、force/delete/mirror 推送、裸 `git push`、工作目录越界；`gh pr create`、feature 分支 push、用户授权后的 `gh pr merge` 可走通。首轮另附分支纪律提示块（用户消息保持逐字）。模式 `workspace-write`。
+  - normal：编辑工具路径与 execute 的 cwd 由权限层限定在项目工作区；任意 shell 命令属用户委托开发（与用户自有 CLI 同信任级），权限层只拦截分支/推送类禁令，不对 shell 做路径 jail；另放行网络；禁止推 main/master 等非 feat|fix|hotfix|… 前缀分支、force/delete/mirror 推送、裸 `git push`、工作目录越界；`gh pr create`、feature 分支 push、用户授权后的 `gh pr merge` 可走通。首轮另附分支纪律提示块（用户消息保持逐字）。模式 `workspace-write`。
   - design：全量取消（read-only + Plan Mode，保持不变）。
   - scheduling：仅 `AGENT_AUTOLOOP_HOME/scripts` 内文件编辑 + `autoloop-hub` 的读工具与 resume/pause/run_rule（及预留 dispatch_task）；shell、网络、项目写入、合并一律取消。模式 `read-only`，创建前设置并核验，失败即拒绝创建。
 - 审计：每次裁定追加到 `<AGENT_AUTOLOOP_HOME>/permission-audit.jsonl`（时间、kind、项目、工具类型、命令、路径、结论、原因），拒绝同时写 stderr。

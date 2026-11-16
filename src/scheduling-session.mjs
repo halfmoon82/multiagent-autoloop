@@ -39,7 +39,7 @@ export const BRANCH_DISCIPLINE_PROMPT = [
   '【分支纪律】',
   '- 不直推 main/master 等受保护分支；任何改动先建分支：热修复走 fix/<topic> 分支，或在独立 worktree（git worktree add .worktrees/<名> -b fix/<topic>）里做。',
   '- 单个 issue 的闭环：读 issue → 建分支 → 改代码 → 跑测试 → 提交 → git push -u origin <分支> → gh pr create 开 PR → 等 reviewer 闭环 → 仅在用户明确授权后合并。',
-  '- 禁止 force push、禁止删除远端分支；写入范围限本项目工作区。以上由控制台权限层强制，违反的请求会被拒绝并记入审计。',
+  '- 禁止 force push、禁止删除远端分支；文件编辑与命令工作目录限本项目工作区。以上由控制台权限层强制，违反的请求会被拒绝并记入审计。',
 ].join('\n');
 
 export function buildHubMcpServer() {
