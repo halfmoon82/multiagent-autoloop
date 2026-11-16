@@ -68,7 +68,9 @@ form.session-message input,form.session-message textarea{flex:1;min-width:0}
 .queue-op{border:0;border-left:1px solid var(--line);background:none;color:var(--muted);font-size:11px;padding:0 8px;cursor:pointer;min-height:26px}
 .queue-op:hover{color:var(--accent-dark)}
 .queue-remove:hover{color:var(--danger)}
-.queue-editor{flex:1;min-width:0;font-size:12px;padding:5px 8px;border:0;resize:none;min-height:28px}
+.queue-item-editing{flex-direction:column;align-items:stretch;gap:6px;padding:6px;background:#fff}
+.queue-item-editing .queue-ops{border-left:0;justify-content:flex-end}
+.queue-item-editing .queue-editor{flex:1;min-width:0;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;resize:vertical;min-height:64px;max-height:200px;overflow-y:auto}
 .queue-paused{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 10px;border:1px dashed #e0b96a;background:#fff8ec;border-radius:8px;font-size:12px;color:#74430e}
 .queue-paused .queue-op{border:1px solid #e8cf9a;border-radius:6px;color:#74430e;font-weight:600}
 .queue-paused .queue-op:hover{background:#fbeed3;color:#5c350b}

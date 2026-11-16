@@ -118,9 +118,12 @@ export function renderSchedulingSessions(sessions = [], queueEditing = null, art
         for (const item of session.queued) {
           const row = el('div', 'queue-item');
           if (queueEditing && queueEditing.sessionId === session.id && queueEditing.itemId === item.id) {
+            row.classList.add('queue-item-editing'); // 编辑态：纵向布局 + 自动长高，长消息可编辑
             const editor = el('textarea', 'queue-editor');
             editor.value = item.text;
-            editor.rows = 1;
+            editor.rows = 2;
+            editor.dataset.autogrow = '';
+            editor.dataset.autogrowMax = '200';
             editor.setAttribute('aria-label', '编辑排队消息内容');
             const ops = el('span', 'queue-ops');
             ops.append(
