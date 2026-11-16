@@ -77,7 +77,7 @@ export function createDispatcher({ root, sessions, git = defaultGit, now = () =>
     get(id) { const task = tasks.get(id); if (!task) throw new DispatchError('派发任务不存在', { status: 404 }); return pub(task); },
     async dispatch(input) {
       const project = path.resolve(input.project);
-      if ([...tasks.values()].some(t => t.project === project && t.subject === input.subject)) throw new DispatchError(`项目 ${project} 已有同名任务 ${input.subject}`, { status: 409 });
+      if ([...tasks.values()].some(t => t.project === project && t.subject === input.subject && t.status !== 'failed')) throw new DispatchError(`项目 ${project} 已有同名任务 ${input.subject}`, { status: 409 });
       const createdAt = now().toISOString();
       const task = {
         id: randomUUID(), subject: input.subject, summary: input.summary, detail: input.detail, project,
@@ -89,9 +89,17 @@ export function createDispatcher({ root, sessions, git = defaultGit, now = () =>
       try { await git(project, ['worktree', 'add', task.worktree, '-b', task.branch]); }
       catch (error) { fail(task, error); throw new DispatchError(`创建 worktree 失败：${task.error}`, { status: 502 }); }
       try {
+        // 注意：model/profile 依赖 PR #49 扩展 sessions.start 签名；落地前 start 会忽略二者，worker 实际跑默认模型。
         const session = await sessions.start({ kind: 'normal', profile: 'worker', project: task.worktree, prompt: buildWorkerPrompt(task), model: task.model });
         task.sessionId = session.id; task.status = 'running'; touch(task);
-      } catch (error) { fail(task, error); throw new DispatchError(`启动 worker 会话失败：${task.error}`, { status: 502 }); }
+      } catch (error) {
+        fail(task, error);
+        // 回滚已建 worktree/分支，避免磁盘残留；清理失败不掩盖原始错误。
+        for (const args of [['worktree', 'remove', '--force', task.worktree], ['branch', '-D', task.branch]]) {
+          try { await git(project, args); } catch { /* 尽力清理 */ }
+        }
+        throw new DispatchError(`启动 worker 会话失败：${task.error}`, { status: 502 });
+      }
       return pub(task);
     },
     // 只信 Agent 自报：控制台绝不估算费用。

@@ -21,13 +21,13 @@ test('validateDispatchInput rejects bad subject and missing fields', () => {
   ]) assert.throws(() => validateDispatchInput(bad), DispatchError, JSON.stringify(bad));
 });
 
-function harness({ gitFail = false, startFail = false } = {}) {
+function harness({ gitFail = false, startFail = false, rollbackFail = false } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'dispatch-'));
   const gitCalls = []; const starts = [];
-  const sessions = { async start(args) { starts.push(args); if (startFail) throw new Error('boom'); return { id: 'sess-1', status: 'running' }; } };
-  const git = async (cwd, args) => { gitCalls.push({ cwd, args }); if (gitFail) throw new Error('git boom'); };
+  const sessions = { fail: startFail, async start(args) { starts.push(args); if (sessions.fail) throw new Error('boom'); return { id: 'sess-1', status: 'running' }; } };
+  const git = async (cwd, args) => { gitCalls.push({ cwd, args }); if (gitFail) throw new Error('git boom'); if (rollbackFail && args[0] !== 'worktree' || rollbackFail && args[1] === 'remove') throw new Error('rollback boom'); };
   const dispatcher = createDispatcher({ root, sessions, git, now: () => new Date('2026-11-16T00:00:00Z') });
-  return { root, dispatcher, gitCalls, starts };
+  return { root, dispatcher: Object.assign(dispatcher, { sessions }), gitCalls, starts };
 }
 
 test('dispatch creates worktree + branch, starts a worker session and registers the task', async () => {
@@ -40,6 +40,7 @@ test('dispatch creates worktree + branch, starts a worker session and registers 
   assert.deepEqual(gitCalls[0].args, ['worktree', 'add', task.worktree, '-b', 'feat/fix-login-bug']);
   assert.equal(gitCalls[0].cwd, '/p/demo');
   assert.equal(starts[0].project, task.worktree);
+  // 仅断言传给 sessions.start 的参数（mock）；真实 start 目前不识别 profile/model，依赖 PR #49，见 docs/dispatch-task.md
   assert.equal(starts[0].profile, 'worker');
   assert.match(starts[0].prompt, /修复登录/);
   assert.deepEqual(task.cost, { status: 'unreported' });
@@ -70,6 +71,30 @@ test('session start failure registers a failed task', async () => {
   const [task] = dispatcher.list();
   assert.equal(task.status, 'failed');
   assert.match(task.error, /boom/);
+});
+
+test('failed task does not block re-dispatching the same subject', async () => {
+  const { dispatcher } = harness({ startFail: true });
+  await assert.rejects(dispatcher.dispatch(validateDispatchInput(valid)), e => e.status === 502);
+  dispatcher.sessions.fail = false;
+  const task = await dispatcher.dispatch(validateDispatchInput(valid));
+  assert.equal(task.status, 'running');
+  assert.equal(dispatcher.list().length, 2);
+  await assert.rejects(dispatcher.dispatch(validateDispatchInput(valid)), e => e.status === 409);
+});
+
+test('session start failure rolls back the worktree and branch', async () => {
+  const { dispatcher, gitCalls } = harness({ startFail: true });
+  await assert.rejects(dispatcher.dispatch(validateDispatchInput(valid)), e => e.status === 502);
+  const wt = path.join('/p/demo', '.worktrees', 'fix-login-bug');
+  assert.deepEqual(gitCalls[1].args, ['worktree', 'remove', '--force', wt]);
+  assert.deepEqual(gitCalls[2].args, ['branch', '-D', 'feat/fix-login-bug']);
+  assert.equal(gitCalls.every(c => c.cwd === '/p/demo'), true);
+});
+
+test('rollback git errors do not mask the original failure', async () => {
+  const { dispatcher } = harness({ startFail: true, rollbackFail: true });
+  await assert.rejects(dispatcher.dispatch(validateDispatchInput(valid)), e => e.status === 502 && /boom/.test(e.message));
 });
 
 test('cost is only taken from agent self-report, never estimated', async () => {

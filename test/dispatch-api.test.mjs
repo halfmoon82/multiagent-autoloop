@@ -28,6 +28,7 @@ test('POST /api/dispatch-tasks dispatches and GET lists it', async () => {
     assert.equal(res.status, 201);
     const task = await res.json();
     assert.equal(task.status, 'running'); assert.equal(task.cost.status, 'unreported');
+    // mock 断言，非"已生效"：真实 sessions.start 尚不识别 profile/model（依赖 PR #49）
     assert.equal(starts[0].profile, 'worker');
     const list = await (await fetch(`${url}/api/dispatch-tasks`)).json();
     assert.equal(list.tasks.length, 1);
