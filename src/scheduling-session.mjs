@@ -16,6 +16,19 @@ export const HUB_TOOLS_PATH = path.join(REPOSITORY_ROOT, 'src', 'mcp', 'hub-tool
 // 调度会话挂载的只读 MCP server：stdio JSON-RPC，数据来自 Autoloop Hub。
 // env 最小透传（ACP stdio MCP 无 cwd 字段，脚本用绝对路径，工作目录无影响）。
 // 注意：owner key 只经 AGENT_AUTOLOOP_HOME/config.json 在 MCP 子进程内读取，绝不进入这里的参数。
+export const SESSION_KIND_LABELS = { normal: '普通会话', scheduling: '调度会话', design: '设计会话' };
+const SESSION_KINDS = Object.keys(SESSION_KIND_LABELS);
+
+// 设计会话专用引导提示词：收敛 PRD/Spec/DAG，不复用调度会话的派发 worker 文案。
+export function buildDesignPrompt({ project } = {}) {
+  return [
+    `你是 ${project} 上的设计会话，负责把产品需求收敛为可评审的 PRD、Spec 与可并行执行的 DAG。`,
+    '【协作方式】原生 Codex Plan Mode + 只读沙箱：只读取代码与文档、提问和出方案，不得直接修改文件或执行写命令；需求确认前不进入实现。',
+    '【产出约定】需求闭合后以约定 JSON 块输出 product-spec（背景、成功标准、非目标、验收命令），控制台据此计算 specDigest；主人确认后再拆解 DAG 与执行范围。',
+    '【边界】本会话只做规划与设计：不执行实现、不触碰部署、不修改真实调度规则；实现由后续事件链按授权快照派发。',
+  ].join('\n');
+}
+
 export function buildHubMcpServer() {
   return {
     name: 'autoloop-hub',
@@ -65,6 +78,7 @@ const statusLabel = status => ({ initializing: '初始化中', running: '运行�
 function toPublicSession(record) {
   return {
     id: record.id,
+    kind: record.kind || 'scheduling',
     sessionId: record.sessionId,
     agent: record.agent,
     cwd: record.cwd,
@@ -138,17 +152,25 @@ export class SchedulingSessionManager {
     try { record = await this.archive.read(id); }
     catch (error) { throw new SchedulingSessionError(`无法继续该会话：${error.message}`, { status: error.status || 400 }); }
     const prompt = await this.archive.buildContinuation(id);
-    return this.start({ prompt, project: record.project, continuedFrom: record.id });
+    return this.start({ kind: record.kind || 'scheduling', prompt, project: record.project, continuedFrom: record.id });
   }
 
-  async start({ prompt, project, continuedFrom = null } = {}) {
+  async start({ kind = 'scheduling', prompt, project, continuedFrom = null } = {}) {
+    const sessionKind = SESSION_KINDS.includes(kind) ? kind : 'scheduling';
     const projectId = this.#validateProject(project);
-    const base = buildSchedulingPrompt({ project: projectId, writableDir: this.writableDir });
-    const composed = prompt ? `${base}\n\n【本次附加说明】\n${prompt}` : base;
+    const base = sessionKind === 'design'
+      ? buildDesignPrompt({ project: projectId })
+      : sessionKind === 'scheduling'
+        ? buildSchedulingPrompt({ project: projectId, writableDir: this.writableDir })
+        : '';
+    // normal：prompt 逐字等于用户输入，不组装任何额外提示词；其余 kind 在基础提示词后附用户说明。
+    const composed = sessionKind === 'normal'
+      ? String(prompt ?? '').trim()
+      : prompt ? `${base}\n\n【本次附加说明】\n${prompt}` : base;
     const text = this.#validatePrompt(composed, 64000);
-    const duplicate = [...this.sessions.values()].find(session => session.project === projectId);
-    if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的调度会话（${duplicate.id.slice(0, 8)}），请先关闭再开启`);
-    if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个调度会话`);
+    const duplicate = [...this.sessions.values()].find(session => session.project === projectId && (session.kind || 'scheduling') === sessionKind);
+    if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的${SESSION_KIND_LABELS[sessionKind]}（${duplicate.id.slice(0, 8)}），请先关闭再开启`);
+    if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个会话`);
     if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
 
     const sessionCwd = this.#projectCwd(projectId);
@@ -164,6 +186,7 @@ export class SchedulingSessionManager {
 
     const record = {
       id: randomUUID(),
+      kind: sessionKind,
       sessionId: null,
       agent: 'Codex ACP',
       cwd: sessionCwd,
@@ -191,7 +214,7 @@ export class SchedulingSessionManager {
     const acpClient = client({ name: 'autoloop-console' })
       .onRequest(methods.client.session.requestPermission, async request => {
         touch('permission');
-        return { outcome: this.#decidePermission(request?.params) };
+        return { outcome: this.#decidePermission(request?.params, record) };
       })
       .onNotification(methods.client.session.update, notification => {
         const update = notification?.params?.update || {};
@@ -229,10 +252,12 @@ export class SchedulingSessionManager {
 
       const session = await connection.agent.request(methods.agent.session.new, {
         cwd: sessionCwd,
-        mcpServers: [buildHubMcpServer()],
+        mcpServers: sessionKind === 'scheduling' ? [buildHubMcpServer()] : [],
       });
       if (!session?.sessionId) throw new SchedulingSessionError('Codex ACP 没有返回会话 ID', { status: 502 });
       record.sessionId = session.sessionId;
+      // 设计会话：首个 prompt 前必须完成 read-only + 原生 Plan Mode 并核验，任一失败即创建失败，不降级。
+      if (sessionKind === 'design') await this.#applyDesignGuards(record);
       record.status = 'idle';
 
       this.#pushMessage(record, 'user', text);
@@ -242,7 +267,8 @@ export class SchedulingSessionManager {
       record.status = 'error';
       record.error = safeMessage(error);
       this.#destroyRecord(record);
-      throw new SchedulingSessionError(`开启调度会话失败：${record.error}`, { status: 502 });
+      const openLabel = { normal: '开启普通会话失败', scheduling: '开启调度会话失败', design: '开启会话失败（设计会话，已按只读 + Plan Mode 要求关闭）' }[sessionKind] || '开启会话失败';
+      throw new SchedulingSessionError(`${openLabel}：${record.error}`, { status: 502 });
     }
   }
 
@@ -252,6 +278,10 @@ export class SchedulingSessionManager {
     if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
     if (record.status === 'error') throw new SchedulingSessionError('会话处于异常状态，请关闭后重新开启', { status: 409 });
     const raw = String(text ?? '').trim();
+    // 设计会话拒绝斜杠命令（至少 /plan 必须拦截），防止借命令切换模式；排队与打断入口同样在此统一拦截。
+    if ((record.kind || 'scheduling') === 'design' && raw.startsWith('/')) {
+      throw new SchedulingSessionError('设计会话不接受斜杠命令（防止切换模式），请用自然语言描述需求', { status: 400 });
+    }
     if (record.status === 'idle') {
       const message = this.#validatePrompt(raw);
       this.#pushMessage(record, 'user', message);
@@ -283,7 +313,11 @@ export class SchedulingSessionManager {
     if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
     const item = record.queue.find(entry => entry.id === String(itemId || ''));
     if (!item) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
-    item.text = this.#validatePrompt(String(text ?? '').trim());
+    const next = this.#validatePrompt(String(text ?? '').trim());
+    if ((record.kind || 'scheduling') === 'design' && next.startsWith('/')) {
+      throw new SchedulingSessionError('设计会话不接受斜杠命令（防止切换模式），请用自然语言描述需求', { status: 400 });
+    }
+    item.text = next;
     item.at = this.now().toISOString();
     record.updatedAt = this.now().toISOString();
     return toPublicSession(record);
@@ -409,8 +443,20 @@ export class SchedulingSessionManager {
     }
   }
 
-  #decidePermission(params) {
+  // 设计会话护栏：set_mode(read-only) → set_config_option(collaboration_mode=plan)，逐个核验返回的 configOptions。
+  async #applyDesignGuards(record) {
+    const mode = await record.connection.agent.request(methods.agent.session.setMode, { sessionId: record.sessionId, modeId: 'read-only' });
+    const modeOptions = Array.isArray(mode?.configOptions) ? mode.configOptions : [];
+    if (!modeOptions.some(option => option.id === 'mode' && option.currentValue === 'read-only')) throw new Error('无法将会话设置为只读模式');
+    const plan = await record.connection.agent.request(methods.agent.session.setConfigOption, { sessionId: record.sessionId, configId: 'collaboration_mode', value: 'plan' });
+    const planOptions = Array.isArray(plan?.configOptions) ? plan.configOptions : [];
+    if (!planOptions.some(option => option.id === 'collaboration_mode' && option.currentValue === 'plan')) throw new Error('无法将协作模式设置为 plan');
+  }
+
+  #decidePermission(params, record = null) {
     const toolCall = params?.toolCall || {};
+    // 设计会话不得直接写项目：权限层全量取消作为 ACP read-only 之外的第二道防线（含 switch_mode 等非 edit 请求）。
+    if ((record?.kind || 'scheduling') === 'design') return { outcome: 'cancelled' };
     if (!this.writableDir || toolCall.kind !== 'edit') return { outcome: 'cancelled' };
     const locations = Array.isArray(toolCall.locations) ? toolCall.locations : [];
     if (!locations.length) return { outcome: 'cancelled' };
@@ -451,6 +497,7 @@ export class SchedulingSessionManager {
     if (!this.archive) return;
     this.archive.save({
       id: record.id,
+      kind: record.kind || 'scheduling',
       project: record.project,
       agent: record.agent,
       prompt: record.prompt,
@@ -487,6 +534,16 @@ export class SchedulingSessionManager {
       }
       record.updatedAt = this.now().toISOString();
       this.#persist(record);
+      if ((record.kind || 'scheduling') === 'design' && !error && !interrupted) {
+        // 契约：每轮结束后重复 set 并读取 configOptions 核验仍为 read-only + plan，不一致置 error。
+        this.#applyDesignGuards(record).catch(guardError => {
+          if (record.status === 'error' || record.closed) return;
+          record.status = 'error';
+          record.error = `设计会话模式漂移：${safeMessage(guardError)}`;
+          record.updatedAt = this.now().toISOString();
+          this.#persist(record);
+        });
+      }
       this.#drainQueue(record);
     };
     record.promptTurn.then(response => {

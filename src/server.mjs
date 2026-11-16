@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { classifySessionRequest } from './session-classify.mjs';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +51,10 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/file$/))) return jsonResponse(res, 200, await config.schedulingSessions.readSessionArtifact(decodeURIComponent(sessionMatch[1]), String(url.searchParams.get('path') || '')));
   if (req.method === 'GET' && url.pathname === '/api/detours') return jsonResponse(res, 200, { detours: readDetours(config).map(publicDetour).filter(Boolean) });
   if (req.method === 'GET' && url.pathname === '/api/serial-progress') return jsonResponse(res, 200, await loadChains({ root: config.root, rules: readRuleOptions(config).rules || [] }));
+  if (req.method === 'POST' && url.pathname === '/api/session-classify') {
+    const body = await readJson(req);
+    return jsonResponse(res, 200, classifySessionRequest(body.text));
+  }
   if (!['POST', 'PUT', 'DELETE'].includes(req.method)) return false;
   checkWrite(req); const body = await readJson(req);
   const continueMatch = req.method === 'POST' ? url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/continue$/) : null;
@@ -66,7 +71,9 @@ async function handleApi(config, req, res, url) {
     const project = String(body.project || '');
     const known = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).find(item => item.path === project);
     if (!known) throw new RequestError(400, '项目不在已发现的 Git 仓库列表中，请从下拉选择');
-    return jsonResponse(res, 201, await config.schedulingSessions.start({ prompt: body.prompt, project: known.path }));
+    const kind = body.kind === undefined || body.kind === null || body.kind === '' ? 'scheduling' : String(body.kind);
+    if (!['normal', 'scheduling', 'design'].includes(kind)) throw new RequestError(400, '会话类型必须是 normal、scheduling 或 design');
+    return jsonResponse(res, 201, await config.schedulingSessions.start({ kind, prompt: body.prompt, project: known.path }));
   }
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   let match;
