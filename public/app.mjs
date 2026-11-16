@@ -321,7 +321,14 @@ function renderMarkdown(text) {
       if (token.startsWith('**')) parent.append(el('strong', '', token.slice(2, -2)));
       else if (token.startsWith('`')) parent.append(el('code', '', token.slice(1, -1)));
       else if (token.startsWith('*')) parent.append(el('em', '', token.slice(1, -1)));
-      else { const link = el('a', '', token.slice(1, token.indexOf(']'))); link.href = token.slice(token.indexOf('(') + 1, -1); link.target = '_blank'; link.rel = 'noreferrer'; parent.append(link); }
+      else {
+        // 协议白名单：产物 md 不可信，javascript:/data: 等一律文本化（点击 XSS 防护）
+        const label = token.slice(1, token.indexOf(']'));
+        const url = token.slice(token.indexOf('(') + 1, -1);
+        if (/^(https?:|mailto:|#)/i.test(url) || !/^[a-z][a-z0-9+.-]*:/i.test(url)) {
+          const link = el('a', '', label); link.href = url; link.target = '_blank'; link.rel = 'noreferrer'; parent.append(link);
+        } else parent.append(document.createTextNode(`${label}（${url}）`));
+      }
       last = match.index + token.length;
     }
     if (last < str.length) parent.append(document.createTextNode(str.slice(last)));

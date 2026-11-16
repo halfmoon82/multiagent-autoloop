@@ -52,8 +52,8 @@ const schedulingSessions = {
   async readSessionArtifact(id, relPath) {
     const session = this.records.find(item => item.id === id);
     if (!session) { const error = new Error('调度会话不存在'); error.status = 404; throw error; }
-    if (relPath === 'docs/调度报告.md') return { path: relPath, name: '调度报告.md', content: '# 调度报告\n\n- **事项一**：已修复\n- 事项二：跟进中\n\n> 引用：队列已暂停' };
-    if (relPath === 'docs/看板.html') return { path: relPath, name: '看板.html', content: '<h1>数据看板</h1><p>实时</p>' };
+    if (relPath === 'docs/调度报告.md') return { path: relPath, name: '调度报告.md', content: '# 调度报告\n\n- **事项一**：已修复\n- 事项二：跟进中\n\n> 引用：队列已暂停\n\n[恶意链](javascript:fetch(\'/api/rules\'))与[正常链](https://example.com)' };
+    if (relPath === 'docs/看板.html') return { path: relPath, name: '看板.html', content: "<h1>数据看板</h1><p>实时</p><script>parent.document.documentElement.dataset.pwned='1'</script>" };
     const error = new Error('产物文件不存在：' + relPath); error.status = 404; throw error;
   },
   async removeQueued(id, itemId) {
@@ -465,13 +465,17 @@ try {
   assert.equal(await page.locator('#artifact-title').innerText(), '调度报告.md');
   assert.equal(await page.locator('.md-view h1').innerText(), '调度报告');
   assert.equal(await page.locator('.md-view li strong').innerText(), '事项一');
+  assert.equal(await page.locator('.md-view a[href^="javascript:"]').count(), 0, 'javascript: links in artifacts must be neutralized to text');
+  assert.equal(await page.locator('.md-view a[href="https://example.com"]').count(), 1, 'https links in artifacts must stay clickable');
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await page.locator('#artifact-dialog').waitFor({ state: 'hidden', timeout: 5000 });
   await page.getByRole('button', { name: /看板\.html/ }).click(); // html → sandbox iframe
   await page.locator('#artifact-dialog').waitFor({ state: 'visible', timeout: 5000 });
   const frame = page.locator('.artifact-frame');
   assert.equal(await frame.getAttribute('sandbox'), '', 'HTML artifacts must render in a sandboxed iframe');
-  assert.equal(await frame.getAttribute('srcdoc'), '<h1>数据看板</h1><p>实时</p>');
+  await page.waitForTimeout(300); // 若 sandbox 失效，srcdoc 内脚本会标记父文档
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.pwned), undefined, 'scripts inside artifact HTML must never run in the console origin');
+  errors.length = 0; // Chrome 为被 sandbox 拦截的脚本记录 console error，属于本负向测试的预期噪音
   await page.getByRole('button', { name: '关闭', exact: true }).click();
 
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();

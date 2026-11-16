@@ -35,11 +35,11 @@ export function listArtifacts(cwd, { maxDepth = MAX_DEPTH, maxFiles = MAX_FILES 
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
       if (files.length >= maxFiles) return;
-      if (entry.name.startsWith('.') && entry.name !== '.') { if (EXCLUDED_DIRS.has(entry.name)) continue; }
+      if (entry.name.startsWith('.')) continue; // 隐藏文件/目录一律跳过（.git/.claude/.github 等）
+      if (EXCLUDED_DIRS.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (EXCLUDED_DIRS.has(entry.name)) continue;
-        try { if (statSync(full).isSymbolicLink()) continue; } catch { continue; }
+        // Dirent 是 lstat 语义：符号链接目录 isDirectory() 为 false，天然不进这里
         walk(full, depth + 1);
       } else if (entry.isFile() && ARTIFACT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
         try {
@@ -61,5 +61,6 @@ export function readArtifact(cwd, relPath, { maxBytes = MAX_BYTES } = {}) {
   const stat = statSync(real);
   if (!stat.isFile()) throw new Error(`产物文件不存在：${relative}`);
   if (stat.size > maxBytes) throw new Error(`产物文件过大（${Math.round(stat.size / 1024)}KB，上限 ${Math.round(maxBytes / 1024)}KB）`);
+  // 注意：stat 与读取之间存在文件增长窗口；本机单人控制台、产物来源为本机 worker，风险可接受
   return { path: relative, name: path.basename(real), content: readFileSync(real, 'utf8') };
 }

@@ -20,6 +20,9 @@ function fixture() {
   writeFileSync(path.join(root, '.git', 'note.md'), '# git\n');
   mkdirSync(path.join(root, 'd1', 'd2', 'd3'), { recursive: true });
   writeFileSync(path.join(root, 'd1', 'd2', 'd3', 'toodeep.md'), '# 太深\n');
+  mkdirSync(path.join(root, '.hidden-dir'), { recursive: true });
+  writeFileSync(path.join(root, '.hidden-dir', 'secret.md'), '# 秘密\n');
+  writeFileSync(path.join(root, '.dotfile.md'), '# 点文件\n');
   return root;
 }
 

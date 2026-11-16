@@ -356,7 +356,11 @@ export class SchedulingSessionManager {
   async listSessionArtifacts(id) {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
-    return listArtifacts(record.cwd);
+    try {
+      return listArtifacts(record.cwd);
+    } catch (error) {
+      throw new SchedulingSessionError(`产物目录不可读：${safeMessage(error)}`, { status: 404 });
+    }
   }
 
   async readSessionArtifact(id, relPath) {
