@@ -37,7 +37,7 @@ const schedulingSessions = {
   },
   async list() { return this.records; },
   async start({ prompt, project } = {}) {
-    const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, queuePaused: false, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
+    const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
     this.records.push(session); return session;
   },
   async listSessionArtifacts(id) {
@@ -99,13 +99,6 @@ const schedulingSessions = {
     const target = index + (direction === 'up' ? -1 : 1);
     if (target >= 0 && target < session.queue.length) [session.queue[index], session.queue[target]] = [session.queue[target], session.queue[index]];
     session.queued = session.queue;
-    return session;
-  },
-  async resumeQueue(id) {
-    const session = this.records.find(item => item.id === id);
-    if (!session) throw new Error('调度会话不存在');
-    session.resumeCalls = (session.resumeCalls || 0) + 1;
-    session.queuePaused = false;
     return session;
   },
   async clearQueued(id) {

@@ -386,7 +386,7 @@ test('scheduling prompt instructs native MCP tools first and keeps the console A
 });
 
 // 受控适配器：session/prompt 的响应由测试手动释放，用来覆盖运行中排队/打断语义。
-function controlledAdapter({ holdInitialize = false, rejectPromptOnCancel = false } = {}) {
+function controlledAdapter({ holdInitialize = false, rejectPromptOnCancel = false, failSteering = false } = {}) {
   const requests = [];
   const prompts = [];
   const steers = [];
@@ -413,7 +413,8 @@ function controlledAdapter({ holdInitialize = false, rejectPromptOnCancel = fals
       else if (request.method === 'session/prompt') { prompts.push(request); turnActive = true; }
       else if (request.method === '_session/steering') {
         steers.push(request);
-        if (turnActive) respond(request, { outcome: 'steeredActiveTurn' });
+        if (failSteering) stdout.write(jsonLine({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'connection reset by peer' } }));
+        else if (turnActive) respond(request, { outcome: 'steeredActiveTurn' });
         else respond(request, { error: { code: -32602, message: 'no active turn to steer' } });
       }
       else if (request.method === 'session/cancel') {
@@ -538,6 +539,59 @@ test('steer in injects the queued message into the live turn via _session/steeri
   fake.endTurn(fake.prompts[1]);
   await waitFor(() => manager.list()[0].status === 'idle', 2000);
   await manager.close(id);
+});
+
+test('a steering transport failure reports 502 and restores the message to the queue', async () => {
+  const fake = controlledAdapter({ failSteering: true });
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '第一条');
+  await manager.send(id, '第二条');
+  const listed = manager.list()[0];
+  await assert.rejects(() => manager.steerQueued(id, listed.queued[1].id), error => error.status === 502, 'a steering transport failure must be 502');
+  const after = manager.list()[0];
+  assert.deepEqual(after.queued.map(item => item.text), ['第二条', '第一条'], 'a failed steer must restore the message to the queue head');
+  await manager.close(id);
+});
+
+test('a send during the settle window wins and the settle timer then no-ops', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 120 });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '排队一');
+  await manager.send(id, '', { interrupt: true });
+  fake.endTurn(fake.prompts[0]);
+  await new Promise(resolve => setTimeout(resolve, 10)); // finish 已跑、settle 定时器（120ms）未到期
+  await manager.send(id, '插队新消息'); // settle 窗口内直接发送：立即开轮
+  await waitFor(() => fake.prompts.length === 2, 2000);
+  assert.match(fake.prompts[1].params.prompt[0].text, /插队新消息/);
+  await new Promise(resolve => setTimeout(resolve, 200)); // settle 定时器触发：会话在运行，必须空转不抢跑
+  assert.equal(fake.prompts.length, 2, 'the settle timer must no-op when a new turn already started');
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => fake.prompts.length === 3, 2000);
+  assert.match(fake.prompts[2].params.prompt[0].text, /排队一/, 'the queued message must continue automatically after the intervening turn');
+  fake.endTurn(fake.prompts[2]);
+  await waitFor(() => manager.list()[0].status === 'idle', 2000);
+  await manager.close(id);
+});
+
+test('closing during the settle window is safe when the timer fires', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 40 });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '排队一');
+  await manager.send(id, '', { interrupt: true });
+  fake.endTurn(fake.prompts[0]);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await manager.close(id);
+  await new Promise(resolve => setTimeout(resolve, 120)); // settle 定时器在已销毁会话上触发：必须静默兜底
+  assert.ok(manager.list().length === 0, 'the session stays closed after the settle timer fires');
 });
 
 test('steer in with no active turn starts a new turn immediately and keeps the remaining queue', async () => {

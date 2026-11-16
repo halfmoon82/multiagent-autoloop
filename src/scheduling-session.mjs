@@ -373,14 +373,21 @@ export class SchedulingSessionManager {
     if (record.status === 'running' && record.connection?.agent) {
       try {
         await record.connection.agent.request('_session/steering', { sessionId: record.sessionId, prompt: [{ type: 'text', text: item.text }] });
+        // 与 drain 路径对齐：steered 消息进转录并写穿存档，会话界面与续跑留档不断档
+        this.#pushMessage(record, 'user', item.text);
+        this.#persist(record);
         return toPublicSession(record);
       } catch (error) {
         // 轮次恰好结束 / 适配器不支持 steering：退回队首路径，等当前轮收尾后自动续跑（finish 内 drain）
         if (!/no active turn to steer|method not found/i.test(String(error?.message || error))) {
+          // 恢复队列项再报错：消息不能丢（传输层失败时适配器可能已收到，重试由用户决定）
+          record.queue.unshift(item);
           throw new SchedulingSessionError(`steer in 失败：${safeMessage(error)}`, { status: 502 });
         }
       }
     }
+    // settle 窗口内（打断后定时器未到期）steer 立即开轮是有意取舍：steer 的语义就是"马上送达"，
+    // 残余风险（适配器仍在取消中）由 finish 的 error 分支兜底为用户可见的错误态
     record.queue.unshift({ id: randomUUID(), text: item.text, at: this.now().toISOString() });
     this.#drainQueue(record);
     return toPublicSession(record);
@@ -544,8 +551,11 @@ export class SchedulingSessionManager {
         });
       }
       // 被打断的轮次收尾后，给适配器一段取消窗口再续跑队列；正常结束的轮次立即续跑
-      if (interrupted) setTimeout(() => this.#drainQueue(record), this.settleMs);
-      else this.#drainQueue(record);
+      if (interrupted) {
+        setTimeout(() => {
+          try { this.#drainQueue(record); } catch (error) { record.status = 'error'; record.error = safeMessage(error); }
+        }, this.settleMs);
+      } else this.#drainQueue(record);
     };
     record.promptTurn.then(response => {
       const interrupted = response?.stopReason && response.stopReason !== 'end_turn';

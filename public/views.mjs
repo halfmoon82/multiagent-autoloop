@@ -107,7 +107,7 @@ export function renderSchedulingSessions(sessions = [], queueEditing = null, art
     if (!closed) {
       const form = el('form', 'session-message');
       form.dataset.action = 'session-message'; form.dataset.id = session.id;
-      // 排队消息与输入框一体（与 Codex 原生一致：芯片排在输入框上方，暂停时显示恢复/清空条）
+      // 排队消息与输入框一体（与 Codex 原生一致：芯片排在输入框上方，头部提供整批清空）
       if (session.queued?.length) {
         const queueList = el('div', 'queue-list');
         const queueHead = el('div', 'queue-head');
@@ -133,7 +133,7 @@ export function renderSchedulingSessions(sessions = [], queueEditing = null, art
             chip.type = 'button';
             chip.dataset.action = 'queue-steer';
             chip.dataset.id = `${session.id}:${item.id}`;
-            chip.title = '立即发送这条（steer in：打断当前轮马上送达）';
+            chip.title = '立即发送这条（steer in：注入当前轮，agent 马上看到）';
             const ops = el('span', 'queue-ops');
             ops.append(
               queueOp('编辑', 'queue-edit', `${session.id}:${item.id}`, `编辑排队消息 ${item.text}`),
