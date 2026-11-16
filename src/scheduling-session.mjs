@@ -213,7 +213,7 @@ export class SchedulingSessionManager {
     const acpClient = client({ name: 'autoloop-console' })
       .onRequest(methods.client.session.requestPermission, async request => {
         touch('permission');
-        return { outcome: this.#decidePermission(request?.params) };
+        return { outcome: this.#decidePermission(request?.params, record) };
       })
       .onNotification(methods.client.session.update, notification => {
         const update = notification?.params?.update || {};
@@ -312,7 +312,11 @@ export class SchedulingSessionManager {
     if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
     const item = record.queue.find(entry => entry.id === String(itemId || ''));
     if (!item) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
-    item.text = this.#validatePrompt(String(text ?? '').trim());
+    const next = this.#validatePrompt(String(text ?? '').trim());
+    if ((record.kind || 'scheduling') === 'design' && next.startsWith('/')) {
+      throw new SchedulingSessionError('设计会话不接受斜杠命令（防止切换模式），请用自然语言描述需求', { status: 400 });
+    }
+    item.text = next;
     item.at = this.now().toISOString();
     record.updatedAt = this.now().toISOString();
     return toPublicSession(record);
@@ -428,8 +432,10 @@ export class SchedulingSessionManager {
     if (!planOptions.some(option => option.id === 'collaboration_mode' && option.currentValue === 'plan')) throw new Error('无法将协作模式设置为 plan');
   }
 
-  #decidePermission(params) {
+  #decidePermission(params, record = null) {
     const toolCall = params?.toolCall || {};
+    // 设计会话不得直接写项目：权限层全量取消作为 ACP read-only 之外的第二道防线（含 switch_mode 等非 edit 请求）。
+    if ((record?.kind || 'scheduling') === 'design') return { outcome: 'cancelled' };
     if (!this.writableDir || toolCall.kind !== 'edit') return { outcome: 'cancelled' };
     const locations = Array.isArray(toolCall.locations) ? toolCall.locations : [];
     if (!locations.length) return { outcome: 'cancelled' };
@@ -507,6 +513,16 @@ export class SchedulingSessionManager {
       }
       record.updatedAt = this.now().toISOString();
       this.#persist(record);
+      if ((record.kind || 'scheduling') === 'design' && !error && !interrupted) {
+        // 契约：每轮结束后重复 set 并读取 configOptions 核验仍为 read-only + plan，不一致置 error。
+        this.#applyDesignGuards(record).catch(guardError => {
+          if (record.status === 'error' || record.closed) return;
+          record.status = 'error';
+          record.error = `设计会话模式漂移：${safeMessage(guardError)}`;
+          record.updatedAt = this.now().toISOString();
+          this.#persist(record);
+        });
+      }
       this.#drainQueue(record);
     };
     record.promptTurn.then(response => {
