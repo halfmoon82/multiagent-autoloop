@@ -483,6 +483,30 @@ test('removeQueued drops only the chosen queued message and unknown ids are 404'
   await assert.rejects(() => manager.removeQueued(id, 'whatever'), error => error.status === 404 && /不存在/.test(error.message), 'a closed session is destroyed, so removal must be a plain 404');
 });
 
+test('updateQueued edits in place, moveQueued reorders within bounds, clearQueued empties the queue', async () => {
+  const fake = controlledAdapter();
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
+  await waitFor(() => fake.prompts.length === 1);
+  const id = started.id;
+  await manager.send(id, '第一条');
+  await manager.send(id, '第二条');
+  await manager.send(id, '第三条');
+  const listed = manager.list()[0];
+  const edited = await manager.updateQueued(id, listed.queued[1].id, '第二条（改）');
+  assert.deepEqual(edited.queued.map(item => item.text), ['第一条', '第二条（改）', '第三条'], 'updateQueued must edit the queued message in place');
+  await assert.rejects(() => manager.updateQueued(id, 'no-such-item', 'x'), error => error.status === 404, 'editing an unknown item must be 404');
+  const moved = await manager.moveQueued(id, edited.queued[2].id, 'up');
+  assert.deepEqual(moved.queued.map(item => item.text), ['第一条', '第三条', '第二条（改）'], 'moveQueued up must swap with the previous item');
+  const noop = await manager.moveQueued(id, moved.queued[0].id, 'up');
+  assert.deepEqual(noop.queued.map(item => item.text), ['第一条', '第三条', '第二条（改）'], 'moving the head up must be a no-op');
+  const cleared = await manager.clearQueued(id);
+  assert.equal(cleared.queuedCount, 0, 'clearQueued must empty the queue');
+  fake.endTurn(fake.prompts[0]);
+  await waitFor(() => manager.list()[0].status === 'idle');
+  await manager.close(id);
+});
+
 test('steer in delivers the chosen queued message immediately and keeps the remaining queue order', async () => {
   const fake = controlledAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
@@ -507,26 +531,33 @@ test('steer in delivers the chosen queued message immediately and keeps the rema
   await manager.close(id);
 });
 
-test('interrupt cancels the running turn and delivers the new message immediately after', async () => {
+test('interrupt is a pure stop that pauses the queue like Codex; resume delivers in order', async () => {
   const fake = controlledAdapter();
   const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
-
-  const interrupted = await manager.send(id, '方向变了，停下', { interrupt: true });
-  assert.equal(interrupted.queuedCount, 1, 'interrupt message is delivered ahead of the queue');
+  await manager.send(id, '排队一');
+  await manager.send(id, '排队二');
+  // 与 Codex 原生 Stop 一致：打断不携带文本、不动队列，队列转为暂停态，草稿留在客户端
+  const interrupted = await manager.send(id, '', { interrupt: true });
+  assert.equal(interrupted.queuePaused, true, 'interrupt must pause the queue');
+  assert.equal(interrupted.queuedCount, 2, 'interrupt must not consume or inject queue items');
   assert.ok(fake.requests.some(request => request.method === 'session/cancel'), 'interrupt must call session/cancel');
-  assert.equal(fake.prompts.length, 1, 'no new prompt before the cancelled turn settles');
-
   fake.endTurn(fake.prompts[0]);
-  await waitFor(() => fake.prompts.length === 2);
-  assert.match(fake.prompts[1].params.prompt[0].text, /方向变了，停下/);
-  fake.endTurn(fake.prompts[1]);
   await waitFor(() => manager.list()[0].status === 'idle');
-  const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 6)}`);
-  assert.deepEqual(transcript, ['user:你是 Mul', 'user:方向变了，停', 'agent:本轮回复'], 'an interrupted turn must not record a partial agent reply');
+  assert.equal(fake.prompts.length, 1, 'a paused queue must not drain after the turn stops');
+  const resumed = await manager.resumeQueue(id);
+  assert.equal(resumed.queuePaused, false, 'resume must clear the paused state');
+  await waitFor(() => fake.prompts.length === 2);
+  assert.match(fake.prompts[1].params.prompt[0].text, /排队一/);
+  fake.endTurn(fake.prompts[1]);
+  await waitFor(() => fake.prompts.length === 3);
+  assert.match(fake.prompts[2].params.prompt[0].text, /排队二/);
+  fake.endTurn(fake.prompts[2]);
+  await waitFor(() => manager.list()[0].status === 'idle');
   await manager.close(id);
+  await assert.rejects(() => manager.resumeQueue(id), error => error.status === 404, 'resuming a destroyed session must be 404');
 });
 
 test('interrupt with an empty text stops the turn without sending a new prompt', async () => {
@@ -568,14 +599,12 @@ test('a cancel-induced prompt rejection settles as interrupted, not error, and t
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
 
-  await manager.send(id, '别跑了', { interrupt: true });
-  await waitFor(() => fake.prompts.length === 2, 1000);
-  assert.match(fake.prompts[1].params.prompt[0].text, /别跑了/);
-  fake.endTurn(fake.prompts[1]);
+  await manager.send(id, '别跑了', { interrupt: true }); // 纯停止：文本被忽略，队列转暂停
   await waitFor(() => manager.list()[0].status === 'idle');
   assert.equal(manager.list()[0].error, null, 'a cancel-induced rejection must not mark the session as error');
+  assert.equal(manager.list()[0].queuePaused, true, 'the queue must stay paused after a cancel-induced stop');
   const transcript = manager.list()[0].messages.map(message => `${message.role}:${message.text.slice(0, 4)}`);
-  assert.deepEqual(transcript, ['user:你是 M', 'user:别跑了', 'agent:本轮回复'], 'the interrupted turn leaves no partial agent reply and the interrupt message is delivered');
+  assert.deepEqual(transcript, ['user:你是 M'], 'the interrupted turn leaves no partial agent reply and no phantom interrupt message');
   await manager.close(id);
 });
 

@@ -78,6 +78,7 @@ function toPublicSession(record) {
     messages: record.messages.map(message => ({ ...message })),
     liveText: record.liveText,
     busy: record.status === 'running',
+    queuePaused: !!record.queuePaused,
     queuedCount: (record.queue || []).filter(item => item !== null).length,
     queued: (record.queue || []).filter(item => item !== null).map(item => ({ id: item.id, text: item.text, at: item.at })),
     createdAt: record.createdAt,
@@ -259,8 +260,10 @@ export class SchedulingSessionManager {
     // 运行中/初始化中：与 Codex 输入体验一致——默认排队跟进，interrupt 取消当前轮。
     if (interrupt) {
       if (record.status === 'initializing') throw new SchedulingSessionError('会话初始化中，请稍候再试（打断只在运行中可用）', { status: 409 });
-      record.queue.unshift(raw ? { id: randomUUID(), text: raw, at: this.now().toISOString() } : null); // null = 仅停止本轮，不发新消息
-      record.interruptRequested = true;
+      // 与 Codex 原生 Stop 一致：只停止本轮并让队列保持暂停；不带文本、不动队列，
+      // 输入框草稿留在客户端，用户可编辑队列或点「恢复队列」继续跟进
+      record.queuePaused = true;
+      record.interruptRequested = true; // cancel 引发的 prompt 拒绝按中断收尾，不算错误
       record.updatedAt = this.now().toISOString();
       try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
       return toPublicSession(record);
@@ -269,6 +272,52 @@ export class SchedulingSessionManager {
     const pendingMessages = record.queue.filter(item => item !== null).length;
     if (pendingMessages >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
     record.queue.push({ id: randomUUID(), text: message, at: this.now().toISOString() });
+    record.updatedAt = this.now().toISOString();
+    return toPublicSession(record);
+  }
+
+  async updateQueued(id, itemId, text) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    const item = record.queue.find(entry => entry !== null && entry.id === String(itemId || ''));
+    if (!item) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
+    item.text = this.#validatePrompt(String(text ?? '').trim());
+    item.at = this.now().toISOString();
+    record.updatedAt = this.now().toISOString();
+    return toPublicSession(record);
+  }
+
+  async moveQueued(id, itemId, direction) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    const index = record.queue.findIndex(entry => entry !== null && entry.id === String(itemId || ''));
+    if (index === -1) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
+    const delta = direction === 'up' ? -1 : direction === 'down' ? 1 : null;
+    if (delta === null) throw new SchedulingSessionError('方向无效（只支持 up/down）', { status: 400 });
+    const target = index + delta;
+    if (target >= 0 && target < record.queue.length) [record.queue[index], record.queue[target]] = [record.queue[target], record.queue[index]];
+    record.updatedAt = this.now().toISOString();
+    return toPublicSession(record);
+  }
+
+  async resumeQueue(id) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    record.queuePaused = false;
+    record.updatedAt = this.now().toISOString();
+    this.#drainQueue(record);
+    return toPublicSession(record);
+  }
+
+  async clearQueued(id) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
+    record.queue = [];
+    record.queuePaused = false;
     record.updatedAt = this.now().toISOString();
     return toPublicSession(record);
   }
@@ -294,9 +343,12 @@ export class SchedulingSessionManager {
     const index = record.queue.findIndex(item => item !== null && item.id === String(itemId || ''));
     if (index === -1) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
     const [item] = record.queue.splice(index, 1);
+    record.queuePaused = false; // sendNow 语义：被 steer 的消息立即送达，队列恢复跟进
+    record.queue.unshift({ id: randomUUID(), text: item.text, at: this.now().toISOString() });
     record.updatedAt = this.now().toISOString();
-    // steer in = 立即追加发送：以该消息为内容打断当前轮，剩余队列顺序不变
-    return this.send(record.id, item.text, { interrupt: true });
+    try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
+    this.#drainQueue(record);
+    return toPublicSession(record);
   }
 
   async close(id) {
@@ -422,7 +474,7 @@ export class SchedulingSessionManager {
   }
 
   #drainQueue(record) {
-    while (record.status === 'idle' && record.queue.length) {
+    while (record.status === 'idle' && record.queue.length && !record.queuePaused) {
       const next = record.queue.shift();
       if (next === null) continue; // 纯打断标记：消费后继续排后续消息
       this.#pushMessage(record, 'user', next.text);

@@ -37,7 +37,7 @@ const schedulingSessions = {
   },
   async list() { return this.records; },
   async start({ prompt, project } = {}) {
-    const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
+    const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, queuePaused: false, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
     this.records.push(session); return session;
   },
   async removeQueued(id, itemId) {
@@ -61,9 +61,46 @@ const schedulingSessions = {
       throw error;
     }
     session.queue = (session.queue || []).filter(entry => entry.id !== itemId);
+    session.queuePaused = false;
+    session.queue.unshift({ id: `q${++this.queueSeq}`, text: item.text, at: '2026-11-14T00:03:00Z' });
     session.queued = session.queue;
     session.queuedCount = session.queue.length;
-    return this.send(id, item?.text || '', { interrupt: true });
+    session.sendCalls.push({ text: item.text, interrupt: true, steer: true });
+    return session;
+  },
+  async updateQueued(id, itemId, text) {
+    const session = this.records.find(item => item.id === id);
+    if (!session) throw new Error('调度会话不存在');
+    session.editCalls = session.editCalls || [];
+    session.editCalls.push({ itemId, text });
+    const entry = (session.queue || []).find(item => item.id === itemId);
+    if (!entry) { const error = new Error('队列消息不存在或已送达'); error.status = 404; throw error; }
+    entry.text = text;
+    return session;
+  },
+  async moveQueued(id, itemId, direction) {
+    const session = this.records.find(item => item.id === id);
+    if (!session) throw new Error('调度会话不存在');
+    const index = (session.queue || []).findIndex(item => item.id === itemId);
+    if (index === -1) { const error = new Error('队列消息不存在或已送达'); error.status = 404; throw error; }
+    const target = index + (direction === 'up' ? -1 : 1);
+    if (target >= 0 && target < session.queue.length) [session.queue[index], session.queue[target]] = [session.queue[target], session.queue[index]];
+    session.queued = session.queue;
+    return session;
+  },
+  async resumeQueue(id) {
+    const session = this.records.find(item => item.id === id);
+    if (!session) throw new Error('调度会话不存在');
+    session.resumeCalls = (session.resumeCalls || 0) + 1;
+    session.queuePaused = false;
+    return session;
+  },
+  async clearQueued(id) {
+    const session = this.records.find(item => item.id === id);
+    if (!session) throw new Error('调度会话不存在');
+    session.clearCalls = (session.clearCalls || 0) + 1;
+    session.queue = []; session.queued = []; session.queuedCount = 0; session.queuePaused = false;
+    return session;
   },
   async send(id, text, { interrupt = false } = {}) {
     const session = this.records.find(item => item.id === id);
@@ -78,7 +115,7 @@ const schedulingSessions = {
       session.updatedAt = '2026-11-14T00:03:00Z';
       return session;
     }
-    if (interrupt) { session.queue = (text ? [{ id: `q${++this.queueSeq}`, text, at: '2026-11-14T00:03:00Z' }] : []).concat(session.queue || []); session.queued = session.queue; session.queuedCount = session.queue.length; session.busy = false; session.status = 'idle'; session.statusText = '待命'; }
+    if (interrupt) { session.queuePaused = true; session.busy = false; session.status = 'idle'; session.statusText = '待命'; }
     if (text) {
       session.messages.push({ role: 'user', text, at: '2026-11-14T00:03:00Z' });
       session.messages.push({ role: 'agent', text: `收到：${text}`, at: '2026-11-14T00:03:05Z' });
@@ -335,10 +372,10 @@ try {
   for (let i = 0; i < 50 && !record.sendCalls?.some(call => call.interrupt); i++) await page.waitForTimeout(200); // 等打断请求送达（含注入延迟）
   assert.ok(record.sendCalls.some(call => call.interrupt), 'interrupt request must reach the session');
   await page.waitForTimeout(2600); // 等响应返回 + 两轮刷新
-  assert.deepEqual(record.sendCalls.at(-1), { text: '方向变了，停下', interrupt: true }, '打断按钮必须以 interrupt 立即送达');
-  assert.ok((await sessionCard.innerText()).includes('方向变了，停下'), 'interrupt message must reach the conversation immediately');
+  assert.deepEqual(record.sendCalls.at(-1), { text: '', interrupt: true }, '打断必须是纯停止：不带草稿文本，Codex 原生 Stop 语义');
   assert.equal(await page.evaluate(node => node.isConnected, draftNode), false, 'card must rebuild during the slow interrupt request (click focuses the button, so the draft does not pin it)');
-  assert.equal(await msgInput.inputValue(), '方向变了，停下', 'interrupt must return the just-sent message to the LIVE input for re-editing');
+  assert.equal(await msgInput.inputValue(), '方向变了，停下', 'a pure stop must leave the draft untouched for re-editing');
+  assert.equal(record.queuePaused, true, 'interrupt must pause the queue like Codex');
   schedulingSessions.delayMs = 0;
   record.status = 'running'; record.busy = true; record.statusText = '运行中';
   await msgInput.fill(''); // 清空草稿解冻卡片，让运行中状态与打断按钮渲染出来
@@ -346,7 +383,7 @@ try {
   await page.getByRole('button', { name: '打断', exact: true }).focus();
   await page.keyboard.press('Enter'); // 键盘可达性：按钮上的回车保持原生语义，必须是打断而不是发送
   await page.waitForTimeout(300);
-  assert.deepEqual(record.sendCalls.at(-1), { text: '', interrupt: true }, 'Enter on the interrupt button must trigger interrupt, not a queued send');
+  assert.deepEqual(record.sendCalls.at(-1), { text: '', interrupt: true }, 'Enter on the interrupt button must be a pure stop, not a queued send');
 
   // 队列可见、可 steer in（立即追加发送）、可单条删除（与 Codex 输入体验一致）
   record.status = 'running'; record.busy = true; record.statusText = '运行中';
@@ -364,14 +401,44 @@ try {
   await chipTwo.waitFor({ timeout: 5000 });
   await chipTwo.click(); // steer in：立即追加发送（打断当前轮马上送达这条）
   await page.waitForTimeout(600);
-  assert.deepEqual(record.sendCalls.at(-1), { text: '队列消息二', interrupt: true }, 'steer in must deliver the queued message immediately like an interrupt');
+  assert.equal(record.sendCalls.at(-1).steer, true, 'steer in must call the steer API');
+  assert.equal(record.sendCalls.at(-1).interrupt, true, 'steer in must deliver the queued message immediately like an interrupt');
   assert.deepEqual(record.queue.map(item => item.text), ['队列消息二', '队列消息一'], 'steered-in message must jump to the queue head for immediate delivery, remaining order kept');
   assert.equal(await queueInput.inputValue(), '', 'steer in must not touch the input draft');
-  await page.getByRole('button', { name: /删除队列消息 队列消息一/ }).click(); // 单条删除
+  // 编辑（行内原位编辑，与 Codex queue_edit 一致）
+  await page.getByRole('button', { name: /编辑排队消息 队列消息一/ }).click();
+  const editor = page.locator('.queue-editor');
+  await editor.fill('队列消息一（改）');
+  await page.getByRole('button', { name: /保存编辑/ }).click();
   await page.waitForTimeout(600);
-  assert.deepEqual(record.queue.map(item => item.text), ['队列消息二'], 'deleted queued message must leave the queue');
+  assert.equal(record.editCalls.at(-1).text, '队列消息一（改）', 'saving the inline editor must update the queued message');
+  assert.deepEqual(record.queue.map(item => item.text), ['队列消息二', '队列消息一（改）']);
+  // 上移（与 Codex queue_reorder 一致）
+  await page.getByRole('button', { name: /上移排队消息 队列消息一/ }).click();
+  await page.waitForTimeout(600);
+  assert.deepEqual(record.queue.map(item => item.text), ['队列消息一（改）', '队列消息二'], 'moving a queued message up must swap order');
+  // 单条删除
+  await page.getByRole('button', { name: /删除队列消息 队列消息二/ }).click(); // 单条删除
+  await page.waitForTimeout(600);
+  assert.deepEqual(record.queue.map(item => item.text), ['队列消息一（改）'], 'deleted queued message must leave the queue');
   assert.equal(record.removeCalls.length, 1, 'only the explicit deletion may call the remove API');
-  assert.equal(record.steerCalls.length, 1, 'steer in must call the steer API');
+  // 打断 = 纯停止 + 队列暂停；恢复队列（与 Codex queue_resume / pausedQueueSubmit 一致）
+  await page.getByRole('button', { name: '打断', exact: true }).click();
+  await page.waitForTimeout(600);
+  assert.equal(record.queuePaused, true, 'interrupt must pause the queue');
+  await page.getByRole('button', { name: '恢复队列', exact: true }).click();
+  await page.waitForTimeout(600);
+  assert.equal(record.queuePaused, false, 'resume must clear the paused state');
+  assert.equal(record.resumeCalls, 1, 'resume must call the resume API');
+  // 暂停时也可整批清空（打断后会话回待命，需重新置为运行中才能再次打断）
+  record.status = 'running'; record.busy = true; record.statusText = '运行中';
+  await page.waitForTimeout(2500);
+  await page.getByRole('button', { name: '打断', exact: true }).click();
+  await page.waitForTimeout(600);
+  await page.getByRole('button', { name: '清空队列', exact: true }).click(); // 确认弹窗由全局 dialog handler 接受
+  await page.waitForTimeout(600);
+  assert.equal(record.queue.length, 0, 'clear must empty the queue');
+  assert.equal(record.clearCalls, 1, 'clear must call the clear API');
 
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
