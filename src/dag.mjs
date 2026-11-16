@@ -39,10 +39,13 @@ function contractError(node) {
 function structuralErrors(nodes) {
   const errors = [];
   const ids = nodes.map(node => text(node?.id));
+  if (!nodes.length) errors.push('DAG 至少包含一个节点');
+  // 首尾空白会让 trim 后的 id 通过格式校验却与 depends_on 引用对不上，导致边断开、环检测失效，必须显式拒绝。
+  if (nodes.some((node, index) => typeof node?.id === 'string' && node.id !== ids[index])) errors.push('节点 id 首尾不能包含空白字符');
   if (new Set(ids).size !== ids.length) errors.push('DAG 节点 id 必须唯一');
   for (const id of ids) if (!ID.test(id)) errors.push(`节点 id 必须是 kebab-case ASCII：${id || '空'}`);
   const known = new Set(ids);
-  const graph = Object.fromEntries(nodes.map(node => [node.id, (node.depends_on || []).map(text)]));
+  const graph = Object.fromEntries(nodes.map((node, index) => [ids[index], (node.depends_on || []).map(text)]));
   for (const node of nodes) {
     for (const dependency of node.depends_on || []) {
       if (!known.has(text(dependency))) errors.push(`节点 ${node.id} 有未知依赖：${dependency}`);

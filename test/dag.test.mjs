@@ -61,3 +61,19 @@ test('parallelShape and dependencyGraph expose waves, width, critical path and s
   assert.equal(dependencyGraphDigest(graph), dependencyGraphDigest(dependencyGraph(nodes)));
   assert.throws(() => dependencyGraph([]), /没有节点/);
 });
+
+test('validateDag rejects whitespace-padded ids that would disconnect the graph and hide cycles', () => {
+  // 首尾空白 trim 后通过 kebab-case 校验，但建图必须用 trim 后的 id，否则依赖边断开、环检测失效。
+  const result = validateDag([
+    { ...node('a', { id: ' a', depends_on: ['b'] }), contract: node('a').contract },
+    node('b', { depends_on: ['a'] }),
+  ]);
+  assert.equal(result.valid, false, '带首尾空白的节点 id 必须被拒绝');
+  assert.match(result.errors.join('\n'), /空白/);
+});
+
+test('validateDag rejects an empty node list instead of passing vacuously', () => {
+  const result = validateDag([]);
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join('\n'), /节点/);
+});

@@ -28,6 +28,7 @@ function digest(value) {
 
 function validateDecisions(plan, productSpec) {
   for (const decision of [...(plan.decisions || []), ...(productSpec.decisions || [])]) {
+    if (!decision || typeof decision !== 'object') throw new Error('PRD 产品决策记录损坏：存在空决策项');
     if (decision.status !== 'approved' || !String(decision.selected ?? '').trim()) {
       throw new Error(`PRD 仍有未闭合产品决策：${decision.question || decision.id || '未命名决策'}`);
     }
@@ -36,9 +37,11 @@ function validateDecisions(plan, productSpec) {
 
 export function loadVibePlan({ projectRoot, planId }) {
   if (!PLAN_ID.test(String(planId || ''))) throw new Error('planId 必须是 kebab-case ASCII');
-  const root = path.resolve(String(projectRoot || ''));
+  if (!String(projectRoot ?? '').trim()) throw new Error('projectRoot 不能为空');
+  const root = path.resolve(String(projectRoot));
   const directory = path.join(root, '.vibe', 'plans', planId);
   const plan = readJson(path.join(directory, 'plan.json'));
+  if (plan.plan_id && plan.plan_id !== planId) throw new Error(`plan.json 的 plan_id（${plan.plan_id}）与请求的 planId（${planId}）不一致`);
   const nodes = readJson(path.join(directory, 'nodes.json'));
   const productSpec = readJson(path.join(directory, 'product-spec.input.json'));
   if (!Array.isArray(nodes)) throw new Error('vibe nodes.json 必须是节点数组');
@@ -57,6 +60,12 @@ export function createPlanDigest({ productSpec, plan, nodes, authorizationSnapsh
 
 export function createRunSnapshot(loaded, { authorizationSnapshot, maxParallel = 5 } = {}) {
   if (!authorizationSnapshot || !Array.isArray(authorizationSnapshot.actions)) throw new Error('缺少执行授权快照');
+  // 契约底线：快照层即拒绝部署/发布/凭据/对外通信类动作，与后续 API 路由白名单互为双保险。
+  const FORBIDDEN_ACTION = /deploy|release|credential|secret|token|external|network|publish/i;
+  for (const action of authorizationSnapshot.actions) {
+    const name = String(action?.id || action || '');
+    if (FORBIDDEN_ACTION.test(name)) throw new Error(`授权快照包含永远禁止的动作：${name}`);
+  }
   if (!Number.isInteger(maxParallel) || maxParallel < 1 || maxParallel > 5) throw new Error('DAG 最大并行必须在 1 到 5 之间');
   const planDigest = createPlanDigest({ ...loaded, authorizationSnapshot });
   return {
