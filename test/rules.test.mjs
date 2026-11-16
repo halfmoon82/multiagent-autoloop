@@ -44,3 +44,29 @@ test('a failed draft check leaves the real rules byte-for-byte unchanged', async
   await assert.rejects(saveRule(config, input, null, async () => { throw new Error('cron 无效'); }), /cron 无效/);
   assert.deepEqual(readFileSync(config.rulesFile), before);
 });
+
+test('rejects a write-intent prompt on a read-only Agent (契约错配防护)', async () => {
+  const { config } = fixture();
+  const before = readFileSync(config.rulesFile, 'utf8');
+  await assert.rejects(
+    saveRule(config, { ...input, name: '门禁登记', prompt: '收到授权后把授权结论写入 state.nodes[node]' }, null, async () => {}),
+    /只读/,
+  );
+  await assert.rejects(
+    saveRule(config, { ...input, name: '台账登记', prompt: '把授权登记进 mtexec-serial.json 台账' }, null, async () => {}),
+    /只读/,
+  );
+  assert.equal(readFileSync(config.rulesFile, 'utf8'), before);
+});
+
+test('write-intent lint has no false positives on prose mentions or writable Agents', async () => {
+  const { config } = fixture();
+  await saveRule(config, { ...input, name: '日报', prompt: '生成日报' }, null, async () => {});
+  await saveRule(config, { ...input, name: '汇报', prompt: '把选择结果写进你的汇报，不要修改任何文件' }, null, async () => {});
+  const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
+  raw.agents.fullbot = { name: 'Full', worker: 'local', use: 'command', access: 'full' };
+  writeFileSync(config.rulesFile, JSON.stringify(raw));
+  await saveRule(config, { ...input, name: '可写门禁', to: 'fullbot', prompt: '把授权结论写入 state.nodes[node]' }, null, async () => {});
+  const saved = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
+  assert.equal(saved.rules.at(-1).to, 'fullbot');
+});

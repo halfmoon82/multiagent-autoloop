@@ -10,6 +10,29 @@ const text = (value, label, { optional = false } = {}) => {
   if (result.length > 20000) throw new RuleError(`${label}过长`);
   return result;
 };
+
+// 契约错配防护（2026-11-16 机制事故）：提示词要求写状态/文件却绑只读通道，运行期必死锁并反复打扰店主。
+// 只匹配明确的写意图信号，且跳过「不要/不得/禁止」等否定语境，避免误伤只读汇报类提示词。
+const WRITE_INTENT_RULES = [
+  { re: /state\.nodes/, label: '写入 state.nodes' },
+  { re: /[a-z0-9-]*-?serial\.json/, label: '写串行台账（serial.json）' },
+  { re: /(写入|写进|写回)[^。；，\n]{0,16}(state|台账|json|配置|文件)/, label: '写入状态/文件' },
+  { re: /(修改|改动)[^。；，\n]{0,12}(rules\.json|补丁)/, label: '修改规则配置/补丁' },
+  { re: /落地补丁|直接修复/, label: '落地修复' },
+];
+const NEGATED = /(不要|不得|禁止|勿|别)[^。；\n]{0,8}$/;
+export function writeIntentSignals(prompt) {
+  const signals = [];
+  for (const { re, label } of WRITE_INTENT_RULES) {
+    const match = prompt.match(re);
+    if (!match) continue;
+    const before = prompt.slice(Math.max(0, match.index - 12), match.index);
+    if (NEGATED.test(before)) continue;
+    signals.push(label);
+  }
+  return signals;
+}
+
 function ruleFrom(input) {
   const name = text(input.name, '规则名称'); if (name.length > 80) throw new RuleError('规则名称不能超过 80 字');
   const cwd = text(input.cwd, '工作目录');
@@ -45,6 +68,9 @@ export async function saveRule(config, input, existingName, check = defaultCheck
       const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
       const rule = ruleFrom(input);
       if (!raw.agents?.[rule.to]) throw new RuleError('所选 Agent 不在配置中');
+      const agentAccess = raw.agents[rule.to].access || 'edit';
+      const signals = agentAccess === 'read' ? writeIntentSignals(rule.prompt) : [];
+      if (signals.length) throw new RuleError(`处理说明要求${[...new Set(signals)].join('、')}，但所选 Agent 是只读通道，运行期必然写不进去。请改选可写 Agent（如 codex-full 或 workbuddy），或把提示词改成只读。`);
       const index = raw.rules.findIndex(item => item.name === (existingName ?? rule.name));
       if (existingName === null && index >= 0) throw new RuleError('已经有同名规则');
       if (existingName !== null && index < 0) throw new RuleError('要编辑的规则已经不存在');
