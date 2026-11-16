@@ -50,13 +50,21 @@ test('createRun 白名单：deploy/release/凭据/对外通信出现即整体拒
   assert.throws(() => store.createRun(baseInput({ confirmedActionIds: [] })), /动作/);
 });
 
-test('createRun 同项目已有活跃 run 返回 409 语义错误（code=CONFLICT），终态后允许再建', () => {
+test('createRun 同项目已有活跃 run 返回 409 语义错误（code=CONFLICT），查重键为纯 project 级', () => {
   const store = setup();
   const first = store.createRun(baseInput());
+  // 相同 planId：拒绝
   let conflict = null;
   try { store.createRun(baseInput({ nodeId: 'node-b' })); } catch (error) { conflict = error; }
   assert.ok(conflict, '同项目活跃 run 必须拒绝创建');
   assert.equal(conflict.code, 'CONFLICT');
+  // 不同 planId：同样拒绝（每项目最多一个活跃 DAG，查重不看 planId）
+  let crossPlan = null;
+  try { store.createRun(baseInput({ nodeId: 'node-c', planId: 'plan-2' })); } catch (error) { crossPlan = error; }
+  assert.ok(crossPlan, '同项目不同 planId 的第二个活跃 run 必须拒绝');
+  assert.equal(crossPlan.code, 'CONFLICT');
+  // 其他项目不受影响
+  assert.equal(store.createRun(baseInput({ project: 'demo-2' })).status, 'queued');
   store.cancel(first.runId, { reason: 'user-request' });
   const second = store.createRun(baseInput({ nodeId: 'node-b' }));
   assert.equal(second.status, 'queued');
@@ -88,12 +96,22 @@ test('状态机：unknown 不可取消；queued/claimed 可取消；unknown→ab
   assert.equal(store.getRun(other.runId).status, 'cancelled');
 });
 
+// project 级 409 后，同项目多活跃 run 只能来自同一 DAG 内的 attempt 链（quarantine/换打法重派）。
+const fillSlots = (store, project) => {
+  const ids = [store.createRun(baseInput({ project })).runId];
+  while (ids.length < MAX_SLOTS) {
+    const prev = store.getRun(ids[ids.length - 1]);
+    const needApproach = prev.attempt >= MAX_ATTEMPTS - 1;
+    ids.push(store.createAttempt(prev.runId, needApproach ? { reason: 'change-approach' } : {}).runId);
+  }
+  return ids;
+};
+
 test('claim 校验槽位 1-5 且互斥，第 6 路占用被拒绝', () => {
   const store = setup();
-  const ids = [];
-  for (let i = 0; i < MAX_SLOTS; i++) ids.push(store.createRun(baseInput({ nodeId: `n${i}`, project: 'p', planId: `plan-${i}` })).runId);
+  const ids = fillSlots(store, 'p');
   for (let i = 0; i < MAX_SLOTS; i++) store.claim(ids[i], { slot: i + 1 });
-  const sixth = store.createRun(baseInput({ nodeId: 'n6', project: 'p', planId: 'plan-6' }));
+  const sixth = store.createAttempt(ids[MAX_SLOTS - 1], { reason: 'change-approach' });
   assert.throws(() => store.claim(sixth.runId, { slot: 1 }), /槽位|占用/);
   assert.throws(() => store.claim(ids[0], { slot: 6 }), /1-5/);
   assert.equal(store.slotUsage('p'), MAX_SLOTS);
@@ -200,18 +218,14 @@ test('换打法：新 generation/attempt 的 run 创建后旧 run 晚到 advance
 
 test('槽位：unknown 超 15 分钟可隔离，隔离槽位仍占 5 路名额直到终态', () => {
   const store = setup();
-  const runs = [];
-  for (let i = 0; i < MAX_SLOTS; i++) {
-    const r = store.createRun(baseInput({ nodeId: `n${i}`, project: 'p', planId: `plan-${i}` }));
-    store.claim(r.runId, { slot: i + 1 });
-    runs.push(r.runId);
-  }
+  const runs = fillSlots(store, 'p');
+  for (let i = 0; i < MAX_SLOTS; i++) store.claim(runs[i], { slot: i + 1 });
   const now = Date.now();
   store.markUnknown(runs[0], { at: now - 16 * 60 * 1000 });
   store.quarantineSlot(runs[0]);
   assert.equal(store.getRun(runs[0]).quarantine, true);
   assert.equal(store.slotUsage('p'), MAX_SLOTS, 'quarantine 槽位仍占名额');
-  const extra = store.createRun(baseInput({ nodeId: 'nx', project: 'p', planId: 'plan-x' }));
+  const extra = store.createAttempt(runs[MAX_SLOTS - 1], { reason: 'change-approach' });
   assert.throws(() => store.claim(extra.runId, { slot: 1 }), /占用/);
 });
 

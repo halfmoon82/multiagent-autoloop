@@ -217,8 +217,10 @@ export function createRunStore({ directory } = {}) {
 
     createRun(input) {
       validateCreateInput(input);
-      const active = listRuns().find(run => run.project === input.project && run.planId === input.planId && !isTerminal(run.status));
-      if (active) throw new DagRunError('CONFLICT', `项目 ${input.project}/${input.planId} 已存在活跃 run ${active.runId}（状态 ${active.status}），409`);
+      // 活跃 run 查重键为纯 project 级（设计文档「每项目最多一个活跃 DAG」）：同项目存在任何
+      // 非终态 run 即拒绝创建，与 planId 是否相同无关；DAG 内并行/重派走 createAttempt，不受此限。
+      const active = listRuns().find(run => run.project === input.project && !isTerminal(run.status));
+      if (active) throw new DagRunError('CONFLICT', `项目 ${input.project} 已存在活跃 run ${active.runId}（planId ${active.planId}，状态 ${active.status}），每项目最多一个活跃 DAG，409`);
       const snapshot = buildAuthorizationSnapshot(input);
       return saveRun({
         schema: 1, runId: newRunId(), project: text(input.project), planId: text(input.planId),
