@@ -285,8 +285,9 @@ document.addEventListener('click', async event => {
 document.addEventListener('keydown', event => {
   if (event.key !== 'Enter' || event.target.tagName !== 'TEXTAREA' || event.isComposing) return;
   if (event.target.classList?.contains('queue-editor')) {
-    // 行内编辑队列消息（对齐 Codex queue_edit）：Enter 保存，Alt/Shift+Enter 换行
-    if (event.altKey || event.shiftKey) return;
+    // 行内编辑队列消息（对齐 Codex queue_edit）：Enter 保存，Alt/Shift+Enter 手动插换行
+    // （Chrome 不会为 Alt+Enter 插换行，与主输入框同走 insertNewline）
+    if (event.altKey || event.shiftKey) { event.preventDefault(); insertNewline(event.target); return; }
     event.preventDefault();
     event.target.closest('.queue-item')?.querySelector('button[data-action="queue-save"]')?.click();
     return;

@@ -79,8 +79,8 @@ function toPublicSession(record) {
     liveText: record.liveText,
     busy: record.status === 'running',
     queuePaused: !!record.queuePaused,
-    queuedCount: (record.queue || []).filter(item => item !== null).length,
-    queued: (record.queue || []).filter(item => item !== null).map(item => ({ id: item.id, text: item.text, at: item.at })),
+    queuedCount: (record.queue || []).length,
+    queued: (record.queue || []).map(item => ({ id: item.id, text: item.text, at: item.at })),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -269,7 +269,7 @@ export class SchedulingSessionManager {
       return toPublicSession(record);
     }
     const message = this.#validatePrompt(raw);
-    const pendingMessages = record.queue.filter(item => item !== null).length;
+    const pendingMessages = record.queue.length;
     if (pendingMessages >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
     record.queue.push({ id: randomUUID(), text: message, at: this.now().toISOString() });
     record.updatedAt = this.now().toISOString();
@@ -280,7 +280,7 @@ export class SchedulingSessionManager {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
     if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
-    const item = record.queue.find(entry => entry !== null && entry.id === String(itemId || ''));
+    const item = record.queue.find(entry => entry.id === String(itemId || ''));
     if (!item) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
     item.text = this.#validatePrompt(String(text ?? '').trim());
     item.at = this.now().toISOString();
@@ -292,7 +292,7 @@ export class SchedulingSessionManager {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
     if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
-    const index = record.queue.findIndex(entry => entry !== null && entry.id === String(itemId || ''));
+    const index = record.queue.findIndex(entry => entry.id === String(itemId || ''));
     if (index === -1) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
     const delta = direction === 'up' ? -1 : direction === 'down' ? 1 : null;
     if (delta === null) throw new SchedulingSessionError('方向无效（只支持 up/down）', { status: 400 });
@@ -340,7 +340,7 @@ export class SchedulingSessionManager {
     // 与 send(interrupt) 同一套状态前置校验：必须先拦下，避免消息已从队列摘除但发送被拒而丢失
     if (record.status === 'initializing') throw new SchedulingSessionError('会话初始化中，请稍候再试', { status: 409 });
     if (record.status === 'error') throw new SchedulingSessionError('会话处于异常状态，请关闭后重新开启', { status: 409 });
-    const index = record.queue.findIndex(item => item !== null && item.id === String(itemId || ''));
+    const index = record.queue.findIndex(item => item.id === String(itemId || ''));
     if (index === -1) throw new SchedulingSessionError('队列消息不存在或已送达', { status: 404 });
     const [item] = record.queue.splice(index, 1);
     record.queuePaused = false; // sendNow 语义：被 steer 的消息立即送达，队列恢复跟进
