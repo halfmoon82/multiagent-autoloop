@@ -8,7 +8,7 @@
 - 只建新链，不改 V6/MT/执行波等旧链、旧规则和旧 serial 文件；不改上游 Hub 内核。
 
 ## 前置门
-1. Claude Opus 5.5 只读审阅本计划，主 Agent 核实并修订，同会话复审至 P0–P2 清零；再在 feat/parallel-dag-scheduling 提交 docs/2026-11-16-parallel-dag-design.md、推送 GitHub、开 PR，按仓库流程独立 Review 和 squash 合并。计划合入不等于运行切换。
+1. Claude Opus 5.5 只读审阅本计划，主 Agent 核实并修订，同会话复审至 P0–P2 清零；再在 feat/<topic> 提交 docs/2026-11-16-parallel-dag-design.md、推送 GitHub、开 PR，按仓库流程独立 Review 和 squash 合并。计划合入不等于运行切换。
 2. 设计稿门：控制台总览、设计会话、DAG 详情、项目接入预检、执行授权范围确认五类页面；本地 HTML/CSS + PNG，桌面 1440×900、移动 390×844，附交互与空/加载/失败/阻塞状态。用户明确确认后才写任何实现代码；稿子变更重新确认。
 
 ## 原生 Codex Plan Mode + 只读沙箱

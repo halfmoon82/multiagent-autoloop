@@ -1,8 +1,8 @@
 # Autoloop 并行 DAG 计划第十轮独立复审报告
 
-复审对象：/tmp/autoloop-dag-plan-review/plan.md（R10，80 行）
+复审对象：`docs/2026-11-16-parallel-dag-design.md`（R10，80 行）
 方式：只读。核实来源：
-- 本机 Hub：/Users/macmini/Documents/Codex/2026-11-11/wo/work/autoloop-pilot.kRAgDa/state/app（下文简称 HUB/）
+- 本机 Autoloop Hub v1.8.1 安装目录（下文简称 HUB/）
 - 前九轮已核实的 codex-acp 2.6.0、vibe 5.2.7、git 2.50.1 证据
 
 本轮没有阻塞，复审完整执行。
@@ -54,5 +54,3 @@
 
 ## 结论
 **P0-P2 清零。** 第一轮到第十轮的全部 P0-P2 发现都已闭合，没有反弹。剩下 6 条 P3 建议，其中 P3-1（名称残留）和 P3-3（离线判定来源）建议在提交计划文档前顺手修正。未核实项都已在计划的测试清单或试点清单中有对应的验证安排。计划可以进入下一道门：提交 GitHub 和设计稿门。
-
-CLAUDE_DELIVERY_COMPLETE
