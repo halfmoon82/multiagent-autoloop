@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConsoleServer } from '../src/server.mjs';
@@ -12,6 +12,7 @@ function setup() {
   const root = mkdtempSync(path.join(tmpdir(), 'dispatch-api-'));
   const projectRoot = mkdtempSync(path.join(tmpdir(), 'dispatch-proj-'));
   const project = path.join(projectRoot, 'demo'); mkdirSync(path.join(project, '.git'), { recursive: true });
+  writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ rules: [] }));
   const starts = [];
   const sessions = { async start(a) { starts.push(a); return { id: 's1', status: 'running' }; }, dispose() {} };
   const dispatcher = createDispatcher({ root, sessions, git: async () => {} });
