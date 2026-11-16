@@ -67,6 +67,21 @@ export async function withStateLockAsync(config, fn, { timeoutMs = 15000, staleM
 
 export function detoursFile(config) { return path.join(config.root, 'detours.json'); }
 
+/** 控制台展示用的公开形态：保留展示字段，剥掉探测命令等运行时细节。
+ *  手改坏的单条记录返回 null，由调用方过滤——一条坏了不拖垮整个列表。 */
+export function publicDetour(detour) {
+  if (!detour || typeof detour !== 'object' || !Array.isArray(detour.rules)) return null;
+  return {
+    id: String(detour.id ?? ''), status: String(detour.status ?? ''),
+    blockedAt: String(detour.blockedAt ?? ''), ...(detour.revertedAt ? { revertedAt: detour.revertedAt } : {}),
+    blockedAgent: String(detour.blockedAgent ?? ''), ...(detour.blockedModel ? { blockedModel: detour.blockedModel } : {}),
+    evidence: String(detour.evidence ?? ''), fallbackAgent: String(detour.fallbackAgent ?? ''),
+    rules: detour.rules.map((rule) => ({ name: String(rule?.name ?? ''), originalTo: String(rule?.originalTo ?? '') })),
+    ...(detour.lastProbeAt ? { lastProbeAt: detour.lastProbeAt } : {}),
+    ...(detour.lastProbeOk !== null && detour.lastProbeOk !== undefined ? { lastProbeOk: detour.lastProbeOk } : {}),
+  };
+}
+
 /** 只读：损坏即抛错，不在只读路径上改名留档。 */
 export function readDetours(config) {
   const file = detoursFile(config);
