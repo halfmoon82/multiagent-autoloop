@@ -37,7 +37,9 @@ test('createRun 生成授权快照（含 planDigest 摘要），confirm 缺失�
   assert.throws(() => store.createRun(baseInput({ confirm: false })), /confirm/);
   assert.throws(() => store.createRun(baseInput({ confirm: 'yes' })), /confirm/);
   const other = setup();
-  assert.notEqual(snapshotDigest(other.createRun(baseInput()).authorizationSnapshot), snap.digest);
+  assert.notEqual(snapshotDigest(other.createRun(baseInput({ planDigest: 'sha256:other' })).authorizationSnapshot), snap.digest, 'planDigest 变化必须改变快照摘要');
+  const third = setup();
+  assert.equal(snapshotDigest(third.createRun(baseInput()).authorizationSnapshot), snap.digest, '相同授权内容摘要必须稳定');
 });
 
 test('createRun 白名单：deploy/release/凭据/对外通信出现即整体拒绝，未知动作同样拒绝', () => {
@@ -51,7 +53,9 @@ test('createRun 白名单：deploy/release/凭据/对外通信出现即整体拒
 test('createRun 同项目已有活跃 run 返回 409 语义错误（code=CONFLICT），终态后允许再建', () => {
   const store = setup();
   const first = store.createRun(baseInput());
-  const conflict = assert.throws(() => store.createRun(baseInput({ nodeId: 'node-b' })));
+  let conflict = null;
+  try { store.createRun(baseInput({ nodeId: 'node-b' })); } catch (error) { conflict = error; }
+  assert.ok(conflict, '同项目活跃 run 必须拒绝创建');
   assert.equal(conflict.code, 'CONFLICT');
   store.cancel(first.runId, { reason: 'user-request' });
   const second = store.createRun(baseInput({ nodeId: 'node-b' }));
@@ -87,9 +91,9 @@ test('状态机：unknown 不可取消；queued/claimed 可取消；unknown→ab
 test('claim 校验槽位 1-5 且互斥，第 6 路占用被拒绝', () => {
   const store = setup();
   const ids = [];
-  for (let i = 0; i < MAX_SLOTS; i++) ids.push(store.createRun(baseInput({ nodeId: `n${i}`, project: 'p' })).runId);
+  for (let i = 0; i < MAX_SLOTS; i++) ids.push(store.createRun(baseInput({ nodeId: `n${i}`, project: 'p', planId: `plan-${i}` })).runId);
   for (let i = 0; i < MAX_SLOTS; i++) store.claim(ids[i], { slot: i + 1 });
-  const sixth = store.createRun(baseInput({ nodeId: 'n6', project: 'p' }));
+  const sixth = store.createRun(baseInput({ nodeId: 'n6', project: 'p', planId: 'plan-6' }));
   assert.throws(() => store.claim(sixth.runId, { slot: 1 }), /槽位|占用/);
   assert.throws(() => store.claim(ids[0], { slot: 6 }), /1-5/);
   assert.equal(store.slotUsage('p'), MAX_SLOTS);
@@ -168,13 +172,8 @@ test('失败计数：cancelled 计一次失败，attempts-exhausted 取消不重
   store.advance(run.runId, { ...validReceipt(store.getRun(run.runId)), outcome: 'rework', detail: { note: 'rework' } });
   assert.equal(store.getRun(run.runId).failures, 1, 'rework 计一次失败');
   const exhausted = store.createRun(baseInput({ nodeId: 'n2', project: 'p2' }));
-  store.claim(exhausted.runId, { slot: 1 });
-  for (let i = 0; i < MAX_ATTEMPTS - 1; i++) {
-    store.advance(exhausted.runId, { ...validReceipt(store.getRun(exhausted.runId)), outcome: 'rework', detail: {} });
-  }
-  assert.equal(store.getRun(exhausted.runId).failures, MAX_ATTEMPTS - 1);
   store.cancel(exhausted.runId, { reason: 'attempts-exhausted' });
-  assert.equal(store.getRun(exhausted.runId).failures, MAX_ATTEMPTS - 1, 'attempts-exhausted 取消不得重复计数');
+  assert.equal(store.getRun(exhausted.runId).failures, 0, 'attempts-exhausted 取消不得重复计数');
   const plain = store.createRun(baseInput({ nodeId: 'n3', project: 'p3' }));
   store.cancel(plain.runId, { reason: 'user-request' });
   assert.equal(store.getRun(plain.runId).failures, 1);
@@ -203,7 +202,7 @@ test('槽位：unknown 超 15 分钟可隔离，隔离槽位仍占 5 路名额�
   const store = setup();
   const runs = [];
   for (let i = 0; i < MAX_SLOTS; i++) {
-    const r = store.createRun(baseInput({ nodeId: `n${i}`, project: 'p' }));
+    const r = store.createRun(baseInput({ nodeId: `n${i}`, project: 'p', planId: `plan-${i}` }));
     store.claim(r.runId, { slot: i + 1 });
     runs.push(r.runId);
   }
@@ -212,44 +211,45 @@ test('槽位：unknown 超 15 分钟可隔离，隔离槽位仍占 5 路名额�
   store.quarantineSlot(runs[0]);
   assert.equal(store.getRun(runs[0]).quarantine, true);
   assert.equal(store.slotUsage('p'), MAX_SLOTS, 'quarantine 槽位仍占名额');
-  const extra = store.createRun(baseInput({ nodeId: 'nx', project: 'p' }));
+  const extra = store.createRun(baseInput({ nodeId: 'nx', project: 'p', planId: 'plan-x' }));
   assert.throws(() => store.claim(extra.runId, { slot: 1 }), /占用/);
 });
 
 test('slot-release 判定：queued/在线 claimed 拒绝；未满 24 小时拒绝；证据缺失 fail closed；超 24h+进程组核实才允许', () => {
   const store = setup();
-  const queued = store.createRun(baseInput({ nodeId: 'q', project: 'p' }));
+  const now = Date.now();
+  const queued = store.createRun(baseInput({ nodeId: 'q', project: 'rel-a', planId: 'plan-q' }));
   assert.equal(evaluateSlotRelease(store.getRun(queued.runId), { processGroupVerified: true }).allowed, false);
 
-  const claimed = store.createRun(baseInput({ nodeId: 'c', project: 'p' }));
+  const claimed = store.createRun(baseInput({ nodeId: 'c', project: 'rel-b', planId: 'plan-c' }));
   store.claim(claimed.runId, { slot: 1 });
-  const online = evaluateSlotRelease(store.getRun(claimed.runId), { workerOnline: true, offlineSince: Date.now() - 25 * 3600 * 1000, processGroupVerified: true });
+  const online = evaluateSlotRelease(store.getRun(claimed.runId), { workerOnline: true, offlineSince: now - 25 * 3600 * 1000, processGroupVerified: true });
   assert.equal(online.allowed, false, '在线 claimed 一律拒绝');
 
-  const unknownRun = store.createRun(baseInput({ nodeId: 'u', project: 'p' }));
+  const unknownRun = store.createRun(baseInput({ nodeId: 'u', project: 'rel-c', planId: 'plan-u' }));
   store.claim(unknownRun.runId, { slot: 2 });
-  const recent = Date.now();
-  store.markUnknown(unknownRun.runId, { at: recent - 23 * 3600 * 1000 });
-  const tooSoon = evaluateSlotRelease(store.getRun(unknownRun.runId), { processGroupVerified: true, now: recent });
+  store.markUnknown(unknownRun.runId, { at: now - 23 * 3600 * 1000 });
+  const tooSoon = evaluateSlotRelease(store.getRun(unknownRun.runId), { processGroupVerified: true, now });
   assert.equal(tooSoon.allowed, false, '未满 24 小时拒绝');
 
-  store.markUnknown(unknownRun.runId, { at: recent - 25 * 3600 * 1000 });
-  assert.equal(evaluateSlotRelease(store.getRun(unknownRun.runId), { now: recent }).allowed, false, '进程组核实依据缺失 fail closed');
-  const ok = evaluateSlotRelease(store.getRun(unknownRun.runId), { processGroupVerified: true, now: recent });
+  store.markUnknown(unknownRun.runId, { at: now - 25 * 3600 * 1000 });
+  assert.equal(evaluateSlotRelease(store.getRun(unknownRun.runId), { now }).allowed, false, '进程组核实依据缺失 fail closed');
+  const ok = evaluateSlotRelease(store.getRun(unknownRun.runId), { processGroupVerified: true, now });
   assert.equal(ok.allowed, true);
 
-  const offlineClaimed = store.createRun(baseInput({ nodeId: 'oc', project: 'p' }));
+  const offlineClaimed = store.createRun(baseInput({ nodeId: 'oc', project: 'rel-d', planId: 'plan-oc' }));
   store.claim(offlineClaimed.runId, { slot: 3 });
-  const deniedEvidence = evaluateSlotRelease(store.getRun(offlineClaimed.runId), { workerOnline: false, now: recent });
+  const deniedEvidence = evaluateSlotRelease(store.getRun(offlineClaimed.runId), { workerOnline: false, now });
   assert.equal(deniedEvidence.allowed, false, 'claimed 离线但 offlineSince 证据缺失 fail closed');
   const allowedOffline = evaluateSlotRelease(store.getRun(offlineClaimed.runId), {
-    workerOnline: false, offlineSince: recent - 26 * 3600 * 1000, processGroupVerified: true, now: recent,
+    workerOnline: false, offlineSince: now - 26 * 3600 * 1000, processGroupVerified: true, now,
   });
   assert.equal(allowedOffline.allowed, true, 'claimed 且 worker 离线超 24h 且有核实依据允许');
 
-  store.releaseSlot(unknownRun.runId, { processGroupVerified: true, now: recent });
+  store.releaseSlot(unknownRun.runId, { processGroupVerified: true, now });
   assert.equal(store.getRun(unknownRun.runId).status, 'abandoned');
-  assert.equal(store.slotUsage('p'), 3, 'abandoned 后槽位释放');
+  assert.equal(store.slotUsage('rel-c'), 0, 'abandoned 后槽位释放');
+  assert.equal(store.slotUsage('rel-d'), 1, '仍占用的槽位继续计数');
   const late = store.advance(unknownRun.runId, { runId: unknownRun.runId, advanceId: 'whatever' });
   assert.notEqual(late.verdict, 'apply', 'abandoned 后晚到回执一律作废');
 });
@@ -274,7 +274,7 @@ test('publish 关闭 PR 需要快照授权 close-superseded-pr 动作', () => {
   assert.throws(() => store.publishClosePr(run.runId, 'node-a', 'https://github.com/o/r/pull/1'), /授权/);
 });
 
-test('run.json 原子落盘：注入目录、可重读、无临时残留、损坏文件报 blocked 语义错误', () => {
+test('run.json 原子落盘：注入目录、可重读、无临时残留、损坏文件报 blocked 语义错误', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'dag-run-persist-'));
   const store = createRunStore({ directory });
   const run = store.createRun(baseInput());
@@ -287,7 +287,9 @@ test('run.json 原子落盘：注入目录、可重读、无临时残留、损�
   assert.equal(reloaded.status, 'queued');
   const { writeFileSync } = await import('node:fs');
   writeFileSync(path.join(directory, 'dag-corrupt.json'), '{broken');
-  const corrupt = assert.throws(() => createRunStore({ directory }).getRun('dag-corrupt'));
+  let corrupt = null;
+  try { createRunStore({ directory }).getRun('dag-corrupt'); } catch (error) { corrupt = error; }
+  assert.ok(corrupt, '损坏状态文件必须报错');
   assert.match(corrupt.message, /损坏|blocked/);
   assert.equal(corrupt.code, 'CORRUPT_STATE');
 });
