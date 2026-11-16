@@ -1,0 +1,8 @@
+{
+  "plan_id": "demo-plan",
+  "version": 1,
+  "complexity_band": "complex",
+  "status": "confirmed_pending_authorization",
+  "decisions": [{"id": "d1", "question": "导出格式", "options": ["CSV", "PDF"], "selected": "CSV", "status": "approved"}],
+  "prd_path": ".vibe/plans/demo-plan/prd.md"
+}
