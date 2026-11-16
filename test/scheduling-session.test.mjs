@@ -39,6 +39,8 @@ function fakeAdapter({ askPermission = false, failInitialize = false, stderrByte
         }
       } else if (request.method === 'session/new') {
         respond(request, { sessionId: 'fake-session' });
+      } else if (request.method === 'session/set_mode') {
+        respond(request, { configOptions: [{ id: 'mode', currentValue: request.params.modeId }] });
       } else if (request.method === 'session/prompt') {
         if (stderrBytes > 0) stderr.write('x'.repeat(stderrBytes));
         if (askPermission) setTimeout(requestPermission, 0);
@@ -85,12 +87,12 @@ test('starts a Codex ACP scheduling session in the configured project and closes
   assert.equal(started.project, 'owner-alpha/demo');
   assert.equal(started.cwd, '/workspace/control-plane');
   assert.equal(started.status, 'running');
-  assert.deepEqual(fake.requests.map(request => request.method), ['initialize', 'session/new', 'session/prompt']);
+  assert.deepEqual(fake.requests.map(request => request.method), ['initialize', 'session/new', 'session/set_mode', 'session/prompt']);
   assert.equal(fake.requests[1].params.cwd, '/workspace/control-plane');
-  assert.equal(fake.requests[2].params.sessionId, 'fake-session');
-  assert.equal(fake.requests[2].params.prompt[0].type, 'text');
-  assert.match(fake.requests[2].params.prompt[0].text, /检查当前待调度事项/);
-  assert.match(fake.requests[2].params.prompt[0].text, /owner-alpha\/demo/);
+  assert.equal(fake.requests[3].params.sessionId, 'fake-session');
+  assert.equal(fake.requests[3].params.prompt[0].type, 'text');
+  assert.match(fake.requests[3].params.prompt[0].text, /检查当前待调度事项/);
+  assert.match(fake.requests[3].params.prompt[0].text, /owner-alpha\/demo/);
   assert.equal(manager.list().length, 1);
 
   await manager.close(started.id);
@@ -208,6 +210,7 @@ test('auto-approves file edits inside the writable scripts dir and cancels every
       const req = JSON.parse(line); requests.push(req);
       if (req.method === 'initialize') stdout.write(jsonLine({ jsonrpc: '2.0', id: req.id, result: { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: 'fake' } } }));
       else if (req.method === 'session/new') stdout.write(jsonLine({ jsonrpc: '2.0', id: req.id, result: { sessionId: 's-perm' } }));
+      else if (req.method === 'session/set_mode') stdout.write(jsonLine({ jsonrpc: '2.0', id: req.id, result: { configOptions: [{ id: 'mode', currentValue: req.params.modeId }] } }));
       else if (req.method === 'session/prompt') {
         stdout.write(jsonLine({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's-perm', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } } } }));
         setTimeout(() => stdout.write(jsonLine({ jsonrpc: '2.0', id: req.id, result: { stopReason: 'end_turn' } })), 5);
@@ -410,6 +413,7 @@ function controlledAdapter({ holdInitialize = false, rejectPromptOnCancel = fals
         else respond(request, initializeResult(request));
       }
       else if (request.method === 'session/new') respond(request, { sessionId: 'ctrl-session' });
+      else if (request.method === 'session/set_mode') respond(request, { configOptions: [{ id: 'mode', currentValue: request.params.modeId }] });
       else if (request.method === 'session/prompt') { prompts.push(request); turnActive = true; }
       else if (request.method === '_session/steering') {
         steers.push(request);
