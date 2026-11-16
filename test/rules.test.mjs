@@ -82,6 +82,10 @@ test('negation heuristics: only verb-adjacent prohibitions are exempt', async ()
     /只读/,
   );
   await assert.rejects(
+    saveRule(config, { ...input, name: '名词别字', prompt: '按级别写入不同的 state.nodes 记录' }, null, async () => {}),
+    /只读/,
+  );
+  await assert.rejects(
     saveRule(config, { ...input, name: '跨桥否定2', prompt: '不得延误，尽快修改 rules.json' }, null, async () => {}),
     /只读/,
   );

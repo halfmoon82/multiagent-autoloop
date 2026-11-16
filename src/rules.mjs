@@ -21,7 +21,7 @@ const WRITE_INTENT_RULES = [
   { re: /(修改|改动)[^。；，\n]{0,12}(rules\.json|补丁)/g, label: '修改规则配置/补丁' },
   { re: /落地补丁|直接修复/g, label: '落地修复' },
 ];
-const NEGATED = /(不要|不得|禁止|勿|别)$/;
+const NEGATED = /(不要|不得|禁止|勿|(?<![识级类差])别)$/;  // 「级别/类别」等名词尾字的「别」不算禁止词
 export function writeIntentSignals(prompt) {
   const signals = [];
   for (const { re, label } of WRITE_INTENT_RULES) {
