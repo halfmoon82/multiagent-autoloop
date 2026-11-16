@@ -289,7 +289,8 @@ export function createRunStore({ directory } = {}) {
         const run = getRun(runId);
         const decision = evaluateSlotRelease(run, evidence);
         if (!decision.allowed) throw new DagRunError('RELEASE_DENIED', `slot-release 被拒绝：${decision.reason}（fail closed）`);
-        const released = transition(run, 'abandoned');
+        // claimed 且 worker 离线（已通过 evaluateSlotRelease）直接 abandoned；unknown 走常规迁移表。
+        const released = run.status === 'claimed' ? { ...run, status: 'abandoned', updatedAt: iso() } : transition(run, 'abandoned');
         return saveRun({ ...released, quarantine: false, unknownSince: null });
       });
     },
