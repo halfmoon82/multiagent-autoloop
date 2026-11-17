@@ -9,7 +9,11 @@ const SUCCESS = new Set(['done', 'accepted', 'merged']);
 const msg = error => String(error?.message || error).replace(/[\r\n]+/g, ' ');
 const defaultApproach = ({ run }) => ({ reason: `第 ${run.attempt} 次失败，换模型重派`, model: 'fallback' });
 
-export function createController({ store, rootRunId, hub, rt, wip, publisher, now = Date.now, chooseApproach = defaultApproach, baseRef = 'origin/main' } = {}) {
+// blockedEvidence({ root, nodeId, run, node }) → { blocked:boolean, detail? }（或 Boolean）。
+// 注入式：默认保守（始终仍阻塞），由运行时接线提供真实证据源（Hub 卡片/授权卡/前置节点/PR 状态）。
+const alwaysBlocked = async () => ({ blocked: true });
+
+export function createController({ store, rootRunId, hub, rt, wip, publisher, now = Date.now, chooseApproach = defaultApproach, baseRef = 'origin/main', blockedEvidence = alwaysBlocked } = {}) {
   const loadRoot = () => store.getRun(rootRunId);
   const nodeList = root => (root.nodes || []).filter(node => node.id !== ROOT_NODE);
   const latest = (root, nodeId, role) => store.listRuns()
@@ -165,6 +169,28 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     await reattempt(root, st, id, role, reason, Boolean(todo.newSlot));
   }
 
+  // 周期复查 blocked_unknown 的阻塞证据：证据消失即写入 blocked-resolved 复活待办，
+  // 由 runTodo 下一阶段以新 attempt 重派——无需 gate、无需用户介入（设计文档 67 行）。
+  async function reviewBlocked(root, st) {
+    for (const id of Object.keys(st.nodes)) {
+      const n = st.nodes[id];
+      if (n.state !== 'blocked' || n.todo) continue;
+      const run = latest(root, id, n.blockedRole || 'dev');
+      if (!run || run.status !== 'blocked_unknown') continue;
+      let decision;
+      try { decision = await blockedEvidence({ root, nodeId: id, run, node: n }); }
+      catch (error) { n.lastError = `复查阻塞证据失败：${msg(error)}`; continue; }
+      const blocked = typeof decision === 'boolean' ? decision : decision?.blocked;
+      if (blocked === false) {
+        const detail = typeof decision === 'object' && decision ? (decision.detail ?? decision.evidence ?? '') : '';
+        n.todo = {
+          kind: 'revive', reason: 'blocked-resolved', role: n.blockedRole || 'dev',
+          evidence: String(detail).slice(0, 500), at: now(), auto: true,
+        };
+      }
+    }
+  }
+
   async function dispatchReady(root, st) {
     const view = nodeList(root).map(node => ({ ...node, status: st.nodes[node.id].state === 'accepted' ? 'done' : st.nodes[node.id].state === 'pending' ? 'pending' : 'running' }));
     if (!validateDag(view).valid) return;
@@ -220,6 +246,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         if (root.publish?.cancelRequested) await cancelStep(root, st);
         else {
           for (const id of Object.keys(st.nodes)) { try { await advanceNode(root, st, id); st.nodes[id].lastError = null; } catch (error) { st.nodes[id].lastError = msg(error); } }
+          try { await reviewBlocked(root, st); } catch (error) { st.lastError = msg(error); }
           for (const id of Object.keys(st.nodes)) if (st.nodes[id].todo) { try { await runTodo(root, st, id); } catch (error) { st.nodes[id].lastError = msg(error); } }
           try { await dispatchReady(root, st); } catch (error) { st.lastError = msg(error); }
           if (Object.values(st.nodes).length && Object.values(st.nodes).every(n => n.state === 'accepted')) store.finishRoot(root.runId, 'done');
