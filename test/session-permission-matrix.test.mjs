@@ -146,6 +146,15 @@ for (const kind of ['scheduling', 'normal']) {
   });
 }
 
+test('session fails closed when the mode read-back does not match the requested sandbox mode', async () => {
+  const e = env(); const fake = fakeAcp({ modeMismatch: true });
+  const manager = new SchedulingSessionManager({ cwd: e.project, adapterPath: '/fixed/acp.js', spawnFn: () => fake.child, writableDir: e.scripts, archiveRoot: e.home, userCodexHome: e.userCodex });
+  await assert.rejects(() => manager.start({ kind: 'scheduling', project: e.project, prompt: '开始' }), /无法将会话设置为 read-only 模式/);
+  assert.equal(fake.requests.some(r => r.method === 'session/prompt'), false);
+  assert.equal(manager.list().length, 0);
+  manager.dispose();
+});
+
 // ---- 普通会话分支纪律：作为独立提示块送达，用户消息保持逐字 ----
 test('normal session delivers branch discipline as a separate prompt block while the user message stays verbatim', async () => {
   const e = env(); const fake = fakeAcp();
