@@ -71,7 +71,7 @@ async function waitFor(predicate, timeout = 500) {
 
 test('starts a Codex ACP scheduling session in the configured project and closes it cleanly', async () => {
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({
+  const manager = new SchedulingSessionManager({ hubScheduling: false,
     cwd: '/workspace/control-plane',
     adapterPath: '/fixed/codex-acp.js',
     spawnFn: (command, args, options) => {
@@ -105,7 +105,7 @@ test('starts a Codex ACP scheduling session in the configured project and closes
 
 test('keeps behavioral guardrails inline and routes console docs through read_console_doc', async () => {
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   await manager.start({ project: '/workspace/demo' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
   const text = fake.requests.find(request => request.method === 'session/prompt').params.prompt[0].text;
@@ -133,7 +133,7 @@ test('keeps behavioral guardrails inline and routes console docs through read_co
 
 test('prompt stays slim: no doc injection parameters are accepted or required', async () => {
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   await manager.start({ project: '/workspace/demo' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
   const text = fake.requests.find(request => request.method === 'session/prompt').params.prompt[0].text;
@@ -153,7 +153,7 @@ test('starts the session inside the project repo and falls back to the console c
   mkdirSync((await import('node:path')).join(repo, '.git'), { recursive: true });
   let seenCwd;
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({
+  const manager = new SchedulingSessionManager({ hubScheduling: false,
     cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js',
     spawnFn: (command, args, options) => { seenCwd = options.cwd; return fake.process; },
   });
@@ -164,7 +164,7 @@ test('starts the session inside the project repo and falls back to the console c
 
   let fallbackCwd;
   const fake2 = fakeAdapter();
-  const manager2 = new SchedulingSessionManager({
+  const manager2 = new SchedulingSessionManager({ hubScheduling: false,
     cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js',
     spawnFn: (command, args, options) => { fallbackCwd = options.cwd; return fake2.process; },
   });
@@ -175,7 +175,7 @@ test('starts the session inside the project repo and falls back to the console c
   const plainDir = mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'plain-dir-'));
   let plainCwd;
   const fake3 = fakeAdapter();
-  const manager3 = new SchedulingSessionManager({
+  const manager3 = new SchedulingSessionManager({ hubScheduling: false,
     cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js',
     spawnFn: (command, args, options) => { plainCwd = options.cwd; return fake3.process; },
   });
@@ -190,7 +190,7 @@ test('auto-approves file edits inside the writable scripts dir and cancels every
   const path = await import('node:path');
   const writableDir = mkdtempSync(path.join(tmpdir(), 'writable-'));
   const fake = fakeAdapter({ askPermission: true });
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, writableDir });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, writableDir });
   await manager.start({ prompt: '读取状态', project: 'owner-alpha/demo' });
   await waitFor(() => fake.requests.some(message => message.id === 'permission-1' && message.result));
   const denied = fake.requests.find(message => message.id === 'permission-1' && message.result);
@@ -221,7 +221,7 @@ test('auto-approves file edits inside the writable scripts dir and cancels every
       } else if (req.method === 'session/close' || req.method === 'session/cancel') stdout.write(jsonLine({ jsonrpc: '2.0', id: req.id, result: {} }));
     }
   });
-  const manager2 = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => proc, writableDir });
+  const manager2 = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => proc, writableDir });
   await manager2.start({ project: 'owner-alpha/demo' });
   const perm = { jsonrpc: '2.0', id: 'perm-in', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't1', kind: 'edit', status: 'pending', locations: [{ path: path.join(writableDir, 'scan.mjs') }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }, { optionId: 'deny', name: '拒绝', kind: 'reject_once' }] } };
   const permOut = { jsonrpc: '2.0', id: 'perm-out', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't2', kind: 'edit', status: 'pending', locations: [{ path: '/etc/crontab' }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }] } };
@@ -249,7 +249,7 @@ test('auto-approves file edits inside the writable scripts dir and cancels every
 
 test('cancels ACP permission requests instead of approving them from the console', async () => {
   const fake = fakeAdapter({ askPermission: true });
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '读取调度状态', project: 'owner-alpha/demo' });
   await waitFor(() => fake.requests.some(message => message.id === 'permission-1' && message.result));
   const permissionResponse = fake.requests.find(message => message.id === 'permission-1' && message.result);
@@ -262,7 +262,7 @@ test('cancels ACP permission requests instead of approving them from the console
 });
 
 test('enforces concurrency and prompt size without exposing process control to the browser', async () => {
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, maxSessions: 1 });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, maxSessions: 1 });
   await manager.start({ prompt: '第一条', project: 'owner-alpha/demo' });
   await assert.rejects(manager.start({ prompt: '第二条', project: 'owner-beta/other' }), /最多/);
   await assert.rejects(manager.start({ prompt: 'x'.repeat(65000), project: 'owner-delta/big' }), /64000/);
@@ -274,18 +274,18 @@ test('enforces concurrency and prompt size without exposing process control to t
 });
 
 test('rejects a start when the ACP adapter is missing and cleans up after initialize failures', async () => {
-  const missing = new SchedulingSessionManager({ adapterPath: '/definitely/not/there.js' });
+  const missing = new SchedulingSessionManager({ hubScheduling: false, adapterPath: '/definitely/not/there.js' });
   await assert.rejects(missing.start({ project: 'owner/demo' }), /适配器/);
 
   const failing = fakeAdapter({ failInitialize: true });
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => failing.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => failing.process });
   await assert.rejects(manager.start({ project: 'owner/demo' }), /开启调度会话失败/);
   assert.deepEqual(manager.list(), []);
   assert.ok(failing.process.killedWith, 'failed start must terminate the adapter process');
 });
 
 test('rejects control characters in project and prefers duplicate message over capacity limit', async () => {
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, maxSessions: 1 });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, maxSessions: 1 });
   await manager.start({ project: 'owner/demo' });
   await assert.rejects(manager.start({ project: 'owner/demo' }), /已有进行中的调度会话/);
   await assert.rejects(manager.start({ project: 'owner/other' }), /最多同时开启/);
@@ -300,7 +300,7 @@ test('rejects a second active session for the same project but allows other proj
   const first = fakeAdapter();
   const second = fakeAdapter();
   let n = 0;
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => (++n === 1 ? first.process : second.process) });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => (++n === 1 ? first.process : second.process) });
   await manager.start({ project: '/home/alice/projects/console' });
   await assert.rejects(manager.start({ project: '/home/alice/projects/console' }), /已有进行中的调度会话/);
   const other = await manager.start({ project: 'owner/other' });
@@ -310,7 +310,7 @@ test('rejects a second active session for the same project but allows other proj
 
 test('drains adapter stderr so a chatty child cannot deadlock the session', async () => {
   const fake = fakeAdapter({ stderrBytes: 200 * 1024 });
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '检查状态', project: 'owner/demo' });
   await waitFor(() => manager.list().find(session => session.id === started.id)?.status === 'idle');
   assert.equal(manager.list()[0].stopReason, 'end_turn');
@@ -319,7 +319,7 @@ test('drains adapter stderr so a chatty child cannot deadlock the session', asyn
 
 test('marks the session error when the adapter process exits on its own', async () => {
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '读取状态', project: 'owner/demo' });
   await waitFor(() => manager.list().find(session => session.id === started.id)?.status === 'running');
   fake.process.kill('SIGKILL');
@@ -329,7 +329,7 @@ test('marks the session error when the adapter process exits on its own', async 
 
 test('keeps a transcript and accepts follow-up messages while the agent is idle', async () => {
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '首轮调度分析', project: 'owner-alpha/demo' });
   await waitFor(() => manager.list()[0]?.status === 'idle');
   let listed = manager.list()[0];
@@ -356,7 +356,7 @@ test('keeps a transcript and accepts follow-up messages while the agent is idle'
 test('session/new carries the autoloop-hub MCP server pointing at the bundled read-only tools script', async () => {
   const { existsSync } = await import('node:fs');
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   await manager.start({ project: '/workspace/demo' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/new'));
   const newRequest = fake.requests.find(request => request.method === 'session/new');
@@ -376,7 +376,7 @@ test('session/new carries the autoloop-hub MCP server pointing at the bundled re
 
 test('scheduling prompt instructs native MCP tools first and keeps the console API as fallback', async () => {
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   await manager.start({ project: '/workspace/demo' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
   const text = fake.requests.find(request => request.method === 'session/prompt').params.prompt[0].text;
@@ -448,7 +448,7 @@ function controlledAdapter({ holdInitialize = false, rejectPromptOnCancel = fals
 
 test('queues follow-up messages while the agent is running and flushes them in order after the turn', async () => {
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -479,7 +479,7 @@ test('queues follow-up messages while the agent is running and flushes them in o
 
 test('removeQueued drops only the chosen queued message and unknown ids are 404', async () => {
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -504,7 +504,7 @@ test('removeQueued drops only the chosen queued message and unknown ids are 404'
 
 test('updateQueued edits in place, moveQueued reorders within bounds, clearQueued empties the queue', async () => {
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -528,7 +528,7 @@ test('updateQueued edits in place, moveQueued reorders within bounds, clearQueue
 
 test('steer in injects the queued message into the live turn via _session/steering, without cancelling', async () => {
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -552,7 +552,7 @@ test('steer in injects the queued message into the live turn via _session/steeri
 
 test('a steering transport failure reports 502 and restores the message to the queue', async () => {
   const fake = controlledAdapter({ failSteering: true });
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -567,7 +567,7 @@ test('a steering transport failure reports 502 and restores the message to the q
 
 test('a send during the settle window wins and the settle timer then no-ops', async () => {
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 120 });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 120 });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -590,7 +590,7 @@ test('a send during the settle window wins and the settle timer then no-ops', as
 
 test('closing during the settle window is safe when the timer fires', async () => {
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 40 });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 40 });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -605,7 +605,7 @@ test('closing during the settle window is safe when the timer fires', async () =
 
 test('steer in with no active turn starts a new turn immediately and keeps the remaining queue', async () => {
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 200 });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 200 });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -632,7 +632,7 @@ test('steer in with no active turn starts a new turn immediately and keeps the r
 
 test('interrupt is a pure stop and the queue continues automatically after the turn settles', async () => {
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 30 });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 30 });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -656,7 +656,7 @@ test('interrupt is a pure stop and the queue continues automatically after the t
 
 test('interrupt with an empty text stops the turn without sending a new prompt', async () => {
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -676,7 +676,7 @@ test('interrupt with an empty text stops the turn without sending a new prompt',
 
 test('a genuine turn failure still marks the session as error instead of hiding it', async () => {
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const request = fake.prompts[0];
@@ -688,7 +688,7 @@ test('a genuine turn failure still marks the session as error instead of hiding 
 
 test('a cancel-induced prompt rejection settles as interrupted, not error, and the queue still drains', async () => {
   const fake = controlledAdapter({ rejectPromptOnCancel: true });
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 30 });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, settleMs: 30 });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   const id = started.id;
@@ -707,7 +707,7 @@ test('a cancel-induced prompt rejection settles as interrupted, not error, and t
 
 test('steerQueued is rejected with 409 before touching the queue while initializing or in error', async () => {
   const fake = controlledAdapter({ holdInitialize: true });
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const starting = manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => manager.list().length === 1);
   const id = manager.list()[0].id;
@@ -728,7 +728,7 @@ test('steerQueued is rejected with 409 before touching the queue while initializ
 
 test('interrupt is rejected while the session is still initializing, while queueing stays open', async () => {
   const fake = controlledAdapter({ holdInitialize: true });
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const starting = manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => manager.list().length === 1);
   const id = manager.list()[0].id;
@@ -755,14 +755,14 @@ test('sessions persist to the archive and reappear as interrupted after a simula
   const { join } = await import('node:path');
   const home = mkdtempSync(join(tmpdir(), 'sess-archive-'));
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.requests.some(message => message.method === 'session/prompt'));
   await manager.send(started.id, '补充一条');
   await waitFor(() => manager.list()[0].status === 'idle');
 
   // 模拟重启：新管理器实例同一运行目录
-  const revived = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, archiveRoot: home });
+  const revived = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, archiveRoot: home });
   assert.equal(revived.list().length, 0, 'active sessions live in memory only');
   const archived = await revived.listArchived();
   assert.equal(archived.length, 1);
@@ -778,7 +778,7 @@ test('closed sessions archive as closed and continue starts a new session with t
   const { join } = await import('node:path');
   const home = mkdtempSync(join(tmpdir(), 'sess-archive-'));
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => manager.list()[0].status === 'idle');
   await manager.close(started.id);
@@ -786,7 +786,7 @@ test('closed sessions archive as closed and continue starts a new session with t
   assert.equal(archived[0].endStatus, 'closed');
 
   const fake2 = fakeAdapter();
-  const manager2 = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake2.process, archiveRoot: home });
+  const manager2 = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake2.process, archiveRoot: home });
   const continued = await manager2.continueSession(started.id);
   assert.equal(continued.continuedFrom, started.id, 'the new session records where it came from');
   await waitFor(() => fake2.requests.some(message => message.method === 'session/prompt'));
@@ -801,7 +801,7 @@ test('continueSession rejects unknown archives', async () => {
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, archiveRoot: mkdtempSync(join(tmpdir(), 'sess-archive-')) });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fakeAdapter().process, archiveRoot: mkdtempSync(join(tmpdir(), 'sess-archive-')) });
   await assert.rejects(() => manager.continueSession('99999999-9999-9999-9999-999999999999'), /存档不存在/);
 });
 
@@ -811,7 +811,7 @@ test('active in-memory sessions never appear in the archived list', async () => 
   const { join } = await import('node:path');
   const home = mkdtempSync(join(tmpdir(), 'sess-archive-'));
   const fake = fakeAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
   await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.requests.some(message => message.method === 'session/prompt'));
   const archived = await manager.listArchived();
@@ -825,7 +825,7 @@ test('an adapter crash persists the error end-status so a restart shows 异常�
   const { join } = await import('node:path');
   const home = mkdtempSync(join(tmpdir(), 'sess-archive-'));
   const fake = controlledAdapter();
-  const manager = new SchedulingSessionManager({ cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
+  const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process, archiveRoot: home });
   const started = await manager.start({ prompt: '首轮调度', project: 'owner-alpha/demo' });
   await waitFor(() => fake.prompts.length === 1);
   fake.process.kill();
