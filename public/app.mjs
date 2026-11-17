@@ -1,7 +1,7 @@
 import { openRuleForm } from './rule-form.mjs';
-import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSessionItems, renderSessionCard, renderArchivedSessions, renderArchivedEntries, renderProjectProgress } from './views.mjs';
+import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSessionItems, renderSessionCard, renderArchivedSessions, renderArchivedEntries, renderProjectProgress, chainUsageText } from './views.mjs';
 import { projectName } from './format.mjs';
-import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject } from './status-sections.mjs';
+import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject, chainUsage } from './status-sections.mjs';
 import { el } from './views.mjs';
 import { initDag } from './dag-app.mjs';
 import { stableReplace, hasLiveInteraction } from './dom-stable.mjs';
@@ -26,11 +26,13 @@ export async function refresh() {
   if (state.loading) return; state.loading = true;
   try {
     const [snapshot, ruleData, sessions, projectData, serial, archives, detourData, projectUsage] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null), api('/api/session-archives').catch(() => ({ sessions: [] })), api('/api/detours').catch(() => ({ detours: [] })), api('/api/project-usage').catch(() => null)]);
-    state.serial = serial || { chains: [] };
+    // 加载失败保留最后成功数据，不把未知当完成（设计基线状态契约）
     state.projectUsage = projectUsage?.projects || [];
     state.projectUsageFailed = !projectUsage;
-    state.archived = archives?.sessions || [];
     state.serialFailed = !serial;
+    if (serial) state.serial = serial;
+    else if (!state.serial) state.serial = { chains: [] };
+    state.archived = archives?.sessions || [];
     state.detours = detourData?.detours || []; state.models = ruleData.models || {}; snapshot.models = state.models; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; setConnection(true, '已连接'); if (noticeError) { noticeError = false; showNotice(''); } render(); dag.refreshDag();
   } catch (error) { setConnection(false, '连接失败'); showErrorNotice(`无法更新：${error.message}`); }
   finally { state.loading = false; }
@@ -165,12 +167,13 @@ function render() {
   const spending = scopedSpending(view.snapshot, view.rules, filter);
   const summarySnapshot = scoped ? { ...view.snapshot, totals: scoped, spending: { today: spending } } : state.snapshot;
   replace('summary', renderSummary(summarySnapshot));
-  const openNode = (() => { const pop = document.querySelector('.node-pop:not([hidden])'); if (!pop) return null; const row = pop.closest('.list-row'); const seg = row?.querySelector(`[data-node="${CSS.escape(pop.dataset.for)}"]`); return row?.dataset.chain && seg ? { chain: row.dataset.chain, node: seg.dataset.node } : null; })();
   replace('progress-list', renderProjectProgress({ chains: (state.serial?.chains || []).filter(chain => matchesProject(chain.project, filter)), sessions: view.sessions, rules: view.rules, snapshot: view.snapshot, loadError: !!state.serialFailed, projectUsage: state.projectUsage || [], usageLoadError: !!state.projectUsageFailed }));
-  if (openNode) {
-    const seg = document.querySelector(`.list-row[data-chain="${CSS.escape(openNode.chain)}"] [data-node="${CSS.escape(openNode.node)}"]`);
-    if (seg) openNodePop(seg);
-  }
+  const progressState = $('progress-state');
+  const progressStateText = state.serialFailed ? '加载失败：节点进度读取失败，已保留最后成功数据，请点击顶部“刷新”重试。'
+    : !state.serial ? '加载中：正在读取节点进度…' : '';
+  progressState.textContent = progressStateText;
+  progressState.hidden = !progressStateText;
+  progressState.className = `state-banner ${state.serialFailed ? 'error' : 'loading'}`;
   const work = renderWorkSections(view.snapshot, view.rules, Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)), state.detours || []);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
   replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); renderSessionsChrome(view.sessions); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
@@ -238,36 +241,14 @@ async function perform(action, id, body = {}) {
   if (!paths[action]) throw new Error('不支持的操作');
   await api(paths[action], { method: 'POST', body: JSON.stringify(body) }); showNotice('操作已完成，正在刷新状态。'); await refresh();
 }
-function closeNodePop(except) {
-  document.querySelectorAll('.node-pop').forEach(pop => { if (pop !== except) pop.hidden = true; });
-}
-function openNodePop(seg) {
-  const row = seg.closest('.list-row');
-  const pop = row?.querySelector('.node-pop');
-  if (!pop) return;
-  if (!pop.hidden && pop.dataset.for === seg.dataset.node) { pop.hidden = true; return; }
-  closeNodePop(pop);
-  pop.replaceChildren();
-  pop.dataset.for = seg.dataset.node;
-  pop.append(el('div', 'node-pop-title', seg.dataset.title || seg.dataset.node));
-  pop.append(el('div', 'node-pop-meta', `${seg.dataset.part || seg.dataset.status} · 节点内 ${seg.dataset.percent}%`));
-  if (seg.dataset.summary) pop.append(el('div', 'node-pop-summary', seg.dataset.summary));
-  else pop.append(el('div', 'node-pop-summary', '暂无进展摘要：节点推进后由开发/审阅上报一句话进展。'));
-  if (seg.dataset.pr) { const link = el('a', 'pr-link', '打开 PR'); link.href = seg.dataset.pr; link.rel = 'noreferrer'; pop.append(link); }
-  pop.hidden = false;
-  row.querySelectorAll('.node-seg').forEach(other => other.setAttribute('aria-selected', other === seg ? 'true' : 'false'));
-}
+// #75：串行链节点点击 → 与 DAG 节点同构的运行详情视图（由 DAG 控制器统一承载）。
 document.addEventListener('click', event => {
-  const seg = event.target.closest('.node-seg');
-  if (seg) { openNodePop(seg); return; }
-  if (!event.target.closest('.node-pop')) closeNodePop();
-});
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape') { closeNodePop(); return; }
-  if ((event.key === 'Enter' || event.key === ' ') && event.target.closest?.('.node-seg')) {
-    event.preventDefault();
-    openNodePop(event.target.closest('.node-seg'));
-  }
+  const hit = event.target.closest('[data-serial-node]');
+  if (!hit || !hit.closest('#view-overview')) return;
+  const chain = (state.serial?.chains || []).find(item => item.sourceFile === hit.dataset.serialRun);
+  if (!chain) return;
+  const usage = chainUsageText(chainUsage(chain, state.rules, state.snapshot?.lines || [], state.serial?.chains || []));
+  dag.openSerialDetail(chain, hit.dataset.serialNode, usage);
 });
 document.addEventListener('click', async event => {
   const button = event.target.closest('button[data-action]'); if (!button) return;

@@ -1,5 +1,6 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
 import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, projectUsageText } from './status-sections.mjs';
+import { buildSerialView, progressVisual } from './progress-view.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
@@ -315,7 +316,7 @@ function countsChips(activity, cardsHere) {
 }
 
 // 整条链累计口径与计费优先级契约一致：已上报费用 → Token +「费用未上报」→「暂无用量」。
-function chainUsageText(usage) {
+export function chainUsageText(usage) {
   const tokens = (usage.tokens || 0).toLocaleString('en-US');
   if (typeof usage.cost === 'number') return `链累计 · ${tokens} Token · $${usage.cost.toFixed(2)}`;
   if (usage.tokens > 0) return `链累计 · ${tokens} Token · 费用未上报`;
@@ -378,50 +379,22 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
 
 function renderChainRow(chain, sessions, rules, openCards, lines, allChains = [], projectUsage = [], usageLoadError = false) {
     const name = projectName(chain.project);
-    const row = el('div', 'list-row');
+    const row = el('div', 'list-row serial-chain-row');
     row.dataset.chain = name;
     const main = el('div', 'progress-main');
 
     const head = el('div', 'progress-head');
-    head.append(el('span', 'row-title', name));
+    const titleLine = el('div', 'title-with-badge');
+    titleLine.append(el('span', 'row-title', name), badge('串行链'));
+    head.append(titleLine);
     const session = sessions.find(item => matchesProject(item.project || '', chain.project));
     if (session) head.append(badge(session.statusText || session.status || '未知', session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
     head.append(el('span', 'progress-pct', `${Math.round(chain.percent)}%`));
     main.append(head);
 
-    const track = el('div', 'node-track');
-    track.setAttribute('role', 'listbox');
-    track.setAttribute('aria-label', `${name} 节点进度`);
-    const byId = new Map(chain.nodes.map(node => [node.id, node]));
-    for (const id of chain.order) {
-      const node = byId.get(id);
-      if (!node) continue;
-      const seg = el('div', `node-seg ${node.kind} w${Math.min(Math.max(node.weight, 1), 10)}${node.id === chain.current?.id ? ' current' : ''}`);
-      seg.dataset.node = node.id;
-      seg.dataset.title = node.title;
-      seg.dataset.status = STATUS_TEXT[node.status] || node.status || '未知';
-      seg.dataset.percent = String(node.percent);
-      seg.dataset.summary = node.summary || '';
-      if (node.part) seg.dataset.part = node.part;
-      if (node.prUrl) seg.dataset.pr = node.prUrl;
-      seg.title = `${node.title} · ${STATUS_TEXT[node.status] || node.status}${node.id === chain.current?.id ? ` ${node.percent}%` : ''}`;
-      seg.setAttribute('role', 'option');
-      seg.tabIndex = 0;
-      seg.setAttribute('aria-selected', node.id === chain.current?.id ? 'true' : 'false');
-      if (node.id === chain.current?.id && node.percent > 0) {
-        const fill = el('progress', 'node-fill');
-        fill.max = 100; fill.value = node.percent;
-        fill.setAttribute('aria-hidden', 'true');
-        seg.append(fill);
-      }
-      seg.append(el('span', '', node.label));
-      track.append(seg);
-    }
-    main.append(track);
-
-    const pop = el('div', 'node-pop');
-    pop.hidden = true;
-    main.append(pop);
+    // #75：串行链与 DAG 共用「分段环形总进度 + 分组四栏节点卡片」组件语言。
+    const view = buildSerialView(chain, chainUsageText(chainUsage(chain, rules, lines, allChains)));
+    main.append(progressVisual(view, { label: `${name} `, cls: 'progress-node', key: 'serialNode', runId: chain.sourceFile, donutCls: 'serial-donut' }));
 
     if (chain.current) {
       const line = el('div', 'current-line');
