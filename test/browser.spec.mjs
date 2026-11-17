@@ -273,10 +273,23 @@ try {
   assert.equal(selectionAcrossRefresh.text, 'beta 项目等待重试', 'selected text must survive background refreshes so it can be copied');
   assert.equal(selectionAcrossRefresh.frozen, true, 'the list under selection freezes instead of rebuilding');
   await page.evaluate(() => document.getSelection().removeAllRanges());
-  await page.waitForTimeout(2600); // 选区收起后下一轮轮询必须用最新数据补齐
+  await page.waitForTimeout(3500); // 选区收起后下一轮轮询必须用最新数据补齐（余量 > 轮询间隔，防 CI 抖动）
   assert.ok((await page.locator('#runs-list').innerText()).includes('beta 项目已改派'), 'after the selection collapses the next refresh must catch up with the latest data');
+  // 指针按下未抬起（点击/拖选进行中）同帧轮询不能拆除目标节点，否则 click 丢失；
+  // 拖出窗口外释放收不到 pointerup，靠 window blur 兜底清除按压状态
+  const pressCard = page.locator('#runs-list .run-card').filter({ hasText: 'beta 项目已改派' });
+  const pressBox = await pressCard.boundingBox();
+  snapshot.runs[1].summary = 'beta 项目二次改派';
+  await page.mouse.move(pressBox.x + 20, pressBox.y + 10);
+  await page.mouse.down();
+  await page.waitForTimeout(4500); // 按下未抬起跨两轮轮询
+  assert.ok((await page.locator('#runs-list').innerText()).includes('beta 项目已改派'), 'the list under a held pointer freezes instead of rebuilding the pressed target away');
+  await page.evaluate(() => window.dispatchEvent(new Event('blur'))); // 模拟拖出窗口外释放：blur 兜底清除按压态
+  await page.mouse.up();
+  await page.waitForTimeout(3500);
+  assert.ok((await page.locator('#runs-list').innerText()).includes('beta 项目二次改派'), 'after the press clears the next refresh must catch up with the latest data');
   snapshot.runs[1].summary = 'beta 项目等待重试'; // 还原，避免影响后续断言
-  await page.waitForTimeout(2600);
+  await page.waitForTimeout(3500);
   await page.locator('.nav-item[data-view="cards"]').click(); // 回到插入前的视图，后续断言在待我处理页继续
   await page.getByRole('button', { name: '继续', exact: true }).click();
   const resolveCard=page.locator('.decision-card').filter({hasText:'直接结案测试'}); await resolveCard.getByRole('button',{name:'结案',exact:true}).click();

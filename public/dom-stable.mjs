@@ -19,6 +19,10 @@ if (typeof document !== 'undefined') {
   document.addEventListener('pointerdown', event => { pressTarget = event.target; }, true);
   document.addEventListener('pointerup', () => { pressTarget = null; }, true);
   document.addEventListener('pointercancel', () => { pressTarget = null; }, true);
+  // 窗口外释放收不到 pointerup（鼠标无隐式捕获，拖选复制极易拖出窗口）：
+  // 窗口失焦即清，否则 pressTarget 残留会让容器永久冻结、内容永不过期
+  window.addEventListener('blur', () => { pressTarget = null; });
+  document.addEventListener('pointerleave', event => { if (!event.relatedTarget) pressTarget = null; }, true);
 }
 
 function hostOf(node) {
@@ -33,8 +37,10 @@ export function hasLiveInteraction(container) {
   if (active !== document.body && isTextEditing(active) && container.contains(active)) return true;
   const selection = document.getSelection?.();
   if (selection && !selection.isCollapsed) {
-    const host = hostOf(selection.anchorNode);
-    if (host && container.contains(host)) return true;
+    // 选区有方向：anchor 在容器外、focus 在容器内的反向选区（Shift+点击/向上拖）同样会被打散，两端都要查
+    const anchorHost = hostOf(selection.anchorNode);
+    const focusHost = hostOf(selection.focusNode);
+    if ((anchorHost && container.contains(anchorHost)) || (focusHost && container.contains(focusHost))) return true;
   }
   if (pressTarget && container.contains(pressTarget)) return true;
   return false;
@@ -42,9 +48,10 @@ export function hasLiveInteraction(container) {
 
 // 稳定替换：容器内有活体交互时跳过本轮（冻结），未受影响的容器照常更新。
 // 跳过不缓存任何节点——render() 每轮都用最新数据重新计算，冻结容器在交互结束后自然补齐。
-export function stableReplace(idOrElement, nodes = []) {
+// force 用于高 stakes 反馈（提交中/错误出现）必须立刻落盘的时刻：牺牲选区换确定性反馈。
+export function stableReplace(idOrElement, nodes = [], { force = false } = {}) {
   const container = typeof idOrElement === 'string' ? document.getElementById(idOrElement) : idOrElement;
   if (!container) return;
-  if (hasLiveInteraction(container)) return;
+  if (!force && hasLiveInteraction(container)) return;
   container.replaceChildren(...nodes);
 }

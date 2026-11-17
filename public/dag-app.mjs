@@ -27,8 +27,13 @@ export function initDag({ api, notify, showView, getProjects }) {
     banner();
   }
   function renderAuth() {
-    stableReplace('authorize-preflight', [renderPreflight(s.preflight, { error: s.preflightError })]);
-    stableReplace('authorize-body', [renderAuthorize(s.plan, { checked: s.checked, submitting: s.submitting, error: s.planError, created: s.created, blocked: s.preflight && !s.preflight.checks.every(c => c.ok) ? '接入预检未全部通过，暂不能创建 DAG。' : '' })]);
+    // 提交中/新错误是授权路径的关键反馈：即使正在拖选契约文本也要强制落盘，不能冻住；
+    // 反馈键变化时 force 一次，之后恢复普通冻结语义（错误常驻期间不再每轮强拆选区）
+    const feedbackKey = s.submitting ? 'submitting' : s.planError ? `plan:${s.planError}` : s.preflightError ? `pre:${s.preflightError}` : '';
+    const force = s.submitting === true || (feedbackKey !== '' && feedbackKey !== s.lastAuthFeedback);
+    s.lastAuthFeedback = feedbackKey;
+    stableReplace('authorize-preflight', [renderPreflight(s.preflight, { error: s.preflightError })], { force });
+    stableReplace('authorize-body', [renderAuthorize(s.plan, { checked: s.checked, submitting: s.submitting, error: s.planError, created: s.created, blocked: s.preflight && !s.preflight.checks.every(c => c.ok) ? '接入预检未全部通过，暂不能创建 DAG。' : '' })], { force });
   }
   function syncProjects() {
     const select = $('authorize-project'); const projects = getProjects();
