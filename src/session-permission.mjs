@@ -5,8 +5,8 @@ import path from 'node:path';
 
 export const HUB_SERVER = 'autoloop-hub';
 export const HUB_READ_TOOLS = ['list_rules', 'list_runs', 'list_cards', 'read_console_doc'];
-// 受控写：自愈恢复/暂停/重触发；dispatch_task 为后续派发工具预留（工具上线前不会有该请求）；工具上线之日需同步收紧此处裁定。
-export const HUB_WRITE_TOOLS = ['resume_rule', 'pause_rule', 'run_rule', 'dispatch_task'];
+// 受控写：自愈恢复/暂停/重触发。
+export const HUB_WRITE_TOOLS = ['resume_rule', 'pause_rule', 'run_rule'];
 
 // 普通会话允许直推的分支前缀；其余（main/master/release/裸 HEAD/tag 等）一律拒绝。
 const FEATURE_BRANCH = /^(feat|fix|hotfix|chore|docs|refactor|test|perf|ci|build)\/[A-Za-z0-9._/-]+$/;

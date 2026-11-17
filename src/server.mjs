@@ -12,7 +12,6 @@ import { readDetours, publicDetour } from './detour.mjs';
 import { loadChains } from './serial-progress.mjs';
 import { readCloseouts } from './chain-closeout.mjs';
 import { createDagService, DagServiceError } from './dag-service.mjs';
-import { createDispatcher, validateDispatchInput, DispatchError } from './dispatch.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(MODULE_DIR, '..', 'public');
@@ -50,7 +49,6 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
   if (req.method === 'GET' && url.pathname === '/api/session-archives') return jsonResponse(res, 200, { sessions: await config.schedulingSessions.listArchived() });
   if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
-  if (req.method === 'GET' && url.pathname === '/api/dispatch-tasks') return jsonResponse(res, 200, { tasks: config.dispatcher ? config.dispatcher.list() : [] });
   let dagMatch;
   if (req.method === 'GET' && url.pathname === '/api/dag-runs') return jsonResponse(res, 200, { runs: config.dagService ? config.dagService.list() : [] });
   if (req.method === 'GET' && (url.pathname === '/api/dag-plan' || url.pathname === '/api/dag-preflight')) {
@@ -112,18 +110,6 @@ async function handleApi(config, req, res, url) {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
     return jsonResponse(res, 200, await config.dagService.slotRelease(decodeURIComponent(dagMatch[1]), decodeURIComponent(dagMatch[2]), body));
   }
-  let dispatchMatch;
-  if (req.method === 'POST' && url.pathname === '/api/dispatch-tasks') {
-    if (!config.dispatcher) throw new RequestError(503, '派发通道不可用（未配置运行目录）');
-    const input = validateDispatchInput(body);
-    const known = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).find(item => item.path === path.resolve(input.project));
-    if (!known) throw new RequestError(400, '项目不在已发现的 Git 仓库列表中，请从下拉选择');
-    return jsonResponse(res, 201, await config.dispatcher.dispatch({ ...input, project: known.path }));
-  }
-  if (req.method === 'POST' && (dispatchMatch = url.pathname.match(/^\/api\/dispatch-tasks\/([^/]+)\/cost$/))) {
-    if (!config.dispatcher) throw new RequestError(503, '派发通道不可用（未配置运行目录）');
-    return jsonResponse(res, 200, await config.dispatcher.reportCost(decodeURIComponent(dispatchMatch[1]), body));
-  }
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   let match;
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/clear$/))) return jsonResponse(res, 200, await config.schedulingSessions.clearQueued(decodeURIComponent(match[1])));
@@ -147,7 +133,7 @@ async function handleApi(config, req, res, url) {
   }
   return false;
 }
-export function createConsoleServer(config, schedulingSessions, dispatcher) {
+export function createConsoleServer(config, schedulingSessions) {
   if (!schedulingSessions) {
     const writableDir = config.root ? path.join(config.root, 'scripts') : null;
     let allowedDir = writableDir;
@@ -157,16 +143,15 @@ export function createConsoleServer(config, schedulingSessions, dispatcher) {
     }
     schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root });
   }
-  if (!dispatcher && config.root) dispatcher = createDispatcher({ root: config.root, sessions: schedulingSessions });
   const dagService = config.dagService || (config.root ? createDagService({ root: config.root, storeDirectory: path.join(config.root, 'dag-runs') }) : null);
-  config = { ...config, schedulingSessions, dispatcher, dagService };
+  config = { ...config, schedulingSessions, dagService };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const host = req.headers.host?.split(':')[0]?.toLowerCase();
     if (!['127.0.0.1', 'localhost'].includes(host)) return jsonResponse(res, 403, { error: '控制台只接受本机地址' });
     try { if (url.pathname.startsWith('/api/') && await handleApi(config, req, res, url) !== false) return; }
     catch (error) {
-      const status = error instanceof RequestError || error instanceof RuleError || error instanceof SchedulingSessionError || error instanceof DispatchError || error instanceof DagServiceError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
+      const status = error instanceof RequestError || error instanceof RuleError || error instanceof SchedulingSessionError || error instanceof DagServiceError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
       return jsonResponse(res, status, { error: error.message });
     }
     const asset = FILES.get(url.pathname);
