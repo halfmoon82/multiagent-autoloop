@@ -97,3 +97,54 @@ test('同节点失败重派保留槽位与改动（不触发 release）', async 
   assert.equal(s.hub.last('a').slot, slot);
   assert.ok(!s.wip.calls.some(c => c[0] === 'release'));
 });
+
+// ---- #54 重启恢复回归：控制器进程重建后只靠 run.json 恢复 ----
+import { createController } from '../src/dag-controller.mjs';
+const restart = s => createController({ store: s.store, rootRunId: s.root.runId, hub: s.hub, rt: s.rt, wip: s.wip, publisher: s.publisher, now: () => s.clock.t });
+
+test('unknown 后控制器重启：仍隔离并换槽恢复，旧晚到回执不覆盖 successor', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick(); s.claimAll();
+  const first = s.runOf('a'); const oldReceipt = { advanceId: first.expectedAdvanceId, runId: first.runId, nodeId: 'a', role: 'dev', generation: 1, attempt: 1, outcome: 'done' };
+  s.hub.set(first.hub.hubRunId, { status: 'unknown' });
+  await s.ctl.tick();
+  assert.equal(s.runOf('a').status, 'unknown');
+  const dispatchedBefore = s.hub.dispatched.length;
+  s.clock.t += 16 * 60 * 1000;
+  const ctl2 = restart(s);                       // 模拟控制台重启
+  await ctl2.tick();
+  const next = s.runOf('a');
+  assert.equal(next.attempt, 2, '重启后以新 attempt 恢复');
+  assert.notEqual(next.slot, first.slot, '隔离原槽，换槽');
+  assert.equal(s.hub.dispatched.length, dispatchedBefore + 1, '只补发一次，不重复派发');
+  const late = s.store.advance(first.runId, oldReceipt);
+  assert.equal(late.verdict, 'stale');
+  assert.equal(s.runOf('a').attempt, 2);
+  assert.notEqual(s.runOf('a').status, 'done', '旧回执不得覆盖 successor');
+  await restart(s).tick();                       // 重复 tick 幂等
+  assert.equal(s.hub.dispatched.length, dispatchedBefore + 1);
+});
+
+test('崩溃在 createNodeRun 与节点状态落盘之间：重启后收养既有 run，不抛 NODE_EXISTS 死锁、不重复建 run', async () => {
+  const s = setup([mkNode('a')]);
+  s.store.createNodeRun(s.root.runId, { nodeId: 'a', role: 'dev' }); // 崩溃遗留：run 已存在，节点仍 pending
+  const ctl2 = restart(s);
+  await ctl2.tick();
+  assert.equal(ctl2.snapshot().nodes.a.state, 'dev');
+  assert.equal(s.store.listRuns().filter(r => r.nodeId === 'a').length, 1);
+  assert.equal(s.hub.dispatched.length, 1, '收养后补发一次');
+  assert.ok(s.runOf('a').hub?.hubRunId);
+});
+
+test('Hub 已终态但回执未消费：重启对账时补处理合法回执；畸形回执保留 WIP 路径不砖化', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick(); s.claimAll();
+  const run = s.runOf('a');
+  const good = { advanceId: run.expectedAdvanceId, runId: run.runId, nodeId: 'a', role: 'dev', generation: 1, attempt: 1, outcome: 'done' };
+  const realGet = s.hub.getRun.bind(s.hub);
+  s.hub.getRun = async id => ({ ...(await realGet(id)), status: 'done', receipts: [{ malformed: true }, good] });
+  await restart(s).tick();
+  assert.equal(s.runOf('a').status, 'done', '合法回执被补消费');
+  assert.ok(s.publisher.calls.some(c => c[0] === 'commitPr'), '进入发布流程');
+  assert.ok(s.runOf('a').failures >= 1, '畸形回执计一次失败而非吞掉');
+});

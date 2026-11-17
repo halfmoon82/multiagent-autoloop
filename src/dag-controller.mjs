@@ -4,7 +4,7 @@ import { readyNodes, validateDag } from './dag.mjs';
 import { MAX_SLOTS, MAX_ATTEMPTS, QUARANTINE_AFTER_MS, isTerminal, ROOT_NODE, DagRunError } from './dag-run.mjs';
 import { seg } from './dag-slots.mjs';
 
-const HUB_TERMINAL = new Set(['done', 'cancelled', 'failed', 'nothing']);
+export const HUB_TERMINAL = new Set(['done', 'cancelled', 'failed', 'nothing']);
 const SUCCESS = new Set(['done', 'accepted', 'merged']);
 const msg = error => String(error?.message || error).replace(/[\r\n]+/g, ' ');
 const defaultApproach = ({ run }) => ({ reason: `第 ${run.attempt} 次失败，换模型重派`, model: 'fallback' });
@@ -126,7 +126,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     await releaseNodeSlot(root, st, id);
   }
 
-  async function advanceNode(root, st, id) {
+  async function advanceNode(root, st, id, replayed = false) {
     const n = st.nodes[id];
     if (!['dev', 'review'].includes(n.state) || n.todo) return;
     const run = latest(root, id, n.state); if (!run) return;
@@ -141,6 +141,12 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         return send(root, id, run, n);
       }
       const h = await hub.getRun(run.hub.hubRunId);
+      // Hub 侧带回的 DAG 回执（重启后补消费）：逐条交给状态机裁决，旧/重复/畸形回执由 advance 判 stale/duplicate/invalid，
+      // 绝不在这里自行改状态；裁决后 run 已变化则按新状态重走一遍（至多一次，避免递归空转）。
+      if (!replayed && Array.isArray(h.receipts) && h.receipts.length) {
+        for (const receipt of h.receipts) store.advance(run.runId, receipt);
+        if (store.getRun(run.runId).status !== run.status) return advanceNode(root, st, id, true);
+      }
       if (h.status === 'unknown') { store.markUnknown(run.runId, { at: now() }); return; }
       if (h.status === 'queued' && run.attempt >= MAX_ATTEMPTS) { await hub.cancel(run.hub.hubRunId); store.cancel(run.runId, { reason: 'attempts-exhausted' }); return failure(root, st, id, run, 'queued-attempts'); }
       // Hub run 已终态却没有合法 advance：按一次失败尝试计数（attempt 即累计次数）。
@@ -236,8 +242,16 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     if (!validateDag(view).valid) return;
     const blockedIds = Object.entries(st.nodes).filter(([, n]) => ['blocked', 'gated'].includes(n.state)).map(([id]) => id);
     for (const node of readyNodes(view, { blockedIds })) {
-      const slot = freeSlot(root, st, node.id); if (slot == null) break;
       const n = st.nodes[node.id];
+      // 崩溃恢复：上次在 createNodeRun 落盘之后、节点状态落盘之前退出，run 已存在而节点仍是 pending。
+      // 直接 createNodeRun 会永远抛 NODE_EXISTS（死锁）；改为收养既有 run，由 advanceNode 补发/对账。
+      const existing = latest(root, node.id, 'dev');
+      if (existing) {
+        const adopted = existing.slot ?? freeSlot(root, st, node.id); if (adopted == null) break;
+        n.state = 'dev'; n.slot = adopted; n.prepareBase = baseRef;
+        await advanceNode(root, st, node.id); continue; // 同一 tick 立即补发/对账，不多等一轮
+      }
+      const slot = freeSlot(root, st, node.id); if (slot == null) break;
       const run = store.createNodeRun(root.runId, { nodeId: node.id, role: 'dev' });
       n.state = 'dev'; await start(root, st, node.id, run, slot, { prepare: true });
     }
