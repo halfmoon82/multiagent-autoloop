@@ -1,153 +1,187 @@
-[
-  {
-    "id": "execution-grants",
-    "title": "原生 DAG 计划、轻量执行授权记录与可选高风险动作",
-    "depends_on": [],
-    "integration_after": [],
-    "parallel_group": "wave-1",
-    "status": "planned",
-    "issue": 67,
-    "contract": {
-      "input": "Spec §5、原生 DAG 节点计划、现有授权政策与用户可选动作",
-      "output": "无需 vibe 的原生计划接入，以及可继承、可重建的执行授权记录",
-      "error_behavior": "未选动作拒绝执行；记录不一致暂停相关写入并可重建，不永久砖化",
-      "acceptance_example": "无 .vibe 也可预览并创建 DAG run；标准合并不重复询问；部署默认拒绝，明确选择且计划包含时才允许",
-      "files": [
-        "test/dag-plan.test.mjs",
-        "src/dag-plan.mjs",
-        "src/dag-run.mjs",
-        "src/dag-service.mjs",
-        "src/dag-publish.mjs",
-        "public/dag-app.mjs",
-        "public/dag-views.mjs",
-        "test/dag-run.test.mjs",
-        "test/dag-publish.test.mjs",
-        "test/dag-api.test.mjs",
-        "test/browser-dag.spec.mjs"
-      ]
-    }
+{
+  "plan_id": "console-hub-native-and-card-routing",
+  "title": "控制台 Hub 原生调度与卡片路由自我改进",
+  "design": {
+    "manifestPath": "docs/design/2026-11-16-parallel-dag/design-manifest.json",
+    "approvalPath": "docs/prd/console-hub-native-and-card-routing/design-approval.json"
   },
-  {
-    "id": "hub-scheduling",
-    "title": "调度会话 Hub 原生接线",
-    "depends_on": [],
-    "integration_after": [],
-    "parallel_group": "wave-1",
-    "status": "planned",
-    "issue": 68,
-    "contract": {
-      "input": "Spec §6、项目与调度消息",
-      "output": "Hub 事项/run/resume 驱动的调度会话适配器",
-      "error_behavior": "Hub 不可用或规则未接线时保留输入并报错，不回退私有 ACP",
-      "acceptance_example": "两次发言属于同一 Hub 事项；控制台重启后 run 继续；调度路径无 ACP spawn",
-      "files": [
-        "src/hub.mjs",
-        "src/hub-scheduling-session.mjs",
-        "src/scheduling-session.mjs",
-        "test/hub-scheduling-session.test.mjs",
-        "test/scheduling-session.test.mjs",
-        "test/scheduling-sessions-api.test.mjs"
-      ]
+  "nodes": [
+    {
+      "id": "execution-grants",
+      "title": "原生 DAG 计划、轻量执行授权记录与可选高风险动作",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "issue": 67,
+      "contract": {
+        "input": "Spec §5、原生 DAG 节点计划、现有授权政策与用户可选动作",
+        "output": "无需 vibe 的原生计划接入，以及可继承、可重建的执行授权记录",
+        "error_behavior": "未选动作拒绝执行；记录不一致暂停相关写入并可重建，不永久砖化",
+        "acceptance_example": "无 .vibe 也可预览并创建 DAG run；标准合并不重复询问；部署默认拒绝，明确选择且计划包含时才允许",
+        "files": [
+          "test/dag-plan.test.mjs",
+          "src/dag-plan.mjs",
+          "src/dag-run.mjs",
+          "src/dag-service.mjs",
+          "src/dag-publish.mjs",
+          "public/dag-app.mjs",
+          "public/dag-views.mjs",
+          "test/dag-run.test.mjs",
+          "test/dag-publish.test.mjs",
+          "test/dag-api.test.mjs",
+          "test/browser-dag.spec.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "authorize"
+          ],
+          "states": [
+            "normal",
+            "failed",
+            "blocked"
+          ],
+          "interactions": [
+            "load-plan",
+            "confirm-scope"
+          ]
+        }
+      }
+    },
+    {
+      "id": "hub-scheduling",
+      "title": "调度会话 Hub 原生接线",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "issue": 68,
+      "contract": {
+        "input": "Spec §6、项目与调度消息",
+        "output": "Hub 事项/run/resume 驱动的调度会话适配器",
+        "error_behavior": "Hub 不可用或规则未接线时保留输入并报错，不回退私有 ACP",
+        "acceptance_example": "两次发言属于同一 Hub 事项；控制台重启后 run 继续；调度路径无 ACP spawn",
+        "files": [
+          "src/hub.mjs",
+          "src/hub-scheduling-session.mjs",
+          "src/scheduling-session.mjs",
+          "test/hub-scheduling-session.test.mjs",
+          "test/scheduling-session.test.mjs",
+          "test/scheduling-sessions-api.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "card-delegation",
+      "title": "退回调度、初始化发卡纪律与卡片语言质量门",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "issue": 69,
+      "contract": {
+        "input": "Spec §8、开放卡片、初始化模板与路由扩展点",
+        "output": "幂等退回事务、全局初始化纪律、卡片质量门和过滤器接线点",
+        "error_behavior": "事件失败保持原卡开放；不合格卡退回重写，不静默删除或自动作答",
+        "acceptance_example": "退回后产生 Hub run；新初始化项目独立含四项纪律；缺收益/代价的卡被拦截",
+        "files": [
+          "src/server.mjs",
+          "src/card-quality.mjs",
+          "src/card-delegate.mjs",
+          "public/app.mjs",
+          "public/views.mjs",
+          "test/card-quality.test.mjs",
+          "test/card-delegate.test.mjs",
+          "test/browser.spec.mjs",
+          "docs/scheduling-contract.md",
+          "docs/2026-11-13-project-initialization-design.md",
+          "examples/rules.example.json"
+        ],
+        "design": {
+          "surfaceIds": [
+            "overview"
+          ],
+          "states": [
+            "normal",
+            "empty",
+            "loading",
+            "failed"
+          ],
+          "interactions": []
+        }
+      }
+    },
+    {
+      "id": "dag-recovery",
+      "title": "DAG 节点断线恢复与生产接线",
+      "depends_on": [
+        "execution-grants"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "issue": 54,
+      "contract": {
+        "input": "Spec §7、轻量执行授权记录、既有 DAG run 与 Hub run",
+        "output": "启动恢复、Hub 对账、queued 补发、blocked 自动核实与有界复活",
+        "error_behavior": "失联不重复派发；旧回执作废；畸形回执保留 WIP；授权不一致不静默扩权",
+        "acceptance_example": "控制器在 unknown 后重启仍能隔离并换槽恢复，旧晚到回执不覆盖 successor",
+        "files": [
+          "src/dag-controller.mjs",
+          "src/dag-runtime.mjs",
+          "scripts/start.mjs",
+          "test/dag-controller.test.mjs",
+          "test/dag-controller-rework.test.mjs",
+          "test/dag-runtime.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "card-routing-filter",
+      "title": "卡片路由自我改进过滤器",
+      "depends_on": [
+        "card-delegation"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "issue": 70,
+      "contract": {
+        "input": "Spec §9、退回/回答/重新升级样本与卡片路由扩展点",
+        "output": "版本化规则、shadow 评测、高可信自动路由、审计与回滚",
+        "error_behavior": "冲突/低置信/模型故障进入 unknown；人工门禁不得自动交调度",
+        "acceptance_example": "shadow 不改变真卡；人工门禁验证集误自动路由为 0；误路由可回滚并形成纠偏样本",
+        "files": [
+          "src/card-router.mjs",
+          "src/card-filter-store.mjs",
+          "scripts/card-filter-evaluate.mjs",
+          "test/card-router.test.mjs",
+          "test/card-filter-store.test.mjs",
+          "test/card-filter-evaluate.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "integration-review",
+      "title": "整链整合审阅与跨节点验收",
+      "depends_on": [
+        "execution-grants",
+        "hub-scheduling",
+        "dag-recovery",
+        "card-routing-filter"
+      ],
+      "integration_after": [],
+      "parallel_group": null,
+      "integration_review": true,
+      "read_only": true,
+      "status": "planned",
+      "contract": {
+        "input": "全部节点合并结果、PR、测试与跨模块契约",
+        "output": "只读整合审阅、全量验证与剩余问题清单",
+        "error_behavior": "发现 P0–P2 即回到对应节点返工；不得由整合审阅直接改代码",
+        "acceptance_example": "全量测试与双端浏览器回归通过；无私有台账、无平行控制器、无 Hub 核心修改",
+        "files": []
+      }
     }
-  },
-  {
-    "id": "card-delegation",
-    "title": "退回调度、初始化发卡纪律与卡片语言质量门",
-    "depends_on": [],
-    "integration_after": [],
-    "parallel_group": "wave-1",
-    "status": "planned",
-    "issue": 69,
-    "contract": {
-      "input": "Spec §8、开放卡片、初始化模板与路由扩展点",
-      "output": "幂等退回事务、全局初始化纪律、卡片质量门和过滤器接线点",
-      "error_behavior": "事件失败保持原卡开放；不合格卡退回重写，不静默删除或自动作答",
-      "acceptance_example": "退回后产生 Hub run；新初始化项目独立含四项纪律；缺收益/代价的卡被拦截",
-      "files": [
-        "src/server.mjs",
-        "src/card-quality.mjs",
-        "src/card-delegate.mjs",
-        "public/app.mjs",
-        "public/views.mjs",
-        "test/card-quality.test.mjs",
-        "test/card-delegate.test.mjs",
-        "test/browser.spec.mjs",
-        "docs/scheduling-contract.md",
-        "docs/2026-11-13-project-initialization-design.md",
-        "examples/rules.example.json"
-      ]
-    }
-  },
-  {
-    "id": "dag-recovery",
-    "title": "DAG 节点断线恢复与生产接线",
-    "depends_on": [
-      "execution-grants"
-    ],
-    "integration_after": [],
-    "parallel_group": "wave-2",
-    "status": "planned",
-    "issue": 54,
-    "contract": {
-      "input": "Spec §7、轻量执行授权记录、既有 DAG run 与 Hub run",
-      "output": "启动恢复、Hub 对账、queued 补发、blocked 自动核实与有界复活",
-      "error_behavior": "失联不重复派发；旧回执作废；畸形回执保留 WIP；授权不一致不静默扩权",
-      "acceptance_example": "控制器在 unknown 后重启仍能隔离并换槽恢复，旧晚到回执不覆盖 successor",
-      "files": [
-        "src/dag-controller.mjs",
-        "src/dag-runtime.mjs",
-        "scripts/start.mjs",
-        "test/dag-controller.test.mjs",
-        "test/dag-controller-rework.test.mjs",
-        "test/dag-runtime.test.mjs"
-      ]
-    }
-  },
-  {
-    "id": "card-routing-filter",
-    "title": "卡片路由自我改进过滤器",
-    "depends_on": [
-      "card-delegation"
-    ],
-    "integration_after": [],
-    "parallel_group": "wave-2",
-    "status": "planned",
-    "issue": 70,
-    "contract": {
-      "input": "Spec §9、退回/回答/重新升级样本与卡片路由扩展点",
-      "output": "版本化规则、shadow 评测、高可信自动路由、审计与回滚",
-      "error_behavior": "冲突/低置信/模型故障进入 unknown；人工门禁不得自动交调度",
-      "acceptance_example": "shadow 不改变真卡；人工门禁验证集误自动路由为 0；误路由可回滚并形成纠偏样本",
-      "files": [
-        "src/card-router.mjs",
-        "src/card-filter-store.mjs",
-        "scripts/card-filter-evaluate.mjs",
-        "test/card-router.test.mjs",
-        "test/card-filter-store.test.mjs",
-        "test/card-filter-evaluate.test.mjs"
-      ]
-    }
-  },
-  {
-    "id": "integration-review",
-    "title": "整链整合审阅与跨节点验收",
-    "depends_on": [
-      "execution-grants",
-      "hub-scheduling",
-      "dag-recovery",
-      "card-routing-filter"
-    ],
-    "integration_after": [],
-    "parallel_group": null,
-    "integration_review": true,
-    "read_only": true,
-    "status": "planned",
-    "contract": {
-      "input": "全部节点合并结果、PR、测试与跨模块契约",
-      "output": "只读整合审阅、全量验证与剩余问题清单",
-      "error_behavior": "发现 P0–P2 即回到对应节点返工；不得由整合审阅直接改代码",
-      "acceptance_example": "全量测试与双端浏览器回归通过；无私有台账、无平行控制器、无 Hub 核心修改",
-      "files": []
-    }
-  }
-]
+  ]
+}

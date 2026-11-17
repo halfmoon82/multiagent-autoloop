@@ -55,8 +55,10 @@ export function loadVibePlan({ projectRoot, planId }) {
 }
 
 export function createPlanDigest({ productSpec, plan, nodes, authorizationSnapshot = null, designBaseline = null }) {
-  const design = designBaseline ? { manifestPath: designBaseline.manifestPath, designDigest: designBaseline.designDigest } : null;
-  return digest({ productSpec, plan, nodes, authorizationSnapshot, design });
+  const value = { productSpec, plan, nodes, authorizationSnapshot };
+  // 无设计计划保持历史字节口径；只有 UI 计划新增 design 字段。
+  if (designBaseline) value.design = { manifestPath: designBaseline.manifestPath, designDigest: designBaseline.designDigest };
+  return digest(value);
 }
 
 export function createRunSnapshot(loaded, { authorizationSnapshot, maxParallel = 5 } = {}) {

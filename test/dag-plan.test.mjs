@@ -49,6 +49,7 @@ test('native plan digest is deterministic with productSpec {} and native plan me
     nodes: simpleNodes,
     authorizationSnapshot: null,
   });
+  assert.equal(expected, '6e9c92fd39ca1b09ab9172cb564ac48f9c7ae52846ff56519ce1f5df339f3d5d');
   assert.equal(createPlanDigest({ ...loaded, authorizationSnapshot: null }), expected);
   assert.equal(createPlanDigest({ ...loaded, authorizationSnapshot: null }), expected);
 });
@@ -78,9 +79,7 @@ test('rejects path traversal planId and empty inputs', () => {
 });
 
 test('loads the committed bootstrap plan with six nodes and parallel waves', () => {
-  const nodes = JSON.parse(readFileSync(bootstrapFile, 'utf8'));
-  const root = nativeProject(BOOTSTRAP_PLAN_ID, nodes);
-  const loaded = loadNativePlan({ projectRoot: root, planId: BOOTSTRAP_PLAN_ID });
+  const loaded = loadNativePlan({ projectRoot: repoRoot, planId: BOOTSTRAP_PLAN_ID });
   assert.equal(loaded.nodes.length, 6);
   const shape = parallelShape(loaded.nodes);
   assert.deepEqual(shape.parallelWaves, [
@@ -147,4 +146,15 @@ test('native UI contracts require a declared valid design baseline', () => {
   const nodes = [{ id: 'ui', contract: { ...contract('src/ui.mjs'), design: { surfaceIds: ['overview'] } } }];
   const root = nativeProject('native-ui', { plan_id: 'native-ui', nodes });
   assert.throws(() => loadNativePlan({ projectRoot: root, planId: 'native-ui' }), /design|设计/);
+});
+
+test('committed bootstrap binds only its UI-writing nodes to the approved scoped surfaces', () => {
+  const loaded = loadNativePlan({ projectRoot: repoRoot, planId: BOOTSTRAP_PLAN_ID });
+  assert.ok(loaded.designBaseline?.designDigest);
+  const byId = Object.fromEntries(loaded.nodes.map(node => [node.id, node]));
+  assert.deepEqual(byId['execution-grants'].contract.design.surfaceIds, ['authorize']);
+  assert.deepEqual(byId['card-delegation'].contract.design.surfaceIds, ['overview']);
+  for (const id of ['hub-scheduling', 'dag-recovery', 'card-routing-filter', 'integration-review']) {
+    assert.equal(byId[id].contract.design, undefined, `${id} 不得被设计设施阻塞`);
+  }
 });

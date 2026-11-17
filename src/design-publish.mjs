@@ -134,7 +134,7 @@ export async function publishProductSpec({
       return { ok: true, branch, baseBranch: snapshot.baseBranch, prUrl: existing[0].url, reused: true, designDigest: design?.designDigest || null, authorizationSnapshot: snapshot };
     }
     const title = `docs(prd): ${String(loaded.productSpec.title || planId).slice(0, 80)}`;
-    const body = `由设计会话 product-spec 确认后发布。\n\n- planId: ${planId}\n- specDigest: ${specDigest}${design ? `\n- designDigest: ${design.designDigest}` : ''}\n\n仅包含 PRD/spec、已确认设计产物与计划产物；未授权 merge/deploy/release。`;
+    const body = `由设计会话 product-spec 确认后发布。\n\n- planId: ${planId}\n- specDigest: ${specDigest}${design ? `\n- designDigest: ${design.designDigest}` : ''}\n\n仅包含 PRD/spec${design ? '、已确认设计产物' : ''}与计划产物；未授权 merge/deploy/release。`;
     const prUrl = (await out('gh', ['pr', 'create', '--base', snapshot.baseBranch, '--head', branch, '--title', title, '--body', body])).split('\n').pop();
     return { ok: true, branch, baseBranch: snapshot.baseBranch, prUrl, reused: false, designDigest: design?.designDigest || null, authorizationSnapshot: snapshot };
   } catch (error) {

@@ -1,6 +1,6 @@
 # Design Gate Hardening Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 将已确认设计基线嵌入 PRD 发布和 UI 节点执行，同时保持非 UI 计划、旧计划和无关 ready 节点不受阻塞。
 
@@ -49,12 +49,12 @@
 - 原生对象计划使用 `design: { manifestPath, approvalPath }`；UI 节点使用 `contract.design: { surfaceIds, viewports?, states?, interactions? }`。
 - `createPlanDigest` 仅额外纳入 `{ manifestPath, designDigest }`；无设计时字节口径不变。
 
-- [ ] **Step 1: 写清单、产物 hash、批准记录、路径安全和 UI surface 子集的失败测试。**
-- [ ] **Step 2: 运行 `node --test test/design-baseline.test.mjs test/dag-plan.test.mjs`，确认因模块/行为缺失失败。**
-- [ ] **Step 3: 实现最小 loader 与原生计划校验；无 UI 节点时不加载设计设施。**
-- [ ] **Step 4: 将设计摘要纳入 planDigest，将不可变 baseline 写入根 run、node run 和 attempt，并由 service.create 传入。**
-- [ ] **Step 5: 运行上述测试及 `test/dag-run.test.mjs test/dag-api.test.mjs`，确认通过。**
-- [ ] **Step 6: 提交 `feat(dag): bind optional approved design baselines`。**
+- [x] **Step 1: 写清单、产物 hash、批准记录、路径安全和 UI surface 子集的失败测试。**
+- [x] **Step 2: 运行 `node --test test/design-baseline.test.mjs test/dag-plan.test.mjs`，确认因模块/行为缺失失败。**
+- [x] **Step 3: 实现最小 loader 与原生计划校验；无 UI 节点时不加载设计设施。**
+- [x] **Step 4: 将设计摘要纳入 planDigest，将不可变 baseline 写入根 run、node run 和 attempt，并由 service.create 传入。**
+- [x] **Step 5: 运行上述测试及 `test/dag-run.test.mjs test/dag-api.test.mjs`，确认通过。**
+- [x] **Step 6: 提交 `feat(dag): bind optional approved design baselines`。**
 
 ### Task 2: PRD 发布确认与 worker 定向约束
 
@@ -71,12 +71,12 @@
 - UI prompt 包含根 `designDigest` 和本节点设计合同；review prompt 包含证据身份摘要。
 - commitPr 拒绝修改 baseline 的 manifest/approval/artifacts，即使这些路径被误加入 files scope。
 
-- [ ] **Step 1: 写 PRD 设计摘要缺失/不符在写盘和 Git 前失败、批准文件发布、非 UI 不变的测试。**
-- [ ] **Step 2: 写无效 UI 节点不占槽且其他 ready 正常派发、prompt 定向注入、新稿不影响旧 run 的测试。**
-- [ ] **Step 3: 写设计基线文件只读的 commitPr 测试。**
-- [ ] **Step 4: 运行对应测试并确认预期 RED。**
-- [ ] **Step 5: 最小实现并运行对应测试至 GREEN。**
-- [ ] **Step 6: 提交 `feat(dag): enforce approved design contracts at publish and dispatch`。**
+- [x] **Step 1: 写 PRD 设计摘要缺失/不符在写盘和 Git 前失败、批准文件发布、非 UI 不变的测试。**
+- [x] **Step 2: 写无效 UI 节点不占槽且其他 ready 正常派发、prompt 定向注入、新稿不影响旧 run 的测试。**
+- [x] **Step 3: 写设计基线文件只读的 commitPr 测试。**
+- [x] **Step 4: 运行对应测试并确认预期 RED。**
+- [x] **Step 5: 最小实现并运行对应测试至 GREEN。**
+- [x] **Step 6: 提交 `feat(dag): enforce approved design contracts at publish and dispatch`。**
 
 ### Task 3: 定向设计证据、自动补验与 merge 身份门
 
@@ -92,11 +92,11 @@
 - controller 将 evidence 存入节点运行状态；review 前发现同 SHA 证据缺失时自动 verify，并重新创建 review attempt。
 - merge 仅对 UI 节点核验 `evidence.commit == reviewedCommit == prHead` 与 `evidence.designDigest == root.designBaseline.designDigest`，不重跑验证。
 
-- [ ] **Step 1: 写非 UI 不调用 verifier、UI 缺 verifier/证据失败、视觉差不硬阻塞、身份 mismatch 拒绝 merge 的测试。**
-- [ ] **Step 2: 写证据丢失自动补验并重新 review、runner 抛错不计 worker attempt 的测试。**
-- [ ] **Step 3: 运行对应测试并确认预期 RED。**
-- [ ] **Step 4: 最小实现并运行对应测试至 GREEN。**
-- [ ] **Step 5: 提交 `feat(dag): bind directional design evidence to reviewed commits`。**
+- [x] **Step 1: 写非 UI 不调用 verifier、UI 缺 verifier/证据失败、视觉差不硬阻塞、身份 mismatch 拒绝 merge 的测试。**
+- [x] **Step 2: 写证据丢失自动补验并重新 review、runner 抛错不计 worker attempt 的测试。**
+- [x] **Step 3: 运行对应测试并确认预期 RED。**
+- [x] **Step 4: 最小实现并运行对应测试至 GREEN。**
+- [x] **Step 5: 提交 `feat(dag): bind directional design evidence to reviewed commits`。**
 
 ### Task 4: 合同文档与全量验证
 
@@ -105,7 +105,7 @@
 - Modify: `AGENTS.md`（仅模块边界表增加 design-baseline 职责）
 - Modify: `docs/superpowers/plans/2026-11-17-design-gate-hardening.md`
 
-- [ ] **Step 1: 记录可选适用范围、一次确认、旧 run 继承、定向验证和自动解除语义。**
-- [ ] **Step 2: 运行 `npm test && npm run test:browser`。**
-- [ ] **Step 3: 运行 `git diff --check`、敏感信息扫描并审阅完整 diff。**
-- [ ] **Step 4: 提交 `docs(dag): record scoped design gate contract`。**
+- [x] **Step 1: 记录可选适用范围、一次确认、旧 run 继承、定向验证和自动解除语义。**
+- [x] **Step 2: 运行 `npm test && npm run test:browser`。**
+- [x] **Step 3: 运行 `git diff --check`、敏感信息扫描并审阅完整 diff。**
+- [x] **Step 4: 提交 `docs(dag): record scoped design gate contract`。**
