@@ -27,6 +27,17 @@ export const STATUS_KINDS = {
 };
 
 const text = (value, max = 300) => String(value ?? '').slice(0, max);
+
+// 链文件词干认领的规则名（词边界前缀），与 public/status-sections.mjs 同一条边界规则：
+// 'v6' 命中 'V6串行推进'，但不命中 'V6x串行推进'。chain-closeout.mjs 复用本实现。
+export function chainRuleNames(sourceFile, rules = []) {
+  const stem = String(sourceFile || '').replace(/-serial\.json$/i, '').toLowerCase();
+  if (!stem) return [];
+  return rules.filter(item => {
+    const name = text(item?.name).toLowerCase();
+    return name.startsWith(stem) && !/^[a-z0-9]/.test(name.slice(stem.length));
+  }).map(item => item.name);
+}
 const validPercent = value => Number.isInteger(value) && value >= 0 && value <= 100 ? value : null;
 
 export function effectiveNodePercent(node) {
