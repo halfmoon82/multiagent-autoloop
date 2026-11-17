@@ -139,9 +139,15 @@ const detourSample = {
 };
 writeFileSync(path.join(root, 'detours.json'), JSON.stringify({ detours: [detourSample.detoured, detourSample.reverted] }));
 const cliPath = path.join(root, 'check.sh'); writeFileSync(cliPath, '#!/bin/sh\nexit 0\n'); chmodSync(cliPath, 0o700);
+const hubEvents = [];
 const hub = await fakeHub((req, res) => {
   if (req.url === '/v1/state') return json(res, snapshot);
-  if (req.url.endsWith('/resolve')) { snapshot.cards[1].state = 'closed'; return json(res, { changed: true }); }
+  if (req.url === '/v1/events') { hubEvents.push(req.url); return json(res, { runId: 999 }); }
+  if (req.url.endsWith('/resolve')) {
+    const match = req.url.match(/\/cards\/(\d+)\/resolve$/);
+    const card = snapshot.cards.find(item => item.id === Number(match?.[1])) || snapshot.cards[1];
+    card.state = 'closed'; return json(res, { changed: true });
+  }
   if (req.url.endsWith('/answer')) { const match = req.url.match(/\/cards\/(\d+)\/answer$/); const card = snapshot.cards.find(item => item.id === Number(match?.[1])); if (card) card.state = 'decided'; return json(res, { changed: true }); }
   if (req.url.endsWith('/pause')) { snapshot.lines[0].paused = { reason: 'browser test' }; return json(res, { changed: true }); }
   if (req.url.endsWith('/resume')) { snapshot.lines[0].paused = null; return json(res, { changed: true }); }
@@ -231,6 +237,10 @@ try {
   assert.ok((await betaCard.innerText()).includes('项目 · beta'), 'a card must fall back to its creating rule project');
   assert.ok((await betaCard.innerText()).includes('规则 · beta 巡检'), 'cards must show which rule created them');
   assert.equal(await page.locator('.decision-card').count(), 3, '全部项目 shows every open card');
+  for (const card of await page.locator('.decision-card').all()) {
+    assert.equal(await card.getByRole('button', { name: '退回调度处理', exact: true }).count(), 1, 'every open card must expose exactly one delegate action');
+  }
+  assert.deepEqual(await betaCard.locator('[data-action="answer-choice"]').allInnerTexts(), ['继续', '暂停'], 'adding the delegate action must not change original option order');
   await page.locator('#project-filter').selectOption('beta');
   await page.waitForTimeout(300);
   assert.equal(await page.locator('.decision-card').count(), 1, 'cards view must filter by project');
@@ -295,6 +305,17 @@ try {
   await page.locator('.nav-item[data-view="cards"]').click(); // 回到插入前的视图，后续断言在待我处理页继续
   await page.getByRole('button', { name: '继续', exact: true }).click();
   const resolveCard=page.locator('.decision-card').filter({hasText:'直接结案测试'}); await resolveCard.getByRole('button',{name:'结案',exact:true}).click();
+  // 退回调度：一键退回产生 Hub 事件，成功后原卡结案；原选项和答案保持不变
+  const delegateBefore = hubEvents.length;
+  snapshot.cards.push({ id: 12, state: 'open', title: '退回调度测试卡', text: '这是一个产品语言背景。', options: ['保留', '取消'], rule: 'beta 巡检', createdAt: '2026-11-17T00:00:00Z' });
+  await page.waitForTimeout(2500);
+  const delegateCard = page.locator('.decision-card').filter({ hasText: '退回调度测试卡' });
+  assert.deepEqual(await delegateCard.locator('[data-action="answer-choice"]').allInnerTexts(), ['保留', '取消'], 'delegate card options must stay in original order');
+  await delegateCard.getByRole('button', { name: '退回调度处理', exact: true }).click();
+  await page.waitForTimeout(2500);
+  assert.ok((await page.locator('#notice').innerText()).includes('已退回调度处理'), 'delegate must report success to the user');
+  assert.ok(hubEvents.length > delegateBefore, 'delegate click must create a Hub scheduling event');
+  assert.equal(snapshot.cards.find(card => card.id === 12)?.state, 'closed', 'source card must be closed only after the event is accepted');
   await page.setViewportSize({ width: 360, height: 800 });
   await page.getByRole('button', { name: '调度规则', exact: true }).click(); await page.getByRole('button', { name: '新建规则', exact: true }).click();
   await page.getByLabel('规则名称').fill('手机创建测试'); await page.getByLabel('Cron 表达式').fill('0 9 * * *'); await page.getByLabel('工作目录').fill(root); await page.getByLabel('处理说明').fill('验证手机表单');

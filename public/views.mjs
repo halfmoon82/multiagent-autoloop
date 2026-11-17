@@ -234,6 +234,7 @@ export function renderCards(snapshot, rules = []) {
     if (card.state === 'open') {
       const options = el('div', 'option-list'); (card.options || []).forEach((option, index) => options.append(button(option, 'answer-choice', `${card.id}:${index}`, 'secondary')));
       box.append(options);
+      const delegate = button('退回调度处理', 'delegate-card', String(card.id), 'secondary'); box.append(delegate);
       const resolve = button('结案', 'resolve', String(card.id), 'secondary'); box.append(resolve);
       const answer = el('form', 'text-answer'); answer.dataset.action = 'answer-text'; answer.dataset.id = card.id;
       const input = el('textarea'); input.name = 'answer'; input.required = true; input.rows = 1; input.dataset.autogrow = ''; input.placeholder = '输入其他回答，回车发送，Alt/Shift+回车换行'; input.setAttribute('aria-label', `回答 ${card.title}`);
