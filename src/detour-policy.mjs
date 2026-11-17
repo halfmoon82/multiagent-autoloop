@@ -89,12 +89,14 @@ export function effectivePolicy(policy, cwd) {
   return result;
 }
 
-/** 给定工作类型与被拦 Agent，算出政策表指定的备选；已在备选或类型不认识时返回 null。 */
+/** 给定工作类型与被拦 Agent，算出政策表指定的备选；仅主 Agent 才改派，其余（含备选/第三 Agent）返回 null。 */
 export function resolveFallback(kind, blockedAgent, { policy, cwd } = {}) {
   if (!KINDS.includes(kind)) throw new PolicyError(`未知工作类型：${kind}`);
   const agent = String(blockedAgent ?? '').trim();
   if (!agent) throw new PolicyError('缺少被拦 Agent');
   const rule = effectivePolicy(policy, cwd)[kind];
-  if (agent === rule.fallback) return null; // 已到政策链末端，不再自动往下绕
+  // 只有被拦 Agent 是该类型主 Agent 时才自动改派到备选；第三 Agent（如 codex 上的开发规则）
+  // 和已处于备选的都不自动往下绕，留给调度会话按 §4 第 9/10 条处理。
+  if (agent !== rule.primary) return null;
   return rule.fallback;
 }

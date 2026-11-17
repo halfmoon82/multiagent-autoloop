@@ -76,8 +76,22 @@ test('resolveFallback applies per-project override only to matching cwd', () => 
     projects: { '/proj/a': { dev: { primary: 'codex', fallback: 'claude' } } },
   });
   const policy = loadPolicy(config);
-  assert.equal(resolveFallback('dev', 'codex', { policy, cwd: '/proj/a' }), 'claude');
-  assert.equal(resolveFallback('dev', 'codex', { policy, cwd: '/elsewhere' }), 'claude'); // 默认 dev 主=workbuddy，codex 非主也走备选 claude
+  assert.equal(resolveFallback('dev', 'codex', { policy, cwd: '/proj/a' }), 'claude'); // /proj/a 下 codex 是 dev 主
+  assert.equal(resolveFallback('dev', 'codex', { policy, cwd: '/elsewhere' }), null); // 默认 dev 主=workbuddy，codex 非主不改派
+  assert.equal(resolveFallback('dev', 'workbuddy', { policy, cwd: '/elsewhere' }), 'claude'); // 默认主 workbuddy 仍改派
+});
+
+test('resolveFallback only reroutes the primary agent, never a third or fallback agent (P1-b)', () => {
+  const { config } = rootWithPolicy();
+  const policy = loadPolicy(config);
+  // dev 主=workbuddy 备=claude；review 主=claude 备=codex-full
+  assert.equal(resolveFallback('dev', 'workbuddy', { policy }), 'claude'); // dev 主改派
+  assert.equal(resolveFallback('review', 'claude', { policy }), 'codex-full'); // review 主改派
+  assert.equal(resolveFallback('dev', 'codex', { policy }), null); // 第三 Agent（codex 开发规则）不自动拽到 claude
+  assert.equal(resolveFallback('dev', 'codex-full', { policy }), null);
+  assert.equal(resolveFallback('review', 'workbuddy', { policy }), null);
+  assert.equal(resolveFallback('dev', 'claude', { policy }), null); // 已在备选，不再往下绕
+  assert.equal(resolveFallback('review', 'codex-full', { policy }), null);
 });
 
 test('loadPolicy rejects malformed override files loudly', () => {
