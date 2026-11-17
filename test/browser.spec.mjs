@@ -21,7 +21,7 @@ const snapshot = {
     { name: 'beta 巡检', paused: null, totals: { running: 0, queued: 2, retrying: 0, unknown: 0, done: 1, nothing: 0, doneToday: 1 }, usage: { input: 10, output: 5 } },
     { name: 'demo 巡检', paused: null, totals: { running: 0, queued: 0, retrying: 0, unknown: 0, done: 3, nothing: 0, doneToday: 1, usage: { input: 1234, output: 432, cost: 0.21 } } },
   ],
-  runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '' }, { id: 4, rule: 'beta 巡检', agent: 'fake', state: 'queued', attempts: 2, project: '/elsewhere/beta', createdAt: '2026-11-14T01:00:00Z', summary: 'beta 项目等待重试' }], timers: [],
+  runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '' }, { id: 4, rule: 'beta 巡检', agent: 'fake', state: 'queued', attempts: 2, project: '/elsewhere/beta', createdAt: '2026-11-14T01:00:00Z', summary: 'beta 项目等待重试' }, { id: 5, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: new Date().toISOString(), usage: { input: 60, output: 40, cost: 0.07 }, summary: '今日完成一次巡检' }], timers: [],
 };
 const rawRules = { sources: { local: { name: '本机' } }, agents: { fake: { name: '无模型 Agent', use: 'command', access: 'read' } }, rules: [{ name: '恢复测试', when: { source: 'local', types: ['recovery.*'] }, to: 'fake', cwd: root, prompt: '只验证控制台', resume: false }, { name: 'beta 巡检', when: { source: 'local', types: ['beta.*'] }, to: 'fake', cwd: '/elsewhere/beta', prompt: 'beta 项目巡检', resume: false }, { name: 'demo 巡检', when: { cron: '0 9 * * *' }, to: 'fake', cwd: demoRepo, prompt: 'demo 项目巡检', resume: false }], elsewhere: [] };
 const schedulingSessions = {
@@ -376,6 +376,8 @@ try {
   assert.ok(progressText.includes('链累计'), 'chain row must show cumulative chain usage');
   assert.ok(progressText.includes('1,666 Token'), 'chain usage sums input+output tokens of the whole chain');
   assert.ok(progressText.includes('$0.21'), 'chain usage must show reported cost');
+  assert.ok(progressText.includes('项目今日 · 费用 $0.07 · Token 100（入 60 / 出 40）'), 'project today usage must come from runs finished today');
+  assert.ok(progressText.includes('项目累计 · 费用 $0.21 · Token 1,666（入 1,234 / 出 432）'), 'project cumulative usage must come from rule lines');
   const segTwo = progressRow.locator('.node-seg').filter({ hasText: '二' });
   await segTwo.click();
   const pop = progressRow.locator('.node-pop');

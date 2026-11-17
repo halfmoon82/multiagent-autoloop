@@ -1,5 +1,5 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
-import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, projectUsageText } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
@@ -322,8 +322,24 @@ function chainUsageText(usage) {
   return '链累计 · 暂无用量';
 }
 
+// 项目级今日/累计费用与 Token：只展示服务端聚合的 Hub 自报值，读取失败如实标注。
+function projectUsageChips(project, projectUsage = [], loadError = false) {
+  const wrap = el('div', 'row-meta chips-line project-usage');
+  if (loadError) {
+    wrap.append(el('span', 'chip', '项目用量读取失败，请刷新重试'));
+    return wrap;
+  }
+  const key = projectName(project);
+  const found = (projectUsage || []).find(item => projectName(item.key || item.project) === key);
+  wrap.append(
+    el('span', 'chip', projectUsageText('项目今日', found?.today)),
+    el('span', 'chip', projectUsageText('项目累计', found?.cumulative)),
+  );
+  return wrap;
+}
+
 // 项目任务进度：每行一个项目（串行链或有活动但无链文件）。节点段可点击，展开卡显示节点摘要。
-export function renderProjectProgress({ chains: rawChains = [], sessions = [], rules = [], snapshot = {}, loadError = false } = {}) {
+export function renderProjectProgress({ chains: rawChains = [], sessions = [], rules = [], snapshot = {}, loadError = false, projectUsage = [], usageLoadError = false } = {}) {
   const chains = latestChainsByProject(rawChains); // 同一项目多条链只显示最近更新的一条
   const openCards = (snapshot.cards || []).filter(card => card.state === 'open');
   const lines = snapshot.lines || [];
@@ -332,7 +348,7 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
 
   // 有串行状态文件的项目：完整任务条
   for (const chain of chains) {
-    rows.push(renderChainRow(chain, sessions, rules, openCards, lines, chains));
+    rows.push(renderChainRow(chain, sessions, rules, openCards, lines, chains, projectUsage, usageLoadError));
   }
 
   // 有活动但没有链文件的项目：只显示计数行（会话绑定项目 + 有今日活动的规则项目）
@@ -351,7 +367,7 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
     head.append(el('span', 'row-title', name), badge('无节点计划', 'warn'));
     const session = sessions.find(item => matchesProject(item.project || '', cwd));
     if (session) head.append(badge(session.statusText || session.status || '未知', session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
-    main.append(head, el('div', 'row-meta', '该项目没有节点计划文件，仅显示计数。'), countsChips(activity, cardsHere));
+    main.append(head, el('div', 'row-meta', '该项目没有节点计划文件，仅显示计数。'), countsChips(activity, cardsHere), projectUsageChips(cwd, projectUsage, usageLoadError));
     row.append(main);
     rows.push(row);
   }
@@ -360,7 +376,7 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
   return rows;
 }
 
-function renderChainRow(chain, sessions, rules, openCards, lines, allChains = []) {
+function renderChainRow(chain, sessions, rules, openCards, lines, allChains = [], projectUsage = [], usageLoadError = false) {
     const name = projectName(chain.project);
     const row = el('div', 'list-row');
     row.dataset.chain = name;
@@ -420,6 +436,7 @@ function renderChainRow(chain, sessions, rules, openCards, lines, allChains = []
     const chips = countsChips(activity, cardsHere);
     chips.append(el('span', 'chip chain-usage', chainUsageText(chainUsage(chain, rules, lines, allChains))));
     main.append(chips);
+    main.append(projectUsageChips(chain.project, projectUsage, usageLoadError));
     row.append(main);
     return row;
 }
