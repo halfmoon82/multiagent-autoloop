@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  DEFAULT_PATTERNS, readRunFailures, scanForQuotaDetours,
+  DEFAULT_PATTERNS, matchesPattern, readRunFailures, scanForQuotaDetours,
 } from '../src/quota-scan.mjs';
 
 const NOW = new Date('2026-11-17T12:00:00+08:00');
@@ -27,17 +27,19 @@ function fixture({ runs = [], ruleDefs, policy } = {}) {
   return { root, config: { root, rulesFile: path.join(root, 'rules.json') } };
 }
 
-function makeRun(root, { n, attempt = 1, agent = 'workbuddy', model = 'hy4free', rule = '执行波开发', error = 'ACP 没有完成这一轮：refusal', exitCode = 1 }) {
+function makeRun(root, { n, attempt = 1, agent = 'workbuddy', model = 'hy4free', rule = '执行波开发', error = 'ACP 没有完成这一轮：refusal', exitCode = 1, stdout, noExit = false }) {
   const dir = path.join(root, 'worker', 'runs', `${n}-${attempt}`);
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, 'entry.json'), JSON.stringify({
     run: n, attempt,
     job: { rule: { name: rule, cwd: '/proj/a' }, agent: { id: agent, model } },
   }));
-  const line = error ? `{"session":"s","started":true}\n{"session":"s","finished":true,"error":${JSON.stringify(error)}}\n` : '{"session":"s","started":true}\n{"session":"s","finished":true}\n';
+  const line = stdout !== undefined
+    ? stdout
+    : (error ? `{"session":"s","started":true}\n{"session":"s","finished":true,"error":${JSON.stringify(error)}}\n` : '{"session":"s","started":true}\n{"session":"s","finished":true}\n');
   writeFileSync(path.join(dir, 'stdout-1.log'), line);
   writeFileSync(path.join(dir, 'stderr-1.log'), error || '');
-  writeFileSync(path.join(dir, 'exit-1'), String(exitCode));
+  if (!noExit) writeFileSync(path.join(dir, 'exit-1'), String(exitCode));
   writeFileSync(path.join(dir, 'context.json'), JSON.stringify({ events: [], answers: [], timers: [], waiting: [], open: [], decided: [] }));
   return dir;
 }
@@ -68,6 +70,41 @@ test('configurable patterns decide quota hits (non-quota failures do not match)'
   assert.equal(readRunFailures({ root, patterns: ['boom'] })[0].quota, true);
 });
 
+test('exit-0 rounds with quota patterns in stdout are not misjudged as failures or counted (P1-a)', () => {
+  // 成功轮次（exit 0）的 stdout 含 429/quota 等模式，但没有 error 行——
+  // 不得判为 failed/quota，三轮也不得触发改派（真钱风险）。
+  const okLog = '{"session":"s","started":true}\n{"level":"info","msg":"GET /api 429 quota handled"}\n{"session":"s","finished":true}\n';
+  const { root, config } = fixture({ runs: [
+    { n: 100, exitCode: 0, error: '', stdout: okLog },
+    { n: 101, exitCode: 0, error: '', stdout: okLog },
+    { n: 102, exitCode: 0, error: '', stdout: okLog },
+  ] });
+  const failures = readRunFailures({ root });
+  assert.equal(failures.length, 3);
+  for (const failure of failures) {
+    assert.equal(failure.failed, false, `run ${failure.id} 不该判为失败`);
+    assert.equal(failure.quota, false, `run ${failure.id} 不该判为额度命中`);
+  }
+  const result = scanForQuotaDetours(config, { now: NOW });
+  assert.equal(result.candidates.length, 0);
+  assert.equal(result.detours.length, 0);
+});
+
+test('missing exit code degrades to error lines only, not raw log text (P1-a)', () => {
+  const infoLog = '{"session":"s","started":true}\n{"level":"info","msg":"quota 429 seen but handled"}\n{"session":"s","finished":true}\n';
+  const { root } = fixture({ runs: [{ n: 100, error: '', noExit: true, stdout: infoLog }] });
+  const failure = readRunFailures({ root })[0];
+  assert.equal(failure.failed, false); // 无 error 行、无退出码 → 不算失败
+  assert.equal(failure.quota, false);
+});
+
+test('matchesPattern anchors bare numeric patterns with word boundaries (P1-a)', () => {
+  assert.equal(matchesPattern('HTTP 429 Too Many Requests', ['429']), true);
+  assert.equal(matchesPattern('429', ['429']), true);
+  assert.equal(matchesPattern('order 4291 failed', ['429']), false); // 词边界：4291 不算 429
+  assert.equal(matchesPattern('code 14290', ['429']), false);
+});
+
 test('three consecutive quota hits register a detour with §12 fields and policy fallback', () => {
   const { config } = fixture({ runs: threeQuota });
   const result = scanForQuotaDetours(config, { now: NOW });
@@ -84,6 +121,20 @@ test('three consecutive quota hits register a detour with §12 fields and policy
   const saved = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
   assert.equal(saved.rules[0].to, 'claude');
   assert.equal(saved.rules[1].to, 'workbuddy');
+});
+
+test('three quota hits on a non-primary agent do not register a detour (P1-b)', () => {
+  // dev 主=workbuddy，但规则派在 codex（第三 Agent）上；即便连续额度命中也不自动改派到 claude。
+  const { config } = fixture({
+    runs: [
+      { n: 100, agent: 'codex' }, { n: 101, agent: 'codex' }, { n: 102, agent: 'codex' },
+    ],
+    ruleDefs: [{ name: '执行波开发', when: { source: 'local', types: ['dev'] }, to: 'codex', cwd: '/proj/a', prompt: '写' }],
+  });
+  const result = scanForQuotaDetours(config, { now: NOW });
+  assert.equal(result.candidates.length, 1); // 候选人被识别
+  assert.equal(result.detours.length, 0); // 但非主 Agent 不改派、不登记
+  assert.ok(result.skipped.some((s) => /非主 Agent/.test(s.reason)));
 });
 
 test('a non-quota failure between hits breaks the consecutive chain', () => {

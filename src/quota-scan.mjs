@@ -19,8 +19,10 @@ const AGENT_HINTS = [
 ];
 
 function runner(text, pattern) {
-  try { return new RegExp(pattern, 'i').test(text); }
-  catch { return new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text); }
+  // 纯数字模式（如 429）加词边界，避免命中 4291/14290 等无关数字；其余模式原样。
+  const source = /^\d+$/.test(pattern) ? `\\b${pattern}\\b` : pattern;
+  try { return new RegExp(source, 'i').test(text); }
+  catch { return new RegExp(source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text); }
 }
 
 export function matchesPattern(text, patterns) {
@@ -47,7 +49,8 @@ function collectFailureText(dir) {
     const parsed = readJsonLine(line);
     if (parsed && typeof parsed.error === 'string' && parsed.error.trim()) errors.push(parsed.error.trim());
   }
-  return { raw, errors, evidence: errors.join('；') || raw.trim() };
+  // evidence 只取自 error 行，不用 raw 全文兜底——否则任何有 stdout 的成功轮次都显得"有证据"。
+  return { raw, errors, evidence: errors.join('；') };
 }
 
 function readJsonLine(line) {
@@ -100,17 +103,20 @@ export function readRunFailures({ root, runsDir, window = 200, patterns = DEFAUL
     const entry = readJson(path.join(full, 'entry.json'));
     let commandText = '';
     try { commandText = readFileSync(path.join(full, 'command-1.sh'), 'utf8'); } catch { /* 老轮次没有命令脚本 */ }
-    const { raw, evidence } = collectFailureText(full);
+    const { raw, errors, evidence } = collectFailureText(full);
     let exitCode = null;
-    try { exitCode = Number(readFileSync(path.join(full, 'exit-1'), 'utf8').trim()); } catch { /* 缺 exit-1 时按错误文本判定 */ }
+    try { exitCode = Number(readFileSync(path.join(full, 'exit-1'), 'utf8').trim()); } catch { /* 缺 exit-1 时降级用 error 行判定 */ }
     const agent = extractAgent(entry, commandText);
     const model = extractModel(entry, commandText, raw);
     const ruleName = typeof entry?.job?.rule?.name === 'string' ? entry.job.rule.name : '';
-    const failed = (Number.isFinite(exitCode) && exitCode !== 0) || evidence.length > 0;
+    // 有退出码只认退出码：exit 0 的成功轮次即使 stdout 含模式也不算失败。
+    // 缺退出码才降级用 error 行数（非 raw 全文）。模式匹配只对 error 提取行执行。
+    const failed = Number.isFinite(exitCode) ? exitCode !== 0 : errors.length > 0;
+    const errorText = errors.join('\n');
     out.push({
       id: item.name, run: item.run, attempt: item.attempt, agent, model,
       kind: classifyKind(ruleName), ruleName,
-      failed, quota: failed && matchesPattern(raw, patterns),
+      failed, quota: failed && matchesPattern(errorText, patterns),
       evidence: evidence || '(无错误原文)', at: dirTime(full),
     });
   }
@@ -165,7 +171,7 @@ export function scanForQuotaDetours(config, options = {}) {
     const matching = rules.filter((rule) => rule.to === candidate.agent && classifyKind(rule.name) === candidate.kind);
     if (!matching.length) { why('没有在被拦 Agent 上的该类型规则'); continue; }
     const fallback = resolveFallback(candidate.kind, candidate.agent, { policy, cwd: matching[0].cwd });
-    if (!fallback) { why('已在政策链末端，无备选'); continue; }
+    if (!fallback) { why('非主 Agent 或已在政策链末端，不自动改派'); continue; }
     const targets = matching.filter((rule) => resolveFallback(candidate.kind, candidate.agent, { policy, cwd: rule.cwd }) === fallback);
     const ruleNames = targets.map((rule) => rule.name);
     const id = `auto-${candidate.agent}-${candidate.model || 'unknown'}-${idStamp(now)}`.replace(/[^\w.-]/g, '_').replace(/\.\./g, '_');
