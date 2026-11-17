@@ -14,6 +14,7 @@ import { loadChains } from './serial-progress.mjs';
 import { aggregateProjectUsage } from './project-usage.mjs';
 import { readCloseouts } from './chain-closeout.mjs';
 import { createDagService, DagServiceError } from './dag-service.mjs';
+import { CardDelegateError, delegateOpenCard } from './card-delegate.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(MODULE_DIR, '..', 'public');
@@ -139,6 +140,18 @@ async function handleApi(config, req, res, url) {
     const payload = action === 'answer' ? (body.choice !== undefined ? { choice: Number(body.choice) } : { text: String(body.text || '') }) : { reason: String(body.reason || '') };
     return jsonResponse(res, 200, await hubRequest(config, `/v1/cards/${id}/${action}`, { method: 'POST', body: payload }));
   }
+  if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/cards\/([^/]+)\/delegate$/))) {
+    const id = idOf(match[1]);
+    const state = await hubRequest(config, '/v1/state');
+    const card = (state?.cards || []).find(item => Number(item?.id) === id);
+    if (!card) throw new RequestError(404, '卡片不存在或已结案');
+    return jsonResponse(res, 200, await delegateOpenCard({
+      card,
+      store: config.cardDelegateStore,
+      postEvent: event => hubRequest(config, '/v1/events', { method: 'POST', body: event }),
+      resolveCard: (cardId, reason) => hubRequest(config, `/v1/cards/${cardId}/resolve`, { method: 'POST', body: { reason } }),
+    }));
+  }
   return false;
 }
 export function createConsoleServer(config, schedulingSessions) {
@@ -159,7 +172,7 @@ export function createConsoleServer(config, schedulingSessions) {
     if (!['127.0.0.1', 'localhost'].includes(host)) return jsonResponse(res, 403, { error: '控制台只接受本机地址' });
     try { if (url.pathname.startsWith('/api/') && await handleApi(config, req, res, url) !== false) return; }
     catch (error) {
-      const status = error instanceof RequestError || error instanceof RuleError || error instanceof SchedulingSessionError || error instanceof DagServiceError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
+      const status = error instanceof RequestError || error instanceof RuleError || error instanceof SchedulingSessionError || error instanceof DagServiceError || error instanceof CardDelegateError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
       return jsonResponse(res, status, { error: error.message });
     }
     const asset = FILES.get(url.pathname);

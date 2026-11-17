@@ -279,6 +279,12 @@ document.addEventListener('click', async event => {
     if (action === 'close-session' && !confirm(`关闭调度会话“${id}”？`)) return;
     if (action === 'edit') { const rule = state.rules.find(item => item.name === id); openRuleForm({ rule, agents: state.agents, sources: state.sources, api, onSaved: refresh }); return; }
     if (action === 'answer-choice') { const split = id.lastIndexOf(':'); await api(`/api/cards/${id.slice(0, split)}/answer`, { method: 'POST', body: JSON.stringify({ choice: Number(id.slice(split + 1)) }) }); showNotice('回答已提交，任务将继续。'); await refresh(); return; }
+    if (action === 'delegate-card') {
+      const result = await api(`/api/cards/${encodeURIComponent(id)}/delegate`, { method: 'POST', body: JSON.stringify({}) });
+      showNotice(result?.idempotent ? '这张卡已经退回过调度，未重复派发。' : '已退回调度处理，原卡已结案。');
+      await refresh();
+      return;
+    }
     if (action === 'queue-steer' || action === 'queue-delete') {
       // 队列消息管理（与 Codex 输入体验一致）：steer in = 立即追加发送（打断当前轮马上送达）；
       // 删除 = 从队列移除这条，剩余队列保持顺序
