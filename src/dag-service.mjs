@@ -5,6 +5,7 @@ import { ALLOWED_ACTIONS, DENIED_ACTIONS, MAX_SLOTS, ROOT_NODE, createRunStore, 
 import { reviveNode } from './dag-controller.mjs';
 import { seg } from './dag-slots.mjs';
 import { parallelShape } from './dag.mjs';
+import { loadNativePlan } from './dag-plan.mjs';
 import { checkCapabilities, checkInitialization } from './vibe-adapter.mjs';
 import { createPlanDigest, loadVibePlan } from './vibe-plan.mjs';
 
@@ -18,6 +19,18 @@ const wrap = fn => { try { return fn(); } catch (error) {
   if (error?.code === 'ENOENT') throw new DagServiceError('run 不存在', 404);
   throw error;
 }; };
+
+// 计划加载：原生 plans 目录优先，旧 vibe 计划作为兼容回退；两者都失败时给可读错误。
+// 原生失败不写盘、不要求 .vibe，失败原因只在回退也失败时才暴露。
+function loadPlan(project, planId) {
+  try { return loadNativePlan({ projectRoot: project, planId }); }
+  catch (nativeError) {
+    try { return loadVibePlan({ projectRoot: project, planId }); }
+    catch (vibeError) {
+      throw new DagServiceError(`无法加载计划：原生（${nativeError.message}）；vibe（${vibeError.message}）`);
+    }
+  }
+}
 
 // hubEvidence({ run }) → { workerOnline?, offlineSince? }：来自 Hub“接单程序没连上”卡片；默认无证据即 fail closed。
 export function createDagService({ root, store: injected, storeDirectory, hubEvidence = async () => ({}), now = Date.now,
@@ -39,9 +52,7 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
     },
     // 授权确认页数据源：只读加载已发布计划；planDigest 与 create() 同口径，确认页直接回传。
     preview(project, planId) {
-      let loaded;
-      try { loaded = loadVibePlan({ projectRoot: project, planId: String(planId || '') }); }
-      catch (error) { throw new DagServiceError(`无法加载计划：${error.message}`); }
+      const loaded = loadPlan(project, String(planId || ''));
       const shape = parallelShape(loaded.nodes);
       const waveOf = new Map();
       (shape.parallelWaves || []).forEach((wave, index) => wave.forEach(id => waveOf.set(id, index + 1)));
@@ -69,9 +80,7 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       return { project, checks };
     },
     create(body, project) {
-      let loaded;
-      try { loaded = loadVibePlan({ projectRoot: project, planId: String(body.planId || '') }); }
-      catch (error) { throw new DagServiceError(`无法加载计划：${error.message}`); }
+      const loaded = loadPlan(project, String(body.planId || ''));
       if (createPlanDigest({ ...loaded, authorizationSnapshot: null }) !== body.planDigest) throw new DagServiceError('planDigest 与服务端计划不一致，计划已变化需重新确认');
       return wrap(() => store.createRun({
         project, planId: loaded.planId, planDigest: body.planDigest, confirmedActionIds: body.confirmedActionIds,
