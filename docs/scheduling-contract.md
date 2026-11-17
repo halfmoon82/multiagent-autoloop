@@ -135,7 +135,93 @@ Agent 或改写成只读提示词。否定豁免只认紧邻动词的禁止（�
 
 这些运行时能力在本契约中保留为明确要求；后续入库必须先泛化配置、去除秘密和私有业务语义，并把现有行为测试一并迁移。文档存在不代表相应运行时脚本已经由本仓库提供。
 
-频限绕行的通用运行时机制已由本仓库提供：`src/detour.mjs` 维护运行目录下的 `detours.json` 登记（被拦 Agent/模型、证据、替代方案、冷却节奏），`scripts/detour.mjs` 提供 record/verify/revert/status；verify 执行登记时给定的探测命令，通过即把 rules.json 原子回归原派发（登记与回归各留带标识的 `.bak`，已离开替代 Agent 的规则不强拽）；登记、核实、回归与控制台规则表单保存共用状态锁互斥；登记写失败自动回滚 rules.json；改坏的 detours.json 留档隔离而不卡死核实。探测命令按 Agent 而异，由登记时显式给出，仓库不提供具体 Agent 的探测实现。
+频限绕行的通用运行时机制已由本仓库提供：`src/detour.mjs` 维护运行目录下的 `detours.json` 登记（被拦 Agent/模型、证据、替代方案、冷却节奏），`scripts/detour.mjs` 提供 record/verify/verify-all/revert/status；verify 执行登记时给定的探测命令，通过即把 rules.json 原子回归原派发（登记与回归各留带标识的 `.bak`，已离开替代 Agent 的规则不强拽）；登记、核实、回归与控制台规则表单保存共用状态锁互斥；登记写失败自动回滚 rules.json；改坏的 detours.json 留档隔离而不卡死核实。探测命令按 Agent 而异，由登记时显式给出，仓库不提供具体 Agent 的探测实现。自动侦测脚本 `scripts/quota-scan.mjs`、路由政策表 `src/detour-policy.mjs` 与 cron 模板见 §12。
+
+## 12. 额度绕行机械化（自动侦测 / 政策路由 / 定时探针）
+
+本节落实 AGENTS.md §4.12：额度耗尽才绕行，探针探到恢复自动切回，全系统通用而非单会话专用。
+机制不升级用户、不计入重试纪律的失败次数，也不改变"恢复后原平台重新成为默认"的口径。
+
+### 12.1 路由政策表（代码配置 + 文档）
+
+主人定死的默认表（`src/detour-policy.mjs` 的 `DEFAULT_POLICY`）：
+
+| 工作类型 | 主 Agent | 备选 Agent | 说明 |
+| --- | --- | --- | --- |
+| dev（开发） | workbuddy | claude | 额度耗尽才由 workbuddy 切 claude |
+| review（审阅） | claude | codex-full | 独立审阅仍优先可靠性，不因省钱降档 |
+
+- 可按项目覆盖：运行目录放 `detour-policy.json`（属本机运行状态，不入库），结构
+  `{"defaults":{...},"projects":{"<项目 cwd>":{"dev":{"primary":"...","fallback":"..."},"review":{...}}}}`；
+  以最长 cwd 前缀匹配的项目条目为准，逐类型覆盖全局默认。
+- 只有在被拦 Agent 是该类型的**主** Agent 时才自动改派到备选；已经处于备选时 `resolveFallback` 返回空，
+  不再自动往下绕，留给调度会话按第 9/10 条处理。判不出工作类型（如纯扫描规则）不自动登记。
+
+### 12.2 自动侦测 `scripts/quota-scan.mjs`
+
+- 只读运行目录 `<AGENT_AUTOLOOP_HOME>/worker/runs/<轮次号>-<尝试号>/` 最近 `window` 个轮次（默认 200，可配），
+  从 `stdout-*.log` / `stderr-1.log` 的 `error` 原文与退出码判定失败；Agent/模型取自 `entry.json` 的
+  `job.agent.id` / `model`，缺失时按命令里的 `--model` 等特征推断；工作类型按规则名（开发/dev、审阅/review）判定。
+- 额度拒绝模式可配：默认 `429, refusal, 配额, quota, 额度, rate.?limit, exhausted, too many requests`，
+  `--patterns` 整体替换。编译失败、网络错误等**非额度失败不触发**，并打断同一 agent+model 的连续命中。
+- 同一 agent+model 连续 3 次额度命中（`--threshold` 可配）才自动登记：调 `recordDetour`，
+  经 `withStateLock` 原子改派备选、失败回滚 `rules.json`，写穿 `detours.json` 留 `.bak`；
+  控制台 `/api/detours` 可见（展示经 `publicDetour` 剥掉探测命令）。已有同 agent+model 在途绕行则幂等跳过。
+- §12 必填字段全部由证据自动写入：`origin: auto-scan`、被拦 agent/model、`blockedAt` 时间、
+  `evidence`（命中模式 + 各轮 `run <id>「证据原文」` + 最近命中时间）、被改派规则及原派发。
+- 探测命令按 Agent 而异，由 `--probe` 或部署配置提供；未配置时登记仍成功但不带探测命令，
+  定时核实时该项会跳过并要求人工回归——生产部署必须先配好探测命令再启用 cron。
+- `--dry-run` 只报候选不写文件；`--json` 输出机器可读摘要。
+
+cron 规则模板 JSON（`to` 用只读或低风险通道，提示词只调用脚本并汇报，不自行改规则）：
+
+```json
+{
+  "name": "额度拒绝自动侦测",
+  "when": { "cron": "*/15 * * * *" },
+  "to": "claude",
+  "cwd": "<AGENT_AUTOLOOP_HOME>",
+  "prompt": "只运行本机命令：cd <REPO> && AGENT_AUTOLOOP_HOME=<AGENT_AUTOLOOP_HOME> node scripts/quota-scan.mjs --json。把登记了几条绕行、跳过了什么如实汇报；除该脚本外不改 rules.json、不改 detours.json、不手工 revert。非额度失败不要登记。",
+  "resume": false
+}
+```
+
+### 12.3 自动回归（定时探针 + 退出码）
+
+- `node scripts/detour.mjs verify-all [--json] [--timeout 120000]` 批量核实**所有**到期登记：
+  对每条执行其探测命令；探到恢复即 `markProbeResult(ok)` 原子回归原 Agent（跳过已离开备选的规则），
+  记录 `probe-ok`/`reverted` 并写穿 `detours.json`；未恢复的继续绕行，等待下一冷却窗口。
+  这是全系统通用行为：任一会话、任一 cron 轮次探到恢复都会切回，不依赖原会话是否还在。
+- 退出码约定（cron 据此判断是否告警）：`0`=核实完成或无到期项；`1`=至少一条探测未通过或处理出错；
+  `2`=用法或配置错误（如 `--timeout` 非法）。`--json` 输出 `{due,ok,failed,errors,skipped,results,notes,exitCode}`。
+  没有探测命令的登记计为跳过而非失败（提示用 `revert` 人工回归），不把跳过伪装成"已通过恢复"。
+- 旧 `verify` 保持兼容语义：只有处理出错才退出 1，探测未通过仍退出 0；cron 一律用 `verify-all`。
+
+cron 规则模板（每 30 分钟，提示词只调用 verify 并汇报，不手工改规则）：
+
+```json
+{
+  "name": "绕行定时核实",
+  "when": { "cron": "*/30 * * * *" },
+  "to": "claude",
+  "cwd": "<AGENT_AUTOLOOP_HOME>",
+  "prompt": "只运行本机命令：cd <REPO> && AGENT_AUTOLOOP_HOME=<AGENT_AUTOLOOP_HOME> node scripts/detour.mjs verify-all --json。按退出码汇报：0=全部核实完成或无到期项，1=仍有未恢复（列出 agent/model 与证据），2=配置错误。不要手工改 rules.json 或 detours.json，也不要跳过探测直接 revert。",
+  "resume": false
+}
+```
+
+对应的系统 cron 模板（与上面的规则模板二选一；`<REPO>`、`<AGENT_AUTOLOOP_HOME>` 为部署时替换的占位符）：
+
+```cron
+*/15 * * * * cd <REPO> && AGENT_AUTOLOOP_HOME=<AGENT_AUTOLOOP_HOME> node scripts/quota-scan.mjs --json >> <AGENT_AUTOLOOP_HOME>/logs/quota-scan.log 2>&1
+*/30 * * * * cd <REPO> && AGENT_AUTOLOOP_HOME=<AGENT_AUTOLOOP_HOME> node scripts/detour.mjs verify-all --json >> <AGENT_AUTOLOOP_HOME>/logs/detour-verify.log 2>&1
+```
+
+### 12.4 边界
+
+- 自动侦测与核实只在运行目录内读写 `rules.json` / `detours.json`，复用与控制台表单保存、人工登记同一把状态锁；
+  不把真实项目配置、凭据或路径写进本仓库，模板中一律用占位符。
+- 绕行登记与回归都有留痕和备份；恢复后按政策表回到主 Agent，不把备选沉淀为新的默认偏好。
 
 ## 验收示例
 

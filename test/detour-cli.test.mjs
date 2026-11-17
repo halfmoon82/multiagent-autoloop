@@ -70,3 +70,60 @@ test('CLI record rejects a malformed --probe with a clean error', () => {
   assert.match(result.stderr, /--probe 要是 JSON 数组/);
   assert.deepEqual(rulesTo(root), ['workbuddy', 'workbuddy']); // 规则未被改动
 });
+
+// ---- 定时探针批量核实入口 verify-all 与退出码约定 ----
+function clearCooldown(root) {
+  const file = path.join(root, 'detours.json');
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  for (const detour of raw.detours) detour.lastProbeAt = null;
+  writeFileSync(file, JSON.stringify(raw, null, 2));
+}
+
+test('verify-all reverts all due detours and exits 0 when probes pass', () => {
+  const root = fixture();
+  record(root, passProbe);
+  clearCooldown(root);
+  const result = run(root, 'verify-all');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /通过，已回归/);
+  assert.deepEqual(rulesTo(root), ['workbuddy', 'workbuddy']);
+});
+
+test('verify-all exits 1 when a due probe fails but keeps the detour', () => {
+  const root = fixture();
+  record(root, failProbe);
+  clearCooldown(root);
+  const result = run(root, 'verify-all');
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /未通过，继续绕行/);
+  assert.deepEqual(rulesTo(root), ['claude', 'claude']);
+});
+
+test('verify-all exits 0 with a clear message when nothing is due', () => {
+  const root = fixture();
+  const result = run(root, 'verify-all');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /没有到期的绕行要核实/);
+});
+
+test('verify-all --json emits a machine-readable summary', () => {
+  const root = fixture();
+  record(root, passProbe);
+  clearCooldown(root);
+  const result = run(root, 'verify-all', '--json');
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout);
+  assert.equal(summary.due, 1);
+  assert.equal(summary.ok, 1);
+  assert.equal(summary.failed, 0);
+  assert.equal(summary.exitCode, 0);
+});
+
+test('verify-all rejects an illegal timeout with exit code 2', () => {
+  const root = fixture();
+  record(root, passProbe);
+  clearCooldown(root);
+  const result = run(root, 'verify-all', '--timeout', '5');
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /--timeout/);
+});

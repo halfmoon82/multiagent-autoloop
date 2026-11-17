@@ -34,3 +34,16 @@ test('serial orchestrators must publish node progress for the console task bar',
   assert.match(normalized, /plan/);
   assert.match(normalized, /part.*percent|percent.*part/);
 });
+
+test('§12 documents the automated quota-detour mechanism with policy, thresholds and cron templates', () => {
+  const normalized = contract.replace(/\s+/g, '');
+  assert.match(normalized, /##12\./);
+  assert.match(normalized, /开发.*workbuddy.*claude/);
+  assert.match(normalized, /审阅.*claude.*codex-full/);
+  assert.match(normalized, /连续3次|连续3/);
+  assert.match(normalized, /quota-scan\.mjs/);
+  assert.match(normalized, /verify-all/);
+  assert.match(normalized, /\*\/30\*+/);
+  assert.match(normalized, /退出码/);
+  assert.match(normalized, /证据原文/);
+});

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   DetourError, readDetours, recordDetour, dueForProbe, markProbeResult, revertDetour,
-  setDetourPersisterForTest,
+  setDetourPersisterForTest, findActiveDetour,
 } from '../src/detour.mjs';
 import { saveRule } from '../src/rules.mjs';
 import { spawn } from 'node:child_process';
@@ -288,4 +288,28 @@ test('publicDetour returns null for malformed records instead of throwing', () =
   assert.equal(publicDetour({ id: 'x', status: 'detoured', rules: [] }).id, 'x');
   const partial = publicDetour({ id: 'x', status: 'detoured', rules: [{}] });
   assert.equal(partial.rules[0].name, ''); // 缺字段兜底空串，不裸印 undefined
+});
+
+// ---- 自动侦测登记：来源标记与去重辅助 ----
+
+test('recordDetour keeps an origin marker and publicDetour surfaces it for console trace', () => {
+  const { config } = fixture();
+  const record = recordDetour(config, { ...input, origin: 'auto-scan' }, T0);
+  assert.equal(record.origin, 'auto-scan');
+  assert.equal(publicDetour(record).origin, 'auto-scan');
+  const other = fixture();
+  const plain = recordDetour(other.config, input, T0);
+  assert.equal(plain.origin, undefined);
+  assert.equal(publicDetour(plain).origin, undefined);
+});
+
+test('findActiveDetour matches blocked agent/model and ignores reverted records', () => {
+  const { config } = fixture();
+  assert.equal(findActiveDetour(config, { blockedAgent: 'workbuddy', blockedModel: 'hy4free' }), null);
+  recordDetour(config, input, T0);
+  assert.equal(findActiveDetour(config, { blockedAgent: 'workbuddy', blockedModel: 'hy4free' }).id, 'wb-hy4-1');
+  assert.equal(findActiveDetour(config, { blockedAgent: 'workbuddy', blockedModel: 'hy4flash' }), null);
+  assert.equal(findActiveDetour(config, { blockedAgent: 'claude' }), null);
+  revertDetour(config, 'wb-hy4-1', T0);
+  assert.equal(findActiveDetour(config, { blockedAgent: 'workbuddy', blockedModel: 'hy4free' }), null);
 });
