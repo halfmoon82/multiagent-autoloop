@@ -54,11 +54,11 @@ test('normal session uses the project workspace with the exact user prompt and n
   const started = await manager.start({ kind: 'normal', project: '/workspace/demo', prompt: '分析账单 API，不要修改文件' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
   assert.equal(started.kind, 'normal');
-  assert.deepEqual(fake.requests.map(request => request.method), ['initialize', 'session/new', 'session/prompt']);
+  assert.deepEqual(fake.requests.map(request => request.method), ['initialize', 'session/new', 'session/set_mode', 'session/prompt']);
   assert.equal(fake.requests[1].params.cwd, '/workspace/demo');
   assert.deepEqual(fake.requests[1].params.mcpServers, []);
-  assert.equal(fake.requests[2].params.prompt[0].text, '分析账单 API，不要修改文件');
-  assert.doesNotMatch(fake.requests[2].params.prompt[0].text, /调度会话|PRD 引导/);
+  assert.equal(fake.requests[3].params.prompt[0].text, '分析账单 API，不要修改文件');
+  assert.doesNotMatch(fake.requests[3].params.prompt[0].text, /调度会话|PRD 引导/);
 });
 
 test('design session enforces read-only and native Plan Mode before the first prompt', async () => {
