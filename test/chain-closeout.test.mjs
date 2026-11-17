@@ -185,6 +185,12 @@ test('a hub failure records an error and keeps the file for the next sweep', asy
   rmSync(root, { recursive: true, force: true });
 });
 
+test('a nonexistent root directory is also a quiet no-op', async () => {
+  const root = path.join(mkdtempSync(path.join(tmpdir(), 'closeout-')), 'gone');
+  const result = await sweepChainCloseouts({ root, rules: RULES, config: HUB_CONFIG });
+  assert.deepEqual(result, { closed: [], skipped: [], errors: [] });
+});
+
 test('missing root is a quiet no-op', async () => {
   const result = await sweepChainCloseouts({ root: null, rules: RULES, config: HUB_CONFIG });
   assert.deepEqual(result, { closed: [], skipped: [], errors: [] });

@@ -61,7 +61,9 @@ export async function sweepChainCloseouts({ root, rules = [], config, now = Date
   result.errors.push(...errors);
   // 共享规则保护基于磁盘上的链文件名（含解析失败的破损文件），而不仅是解析成功的链：
   // 破损在途链同样要能保住共享 cron 不被掐停。
-  const filesOnDisk = readdirSync(root).filter(name => FILE_PATTERN.test(name));
+  let filesOnDisk = [];
+  try { filesOnDisk = readdirSync(root).filter(name => FILE_PATTERN.test(name)); }
+  catch { return result; } // 运行目录缺失/不可读：安静空转，与 loadChains 的防护一致
   // 本轮即将收口的候选：完成且过宽限。它们归档后不再占有规则，因此独占判定要排除。
   const closing = new Set();
   for (const chain of chains) {
@@ -100,7 +102,7 @@ export async function sweepChainCloseouts({ root, rules = [], config, now = Date
       }
       // 暂停是网络往返，rename 前重查 mtime：编排器若刚写入（复活/推进），本轮放弃归档。
       if (statSync(file).mtimeMs !== mtimeMs) {
-        audit(root, { at: new Date(now).toISOString(), chain: chain.sourceFile, project: chain.project, pausedRules, error: '暂停期间链文件被写入，放弃归档，请核实规则是否该恢复' });
+        audit(root, { at: new Date(now).toISOString(), chain: chain.sourceFile, project: chain.project, pausedRules, error: '暂停期间链文件被写入，放弃归档，请核实规则是否该恢复', resumeHint: pausedRules.map(name => `agent-autoloop resume ${name}`) });
         result.errors.push(`${chain.sourceFile}：暂停期间文件被写入，放弃归档`);
         continue;
       }
