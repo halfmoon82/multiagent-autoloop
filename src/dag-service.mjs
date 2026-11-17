@@ -1,7 +1,7 @@
 // 控制台 DAG 服务：创建/列表/详情/取消/slot-release。服务端生成授权快照；证据缺失 fail closed。
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { ALLOWED_ACTIONS, DENIED_ACTIONS, MAX_SLOTS, ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
+import { ALLOWED_ACTIONS, DENIED_ACTIONS, HIGH_RISK_ACTIONS, HIGH_RISK_ACTION_INFO, MAX_SLOTS, ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
 import { reviveNode } from './dag-controller.mjs';
 import { seg } from './dag-slots.mjs';
 import { parallelShape } from './dag.mjs';
@@ -30,6 +30,14 @@ function loadPlan(project, planId) {
       throw new DagServiceError(`无法加载计划：原生（${nativeError.message}）；vibe（${vibeError.message}）`);
     }
   }
+}
+
+// 计划可选高风险动作：优先用计划显式声明的 optionalHighRiskActions，未声明时不开放任何高风险动作（默认关闭）。
+// 每项附产品语言的 title/benefit/cost 与 selectedByDefault=false，供授权确认页逐项呈现。
+function optionalActionOptions(loaded) {
+  const declared = loaded.optionalHighRiskActions ?? loaded.plan?.optionalHighRiskActions ?? [];
+  const pool = HIGH_RISK_ACTIONS.filter(id => declared.includes(id));
+  return pool.map(id => ({ id, ...HIGH_RISK_ACTION_INFO[id], selectedByDefault: false }));
 }
 
 // hubEvidence({ run }) → { workerOnline?, offlineSince? }：来自 Hub“接单程序没连上”卡片；默认无证据即 fail closed。
@@ -68,6 +76,7 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
           wave: waveOf.get(node.id) ?? lastWave, integrationReview: node.id === 'integration-review' || Boolean(node.integration_review),
         })),
         allowedActions: [...ALLOWED_ACTIONS], deniedActions: [...DENIED_ACTIONS],
+        optionalActions: optionalActionOptions(loaded),
       };
     },
     // 接入预检：只读，如实返回；能力记录必须由真实 Codex 会话 vibe attest 留下，这里不代写。
@@ -82,8 +91,11 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
     create(body, project) {
       const loaded = loadPlan(project, String(body.planId || ''));
       if (createPlanDigest({ ...loaded, authorizationSnapshot: null }) !== body.planDigest) throw new DagServiceError('planDigest 与服务端计划不一致，计划已变化需重新确认');
+      // 计划未声明的高风险动作即便勾选也不写入：planOptionalActions 作为授权白名单交给 store 校验。
+      const planOptionalActions = optionalActionOptions(loaded).map(a => a.id);
       return wrap(() => store.createRun({
         project, planId: loaded.planId, planDigest: body.planDigest, confirmedActionIds: body.confirmedActionIds,
+        selectedOptionalActions: body.selectedOptionalActions ?? [], planOptionalActions,
         confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes,
       }));
     },

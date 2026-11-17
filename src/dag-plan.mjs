@@ -39,5 +39,8 @@ export function loadNativePlan({ projectRoot, planId }) {
   };
   const dag = validateDag(nodes);
   if (!dag.valid) throw new Error(`原生 DAG 校验失败：${dag.errors.join('；')}`);
-  return { planId, plan, nodes, productSpec: {} };
+  // 原生计划可用 optionalHighRiskActions 声明本计划开放哪些高风险动作（默认关闭）。
+  const declared = !Array.isArray(data) && Array.isArray(data.optionalHighRiskActions)
+    ? data.optionalHighRiskActions.filter(id => typeof id === 'string') : [];
+  return { planId, plan, nodes, productSpec: {}, optionalHighRiskActions: declared };
 }
