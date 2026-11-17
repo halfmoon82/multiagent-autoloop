@@ -17,14 +17,14 @@
   <nav class="navigation" aria-label="控制台工作区">
     <button class="nav-item active" data-view="overview" aria-current="page">总览</button>
     <button class="nav-item" data-view="rules">调度规则</button>
-    <button class="nav-item" data-view="sessions">会话管理</button>
+    <button class="nav-item" data-view="sessions">会话管理 <span id="session-nav-count" class="count info" hidden>0</span></button>
     <button class="nav-item" data-view="runs">执行轮次</button>
     <button class="nav-item" data-view="cards">待我处理 <span id="card-count" class="count" hidden>0</span></button>
   </nav>
   <main>
     <div id="notice" class="notice" role="status" hidden></div>
     <section id="view-overview" class="view" aria-labelledby="overview-title">
-      <div class="page-heading"><div><p class="eyebrow">PILOT OVERVIEW</p><h1 id="overview-title">今天的自动化</h1><p class="subtle">看见进展，只处理真正需要你的事。</p></div></div>
+      <div class="page-heading"><div><p class="eyebrow">PILOT OVERVIEW</p><h1 id="overview-title">今天的自动化</h1><p class="subtle">看见进展，只处理真正需要你的事。</p></div><button id="overview-new-session" class="button primary" type="button"><span class="button-icon">＋</span>新建会话</button></div>
       <div id="summary" class="summary-grid" aria-live="polite"></div>
       <section class="panel" aria-labelledby="progress-title"><div class="panel-heading"><h2 id="progress-title">项目任务进度</h2><span class="subtle">串行链与并行 DAG 在同一项目中汇总 · 点击节点看详情</span></div><div id="progress-list" class="list" aria-live="polite"></div><div id="dag-overview-list" class="dag-overview-list" aria-live="polite"></div></section>
       <div class="work-grid" aria-live="polite">
@@ -43,11 +43,10 @@
       <div id="rules-list" class="rule-grid"></div>
     </section>
     <section id="view-sessions" class="view" hidden aria-labelledby="sessions-title">
-      <div class="page-heading"><div><p class="eyebrow">SESSIONS</p><h1 id="sessions-title">会话管理</h1><p class="subtle">普通对话、调度协调与 PRD 设计，在同一个项目工作区里各就其位。</p></div><button id="session-new-dag" class="button secondary" type="button">新建 DAG（执行授权）</button></div>
-      <div class="session-start"><select id="session-project" aria-label="项目标识"></select><textarea id="session-prompt" rows="3" aria-label="首轮提示词" placeholder="先输入首轮提示词，系统会判定会话类型"></textarea><button id="classify-session" class="button" type="button">分析首轮提示词</button></div>
-      <div id="session-suggest" class="session-suggest" hidden><span id="session-suggest-reason" class="subtle"></span><label>会话类型 <select id="session-kind" aria-label="会话类型"><option value="normal">普通会话</option><option value="scheduling">调度会话</option><option value="design">设计会话</option></select></label><button id="start-session" class="button primary" type="button">确认并发送首轮</button><button id="cancel-session-suggest" class="button" type="button">返回修改</button></div>
+      <div class="page-heading session-page-heading"><div><p class="eyebrow">SESSIONS</p><h1 id="sessions-title">会话管理</h1><p class="subtle">普通对话、调度协调与 PRD 设计，在同一个项目工作区里各就其位。</p></div><button id="session-new" class="button primary" type="button"><span class="button-icon">＋</span>新建会话</button></div>
       <div class="session-layout panel">
-        <aside id="session-sidebar" aria-label="会话列表">
+        <aside id="session-sidebar" class="session-sidebar" aria-label="会话列表">
+          <div class="session-search"><input id="session-search" type="search" placeholder="搜索会话" aria-label="搜索会话"></div>
           <div class="session-kind-tabs" role="tablist" aria-label="按类型筛选会话">
             <button role="tab" data-kind="normal" aria-selected="false">普通 <span class="kind-count" data-kind-count="normal">0</span></button>
             <button role="tab" data-kind="scheduling" aria-selected="false">调度 <span class="kind-count" data-kind-count="scheduling">0</span></button>
@@ -85,6 +84,18 @@
       <div id="cards-list" class="card-list"></div>
     </section>
   </main>
+  <dialog id="new-session-dialog" class="new-session-dialog" aria-labelledby="new-session-title">
+    <div class="dialog-heading"><div><p class="eyebrow">NEW SESSION</p><h2 id="new-session-title">新建会话</h2><p class="subtle">根据第一句话的语义推荐会话类型，您也可以手动更改。</p></div><button class="icon-button js-close-new-session" type="button" aria-label="关闭">×</button></div>
+    <label class="form-field">项目工作区<select id="new-session-project" aria-label="项目工作区"></select></label>
+    <label class="form-field">您想做什么？<textarea id="new-session-request" aria-label="首轮提示词" placeholder="例如：分析一下账单 API 的依赖；排查失败的调度任务；设计一个多租户计费方案…"></textarea></label>
+    <div class="session-classification">
+      <div class="classification-top"><span>语义判断</span><span id="classification-method">语义分类 · 关键词 + 意图</span></div>
+      <div class="classification-result"><span id="classification-icon">○</span><div><strong id="classification-title">等待输入</strong><p id="classification-reason">普通问答/分析、调度协调、复杂 PRD 设计会进入不同会话协议。</p></div></div>
+      <div class="classification-override" role="radiogroup" aria-label="手动选择会话类型"><button type="button" class="active" data-type-override="auto" aria-pressed="true">自动</button><button type="button" data-type-override="normal" aria-pressed="false">普通</button><button type="button" data-type-override="scheduling" aria-pressed="false">调度</button><button type="button" data-type-override="design" aria-pressed="false">设计</button></div>
+    </div>
+    <div id="classification-contract" class="classification-contract">普通会话：直接创建于项目工作区，不组装额外提示词。</div>
+    <div class="dialog-actions"><button class="button secondary js-close-new-session" type="button">取消</button><button id="create-session" class="button primary" type="button" disabled>创建会话</button></div>
+  </dialog>
   <dialog id="rule-dialog" aria-labelledby="rule-dialog-title"><div id="rule-form-container"></div></dialog>
   <dialog id="artifact-dialog" class="artifact-dialog">
     <div class="artifact-viewer">
@@ -92,6 +103,7 @@
       <div id="artifact-body" class="artifact-body"></div>
     </div>
   </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
   <script type="module" src="/app.mjs"></script>
 </body>
 </html>
