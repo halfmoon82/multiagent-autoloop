@@ -10,6 +10,7 @@ export const ALLOWED_ACTIONS = Object.freeze([
   'independent-review', 'rework-p0-p2', 'squash-merge', 'close-superseded-pr',
 ]);
 export const DENIED_ACTIONS = Object.freeze(['deploy', 'release', 'production-write', 'credentials', 'external-communication']);
+export const ROOT_NODE = '__root__';
 export const MAX_SLOTS = 5;
 export const MAX_ATTEMPTS = 3;
 export const MAX_GENERATION = 10;
@@ -288,7 +289,8 @@ export function createRunStore({ directory } = {}) {
         const run = getRun(runId);
         const decision = evaluateSlotRelease(run, evidence);
         if (!decision.allowed) throw new DagRunError('RELEASE_DENIED', `slot-release 被拒绝：${decision.reason}（fail closed）`);
-        const released = transition(run, 'abandoned');
+        // claimed 且 worker 离线（已通过 evaluateSlotRelease）直接 abandoned；unknown 走常规迁移表。
+        const released = run.status === 'claimed' ? { ...run, status: 'abandoned', updatedAt: iso() } : transition(run, 'abandoned');
         return saveRun({ ...released, quarantine: false, unknownSince: null });
       });
     },
@@ -374,6 +376,54 @@ export function createRunStore({ directory } = {}) {
         }
         const saved = saveRun(next);
         return { verdict: decision.verdict, reason: decision.reason, failureCounted: decision.failureCounted, failures: saved.failures, result: next.appliedAdvance?.result };
+      });
+    },
+
+    // 控制器为同一 DAG 的其他节点派生 run：继承根 run 的授权快照，不受“每项目一个活跃 DAG”限制。
+    createNodeRun(rootRunId, { nodeId, role } = {}) {
+      const root = getRun(rootRunId);
+      if (!text(nodeId)) throw new DagRunError('BAD_INPUT', '缺少 nodeId');
+      if (!['dev', 'review'].includes(role)) throw new DagRunError('BAD_INPUT', `role 必须是 dev/review：${role}`);
+      if (currentRunFor(root.project, root.planId, nodeId, role)) throw new DagRunError('NODE_EXISTS', `节点 ${nodeId}:${role} 的 run 已存在`);
+      return saveRun({
+        schema: 1, runId: newRunId(), project: root.project, planId: root.planId,
+        planDigest: root.planDigest, nodeId, role, generation: 1, attempt: 1, status: 'queued',
+        slot: null, expectedAdvanceId: null, failures: 0, outcome: null, prs: [], appliedAdvance: null,
+        supersededBy: null, unknownSince: null, quarantine: false, nodes: root.nodes,
+        authorizationSnapshot: root.authorizationSnapshot, rootRunId: root.rootRunId || root.runId,
+        createdAt: iso(), updatedAt: iso(),
+      });
+    },
+
+    // 只允许写 publish 子对象（提交/测试/PR/WIP 引用等运行记录），状态与授权字段不可经此修改。
+    updateRun(runId, patch = {}) {
+      return withRunLock(runId, () => {
+        const bad = Object.keys(patch).filter(key => !['publish', 'hub'].includes(key));
+        if (bad.length) throw new DagRunError('FIELD_NOT_ALLOWED', `updateRun 不允许修改字段：${bad.join(',')}`);
+        const run = getRun(runId);
+        return saveRun({ ...run, publish: { ...(run.publish || {}), ...(patch.publish || {}) }, hub: { ...(run.hub || {}), ...(patch.hub || {}) } });
+      });
+    },
+
+    // 根 run（DAG 本身）终结：不走节点迁移表，仅允许 done/cancelled，且只作用于根 run。
+    finishRoot(runId, status) {
+      return withRunLock(runId, () => {
+        const run = getRun(runId);
+        if (run.nodeId !== ROOT_NODE) throw new DagRunError('NOT_ROOT', `${runId} 不是 DAG 根 run`);
+        if (!['done', 'cancelled'].includes(status)) throw new DagRunError('BAD_INPUT', `根 run 只能终结为 done/cancelled：${status}`);
+        if (isTerminal(run.status)) return run;
+        return saveRun({ ...run, status });
+      });
+    },
+
+    markPrMerged(runId, prUrl, { mergeCommit } = {}) {
+      return withRunLock(runId, () => {
+        const run = getRun(runId);
+        const pr = (run.prs || []).find(entry => entry.prUrl === prUrl);
+        if (!pr) throw new DagRunError('PR_NOT_REGISTERED', `PR ${prUrl} 未登记`);
+        if (pr.state === 'merged') return pr;
+        const prs = run.prs.map(entry => entry.prUrl === prUrl ? { ...entry, state: 'merged', mergeCommit: mergeCommit ?? null, mergedAt: iso() } : entry);
+        return saveRun({ ...run, prs }).prs.find(entry => entry.prUrl === prUrl);
       });
     },
 

@@ -10,6 +10,7 @@ import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-s
 import { discoverGitProjects } from './projects.mjs';
 import { readDetours, publicDetour } from './detour.mjs';
 import { loadChains } from './serial-progress.mjs';
+import { createDagService, DagServiceError } from './dag-service.mjs';
 import { createDispatcher, validateDispatchInput, DispatchError } from './dispatch.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -48,6 +49,12 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/session-archives') return jsonResponse(res, 200, { sessions: await config.schedulingSessions.listArchived() });
   if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
   if (req.method === 'GET' && url.pathname === '/api/dispatch-tasks') return jsonResponse(res, 200, { tasks: config.dispatcher ? config.dispatcher.list() : [] });
+  let dagMatch;
+  if (req.method === 'GET' && url.pathname === '/api/dag-runs') return jsonResponse(res, 200, { runs: config.dagService ? config.dagService.list() : [] });
+  if (req.method === 'GET' && (dagMatch = url.pathname.match(/^\/api\/dag-runs\/([^/]+)$/))) {
+    if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
+    return jsonResponse(res, 200, config.dagService.get(decodeURIComponent(dagMatch[1])));
+  }
   let sessionMatch;
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/artifacts$/))) return jsonResponse(res, 200, { files: await config.schedulingSessions.listSessionArtifacts(decodeURIComponent(sessionMatch[1])) });
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/file$/))) return jsonResponse(res, 200, await config.schedulingSessions.readSessionArtifact(decodeURIComponent(sessionMatch[1]), String(url.searchParams.get('path') || '')));
@@ -81,6 +88,20 @@ async function handleApi(config, req, res, url) {
     const kind = explicit || classifySessionRequest(prompt).kind;
     if (!kind) throw new RequestError(400, '无法判定会话类型，请补充首轮提示词');
     return jsonResponse(res, 201, await config.schedulingSessions.start({ kind, prompt, project: known.path }));
+  }
+  if (req.method === 'POST' && url.pathname === '/api/dag-runs') {
+    if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
+    const known = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).find(item => item.path === path.resolve(String(body.project || '')));
+    if (!known) throw new RequestError(400, '项目不在已发现的 Git 仓库列表中，请从下拉选择');
+    return jsonResponse(res, 201, config.dagService.create(body, known.path));
+  }
+  if (req.method === 'POST' && (dagMatch = url.pathname.match(/^\/api\/dag-runs\/([^/]+)\/cancel$/))) {
+    if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
+    return jsonResponse(res, 200, config.dagService.cancel(decodeURIComponent(dagMatch[1])));
+  }
+  if (req.method === 'POST' && (dagMatch = url.pathname.match(/^\/api\/dag-runs\/([^/]+)\/slots\/([^/]+)\/slot-release$/))) {
+    if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
+    return jsonResponse(res, 200, await config.dagService.slotRelease(decodeURIComponent(dagMatch[1]), decodeURIComponent(dagMatch[2]), body));
   }
   let dispatchMatch;
   if (req.method === 'POST' && url.pathname === '/api/dispatch-tasks') {
@@ -128,14 +149,15 @@ export function createConsoleServer(config, schedulingSessions, dispatcher) {
     schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root });
   }
   if (!dispatcher && config.root) dispatcher = createDispatcher({ root: config.root, sessions: schedulingSessions });
-  config = { ...config, schedulingSessions, dispatcher };
+  const dagService = config.dagService || (config.root ? createDagService({ root: config.root, storeDirectory: path.join(config.root, 'dag-runs') }) : null);
+  config = { ...config, schedulingSessions, dispatcher, dagService };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const host = req.headers.host?.split(':')[0]?.toLowerCase();
     if (!['127.0.0.1', 'localhost'].includes(host)) return jsonResponse(res, 403, { error: '控制台只接受本机地址' });
     try { if (url.pathname.startsWith('/api/') && await handleApi(config, req, res, url) !== false) return; }
     catch (error) {
-      const status = error instanceof RequestError || error instanceof RuleError || error instanceof SchedulingSessionError || error instanceof DispatchError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
+      const status = error instanceof RequestError || error instanceof RuleError || error instanceof SchedulingSessionError || error instanceof DispatchError || error instanceof DagServiceError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
       return jsonResponse(res, status, { error: error.message });
     }
     const asset = FILES.get(url.pathname);
