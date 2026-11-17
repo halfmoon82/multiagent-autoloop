@@ -46,12 +46,28 @@ try {
   const noOverflow = async label => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${label}: 页面主体不得横向溢出`);
   await page.goto(url); await page.getByRole('heading', { name: '今天的自动化' }).waitFor();
 
+  // IA 基线：主导航恰好 5 项；「DAG 运行」「执行授权」不得作为顶级导航项，只能是情境屏幕
+  assert.deepEqual((await page.locator('.navigation .nav-item').allInnerTexts()).map(text => text.replace(/\s+/g, ' ').trim()),
+    ['总览', '调度规则', '会话管理', '执行轮次', '待我处理'], '主导航必须是基线五项');
+  assert.equal(await page.locator('.navigation .nav-item', { hasText: 'DAG 运行' }).count(), 0, '「DAG 运行」不得出现在主导航');
+  assert.equal(await page.locator('.navigation .nav-item', { hasText: '执行授权' }).count(), 0, '「执行授权」不得出现在主导航');
+  assert.equal(await page.locator('#view-dag').isHidden(), true, 'DAG 是情境屏幕，默认隐藏');
+  assert.equal(await page.locator('#view-authorize').isHidden(), true, '授权是情境屏幕，默认隐藏');
+
   // 总览：没有 DAG 时旧四组与串行进度仍在，DAG 分组不凭空出现
   assert.equal(await page.locator('#dag-overview-list .dag-project').count(), 0);
   await page.getByRole('heading', { name: '正在运行' }).waitFor();
 
-  // 授权范围确认页：逐项展示，确认前不可创建
-  await page.getByRole('button', { name: '执行授权', exact: true }).click();
+  // 会话管理屏：左侧类型 tab + 列表，右侧工作区（新建会话流与语义分类保留）
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.locator('.session-kind-tabs [data-kind="scheduling"]').waitFor();
+  await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, 'design-desktop.png'), fullPage: true });
+  await noOverflow('sessions-desktop');
+
+  // 授权范围确认页（情境屏幕）：从会话管理的「新建 DAG（执行授权）」进入，逐项展示，确认前不可创建
+  await page.getByRole('button', { name: '新建 DAG（执行授权）', exact: true }).click();
+  assert.equal(await page.locator('#view-authorize').isVisible(), true);
+  assert.equal(await page.locator('#view-sessions').isHidden(), true, '授权确认接管主区域，不再与导航页并列');
   await page.locator('#authorize-project').selectOption(project);
   await page.locator('#authorize-plan').fill('plan-one');
   await page.getByRole('button', { name: '读取计划与预检' }).click();
@@ -74,6 +90,7 @@ try {
   assert.equal(await page.locator('#authorize-button').isEnabled(), true);
   await page.locator('#authorize-button').click();
   await page.locator('#dag-detail .dag-detail').waitFor();
+  assert.equal(await page.locator('.navigation .nav-item.active').count(), 0, '情境屏幕不点亮任何主导航项');
   assert.equal(hub.requests.some(r => r.url.includes('/v1/runs')), false, '创建 DAG 不触碰 Hub 旧通道');
   const runs = store.listRuns(); assert.equal(runs.length, 1);
   assert.deepEqual(runs[0].authorizationSnapshot.allowedActions.includes('deploy'), false);
@@ -111,14 +128,24 @@ try {
   await page.locator('[data-dag-history-toggle]').click();
   assert.equal(await page.locator('#dag-history-list').isVisible(), true);
 
-  // 移动端 390×844
+  // 移动端 390×844：导航只有 5 项，DAG/授权经情境触达
   await page.setViewportSize({ width: 390, height: 844 });
-  for (const [view, name] of [['overview', '总览'], ['dag', 'DAG 运行'], ['authorize', '执行授权']]) {
-    await page.getByRole('button', { name, exact: true }).click();
-    await page.waitForTimeout(250);
-    await noOverflow(`${view}-mobile`);
-    await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, `${view}-mobile.png`), fullPage: true });
-  }
+  await page.getByRole('button', { name: '总览', exact: true }).click();
+  await page.waitForTimeout(250);
+  await noOverflow('overview-mobile');
+  await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, 'overview-mobile.png'), fullPage: true });
+  await page.locator('#dag-overview-list [data-dag-open]').first().click();
+  await page.waitForTimeout(250);
+  await noOverflow('dag-mobile');
+  await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, 'dag-mobile.png'), fullPage: true });
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.waitForTimeout(250);
+  await noOverflow('sessions-mobile');
+  await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, 'design-mobile.png'), fullPage: true });
+  await page.getByRole('button', { name: '新建 DAG（执行授权）', exact: true }).click();
+  await page.waitForTimeout(250);
+  await noOverflow('authorize-mobile');
+  await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, 'authorize-mobile.png'), fullPage: true });
   assert.deepEqual(errors, []);
   console.log('PASS browser-dag: authorize → create → overview group → detail → cancel, desktop+mobile, no console errors');
 } finally {

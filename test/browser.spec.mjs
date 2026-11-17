@@ -256,7 +256,7 @@ try {
   try { await page.locator('#rule-dialog').waitFor({ state: 'hidden', timeout: 5000 }); }
   catch (error) { console.log('DIALOG DIAGNOSTIC:', await page.locator('#rule-dialog').innerText()); console.log('HUB REQUESTS:', hub.requests.map(x => x.url)); throw error; }
   const saved = JSON.parse(readFileSync(rulesFile, 'utf8')); assert.equal(saved.rules.at(-1).name, '手机创建测试');
-  await page.getByRole('button', { name: '调度会话', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
   await page.getByLabel('项目标识').selectOption(demoRepo);
   // 创建流全链：输入首轮提示词 → 分类建议 → 确认前不创建会话 → 确认后一次性发送首轮。
   await page.getByLabel('首轮提示词').fill('排查失败任务并恢复调度规则');
@@ -266,8 +266,10 @@ try {
   assert.equal(await page.getByLabel('会话类型').inputValue(), 'scheduling');
   assert.equal(schedulingSessions.startCalls?.length || 0, 0, 'no session turn may run before the user confirms');
   await page.getByRole('button', { name: '确认并发送首轮', exact: true }).click();
-  const sessionCard = page.locator('#sessions-list .run-card').filter({ hasText: 'browser-' });
+  const sessionCard = page.locator('#session-workspace .run-card.session-card').filter({ hasText: 'browser-' });
   await sessionCard.waitFor();
+  await page.locator('#session-items .session-item').filter({ hasText: 'browser-' }).waitFor('attached');
+  assert.equal(await page.locator('.session-kind-tabs [data-kind="scheduling"]').getAttribute('aria-selected'), 'true', 'creating a scheduling session must activate the scheduling kind tab');
   assert.deepEqual(schedulingSessions.startCalls, [{ prompt: '排查失败任务并恢复调度规则', project: demoRepo, kind: 'scheduling' }], 'first turn must be sent once with the confirmed kind');
   assert.ok((await sessionCard.innerText()).includes('项目 · demo-repo'), 'scheduling session must show its bound project name');
   const chatInput = page.getByLabel('发消息给会话 browser-session');
@@ -339,13 +341,13 @@ try {
   await page.waitForTimeout(200);
   await page.locator('#clear-project-filter').click();
   assert.equal(await page.locator('#project-filter').inputValue(), '', 'clear-filter must reset the project filter');
-  await page.getByRole('button', { name: '调度会话', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
   await page.locator('#session-project').selectOption({ index: 0 });
   await page.getByLabel('首轮提示词').fill('占位项目测试');
   await page.getByRole('button', { name: '分析首轮提示词', exact: true }).click();
   await page.waitForTimeout(300);
   assert.ok((await page.locator('#notice').innerText()).includes('请先从列表选择'), 'placeholder selection must be rejected before starting a session');
-  assert.equal(await page.locator('#sessions-list .run-card').count(), 1, 'no session must be created for placeholder selection');
+  assert.equal(await page.locator('#session-workspace .run-card.session-card').count(), 1, 'no session must be created for placeholder selection');
   await page.getByLabel('发消息给会话 browser-session').fill('重点看执行轮次');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.waitForTimeout(300);
@@ -353,7 +355,7 @@ try {
   // 回车必须直接发送（与 Codex 输入体验一致）；Alt/Option+回车必须换行而不是发送
   await page.getByLabel('发消息给会话 browser-session').fill('回车发送测试');
   await page.keyboard.press('Enter');
-  await page.waitForFunction(() => document.querySelector('#sessions-list').innerText.includes('回车发送测试'), null, { timeout: 6000 });
+  await page.waitForFunction(() => document.querySelector('#session-workspace').innerText.includes('回车发送测试'), null, { timeout: 6000 });
   assert.equal(await page.getByLabel('发消息给会话 browser-session').inputValue(), '', 'input must clear after Enter send');
   const newlineInput = page.getByLabel('发消息给会话 browser-session');
   await newlineInput.fill('第一行');
@@ -370,7 +372,7 @@ try {
   await page.getByLabel('发消息给会话 browser-session').fill(''); // 清掉草稿解冻卡片，模拟纯阅读选区场景
   await page.waitForTimeout(300);
   await page.evaluate(() => {
-    const log = document.querySelector('#sessions-list .session-card .chat-log');
+    const log = document.querySelector('#session-workspace .session-card .chat-log');
     const bubble = [...log.querySelectorAll('.bubble-text')].pop();
     const range = document.createRange();
     range.setStart(bubble.firstChild, 0);
@@ -443,7 +445,7 @@ try {
   await page.getByRole('button', { name: /编辑排队消息 队列消息一/ }).click();
   const editor = page.locator('.queue-editor');
   const editorBox = await editor.boundingBox();
-  const cardBox = await page.locator('#sessions-list .session-card .queue-item-editing').boundingBox();
+  const cardBox = await page.locator('#session-workspace .session-card .queue-item-editing').boundingBox();
   assert.ok(editorBox.width >= cardBox.width * 0.55, `the queue editor must expand horizontally (>=55% of the row, got ${Math.round(editorBox.width / cardBox.width * 100)}%)`);
   assert.ok(editorBox.height <= 80, `the queue editor height must cap at about 3 lines (<=80px, got ${editorBox.height})`);
   await editor.fill('队列消息一（改）');
@@ -487,16 +489,22 @@ try {
   await page.getByRole('button', { name: '关闭', exact: true }).click();
 
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
-  await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
-  // 已存档会话：转录只读可回溯，一键继续生成新会话
-  const archivedCard = page.locator('#archived-sessions-list .run-card.archived');
+  await page.locator('#session-items').getByText('还没有该类型的会话').waitFor();
+  // 已归档与历史：默认折叠；查看进入右侧工作区（只读），恢复生成新会话
+  assert.equal(await page.locator('#archived-entries').isHidden(), true, 'archived history must be collapsed by default');
+  await page.getByRole('button', { name: /已归档与历史/ }).click();
+  const archivedEntry = page.locator('.archived-entry').filter({ hasText: 'deadbeef' });
+  await archivedEntry.getByRole('button', { name: '查看', exact: true }).click();
+  const archivedCard = page.locator('#session-workspace .run-card.archived');
   await archivedCard.waitFor();
   assert.ok((await archivedCard.innerText()).includes('被重启中断'), 'archived sessions show why they stopped');
   assert.ok((await archivedCard.innerText()).includes('上次看到一半的计划'), 'archived transcripts stay readable');
   await archivedCard.getByRole('button', { name: '继续调度', exact: true }).click();
-  await page.locator('#sessions-list .run-card').filter({ hasText: '项目 · demo-repo' }).waitFor();
-  assert.ok(await archivedCard.count() >= 1, 'the archive entry stays after continuing');
-  const archiveLog = archivedCard.locator('.chat-log').first();
+  await page.locator('#session-workspace .run-card.session-card').filter({ hasText: '项目 · demo-repo' }).waitFor();
+  assert.ok(await archivedEntry.count() >= 1, 'the archive entry stays after continuing');
+  await archivedEntry.getByRole('button', { name: '查看', exact: true }).click();
+  const archiveLog = page.locator('#session-workspace .run-card.archived .chat-log').first();
+  await archiveLog.waitFor();
   await archiveLog.evaluate(node => { node.scrollTop = 40; });
   await page.waitForTimeout(4500); // 跨过后台刷新周期
   assert.equal(await archiveLog.evaluate(node => node.scrollTop), 40, 'archived transcript scroll position must survive background refreshes');
@@ -504,12 +512,12 @@ try {
   await archiveLog.evaluate(node => { node.scrollTop = node.scrollHeight; });
   await page.getByRole('button', { name: '总览', exact: true }).click();
   await page.waitForTimeout(4500); // 隐藏期间跨多次后台刷新
-  await page.getByRole('button', { name: '调度会话', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
   await page.waitForTimeout(400);
   const atBottom = await archiveLog.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight < 40);
   assert.equal(atBottom, true, 'returning to the sessions view must land the transcript at the latest message, not the top');
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
-  await page.locator('#sessions-list').getByText('还没有开启的调度会话').waitFor();
+  await page.locator('#session-items').getByText('还没有该类型的会话').waitFor();
   await page.screenshot({ path: path.join(output, 'console-mobile.png'), fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
