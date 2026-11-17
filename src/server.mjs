@@ -12,6 +12,7 @@ import { discoverGitProjects } from './projects.mjs';
 import { readDetours, publicDetour } from './detour.mjs';
 import { loadChains } from './serial-progress.mjs';
 import { aggregateProjectUsage } from './project-usage.mjs';
+import { refreshUsage } from './chain-usage.mjs';
 import { readCloseouts } from './chain-closeout.mjs';
 import { createDagService, DagServiceError } from './dag-service.mjs';
 import { CardDelegateError, delegateOpenCard } from './card-delegate.mjs';
@@ -69,8 +70,22 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/artifacts$/))) return jsonResponse(res, 200, { files: await config.schedulingSessions.listSessionArtifacts(decodeURIComponent(sessionMatch[1])) });
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/file$/))) return jsonResponse(res, 200, await config.schedulingSessions.readSessionArtifact(decodeURIComponent(sessionMatch[1]), String(url.searchParams.get('path') || '')));
   if (req.method === 'GET' && url.pathname === '/api/detours') return jsonResponse(res, 200, { detours: readDetours(config).map(publicDetour).filter(Boolean) });
-  if (req.method === 'GET' && url.pathname === '/api/serial-progress') return jsonResponse(res, 200, await loadChains({ root: config.root, rules: readRuleOptions(config).rules || [] }));
-  if (req.method === 'GET' && url.pathname === '/api/project-usage') return jsonResponse(res, 200, aggregateProjectUsage({ state: await hubRequest(config, '/v1/state'), rules: readRuleOptions(config).rules || [] }));
+  if (req.method === 'GET' && url.pathname === '/api/serial-progress') {
+    const rules = readRuleOptions(config).rules || [];
+    const data = await loadChains({ root: config.root, rules });
+    const usage = await refreshUsage({ config, rules, chains: data.chains });
+    if (usage) for (const chain of data.chains) {
+      const cumulative = usage.byChain.get(chain.sourceFile);
+      if (cumulative) chain.cumulativeUsage = cumulative;
+    }
+    return jsonResponse(res, 200, data);
+  }
+  if (req.method === 'GET' && url.pathname === '/api/project-usage') {
+    const rules = readRuleOptions(config).rules || [];
+    const usage = await refreshUsage({ config, rules, chains: [] });
+    const state = await hubRequest(config, '/v1/state');
+    return jsonResponse(res, 200, aggregateProjectUsage({ state, rules, cumulativeByRule: usage?.byRule }));
+  }
   if (req.method === 'GET' && url.pathname === '/api/closeouts') return jsonResponse(res, 200, { closeouts: readCloseouts(config.root) });
   if (req.method === 'POST' && url.pathname === '/api/session-classify') {
     const body = await readJson(req);

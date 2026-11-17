@@ -22,6 +22,7 @@ const snapshot = {
     { name: 'demo 巡检', paused: null, totals: { running: 0, queued: 0, retrying: 0, unknown: 0, done: 3, nothing: 0, doneToday: 1, usage: { input: 1234, output: 432, cost: 0.21 } } },
   ],
   runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '' }, { id: 4, rule: 'beta 巡检', agent: 'fake', state: 'queued', attempts: 2, project: '/elsewhere/beta', createdAt: '2026-11-14T01:00:00Z', summary: 'beta 项目等待重试' }, { id: 5, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: new Date().toISOString(), usage: { input: 60, output: 40, cost: 0.07 }, summary: '今日完成一次巡检' }], timers: [],
+  hasMore: true, nextBefore: 3,
 };
 const rawRules = { sources: { local: { name: '本机' } }, agents: { fake: { name: '无模型 Agent', use: 'command', access: 'read' } }, rules: [{ name: '恢复测试', when: { source: 'local', types: ['recovery.*'] }, to: 'fake', cwd: root, prompt: '只验证控制台', resume: false }, { name: 'beta 巡检', when: { source: 'local', types: ['beta.*'] }, to: 'fake', cwd: '/elsewhere/beta', prompt: 'beta 项目巡检', resume: false }, { name: 'demo 巡检', when: { cron: '0 9 * * *' }, to: 'fake', cwd: demoRepo, prompt: 'demo 项目巡检', resume: false }], elsewhere: [] };
 const schedulingSessions = {
@@ -140,8 +141,15 @@ const detourSample = {
 writeFileSync(path.join(root, 'detours.json'), JSON.stringify({ detours: [detourSample.detoured, detourSample.reverted] }));
 const cliPath = path.join(root, 'check.sh'); writeFileSync(cliPath, '#!/bin/sh\nexit 0\n'); chmodSync(cliPath, 0o700);
 const hubEvents = [];
+// 台账翻页的历史轮次：demo 巡检在 ?before= 页里还有更早完成的两轮，
+// 链/项目累计必须来自这些 runs 全量累加，而不是 lines 的今日窗口。
+const historyRuns = [
+  { id: 2, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: '2026-11-10T01:00:00Z', usage: { input: 600, output: 200, cost: 0.1 }, summary: '更早完成一轮巡检' },
+  { id: 1, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: '2026-11-09T01:00:00Z', usage: { input: 574, output: 192, cost: 0.04 }, summary: '首轮巡检' },
+];
 const hub = await fakeHub((req, res) => {
   if (req.url === '/v1/state') return json(res, snapshot);
+  if (req.url.startsWith('/v1/state?before=')) return json(res, { ...snapshot, runs: historyRuns, hasMore: false, nextBefore: null });
   if (req.url === '/v1/events') { hubEvents.push(req.url); return json(res, { runId: 999 }); }
   if (req.url.endsWith('/resolve')) {
     const match = req.url.match(/\/cards\/(\d+)\/resolve$/);
@@ -398,7 +406,7 @@ try {
   assert.ok(progressText.includes('1,666 Token'), 'chain usage sums input+output tokens of the whole chain');
   assert.ok(progressText.includes('$0.21'), 'chain usage must show reported cost');
   assert.ok(progressText.includes('项目今日 · 费用 $0.07 · Token 100（入 60 / 出 40）'), 'project today usage must come from runs finished today');
-  assert.ok(progressText.includes('项目累计 · 费用 $0.21 · Token 1,666（入 1,234 / 出 432）'), 'project cumulative usage must come from rule lines');
+  assert.ok(progressText.includes('项目累计 · 费用 $0.21 · Token 1,666（入 1,234 / 出 432）'), 'project cumulative usage must come from the runs ledger across pages, not the today-window rule lines');
   const segTwo = progressRow.locator('.node-seg').filter({ hasText: '二' });
   await segTwo.click();
   const pop = progressRow.locator('.node-pop');

@@ -160,10 +160,12 @@ export function chainRuleNames(sourceFile, rules = []) {
   }).map((rule) => rule.name));
 }
 
-// 整条调度链从头到尾的累计 Token 与计费：只信 Hub 上报值，费用缺失如实标注。
-// 词干零命中（链文件名与规则名不同源，如 mtexec 链配 MT* 规则）时回退：
-// 该项目归属、且未被其他已加载链词干认领的规则。
+// 整条调度链从头到尾的累计 Token 与计费：优先用服务端 chain-usage.mjs 台账
+// （翻遍 Hub runs 历史逐轮累加，真·自首次运行）；台账缺失时回退 lines 今日窗口并如实偏低。
+// 只信 Hub 上报值，费用缺失如实标注。词干零命中（链文件名与规则名不同源，
+// 如 mtexec 链配 MT* 规则）时回退：该项目归属、且未被其他已加载链词干认领的规则。
 export function chainUsage(chain, rules = [], lines = [], allChains = []) {
+  if (chain?.cumulativeUsage && typeof chain.cumulativeUsage === 'object') return chain.cumulativeUsage;
   let names = chainRuleNames(chain?.sourceFile, rules);
   if (!names.size) {
     const claimed = new Set();

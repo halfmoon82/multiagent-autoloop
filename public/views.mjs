@@ -315,7 +315,7 @@ function countsChips(activity, cardsHere) {
   return chips;
 }
 
-// 整条链累计口径与计费优先级契约一致：已上报费用 → Token +「费用未上报」→「暂无用量」。
+// 整条链累计口径与计费优先级契约一致（服务端台账真累计，缺台账回退今日窗口）：已上报费用 → Token +「费用未上报」→「暂无用量」。
 function chainUsageText(usage) {
   const tokens = (usage.tokens || 0).toLocaleString('en-US');
   if (typeof usage.cost === 'number') return `链累计 · ${tokens} Token · $${usage.cost.toFixed(2)}`;
