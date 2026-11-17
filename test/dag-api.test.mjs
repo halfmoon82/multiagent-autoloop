@@ -169,3 +169,47 @@ test('GET /api/dag-preflight 如实返回初始化与能力记录检查，不代
     assert.match(byId.capabilities.message, /vibe attest/);
   } finally { await close(t.server); }
 });
+
+// ---------- #54 revive 入口 ----------
+async function seedBlocked(t, url) {
+  const root = await (await post(url, '/api/dag-runs', t.payload())).json();
+  let node = t.store.createNodeRun(root.runId, { nodeId: 'a', role: 'dev' });
+  node = t.store.claim(node.runId, { slot: 2 });
+  t.store.advance(node.runId, { advanceId: node.expectedAdvanceId, runId: node.runId, nodeId: 'a', role: 'dev', generation: 1, attempt: 1, outcome: 'weird-outcome' });
+  assert.equal(t.store.getRun(node.runId).status, 'blocked_unknown');
+  t.store.updateRun(root.runId, { publish: { nodes: { a: { state: 'blocked', blockedRole: 'dev', slot: null, todo: null } } } });
+  return { root, node };
+}
+
+test('POST revive：blocked 节点按 blocked-resolved 留痕并写审计命令', async () => {
+  const t = setup(); const url = await listen(t.server);
+  try {
+    const { root } = await seedBlocked(t, url);
+    const res = await post(url, `/api/dag-runs/${root.runId}/revive`, JSON.stringify({ nodeId: 'a', reason: 'blocked-resolved', evidence: 'Hub 阻塞卡片已消除' }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { nodeId: 'a', reason: 'blocked-resolved' });
+    const todo = t.store.getRun(root.runId).publish.nodes.a.todo;
+    assert.equal(todo.reason, 'blocked-resolved');
+    assert.equal(todo.evidence, 'Hub 阻塞卡片已消除');
+    const files = readdirSync(path.join(t.root, 'dag-commands'));
+    assert.equal(files.length, 1);
+    const audit = readFileSync(path.join(t.root, 'dag-commands', files[0]), 'utf8');
+    assert.match(audit, /blocked-resolved/);
+    assert.match(audit, /Hub 阻塞卡片已消除/);
+  } finally { await close(t.server); }
+});
+
+test('POST revive：非法 reason / 非 blocked 节点 / 写守卫均拒绝且不写审计', async () => {
+  const t = setup(); const url = await listen(t.server);
+  try {
+    const { root } = await seedBlocked(t, url);
+    const bad = await post(url, `/api/dag-runs/${root.runId}/revive`, JSON.stringify({ nodeId: 'a', reason: 'whatever' }));
+    assert.equal(bad.status, 400);
+    assert.match((await bad.json()).error, /reason/);
+    const none = await post(url, `/api/dag-runs/${root.runId}/revive`, JSON.stringify({ nodeId: 'b', reason: 'blocked-resolved' }));
+    assert.equal(none.status, 400);
+    const guard = await post(url, `/api/dag-runs/${root.runId}/revive`, JSON.stringify({ nodeId: 'a', reason: 'blocked-resolved' }), { 'content-type': 'application/json' });
+    assert.equal(guard.status, 403);
+    assert.ok(!existsSync(path.join(t.root, 'dag-commands')), '拒绝不写审计');
+  } finally { await close(t.server); }
+});
