@@ -54,8 +54,9 @@ export function loadVibePlan({ projectRoot, planId }) {
   return { planId, plan, nodes, productSpec };
 }
 
-export function createPlanDigest({ productSpec, plan, nodes, authorizationSnapshot = null }) {
-  return digest({ productSpec, plan, nodes, authorizationSnapshot });
+export function createPlanDigest({ productSpec, plan, nodes, authorizationSnapshot = null, designBaseline = null }) {
+  const design = designBaseline ? { manifestPath: designBaseline.manifestPath, designDigest: designBaseline.designDigest } : null;
+  return digest({ productSpec, plan, nodes, authorizationSnapshot, design });
 }
 
 export function createRunSnapshot(loaded, { authorizationSnapshot, maxParallel = 5 } = {}) {
@@ -74,6 +75,7 @@ export function createRunSnapshot(loaded, { authorizationSnapshot, maxParallel =
     planDigest,
     maxParallel,
     authorizationSnapshot: JSON.parse(JSON.stringify(authorizationSnapshot)),
+    designBaseline: loaded.designBaseline ? JSON.parse(JSON.stringify(loaded.designBaseline)) : null,
     nodes: Object.fromEntries(loaded.nodes.map(node => [node.id, {
       id: node.id,
       title: node.title,

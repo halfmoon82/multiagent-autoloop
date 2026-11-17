@@ -556,3 +556,15 @@ test('兼容读取旧快照格式（schema1）：digest 公式原样保留，只
   assert.equal(canExecuteAction(store.getRun(raw.runId).authorizationSnapshot, 'worktree').ok, true);
   assert.equal(canExecuteAction(store.getRun(raw.runId).authorizationSnapshot, 'deploy').ok, false);
 });
+
+test('设计基线快照由根 run 传到节点 run 与新 attempt，且序列化后互不影响', () => {
+  const store = setup();
+  const designBaseline = { designDigest: 'a'.repeat(64), manifest: { surfaces: [] }, readOnlyPaths: ['docs/design/demo.json'] };
+  const root = store.createRun(baseInput({ nodeId: ROOT_NODE, nodes: [{ id: 'ui', contract: { design: { surfaceIds: ['overview'] } } }], designBaseline }));
+  designBaseline.manifest.surfaces.push({ id: 'mutated-outside-store' });
+  assert.equal(root.designBaseline.manifest.surfaces.length, 0);
+  const node = store.createNodeRun(root.runId, { nodeId: 'ui', role: 'dev' });
+  assert.deepEqual(node.designBaseline, root.designBaseline);
+  const attempt = store.createAttempt(node.runId, { reason: 'retry' });
+  assert.deepEqual(attempt.designBaseline, root.designBaseline);
+});

@@ -328,7 +328,7 @@ export function createRunStore({ directory } = {}) {
         generation: 1, attempt: 1, status: 'queued', slot: null, expectedAdvanceId: null,
         failures: 0, outcome: null, prs: [], appliedAdvance: null, supersededBy: null,
         unknownSince: null, quarantine: false, nodes: Array.isArray(input.nodes) ? input.nodes : [],
-        authorizationSnapshot: snapshot, createdAt: iso(), updatedAt: iso(),
+        authorizationSnapshot: snapshot, designBaseline: input.designBaseline ? JSON.parse(JSON.stringify(input.designBaseline)) : null, createdAt: iso(), updatedAt: iso(),
       });
     },
 
@@ -425,7 +425,7 @@ export function createRunStore({ directory } = {}) {
           generation, attempt, status: 'queued', slot: null, expectedAdvanceId: null,
           failures: 0, outcome: null, prs: [], appliedAdvance: null, supersededBy: null,
           unknownSince: null, quarantine: false, nodes: prev.nodes,
-          authorizationSnapshot: prev.authorizationSnapshot,
+          authorizationSnapshot: prev.authorizationSnapshot, designBaseline: prev.designBaseline || null,
           supersedes: prev.runId, attemptReason: reason ?? null,
           revivedFrom: ['blocked_unknown'].includes(prev.status) ? prev.runId : null,
           reviveReason: ['blocked_unknown'].includes(prev.status) ? (reason ?? null) : null,
@@ -478,7 +478,7 @@ export function createRunStore({ directory } = {}) {
         planDigest: root.planDigest, nodeId, role, generation: 1, attempt: 1, status: 'queued',
         slot: null, expectedAdvanceId: null, failures: 0, outcome: null, prs: [], appliedAdvance: null,
         supersededBy: null, unknownSince: null, quarantine: false, nodes: root.nodes,
-        authorizationSnapshot: root.authorizationSnapshot, rootRunId: root.rootRunId || root.runId,
+        authorizationSnapshot: root.authorizationSnapshot, designBaseline: root.designBaseline || null, rootRunId: root.rootRunId || root.runId,
         createdAt: iso(), updatedAt: iso(),
       });
     },

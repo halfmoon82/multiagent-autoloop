@@ -3,6 +3,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { validateDag } from './dag.mjs';
+import { loadDesignBaseline, assertNodeDesignSnapshot } from './design-baseline.mjs';
 
 const PLAN_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
@@ -42,5 +43,14 @@ export function loadNativePlan({ projectRoot, planId }) {
   // 原生计划可用 optionalHighRiskActions 声明本计划开放哪些高风险动作（默认关闭）。
   const declared = !Array.isArray(data) && Array.isArray(data.optionalHighRiskActions)
     ? data.optionalHighRiskActions.filter(id => typeof id === 'string') : [];
-  return { planId, plan, nodes, productSpec: {}, optionalHighRiskActions: declared };
+  // 只有显式 UI 合同才加载设计设施；旧数组计划和纯后端计划完全保持原路径。
+  const uiNodes = nodes.filter(node => node.contract?.design != null);
+  let designBaseline = null;
+  if (uiNodes.length) {
+    if (Array.isArray(data) || !data.design || typeof data.design !== 'object') throw new Error('UI 节点必须声明 plan.design.manifestPath 与 approvalPath');
+    designBaseline = loadDesignBaseline({ projectRoot: root, manifestPath: data.design.manifestPath, approvalPath: data.design.approvalPath });
+    const rootSnapshot = { designBaseline };
+    for (const node of uiNodes) assertNodeDesignSnapshot(rootSnapshot, node);
+  }
+  return { planId, plan, nodes, productSpec: {}, optionalHighRiskActions: declared, designBaseline };
 }

@@ -96,7 +96,7 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       return wrap(() => store.createRun({
         project, planId: loaded.planId, planDigest: body.planDigest, confirmedActionIds: body.confirmedActionIds,
         selectedOptionalActions: body.selectedOptionalActions ?? [], planOptionalActions,
-        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes,
+        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes, designBaseline: loaded.designBaseline || null,
       }));
     },
     cancel(id) {
