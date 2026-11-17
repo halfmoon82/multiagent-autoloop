@@ -7,6 +7,7 @@ import { HubError, hubRequest } from './hub.mjs';
 import { readRuleOptions, saveRule, RuleError } from './rules.mjs';
 import { modelLabels } from './models.mjs';
 import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-session.mjs';
+import { HubSchedulingSessionAdapter } from './hub-scheduling-session.mjs';
 import { discoverGitProjects } from './projects.mjs';
 import { readDetours, publicDetour } from './detour.mjs';
 import { loadChains } from './serial-progress.mjs';
@@ -148,7 +149,7 @@ export function createConsoleServer(config, schedulingSessions) {
       try { mkdirSync(allowedDir, { recursive: true }); }
       catch (error) { console.error(`[console] 脚本目录 ${allowedDir} 创建失败，会话按只读处理：${error.message}`); allowedDir = null; }
     }
-    schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root });
+    schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }) });
   }
   const dagService = config.dagService || (config.root ? createDagService({ root: config.root, storeDirectory: path.join(config.root, 'dag-runs') }) : null);
   config = { ...config, schedulingSessions, dagService };
@@ -167,6 +168,10 @@ export function createConsoleServer(config, schedulingSessions) {
       catch { return jsonResponse(res, 404, { error: '控制台资源尚未安装' }); }
     }
     return jsonResponse(res, 404, { error: '没有这个控制台地址' });
+  });
+  // §6.3 重启后按 Hub 事项恢复调度会话视图；由启动脚本在 listen 后调用。失败只记录，不阻止控制台启动。
+  server.restoreSchedulingSessions = () => schedulingSessions.restoreFromHub().catch(error => {
+    console.error(`[console] 恢复 Hub 调度会话失败：${error.message}`);
   });
   server.on('close', () => schedulingSessions.dispose?.());
   return server;

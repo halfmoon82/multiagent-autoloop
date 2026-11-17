@@ -12,6 +12,7 @@ import { SessionArchive } from './session-archive.mjs';
 import { listArtifacts, readArtifact } from './artifacts.mjs';
 import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
+import { HubSchedulingSessionAdapter, HUB_SCHEDULING_AGENT_LABEL, schedulingSubject, schedulingEventId, mapHubStateToStatus, matterTurn } from './hub-scheduling-session.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -86,7 +87,7 @@ const safeMessage = error => String(error?.message || error || '未知错误').r
 const statusLabel = status => ({ initializing: '初始化中', running: '运行中', idle: '待命', error: '异常', closing: '关闭中', closed: '已关闭' })[status] || status;
 
 function toPublicSession(record) {
-  return {
+  const view = {
     id: record.id,
     kind: record.kind || 'scheduling',
     sessionId: record.sessionId,
@@ -108,6 +109,12 @@ function toPublicSession(record) {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
+  // Hub 原生调度会话暴露事项/run 标识供控制台总览映射；ACP 会话保持既有字段不变。
+  if (record.hub) {
+    view.hubSubject = record.hub.subject;
+    view.hubRunId = record.hub.runId || null;
+  }
+  return view;
 }
 
 function summarizeUpdate(update) {
@@ -119,9 +126,17 @@ function summarizeUpdate(update) {
 }
 
 export class SchedulingSessionManager {
-  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null } = {}) {
+  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null, hubScheduling } = {}) {
     this.cwd = path.resolve(cwd);
     this.writableDir = writableDir ? path.resolve(writableDir) : null;
+    // §6：kind=scheduling 走 Hub 事项/run/resume，绝不派生私有 ACP；normal/design 始终走 ACP。
+    // 显式注入适配器（生产装配或测试）优先；false 保留旧 ACP 语义。
+    // 缺省且为真实 ACP 默认装配（未注入假 spawnFn/adapterPath）时自动启用 Hub——本机服务由
+    // createConsoleServer 以默认装配创建，因此生产自动走 Hub；注入假适配器的单元测试不受影响。
+    const realAcpDefaults = spawnFn === spawn && adapterPath === DEFAULT_ADAPTER_PATH;
+    this.hubScheduling = hubScheduling === false ? null
+      : hubScheduling && typeof hubScheduling.postTurn === 'function' ? hubScheduling
+        : realAcpDefaults ? new HubSchedulingSessionAdapter() : null;
     this.adapterPath = adapterPath;
     this.spawnFn = spawnFn;
     this.maxSessions = maxSessions;
@@ -161,6 +176,53 @@ export class SchedulingSessionManager {
     } catch { return []; }
   }
 
+  // §6.3 控制台重启：按 Hub 事项状态恢复视图，不恢复私有进程、不另登记执行状态。
+  async restoreFromHub() {
+    if (!this.hubScheduling?.listMatters) return;
+    const matters = await this.hubScheduling.listMatters();
+    for (const matter of matters) {
+      const subject = String(matter.subject || '');
+      if (!subject.startsWith('scheduling:')) continue;
+      const sessionId = String(matter.sessionId || subject.slice('scheduling:'.length));
+      if (this.sessions.has(sessionId)) continue;
+      const nowIso = this.now().toISOString();
+      // 轮次从事项已有事件恢复，避免续发时生成与已投递事件重复的 id 被 Hub 幂等丢弃。
+      const turn = matterTurn(sessionId, matter);
+      const record = {
+        id: sessionId,
+        kind: 'scheduling',
+        sessionId,
+        agent: HUB_SCHEDULING_AGENT_LABEL,
+        cwd: this.#projectCwd(String(matter.project || '')),
+        status: mapHubStateToStatus(matter.state),
+        project: String(matter.project || '未识别'),
+        writableDir: null,
+        continuedFrom: null,
+        prompt: String(matter.text || ''),
+        queue: [],
+        interruptRequested: false,
+        stopReason: null,
+        error: null,
+        messages: matter.text ? [{ role: 'user', text: String(matter.text), at: matter.startedAt || nowIso }] : [],
+        liveText: '',
+        createdAt: matter.startedAt || nowIso,
+        updatedAt: nowIso,
+        child: null,
+        connection: null,
+        closed: false,
+        hub: {
+          sessionId,
+          subject,
+          turn,
+          lastEventId: schedulingEventId(sessionId, turn),
+          runId: matter.runId || null,
+          lastState: matter.state || null,
+        },
+      };
+      this.sessions.set(record.id, record);
+    }
+  }
+
   // 用存档转录新建会话续跑（ACP 无法跨进程重连，只能新建）。
   async continueSession(id) {
     if (!this.archive) throw new SchedulingSessionError('会话存档不可用（未配置运行目录）', { status: 503 });
@@ -187,6 +249,8 @@ export class SchedulingSessionManager {
     const duplicate = [...this.sessions.values()].find(session => session.project === projectId && (session.kind || 'scheduling') === sessionKind);
     if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的${SESSION_KIND_LABELS[sessionKind]}（${duplicate.id.slice(0, 8)}），请先关闭再开启`);
     if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个会话`);
+    // §6：调度会话从首轮起进入 Hub，绝不派生私有 ACP 进程；normal/design 保持既有 ACP 语义。
+    if (sessionKind === 'scheduling' && this.hubScheduling) return this.#startHubSession({ projectId, text, continuedFrom });
     if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
 
     const sessionCwd = this.#projectCwd(projectId);
@@ -298,6 +362,111 @@ export class SchedulingSessionManager {
     }
   }
 
+  // §6.3 start：生成 subject、投递首个事件，返回 Hub 支持的会话视图；失败保留输入且不派生进程。
+  async #startHubSession({ projectId, text, continuedFrom }) {
+    const id = randomUUID();
+    const turn = 1;
+    let result;
+    try {
+      result = await this.hubScheduling.postTurn({ sessionId: id, turn, project: projectId, text });
+    } catch (error) {
+      throw new SchedulingSessionError(`开启调度会话失败：${safeMessage(error)}`, { status: error.status || 502 });
+    }
+    const nowIso = this.now().toISOString();
+    const subject = schedulingSubject(id);
+    const record = {
+      id,
+      kind: 'scheduling',
+      sessionId: id,
+      agent: HUB_SCHEDULING_AGENT_LABEL,
+      cwd: this.#projectCwd(projectId),
+      status: mapHubStateToStatus(result?.state),
+      project: projectId,
+      writableDir: null,
+      continuedFrom,
+      prompt: text,
+      queue: [],
+      interruptRequested: false,
+      stopReason: null,
+      error: null,
+      messages: [],
+      liveText: '',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      child: null,
+      connection: null,
+      closed: false,
+      hub: {
+        sessionId: id,
+        subject,
+        turn,
+        lastEventId: result?.id || schedulingEventId(id, turn),
+        runId: result?.runId || null,
+        lastState: result?.state ?? null,
+      },
+    };
+    this.sessions.set(record.id, record);
+    this.#pushMessage(record, 'user', text);
+    return toPublicSession(record);
+  }
+
+  // §6.3 send：向同一 subject 发新事件；重复 id 幂等；失败保留输入，不回退 ACP。
+  async #sendToHub(record, raw, { interrupt }) {
+    if (interrupt) {
+      record.interruptRequested = true;
+      try {
+        let runId = record.hub.runId;
+        if (!runId) runId = (await this.hubScheduling.readStatus?.({ eventId: record.hub.lastEventId }))?.runId || null;
+        if (!runId) throw new Error('取不到正在运行的 run 标识，无法确认已打断');
+        record.hub.runId = runId;
+        await this.hubScheduling.cancelRun(runId);
+      } catch (error) {
+        record.interruptRequested = false;
+        throw new SchedulingSessionError(`打断 Hub run 失败：${safeMessage(error)}`, { status: 502 });
+      }
+      record.interruptRequested = false;
+      record.status = 'idle';
+      record.stopReason = 'interrupted';
+      record.updatedAt = this.now().toISOString();
+      this.#persist(record);
+      return toPublicSession(record);
+    }
+    const message = this.#validatePrompt(raw);
+    const turn = record.hub.turn + 1;
+    let result;
+    try {
+      result = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn, project: record.project, text: message });
+    } catch (error) {
+      // 输入保留：不记入转录、不推进轮次，让调用方/界面保留草稿可重试。
+      throw new SchedulingSessionError(`发送失败：${safeMessage(error)}（内容已保留，请重试）`, { status: error.status || 502 });
+    }
+    record.hub.turn = turn;
+    record.hub.lastEventId = result?.id || schedulingEventId(record.hub.sessionId, turn);
+    if (result?.runId) record.hub.runId = result.runId;
+    record.hub.lastState = result?.state ?? null;
+    record.status = mapHubStateToStatus(result?.state);
+    record.stopReason = null;
+    this.#pushMessage(record, 'user', message);
+    // 队列项各成一条 Hub 事件；投递失败则留回队首，不丢消息。
+    while (record.queue.length) {
+      const next = record.queue[0];
+      const queuedTurn = record.hub.turn + 1;
+      try {
+        const queuedResult = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn: queuedTurn, project: record.project, text: next.text });
+        record.queue.shift();
+        record.hub.turn = queuedTurn;
+        record.hub.lastEventId = queuedResult?.id || schedulingEventId(record.hub.sessionId, queuedTurn);
+        if (queuedResult?.runId) record.hub.runId = queuedResult.runId;
+        record.hub.lastState = queuedResult?.state ?? null;
+        this.#pushMessage(record, 'user', next.text);
+      } catch (error) {
+        record.error = safeMessage(error);
+        break;
+      }
+    }
+    return toPublicSession(record);
+  }
+
   async send(id, text, { interrupt = false } = {}) {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
@@ -308,6 +477,7 @@ export class SchedulingSessionManager {
     if ((record.kind || 'scheduling') === 'design' && raw.startsWith('/')) {
       throw new SchedulingSessionError('设计会话不接受斜杠命令（防止切换模式），请用自然语言描述需求', { status: 400 });
     }
+    if (record.hub) return this.#sendToHub(record, raw, { interrupt });
     if (record.status === 'idle') {
       const message = this.#validatePrompt(raw);
       this.#pushMessage(record, 'user', message);
@@ -441,6 +611,14 @@ export class SchedulingSessionManager {
   async close(id) {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    if (record.hub) {
+      // §6.3 close：停止新事件；Hub run 在 Hub 侧继续，不杀本地进程、也不在此取消 run。
+      record.status = 'closed';
+      record.updatedAt = this.now().toISOString();
+      this.#persist(record);
+      this.sessions.delete(record.id);
+      return toPublicSession(record);
+    }
     record.status = 'closing';
     record.updatedAt = this.now().toISOString();
     if (record.sessionId) {
