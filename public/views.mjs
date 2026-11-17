@@ -8,9 +8,9 @@ export function renderSummary(snapshot) {
   const view = formatState(snapshot);
   const items = [
     ['正在运行', view.active, 'Agent 正在处理', ''],
-    ['等待与重试', view.waiting, '排队或等待下一次尝试', ''],
-    ['今日完成', view.doneToday, `输入与输出合计 ${view.tokens} Token`, ''],
-    ['需要您处理', view.openCards, `今日费用 ${view.cost}`, 'attention'],
+    ['等待重试', view.waiting, '排队或等待下一次尝试', ''],
+    ['今日完成', view.doneToday, `输入与输出合计 ${view.tokens} Token · 今日费用 ${view.cost}`, ''],
+    ['需要您处理', view.openCards, '仅产品、凭据与穷尽失败', 'attention'],
   ];
   return items.map(([label, value, note, kind]) => { const card = el('article', `metric ${kind}`); card.append(el('div', 'metric-label', label), el('div', 'metric-value', String(value)), el('div', 'metric-note', note)); return card; });
 }
@@ -77,24 +77,36 @@ function queueOp(text, action, id, ariaLabel) {
 export const SESSION_KIND_LABELS = { normal: '普通', scheduling: '调度', design: '设计' };
 
 // 会话管理屏（设计基线 screen-design）：左侧紧凑条目列表；点击条目在右侧工作区打开会话。
-export function renderSessionItems(sessions = []) {
+export function renderSessionItems(sessions = [], { collapsed = {} } = {}) {
   if (!sessions.length) return [el('div', 'empty', '还没有该类型的会话。')];
   return sessions.map(session => {
     const kind = session.kind || 'scheduling';
-    const item = el('article', 'session-item');
+    const item = el('article', `session-item${collapsed[session.id] ? ' collapsed' : ''}`);
     item.dataset.session = session.id; item.dataset.kind = kind; item.dataset.ws = `s:${session.id}`;
     const lastUser = [...(session.messages || [])].reverse().find(message => message.role === 'user');
     const title = String(lastUser?.text || session.prompt || session.id).trim().replace(/\s+/g, ' ');
+    const created = String(formatTime(session.createdAt)).split(' ')[0].replace('/', '-');
+    const last = [...(session.messages || [])].reverse().find(message => message.text);
+    const preview = String(last?.text || session.prompt || '').trim().replace(/\s+/g, ' ');
     const select = el('button', 'session-select');
     select.type = 'button'; select.dataset.action = 'select-session'; select.dataset.id = session.id;
     select.setAttribute('aria-label', `选择会话 ${session.id}`);
     select.append(
       el('strong', '', title.length > 36 ? `${title.slice(0, 36)}…` : title),
-      el('span', '', `${projectName(session.project || '')} · ${session.id.slice(0, 8)} · ${formatTime(session.createdAt)}`),
-      el('small', '', `更新 · ${formatTime(session.updatedAt)}${session.queuedCount ? ` · 排队 ${session.queuedCount}` : ''}`),
+      el('span', '', `${projectName(session.project || '')} · ${created}`),
+      el('small', '', `${preview.length > 28 ? `${preview.slice(0, 28)}…` : preview}${session.queuedCount ? ` · 排队 ${session.queuedCount}` : ''}`),
     );
-    const status = session.statusText || session.status || '未知';
-    item.append(select, badge(status, session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
+    const actions = el('div', 'session-item-actions');
+    const collapse = el('button', '', '⌃');
+    collapse.type = 'button'; collapse.dataset.action = 'collapse-session'; collapse.dataset.id = session.id;
+    collapse.title = collapsed[session.id] ? '展开会话摘要' : '折叠会话摘要';
+    collapse.setAttribute('aria-label', collapse.title);
+    const archive = el('button', '', '□');
+    archive.type = 'button'; archive.dataset.action = 'archive-session'; archive.dataset.id = session.id;
+    archive.title = '归档会话（保留转录，可在已归档与历史查看或继续）';
+    archive.setAttribute('aria-label', '归档会话');
+    actions.append(collapse, archive);
+    item.append(select, actions);
     return item;
   });
 }
