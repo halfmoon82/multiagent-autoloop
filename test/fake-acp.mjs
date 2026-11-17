@@ -21,9 +21,10 @@ export function fakeAcp({ permissions = [], updates = [], failSetMode = false } 
       if (!message.method) { if (message.result) outcomes[message.id] = message.result.outcome; continue; }
       if (message.method === 'initialize') respond(message, { agentInfo: { name: 'fake-codex' }, agentCapabilities: {} });
       else if (message.method === 'session/new') respond(message, { sessionId: 'fake-session' });
+      // 对齐 @agentclientprotocol/codex-acp@2.6.0 真实行为：set_mode 成功响应是空对象，configOptions 只在 set_config_option 响应里。
       else if (message.method === 'session/set_mode') {
         if (failSetMode) stdout.write(line({ jsonrpc: '2.0', id: message.id, error: { code: -32603, message: 'mode unavailable' } }));
-        else respond(message, { configOptions: [{ id: 'mode', currentValue: message.params.modeId }] });
+        else respond(message, {});
       } else if (message.method === 'session/set_config_option') respond(message, { configOptions: [{ id: message.params.configId, currentValue: message.params.value }] });
       else if (message.method === 'session/prompt') {
         setTimeout(() => {

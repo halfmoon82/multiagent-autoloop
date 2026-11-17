@@ -124,7 +124,7 @@ test('scheduling session sets and verifies read-only mode before the first promp
   await manager.start({ kind: 'scheduling', project: e.project, prompt: '诊断' });
   await waitFor(() => fake.requests.some(r => r.method === 'session/prompt'));
   const methods = fake.requests.filter(r => r.method).map(r => r.method);
-  assert.deepEqual(methods.slice(0, 4), ['initialize', 'session/new', 'session/set_mode', 'session/prompt']);
+  assert.deepEqual(methods.slice(0, 4), ['initialize', 'session/new', 'session/set_mode', 'session/set_config_option']);
   assert.equal(fake.requests.find(r => r.method === 'session/set_mode').params.modeId, 'read-only');
   manager.dispose();
 });

@@ -23,13 +23,19 @@ function fakeAdapter({ failMode = false, driftMode = false, askPermission = fals
       if (!request.method) { responses.push(request); continue; }
       if (request.method === 'initialize') respond(request, { agentInfo: { name: 'fake-codex' }, agentCapabilities: {} });
       else if (request.method === 'session/new') respond(request, { sessionId: 'fake-session' });
+      // 对齐 @agentclientprotocol/codex-acp@2.6.0 真实行为：set_mode 成功响应是空对象。
       else if (request.method === 'session/set_mode') {
         if (failMode) stdout.write(line({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'mode unavailable' } }));
-        else respond(request, { configOptions: [{ id: 'mode', currentValue: request.params.modeId }] });
+        else respond(request, {});
       } else if (request.method === 'session/set_config_option') {
-        planConfigCalls += 1;
-        if (driftMode && planConfigCalls > 1) stdout.write(line({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'collaboration_mode drifted back to default' } }));
-        else respond(request, { configOptions: [{ id: request.params.configId, currentValue: request.params.value }] });
+        if (request.params.configId === 'collaboration_mode') {
+          // 漂移只模拟在 collaboration_mode 上：创建时首个调用成功，每轮复核时再失败。
+          planConfigCalls += 1;
+          if (driftMode && planConfigCalls > 1) stdout.write(line({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'collaboration_mode drifted back to default' } }));
+          else respond(request, { configOptions: [{ id: request.params.configId, currentValue: request.params.value }] });
+        } else {
+          respond(request, { configOptions: [{ id: request.params.configId, currentValue: request.params.value }] });
+        }
       } else if (request.method === 'session/prompt') {
         setTimeout(() => {
           stdout.write(line({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'fake-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '完成' } } } }));
@@ -54,11 +60,12 @@ test('normal session uses the project workspace with the exact user prompt and n
   const started = await manager.start({ kind: 'normal', project: '/workspace/demo', prompt: '分析账单 API，不要修改文件' });
   await waitFor(() => fake.requests.some(request => request.method === 'session/prompt'));
   assert.equal(started.kind, 'normal');
-  assert.deepEqual(fake.requests.map(request => request.method), ['initialize', 'session/new', 'session/set_mode', 'session/prompt']);
+  assert.deepEqual(fake.requests.map(request => request.method), ['initialize', 'session/new', 'session/set_mode', 'session/set_config_option', 'session/prompt']);
   assert.equal(fake.requests[1].params.cwd, '/workspace/demo');
   assert.deepEqual(fake.requests[1].params.mcpServers, []);
-  assert.equal(fake.requests[3].params.prompt[0].text, '分析账单 API，不要修改文件');
-  assert.doesNotMatch(fake.requests[3].params.prompt[0].text, /调度会话|PRD 引导/);
+  assert.deepEqual(fake.requests[3].params, { sessionId: 'fake-session', configId: 'mode', value: 'workspace-write' });
+  assert.equal(fake.requests[4].params.prompt[0].text, '分析账单 API，不要修改文件');
+  assert.doesNotMatch(fake.requests[4].params.prompt[0].text, /调度会话|PRD 引导/);
 });
 
 test('design session enforces read-only and native Plan Mode before the first prompt', async () => {
@@ -70,13 +77,14 @@ test('design session enforces read-only and native Plan Mode before the first pr
   // 只截取到首个 prompt：每轮结束后的护栏复核会产生额外的 set_mode/set_config_option，不属于首轮顺序断言范围。
   const upToPrompt = [];
   for (const request of fake.requests) { upToPrompt.push(request.method); if (request.method === 'session/prompt') break; }
-  assert.deepEqual(upToPrompt, ['initialize', 'session/new', 'session/set_mode', 'session/set_config_option', 'session/prompt']);
+  assert.deepEqual(upToPrompt, ['initialize', 'session/new', 'session/set_mode', 'session/set_config_option', 'session/set_config_option', 'session/prompt']);
   assert.equal(fake.requests[2].params.modeId, 'read-only');
-  assert.deepEqual(fake.requests[3].params, { sessionId: 'fake-session', configId: 'collaboration_mode', value: 'plan' });
+  assert.deepEqual(fake.requests[3].params, { sessionId: 'fake-session', configId: 'mode', value: 'read-only' });
+  assert.deepEqual(fake.requests[4].params, { sessionId: 'fake-session', configId: 'collaboration_mode', value: 'plan' });
   assert.deepEqual(fake.requests[1].params.mcpServers, []);
-  assert.match(fake.requests[4].params.prompt[0].text, /PRD/);
-  assert.match(fake.requests[4].params.prompt[0].text, /product-spec/);
-  assert.doesNotMatch(fake.requests[4].params.prompt[0].text, /派发 worker/);
+  assert.match(fake.requests[5].params.prompt[0].text, /PRD/);
+  assert.match(fake.requests[5].params.prompt[0].text, /product-spec/);
+  assert.doesNotMatch(fake.requests[5].params.prompt[0].text, /派发 worker/);
   await assert.rejects(() => manager.send(started.id, '/plan'), /设计会话不接受斜杠命令/);
 });
 
