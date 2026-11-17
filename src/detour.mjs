@@ -73,6 +73,7 @@ export function publicDetour(detour) {
   if (!detour || typeof detour !== 'object' || !Array.isArray(detour.rules)) return null;
   return {
     id: String(detour.id ?? ''), status: String(detour.status ?? ''),
+    ...(detour.origin ? { origin: String(detour.origin) } : {}),
     blockedAt: String(detour.blockedAt ?? ''), ...(detour.revertedAt ? { revertedAt: detour.revertedAt } : {}),
     blockedAgent: String(detour.blockedAgent ?? ''), ...(detour.blockedModel ? { blockedModel: detour.blockedModel } : {}),
     evidence: String(detour.evidence ?? ''), fallbackAgent: String(detour.fallbackAgent ?? ''),
@@ -146,6 +147,16 @@ function findAnyDetour(config, id) {
   return detour;
 }
 
+/** 去重辅助：找同一被拦 Agent（可再按模型收窄）的进行中绕行，已回归的不再算占用。 */
+export function findActiveDetour(config, { blockedAgent, blockedModel } = {}) {
+  const agent = String(blockedAgent ?? '').trim();
+  if (!agent) return null;
+  const model = String(blockedModel ?? '').trim();
+  return readDetours(config).find((item) => item.status === 'detoured'
+    && item.blockedAgent === agent
+    && (!model || item.blockedModel === model)) ?? null;
+}
+
 /** 登记一次频限绕行：把指定规则切到替代 Agent，留原始派发的快照。 */
 export function recordDetour(config, input, now = new Date()) {
   return withStateLock(config, () => {
@@ -179,6 +190,7 @@ export function recordDetour(config, input, now = new Date()) {
     }
     const record = {
       id, status: 'detoured', blockedAt: now.toISOString(),
+      ...(input.origin ? { origin: String(input.origin) } : {}),
       blockedAgent, ...(blockedModel ? { blockedModel } : {}), evidence,
       fallbackAgent, rules: snapshots,
       probe: { ...(probeCommand ? { command: probeCommand } : {}), cooldownMinutes },
