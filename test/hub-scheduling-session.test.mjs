@@ -8,6 +8,7 @@ import {
   schedulingEventId,
   buildSchedulingEvent,
   mapHubStateToStatus,
+  matterTurn,
 } from '../src/hub-scheduling-session.mjs';
 import { SchedulingSessionManager } from '../src/scheduling-session.mjs';
 import { postSchedulingEvent, readSchedulingEvent } from '../src/hub.mjs';
@@ -245,4 +246,73 @@ test('normal and design sessions keep the existing ACP spawn path', async () => 
   assert.equal(spawned, 1, 'normal sessions must still use ACP');
   assert.equal(started.sessionId, 'acp-1');
   assert.equal(client.calls.length, 0, 'normal sessions must not touch the Hub scheduling adapter');
+});
+
+// ---- PR #74 返工回归 ----
+test('F2 restore of a multi-turn matter continues at the next turn, not a duplicate id', async () => {
+  const matters = [{ subject: 'scheduling:multi', sessionId: 'multi', project: 'owner/demo', state: 'idle', text: '第一句', lastEventId: 'console:multi:turn:3', runId: 'run-3' }];
+  const client = fakeHubClient({ matters });
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: adapter });
+  await manager.restoreFromHub();
+  await manager.send('multi', '恢复后继续');
+  const posted = client.calls.filter(call => call[0] === 'postEvent').map(call => call[1].id);
+  assert.deepEqual(posted, ['console:multi:turn:4']);
+});
+
+test('F2 matterTurn reads the max turn from events list and falls back to 1', () => {
+  assert.equal(matterTurn('s', {}), 1);
+  assert.equal(matterTurn('s', { events: [{ id: 'console:s:turn:2' }, 'console:s:turn:5', { id: 'other' }] }), 5);
+  assert.equal(matterTurn('s', { lastEventId: 'console:other:turn:9' }), 1);
+});
+
+test('F3 restoreFromHub surfaces Hub failure instead of an empty list', async () => {
+  const client = fakeHubClient({ listError: new Error('hub down') });
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  await assert.rejects(adapter.listMatters(), error => error instanceof HubSchedulingError && /hub down/.test(error.message));
+  const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: adapter });
+  await assert.rejects(manager.restoreFromHub(), /hub down/);
+  const empty = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: fakeHubClient({ matters: [] }) });
+  assert.deepEqual(await empty.listMatters(), []);
+});
+
+test('F4 interrupt without a runId looks it up, and errors without marking idle when unknown', async () => {
+  const matters = [{ subject: 'scheduling:norun', sessionId: 'norun', project: 'owner/demo', state: 'running', text: 'x' }];
+  const found = fakeHubClient({ matters, runId: 'run-found', state: 'running' });
+  const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: found }) });
+  await manager.restoreFromHub();
+  await manager.send('norun', '', { interrupt: true });
+  assert.ok(found.calls.some(call => call[0] === 'cancelRun' && call[1] === 'run-found'));
+
+  const missing = fakeHubClient({ matters, readError: new Error('nope') });
+  const manager2 = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: missing }) });
+  await manager2.restoreFromHub();
+  await assert.rejects(manager2.send('norun', '', { interrupt: true }), /run/);
+  assert.equal(manager2.list()[0].status, 'running');
+  assert.ok(!missing.calls.some(call => call[0] === 'cancelRun'));
+});
+
+test('F1 real createConsoleServer assembly restores sessions from the Hub on start', async () => {
+  const { createServer } = await import('node:http');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const { createConsoleServer } = await import('../src/server.mjs');
+  const { listen, close } = await import('./helpers.mjs');
+  const hub = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/v1/matters')) return res.end(JSON.stringify({ matters: [{ subject: 'scheduling:real', sessionId: 'real', project: 'owner/demo', state: 'running', text: '重启前', lastEventId: 'console:real:turn:2' }] }));
+    res.statusCode = 404; res.end('{}');
+  });
+  await new Promise(resolve => hub.listen(0, '127.0.0.1', resolve));
+  const root = mkdtempSync(path.join(tmpdir(), 'restore-root-'));
+  const server = createConsoleServer({ hubUrl: `http://127.0.0.1:${hub.address().port}`, ownerKey: 'k', host: '127.0.0.1', root, rulesFile: path.join(root, 'rules.json') });
+  try {
+    const url = await listen(server);
+    await server.restoreSchedulingSessions();
+    const response = await fetch(`${url}/api/scheduling-sessions`, { headers: { host: '127.0.0.1' } });
+    const sessions = await response.json();
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].hubSubject, 'scheduling:real');
+  } finally { await close(server); await new Promise(resolve => hub.close(resolve)); }
 });

@@ -12,7 +12,7 @@ import { SessionArchive } from './session-archive.mjs';
 import { listArtifacts, readArtifact } from './artifacts.mjs';
 import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
-import { HubSchedulingSessionAdapter, HUB_SCHEDULING_AGENT_LABEL, schedulingSubject, schedulingEventId, mapHubStateToStatus } from './hub-scheduling-session.mjs';
+import { HubSchedulingSessionAdapter, HUB_SCHEDULING_AGENT_LABEL, schedulingSubject, schedulingEventId, mapHubStateToStatus, matterTurn } from './hub-scheduling-session.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -186,6 +186,8 @@ export class SchedulingSessionManager {
       const sessionId = String(matter.sessionId || subject.slice('scheduling:'.length));
       if (this.sessions.has(sessionId)) continue;
       const nowIso = this.now().toISOString();
+      // 轮次从事项已有事件恢复，避免续发时生成与已投递事件重复的 id 被 Hub 幂等丢弃。
+      const turn = matterTurn(sessionId, matter);
       const record = {
         id: sessionId,
         kind: 'scheduling',
@@ -211,8 +213,8 @@ export class SchedulingSessionManager {
         hub: {
           sessionId,
           subject,
-          turn: 1,
-          lastEventId: schedulingEventId(sessionId, 1),
+          turn,
+          lastEventId: schedulingEventId(sessionId, turn),
           runId: matter.runId || null,
           lastState: matter.state || null,
         },
@@ -412,8 +414,13 @@ export class SchedulingSessionManager {
   async #sendToHub(record, raw, { interrupt }) {
     if (interrupt) {
       record.interruptRequested = true;
-      try { await this.hubScheduling.cancelRun(record.hub.runId); }
-      catch (error) {
+      try {
+        let runId = record.hub.runId;
+        if (!runId) runId = (await this.hubScheduling.readStatus?.({ eventId: record.hub.lastEventId }))?.runId || null;
+        if (!runId) throw new Error('取不到正在运行的 run 标识，无法确认已打断');
+        record.hub.runId = runId;
+        await this.hubScheduling.cancelRun(runId);
+      } catch (error) {
         record.interruptRequested = false;
         throw new SchedulingSessionError(`打断 Hub run 失败：${safeMessage(error)}`, { status: 502 });
       }

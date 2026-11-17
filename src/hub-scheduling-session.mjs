@@ -36,6 +36,20 @@ export function buildSchedulingEvent({ sessionId, turn, project, text } = {}) {
   };
 }
 
+// 从事项里恢复已用的最大轮次：lastEventId / events[].id / turn / eventCount 取最大，至少为 1。
+export function matterTurn(sessionId, matter = {}) {
+  const prefix = `console:${sessionId}:turn:`;
+  const parse = id => {
+    const text = String(id || '');
+    if (!text.startsWith(prefix)) return 0;
+    const n = Number(text.slice(prefix.length));
+    return Number.isInteger(n) && n > 0 ? n : 0;
+  };
+  const ids = [matter.lastEventId, ...(Array.isArray(matter.events) ? matter.events.map(e => (typeof e === 'string' ? e : e?.id)) : [])];
+  const counts = [matter.turn, matter.eventCount].map(Number).filter(n => Number.isInteger(n) && n > 0);
+  return Math.max(1, ...ids.map(parse), ...counts);
+}
+
 export function mapHubStateToStatus(state) {
   if (['running', 'queued', 'active', 'in_progress'].includes(state)) return 'running';
   if (['failed', 'error', 'cancelled', 'canceled'].includes(state)) return 'error';
@@ -94,10 +108,14 @@ export class HubSchedulingSessionAdapter {
   }
 
   async listMatters() {
-    try {
-      const matters = await this.hubClient.listMatters(this.#config());
-      return Array.isArray(matters) ? matters : (matters?.matters || []);
-    } catch { return []; }
+    // Hub 失败必须抛出，不能与「没有会话」的空列表混淆（restoreFromHub 依赖这点）。
+    let matters;
+    try { matters = await this.hubClient.listMatters(this.#config()); }
+    catch (error) {
+      if (error instanceof HubSchedulingError) throw error;
+      throw new HubSchedulingError(`读取 Hub 调度事项失败：${safeMessage(error)}`, { status: error?.status >= 400 && error.status < 600 ? error.status : 502 });
+    }
+    return Array.isArray(matters) ? matters : (matters?.matters || []);
   }
 
   async cancelRun(runId) {
