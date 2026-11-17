@@ -20,6 +20,7 @@ const FILES = new Map([
   ['/app.mjs', ['app.mjs', 'text/javascript; charset=utf-8']], ['/format.mjs', ['format.mjs', 'text/javascript; charset=utf-8']],
   ['/status-sections.mjs', ['status-sections.mjs', 'text/javascript; charset=utf-8']],
   ['/views.mjs', ['views.mjs', 'text/javascript; charset=utf-8']], ['/rule-form.mjs', ['rule-form.mjs', 'text/javascript; charset=utf-8']],
+  ['/dag-model.mjs', ['dag-model.mjs', 'text/javascript; charset=utf-8']], ['/dag-views.mjs', ['dag-views.mjs', 'text/javascript; charset=utf-8']], ['/dag-authorize.mjs', ['dag-authorize.mjs', 'text/javascript; charset=utf-8']], ['/dag-app.mjs', ['dag-app.mjs', 'text/javascript; charset=utf-8']], ['/dag.css', ['dag.css', 'text/css; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
 ]);
 export function securityHeaders() {
@@ -51,6 +52,12 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/dispatch-tasks') return jsonResponse(res, 200, { tasks: config.dispatcher ? config.dispatcher.list() : [] });
   let dagMatch;
   if (req.method === 'GET' && url.pathname === '/api/dag-runs') return jsonResponse(res, 200, { runs: config.dagService ? config.dagService.list() : [] });
+  if (req.method === 'GET' && (url.pathname === '/api/dag-plan' || url.pathname === '/api/dag-preflight')) {
+    if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
+    const known = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).find(item => item.path === path.resolve(String(url.searchParams.get('project') || '')));
+    if (!known) throw new RequestError(400, '项目不在已发现的 Git 仓库列表中，请从下拉选择');
+    return jsonResponse(res, 200, url.pathname === '/api/dag-plan' ? config.dagService.preview(known.path, url.searchParams.get('planId')) : config.dagService.preflight(known.path));
+  }
   if (req.method === 'GET' && (dagMatch = url.pathname.match(/^\/api\/dag-runs\/([^/]+)$/))) {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
     return jsonResponse(res, 200, config.dagService.get(decodeURIComponent(dagMatch[1])));

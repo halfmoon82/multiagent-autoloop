@@ -1,7 +1,9 @@
 // 控制台 DAG 服务：创建/列表/详情/取消/slot-release。服务端生成授权快照；证据缺失 fail closed。
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { MAX_SLOTS, ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
+import { ALLOWED_ACTIONS, DENIED_ACTIONS, MAX_SLOTS, ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
+import { parallelShape } from './dag.mjs';
+import { checkCapabilities, checkInitialization } from './vibe-adapter.mjs';
 import { createPlanDigest, loadVibePlan } from './vibe-plan.mjs';
 
 export class DagServiceError extends Error {
@@ -31,6 +33,37 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
     get(id) {
       const run = getRoot(id);
       return { run, nodeRuns: store.listRuns().filter(r => r.project === run.project && r.planId === run.planId && r.nodeId !== ROOT_NODE) };
+    },
+    // 授权确认页数据源：只读加载已发布计划；planDigest 与 create() 同口径，确认页直接回传。
+    preview(project, planId) {
+      let loaded;
+      try { loaded = loadVibePlan({ projectRoot: project, planId: String(planId || '') }); }
+      catch (error) { throw new DagServiceError(`无法加载计划：${error.message}`); }
+      const shape = parallelShape(loaded.nodes);
+      const waveOf = new Map();
+      (shape.parallelWaves || []).forEach((wave, index) => wave.forEach(id => waveOf.set(id, index + 1)));
+      const lastWave = (shape.parallelWaves || []).length + 1;
+      return {
+        project, planId: loaded.planId,
+        planDigest: createPlanDigest({ ...loaded, authorizationSnapshot: null }),
+        title: String(loaded.plan.title || loaded.plan.name || loaded.planId),
+        maxParallel: MAX_SLOTS, mergeStrategy: 'squash',
+        nodes: loaded.nodes.map(node => ({
+          id: node.id, title: String(node.title || node.id), dependsOn: [...(node.depends_on || [])],
+          files: node.id === 'integration-review' || node.integration_review ? [] : [...(node.contract?.files || [])],
+          wave: waveOf.get(node.id) ?? lastWave, integrationReview: node.id === 'integration-review' || Boolean(node.integration_review),
+        })),
+        allowedActions: [...ALLOWED_ACTIONS], deniedActions: [...DENIED_ACTIONS],
+      };
+    },
+    // 接入预检：只读，如实返回；能力记录必须由真实 Codex 会话 vibe attest 留下，这里不代写。
+    preflight(project) {
+      const checks = [];
+      const init = checkInitialization({ projectRoot: project });
+      checks.push({ id: 'initialized', label: '规划环境已初始化', ok: init.ok, message: init.ok ? '.vibe/state.json 存在' : init.error.message });
+      const caps = checkCapabilities({ projectRoot: project, now: now() });
+      checks.push({ id: 'capabilities', label: 'Codex 能力记录', ok: caps.ok, message: caps.ok ? '能力记录有效' : `${caps.error.message}。${caps.error.remediation || ''}` });
+      return { project, checks };
     },
     create(body, project) {
       let loaded;
