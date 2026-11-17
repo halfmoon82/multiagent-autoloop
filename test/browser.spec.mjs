@@ -516,6 +516,8 @@ try {
   await page.waitForTimeout(400);
   const atBottom = await archiveLog.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight < 40);
   assert.equal(atBottom, true, 'returning to the sessions view must land the transcript at the latest message, not the top');
+  // 已归档视图只读、没有关闭入口：先选中「继续调度」生成的活动会话，再关闭它
+  await page.locator('#session-items .session-select').first().click();
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#session-items').getByText('还没有该类型的会话').waitFor();
   await page.screenshot({ path: path.join(output, 'console-mobile.png'), fullPage: true });
