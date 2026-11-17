@@ -2,6 +2,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ALLOWED_ACTIONS, DENIED_ACTIONS, MAX_SLOTS, ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
+import { reviveNode } from './dag-controller.mjs';
+import { seg } from './dag-slots.mjs';
 import { parallelShape } from './dag.mjs';
 import { checkCapabilities, checkInitialization } from './vibe-adapter.mjs';
 import { createPlanDigest, loadVibePlan } from './vibe-plan.mjs';
@@ -79,6 +81,24 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       const run = getRoot(id);
       if (isTerminal(run.status)) return run;
       return wrap(() => store.updateRun(id, { publish: { cancelRequested: true, cancelRequestedAt: new Date(now()).toISOString() } }));
+    },
+    // blocked 复活入口：只写节点待办（授权快照由 createAttempt 逐字继承），控制器下一 tick 执行；
+    // evidence 同时写入待办与审计命令文件，便于事后核实谁、以何依据复活了哪个节点。
+    revive(id, nodeId, body = {}) {
+      const dagRun = getRoot(id);
+      const evidence = String(body.evidence ?? body.detail ?? '').slice(0, 500);
+      const result = wrap(() => reviveNode(store, dagRun, nodeId, body.reason, { evidence, at: now() }));
+      const dir = path.join(root, 'dag-commands');
+      try {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(path.join(dir, `${now()}-${root.runId}-revive-${seg(String(nodeId))}.json`), JSON.stringify({
+          command: 'revive', rootRunId: id, nodeId: String(nodeId), reason: body.reason, evidence,
+          at: new Date(now()).toISOString(),
+        }, null, 2));
+      } catch (error) {
+        console.error(`[dag] revive 审计写入失败（复活待办已落盘但无审计留痕）：rootRunId=${id} nodeId=${nodeId}：${error.message}`);
+      }
+      return result;
     },
     async slotRelease(id, slotRaw, body = {}) {
       const rootRun = getRoot(id);

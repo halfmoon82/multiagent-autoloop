@@ -1,7 +1,7 @@
 // DAG 控制器：无模型，每次 tick 读 run.json → 推进节点 → 派发。只做授权快照内动作。
 // 依赖全部注入（store/hub/rt/wip/publisher），便于离线测试。
 import { readyNodes, validateDag } from './dag.mjs';
-import { MAX_SLOTS, MAX_ATTEMPTS, QUARANTINE_AFTER_MS, isTerminal, ROOT_NODE } from './dag-run.mjs';
+import { MAX_SLOTS, MAX_ATTEMPTS, QUARANTINE_AFTER_MS, isTerminal, ROOT_NODE, DagRunError } from './dag-run.mjs';
 import { seg } from './dag-slots.mjs';
 
 const HUB_TERMINAL = new Set(['done', 'cancelled', 'failed', 'nothing']);
@@ -13,6 +13,32 @@ const defaultApproach = ({ run }) => ({ reason: `第 ${run.attempt} 次失败，
 // 注入式：默认保守（始终仍阻塞），由运行时接线提供真实证据源（Hub 卡片/授权卡/前置节点/PR 状态）。
 const alwaysBlocked = async () => ({ blocked: true });
 
+// 节点状态视图与 revive 请求共用：控制台 API 只写待办（不直接迁移节点状态），
+// 控制器下一 tick 的 runTodo 才真正 createAttempt 重派。
+export function loadNodeStates(root) {
+  const saved = root.publish?.nodes || {};
+  const nodes = {};
+  for (const node of (root.nodes || []).filter(item => item.id !== ROOT_NODE)) {
+    nodes[node.id] = saved[node.id] || { state: 'pending', slot: null, branch: `feat/dag-${seg(root.runId)}-${seg(node.id)}`, model: null, todo: null };
+  }
+  return { nodes, approachChanges: root.publish?.approachChanges || [] };
+}
+
+// blocked 复活唯一通道：reason 仅接受 blocked-resolved / change-approach；
+// evidence 写入 node todo 留痕（根 run publish.nodes 持久化），授权快照逐字继承由 createAttempt 保证。
+export function reviveNode(store, root, nodeId, reason, { evidence = '', at = Date.now() } = {}) {
+  if (!['blocked-resolved', 'change-approach'].includes(reason)) {
+    throw new DagRunError('REVIVE_REASON_REQUIRED', 'revive reason 只能是 blocked-resolved 或 change-approach');
+  }
+  const st = loadNodeStates(root);
+  const n = st.nodes[String(nodeId)];
+  if (!n || n.state !== 'blocked') throw new DagRunError('NODE_NOT_BLOCKED', `节点 ${nodeId} 不在 blocked 状态，无法复活`);
+  if (root.publish?.cancelRequested || isTerminal(root.status)) throw new DagRunError('DAG_TERMINAL', 'DAG 已取消/终结，不得复活节点');
+  n.todo = { kind: 'revive', reason, role: n.blockedRole || 'dev', evidence: String(evidence).slice(0, 500), at };
+  store.updateRun(root.runId, { publish: { nodes: st.nodes, approachChanges: st.approachChanges } });
+  return { nodeId: String(nodeId), reason };
+}
+
 export function createController({ store, rootRunId, hub, rt, wip, publisher, now = Date.now, chooseApproach = defaultApproach, baseRef = 'origin/main', blockedEvidence = alwaysBlocked } = {}) {
   const loadRoot = () => store.getRun(rootRunId);
   const nodeList = root => (root.nodes || []).filter(node => node.id !== ROOT_NODE);
@@ -21,14 +47,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     .reduce((best, r) => !best || r.generation > best.generation || (r.generation === best.generation && r.attempt > best.attempt) ? r : best, null);
   const persist = (root, st) => store.updateRun(root.runId, { publish: { nodes: st.nodes, approachChanges: st.approachChanges } });
 
-  function load(root) {
-    const saved = root.publish?.nodes || {};
-    const nodes = {};
-    for (const node of nodeList(root)) {
-      nodes[node.id] = saved[node.id] || { state: 'pending', slot: null, branch: `feat/dag-${seg(root.runId)}-${seg(node.id)}`, model: null, todo: null };
-    }
-    return { nodes, approachChanges: root.publish?.approachChanges || [] };
-  }
+  const load = root => loadNodeStates(root);
 
   const usedSlots = (root, st, except) => {
     const used = new Set(store.listRuns().filter(r => r.project === root.project && r.slot != null && !isTerminal(r.status)).map(r => r.slot));
@@ -252,12 +271,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     cancel() { store.updateRun(rootRunId, { publish: { cancelRequested: true } }); },
     // blocked 节点复活入口：阻塞源消失（Hub 证据/用户确认）后由调度方/控制台调用，下一 tick 以新 attempt 重派。
     revive(nodeId, reason, { evidence = '' } = {}) {
-      if (!['blocked-resolved', 'change-approach'].includes(reason)) throw new Error('revive reason 只能是 blocked-resolved 或 change-approach');
-      const root = loadRoot(); const st = load(root); const n = st.nodes[nodeId];
-      if (!n || n.state !== 'blocked') throw new Error(`节点 ${nodeId} 不在 blocked 状态，无法复活`);
-      if (root.publish?.cancelRequested || isTerminal(root.status)) throw new Error('DAG 已取消/终结，不得复活节点');
-      n.todo = { kind: 'revive', reason, role: n.blockedRole || 'dev', evidence: String(evidence).slice(0, 500), at: now() };
-      persist(root, st); return { nodeId, reason };
+      return reviveNode(store, loadRoot(), nodeId, reason, { evidence, at: now() });
     },
     async releaseNode(nodeId) { const root = loadRoot(); const st = load(root); try { return await releaseNodeSlot(root, st, nodeId); } finally { persist(root, st); } },
     async tick() {
