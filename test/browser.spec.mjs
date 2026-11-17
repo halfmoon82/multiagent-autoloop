@@ -21,7 +21,8 @@ const snapshot = {
     { name: 'beta 巡检', paused: null, totals: { running: 0, queued: 2, retrying: 0, unknown: 0, done: 1, nothing: 0, doneToday: 1 }, usage: { input: 10, output: 5 } },
     { name: 'demo 巡检', paused: null, totals: { running: 0, queued: 0, retrying: 0, unknown: 0, done: 3, nothing: 0, doneToday: 1, usage: { input: 1234, output: 432, cost: 0.21 } } },
   ],
-  runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '' }, { id: 4, rule: 'beta 巡检', agent: 'fake', state: 'queued', attempts: 2, project: '/elsewhere/beta', createdAt: '2026-11-14T01:00:00Z', summary: 'beta 项目等待重试' }, { id: 5, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: new Date().toISOString(), usage: { input: 60, output: 40, cost: 0.07 }, summary: '今日完成一次巡检' }], timers: [],
+  runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '',
+    events: [{ source: 'local', type: 'run.manual', subject: 'recovery-75', summary: 'owner 手动触发恢复核验' }] }, { id: 4, rule: 'beta 巡检', agent: 'fake', state: 'queued', attempts: 2, project: '/elsewhere/beta', createdAt: '2026-11-14T01:00:00Z', summary: 'beta 项目等待重试' }, { id: 5, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: new Date().toISOString(), usage: { input: 60, output: 40, cost: 0.07 }, summary: '今日完成一次巡检' }], timers: [],
 };
 const rawRules = { sources: { local: { name: '本机' } }, agents: { fake: { name: '无模型 Agent', use: 'command', access: 'read' } }, rules: [{ name: '恢复测试', when: { source: 'local', types: ['recovery.*'] }, to: 'fake', cwd: root, prompt: '只验证控制台', resume: false }, { name: 'beta 巡检', when: { source: 'local', types: ['beta.*'] }, to: 'fake', cwd: '/elsewhere/beta', prompt: 'beta 项目巡检', resume: false }, { name: 'demo 巡检', when: { cron: '0 9 * * *' }, to: 'fake', cwd: demoRepo, prompt: 'demo 项目巡检', resume: false }], elsewhere: [] };
 const schedulingSessions = {
@@ -187,6 +188,10 @@ try {
   assert.match(await page.locator('#summary').innerText(), /今日完成/); assert.match(await page.locator('#summary').innerText(), /1,234/);
   assert.ok((await page.locator('#running-list').innerText()).includes(`项目 · ${path.basename(root)}`), 'overview task summary must show its short project name');
   assert.ok((await page.locator('#running-list').innerText()).includes('执行 · 无模型 Agent'), 'overview items must show which agent executes them');
+  // #75：run 无 text 的在途轮次必须显示触发事件的任务摘要 + 稳定任务编号
+  assert.ok((await page.locator('#running-list').innerText()).includes('任务摘要'), 'in-flight round must label the task summary');
+  assert.ok((await page.locator('#running-list').innerText()).includes('owner 手动触发恢复核验'), 'run without text falls back to triggering event summary');
+  assert.ok((await page.locator('#running-list').innerText()).includes('recovery-75'), 'run without text falls back to triggering event subject as task number');
   assert.ok(!(await page.locator('#attention-list').innerText()).includes('是否继续测试'), 'open decision cards must not sit in the scheduling-handled queue');
   const attentionBefore = await page.locator('#attention-list').innerText();
   assert.ok(attentionBefore.includes('wb-hy4-browser') || attentionBefore.includes('没有等待调度处理的事'), 'scheduling queue only lists scheduling-handleable items (detours count as scheduling-handled)');

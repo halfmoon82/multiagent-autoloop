@@ -442,11 +442,17 @@ function renderChainRow(chain, sessions, rules, openCards, lines, allChains = []
 }
 
 function runRow(item) {
-  const row = el('div', 'list-row');
+  const row = el('div', 'list-row'); row.dataset.run = String(item.id);
   const text = el('div');
   const project = el('span', 'chip', `项目 · ${item.projectName || projectName(item.project)}`); if (item.project && item.project !== '未识别') project.title = item.project;
-  const metaLine = el('div', 'row-meta'); metaLine.append(project, document.createTextNode(` · ${item.status}${item.attempts ? ` · 第 ${item.attempts} 次` : ''}${item.agent ? ` · 执行 · ${item.agent}` : ''} · 模型 · ${item.model} · ${item.text}`));
+  const metaLine = el('div', 'row-meta'); metaLine.append(project, document.createTextNode(` · ${item.status}${item.attempts ? ` · 第 ${item.attempts} 次` : ''}${item.agent ? ` · 执行 · ${item.agent}` : ''} · 模型 · ${item.model}`));
   text.append(el('div', 'row-title', `#${item.id} · ${item.rule}`), metaLine);
+  // #75：每条在途轮次都显式显示任务摘要 + 任务编号。上游文本一律 textContent。
+  const task = el('div', 'run-task-line');
+  task.append(el('span', 'run-task-label', '任务摘要'), el('span', 'run-task-value', item.taskSummary || item.text || '暂无概要'));
+  const number = el('div', 'run-task-line');
+  number.append(el('span', 'run-task-label', '任务编号'), el('span', 'run-task-number', item.taskNumber || `#${item.id}`));
+  text.append(task, number);
   if (item.state === 'done' || item.state === 'nothing') text.append(el('div', 'row-meta', `计费 · ${item.billing}`));
   row.append(text);
   return row;
