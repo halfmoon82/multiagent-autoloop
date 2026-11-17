@@ -2,6 +2,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ALLOWED_ACTIONS, DENIED_ACTIONS, MAX_SLOTS, ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
+import { reviveNode } from './dag-controller.mjs';
+import { seg } from './dag-slots.mjs';
 import { parallelShape } from './dag.mjs';
 import { checkCapabilities, checkInitialization } from './vibe-adapter.mjs';
 import { createPlanDigest, loadVibePlan } from './vibe-plan.mjs';
@@ -18,7 +20,8 @@ const wrap = fn => { try { return fn(); } catch (error) {
 }; };
 
 // hubEvidence({ run }) → { workerOnline?, offlineSince? }：来自 Hub“接单程序没连上”卡片；默认无证据即 fail closed。
-export function createDagService({ root, store: injected, storeDirectory, hubEvidence = async () => ({}), now = Date.now } = {}) {
+export function createDagService({ root, store: injected, storeDirectory, hubEvidence = async () => ({}), now = Date.now,
+  log = console.error, writeAudit = (dir, name, content) => writeFileSync(path.join(dir, name), content) } = {}) {
   // 存储惰性创建：控制台启动不碰磁盘，root 不可写时只有 DAG 接口报错，不影响其它功能。
   let lazy = injected || null;
   const storeProxy = new Proxy({}, { get: (_, key) => { lazy ||= createRunStore({ directory: storeDirectory }); const value = lazy[key]; return typeof value === 'function' ? value.bind(lazy) : value; } });
@@ -80,6 +83,24 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       if (isTerminal(run.status)) return run;
       return wrap(() => store.updateRun(id, { publish: { cancelRequested: true, cancelRequestedAt: new Date(now()).toISOString() } }));
     },
+    // blocked 复活入口：只写节点待办（授权快照由 createAttempt 逐字继承），控制器下一 tick 执行；
+    // evidence 同时写入待办与审计命令文件，便于事后核实谁、以何依据复活了哪个节点。
+    revive(id, nodeId, body = {}) {
+      const dagRun = getRoot(id);
+      const evidence = String(body.evidence ?? body.detail ?? '').slice(0, 500);
+      const result = wrap(() => reviveNode(store, dagRun, nodeId, body.reason, { evidence, at: now() }));
+      const dir = path.join(root, 'dag-commands');
+      try {
+        mkdirSync(dir, { recursive: true });
+        writeAudit(dir, `${now()}-${dagRun.runId}-revive-${seg(String(nodeId))}.json`, JSON.stringify({
+          command: 'revive', rootRunId: id, nodeId: String(nodeId), reason: body.reason, evidence,
+          at: new Date(now()).toISOString(),
+        }, null, 2));
+      } catch (error) {
+        log(`[dag] revive 审计写入失败（复活待办已落盘但无审计留痕）：rootRunId=${id} nodeId=${nodeId}：${error.message}`);
+      }
+      return result;
+    },
     async slotRelease(id, slotRaw, body = {}) {
       const rootRun = getRoot(id);
       const slot = typeof slotRaw === 'number' ? slotRaw : /^[1-9][0-9]*$/.test(String(slotRaw)) ? Number(slotRaw) : NaN;
@@ -92,10 +113,17 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       if (!decision.allowed) throw new DagServiceError(`slot-release 被拒绝：${decision.reason}（fail closed）`, 409);
       // 释放成功后再写审计文件：被拒绝/失败的释放不留下“已执行”的假审计；控制器据此把 Hub run 标 abandoned。
       const released = wrap(() => store.releaseSlot(holder.runId, evidence));
-      const dir = path.join(root, 'dag-commands'); mkdirSync(dir, { recursive: true });
-      writeFileSync(path.join(dir, `${now()}-${holder.runId}-slot-${slot}.json`), JSON.stringify({
-        command: 'slot-release', rootRunId: id, runId: holder.runId, slot, evidence, note: String(body.note || '').slice(0, 500), at: new Date(now()).toISOString(),
-      }, null, 2));
+      // 槽位已经释放，审计写失败（磁盘满/只读）不能把已执行动作回成 5xx——否则调用方重试会得到 404。
+      // 留一行日志标出「已释放但无审计」，由运维据 runId 补核。
+      const dir = path.join(root, 'dag-commands');
+      try {
+        mkdirSync(dir, { recursive: true });
+        writeAudit(dir, `${now()}-${holder.runId}-slot-${slot}.json`, JSON.stringify({
+          command: 'slot-release', rootRunId: id, runId: holder.runId, slot, evidence, note: String(body.note || '').slice(0, 500), at: new Date(now()).toISOString(),
+        }, null, 2));
+      } catch (error) {
+        log(`[dag] slot-release 审计写入失败（槽位已释放但无审计留痕，请据 runId 补核）：rootRunId=${id} runId=${holder.runId} slot=${slot}：${error.message}`);
+      }
       return released;
     },
   };
