@@ -84,3 +84,19 @@ test('loads the committed bootstrap plan with six nodes and parallel waves', () 
     ['dag-recovery', 'card-routing-filter'],
   ]);
 });
+
+// ---- #67 execution-grants：原生计划声明可选高风险动作 ----
+
+test('native plan object form carries declared optional high-risk actions and keeps digest stable for array form', () => {
+  const root = nativeProject('native-demo', { plan_id: 'native-demo', title: '带授权', nodes: simpleNodes, optionalHighRiskActions: ['deploy', 'release'] });
+  const loaded = loadNativePlan({ projectRoot: root, planId: 'native-demo' });
+  assert.deepEqual(loaded.optionalHighRiskActions, ['deploy', 'release']);
+  assert.equal(loaded.plan.title, '带授权');
+  // array form has no declared optional actions → default []
+  const root2 = nativeProject('native-demo', simpleNodes);
+  const loaded2 = loadNativePlan({ projectRoot: root2, planId: 'native-demo' });
+  assert.deepEqual(loaded2.optionalHighRiskActions, []);
+  assert.equal(createPlanDigest({ ...loaded2, authorizationSnapshot: null }), createPlanDigest({
+    productSpec: {}, plan: { plan_id: 'native-demo', title: 'native-demo', source: 'native' }, nodes: simpleNodes, authorizationSnapshot: null,
+  }), 'array 形态 digest 口径不变');
+});
