@@ -74,7 +74,9 @@ async function handleApi(config, req, res, url) {
     const rules = readRuleOptions(config).rules || [];
     const data = await loadChains({ root: config.root, rules });
     const usage = await refreshUsage({ config, rules, chains: data.chains });
-    if (usage) for (const chain of data.chains) {
+    for (const chain of data.chains) {
+      // loadChains 有 mtime 缓存：中台不可用时必须剥掉旧值，避免把上一轮残留当成服务端真累计。
+      if (!usage) { delete chain.cumulativeUsage; continue; }
       const cumulative = usage.byChain.get(chain.sourceFile);
       if (cumulative) chain.cumulativeUsage = cumulative;
     }

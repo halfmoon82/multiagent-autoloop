@@ -2,7 +2,7 @@
 // 不能复用 lines 的今日窗口。只统计已完成轮次，费用缺失如实标注，幂等不重复计费。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConsoleServer } from '../src/server.mjs';
@@ -139,5 +139,64 @@ test('项目累计同样走全量翻页，不受 lines 今日窗口限制', asyn
     assert.equal(v6.cumulative.cost, 16, '累计=全部历史轮次之和');
     assert.equal(v6.cumulative.tokens, 20);
     assert.equal(v6.today.cost, 8, '今日窗口只算当天完成的轮次');
+  } finally { await close(server); await close(hub.server); }
+});
+
+// —— Reviewer P2 回归：陈旧 pending 不得拖垮热路径；翻页失败退避且保留断点进度 ——
+
+test('超过 24h 未完成的 pending 视为夭折：不再阻塞前沿，也不再翻历史页', async () => {
+  const { root, store, hub, server, progress } = await setup();
+  try {
+    // 预置台账：runs 4/3/2 已计，run 1 是 3 天前看到的未完成轮次（已夭折）。
+    const stale = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    writeFileSync(path.join(root, 'chain-usage.json'), JSON.stringify({
+      version: 1, complete: true, updatedAt: stale,
+      seen: [1, 2, 3, 4],
+      rules: {
+        'V6串行推进': { counted: [4, 3, 2], pending: [{ id: 1, since: stale }], input: 3, output: 3, cost: 3, costReported: true, rounds: 3, missingCostRounds: 0 },
+      },
+    }));
+    const unfinished = { ...finished(1, 'V6串行推进', { input: 9, output: 9, cost: 9 }), finishedAt: null, state: 'claimed' };
+    store.runs = [finished(4, 'V6串行推进', { input: 1, output: 1, cost: 1 }), finished(3, 'V6串行推进', { input: 1, output: 1, cost: 1 }), finished(2, 'V6串行推进', { input: 1, output: 1, cost: 1 }), unfinished];
+    const beforeCalls = () => hub.requests.filter(item => item.url.includes('before=')).length;
+    const body = await progress();
+    const usage = body.chains.find(item => item.sourceFile === 'v6-serial.json').cumulativeUsage;
+    assert.equal(beforeCalls(), 0, '陈旧 pending 不得触发历史翻页');
+    assert.equal(usage.cost, 3, '夭折轮次不计费、不污染已计结果');
+    const ledger = JSON.parse(readFileSync(path.join(root, 'chain-usage.json'), 'utf8'));
+    assert.deepEqual(ledger.rules['V6串行推进'].pending, [], '陈旧 pending 被清出台账');
+  } finally { await close(server); await close(hub.server); }
+});
+
+test('翻页中途失败：已扫页进度落盘，退避期内不再打中台', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'chain-usage-'));
+  writeFileSync(path.join(root, 'rules.json'), JSON.stringify({
+    agents: {}, sources: {},
+    rules: [{ name: 'V6串行推进', when: { cron: '* * * * *' }, to: 'claude', cwd: '/p/v6app', prompt: 'x' }],
+  }));
+  writeFileSync(path.join(root, 'v6-serial.json'), JSON.stringify({ project: '/p/v6app', lastNode: 'n1', nodes: { n1: { status: 'done' } } }));
+  let failBefore = true;
+  const hub = await fakeHub((req, res) => {
+    if (req.url.includes('before=')) {
+      if (failBefore) { json(res, { error: 'hub 抖动' }, 502); return; }
+      return json(res, { runs: [], hasMore: false, nextBefore: null });
+    }
+    return json(res, {
+      runs: [finished(3, 'V6串行推进', { input: 1, output: 1, cost: 1 }), finished(2, 'V6串行推进', { input: 1, output: 1, cost: 1 }), finished(1, 'V6串行推进', { input: 1, output: 1, cost: 1 })],
+      hasMore: true, nextBefore: 1,
+    });
+  });
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'k', host: '127.0.0.1', root, rulesFile: path.join(root, 'rules.json') });
+  const url = await listen(server);
+  try {
+    const first = await (await fetch(`${url}/api/serial-progress`)).json();
+    assert.equal(first.chains[0].cumulativeUsage, undefined, '本轮刷新失败不附加累计');
+    const ledger = JSON.parse(readFileSync(path.join(root, 'chain-usage.json'), 'utf8'));
+    assert.equal(ledger.rules['V6串行推进'].cost, 3, '翻页失败前已扫页的进度必须落盘');
+    const calls = hub.requests.length;
+    failBefore = false;
+    const second = await (await fetch(`${url}/api/serial-progress`)).json();
+    assert.equal(second.chains[0].cumulativeUsage, undefined, '退避期内直接复用/降级，不重扫');
+    assert.equal(hub.requests.length, calls, '退避期内不再发起任何中台请求');
   } finally { await close(server); await close(hub.server); }
 });
