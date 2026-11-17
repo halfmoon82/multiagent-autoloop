@@ -74,119 +74,144 @@ function queueOp(text, action, id, ariaLabel) {
   return node;
 }
 
-export function renderSchedulingSessions(sessions = [], queueEditing = null, artifactsPanel = null) {
-  if (!sessions.length) return [el('div', 'empty', '还没有开启的调度会话。')];
+export const SESSION_KIND_LABELS = { normal: '普通', scheduling: '调度', design: '设计' };
+
+// 会话管理屏（设计基线 screen-design）：左侧紧凑条目列表；点击条目在右侧工作区打开会话。
+export function renderSessionItems(sessions = []) {
+  if (!sessions.length) return [el('div', 'empty', '还没有该类型的会话。')];
   return sessions.map(session => {
-    const card = el('article', 'run-card session-card');
-    card.dataset.session = session.id;
-    const top = el('div', 'run-top');
-    const title = el('div');
-    const status = session.statusText || session.status || '未知';
-    title.append(
-      el('div', 'run-name', `${session.agent || 'Codex ACP'} · ${session.id.slice(0, 8)}`),
-      el('div', 'row-meta', `ACP · ${session.sessionId || '未识别'} · ${formatTime(session.createdAt)}${session.stopReason ? ` · ${session.stopReason}` : ''}`),
+    const kind = session.kind || 'scheduling';
+    const item = el('article', 'session-item');
+    item.dataset.session = session.id; item.dataset.kind = kind; item.dataset.ws = `s:${session.id}`;
+    const lastUser = [...(session.messages || [])].reverse().find(message => message.role === 'user');
+    const title = String(lastUser?.text || session.prompt || session.id).trim().replace(/\s+/g, ' ');
+    const select = el('button', 'session-select');
+    select.type = 'button'; select.dataset.action = 'select-session'; select.dataset.id = session.id;
+    select.setAttribute('aria-label', `选择会话 ${session.id}`);
+    select.append(
+      el('strong', '', title.length > 36 ? `${title.slice(0, 36)}…` : title),
+      el('span', '', `${projectName(session.project || '')} · ${session.id.slice(0, 8)} · ${formatTime(session.createdAt)}`),
+      el('small', '', `更新 · ${formatTime(session.updatedAt)}${session.queuedCount ? ` · 排队 ${session.queuedCount}` : ''}`),
     );
-    top.append(title, badge(status, session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
-    const meta = el('div', 'rule-meta');
-    const projectChip = el('span', 'chip', `项目 · ${projectName(session.project || '')}`); if (session.project) projectChip.title = session.project;
-    meta.append(projectChip, el('span', 'chip', `更新 · ${formatTime(session.updatedAt)}`));
-    card.append(top, meta);
-    if (session.error) card.append(el('p', 'run-summary run-error', session.error));
-
-    const closed = ['closing', 'closed'].includes(session.status);
-    const log = el('div', 'chat-log');
-    for (const message of session.messages || []) log.append(chatBubble(message));
-    if (session.liveText) {
-      const streaming = el('div', 'bubble agent streaming');
-      streaming.append(el('div', 'bubble-text', session.liveText), el('div', 'bubble-time', '正在输出…'));
-      log.append(streaming);
-    }
-    if (!(session.messages || []).length && !session.liveText) log.append(el('div', 'empty', session.busy ? 'Agent 正在处理首轮调度分析…' : '还没有对话，发一条消息开始。'));
-    card.append(log);
-
-    if (!closed) {
-      const form = el('form', 'session-message');
-      form.dataset.action = 'session-message'; form.dataset.id = session.id;
-      // 排队消息与输入框一体（与 Codex 原生一致：芯片排在输入框上方，头部提供整批清空）
-      if (session.queued?.length) {
-        const queueList = el('div', 'queue-list');
-        const queueHead = el('div', 'queue-head');
-        queueHead.append(el('span', 'queue-head-label', `排队中的消息 ${session.queued.length}`));
-        queueHead.append(queueOp('清空队列', 'queue-clear', session.id, null));
-        queueList.append(queueHead);
-        queueList.setAttribute('aria-label', '排队中的消息');
-        for (const item of session.queued) {
-          const row = el('div', 'queue-item');
-          if (queueEditing && queueEditing.sessionId === session.id && queueEditing.itemId === item.id) {
-            row.classList.add('queue-item-editing'); // 编辑态：编辑器横向展开，高度封顶 3 行（主人定的交互口径）
-            const editor = el('textarea', 'queue-editor');
-            editor.value = item.text;
-            editor.rows = 2;
-            editor.dataset.autogrow = '';
-            editor.dataset.autogrowMax = '76'; // 高度最多 3 行：横向展开阅读，纵向符合阅读习惯
-            editor.setAttribute('aria-label', '编辑排队消息内容');
-            const ops = el('span', 'queue-ops');
-            ops.append(
-              queueOp('保存', 'queue-save', `${session.id}:${item.id}`, '保存编辑'),
-              queueOp('取消', 'queue-cancel', `${session.id}:${item.id}`, '取消编辑'),
-            );
-            row.append(editor, ops);
-          } else {
-            const chip = el('button', 'queue-chip', item.text);
-            chip.type = 'button';
-            chip.dataset.action = 'queue-steer';
-            chip.dataset.id = `${session.id}:${item.id}`;
-            chip.title = '立即发送这条（steer in：注入当前轮，agent 马上看到）';
-            const ops = el('span', 'queue-ops');
-            ops.append(
-              queueOp('编辑', 'queue-edit', `${session.id}:${item.id}`, `编辑排队消息 ${item.text}`),
-              queueOp('↑', 'queue-move', `${session.id}:${item.id}:up`, `上移排队消息 ${item.text}`),
-              queueOp('↓', 'queue-move', `${session.id}:${item.id}:down`, `下移排队消息 ${item.text}`),
-            );
-            const remove = el('button', 'queue-op queue-remove', '×');
-            remove.type = 'button';
-            remove.dataset.action = 'queue-delete';
-            remove.dataset.id = `${session.id}:${item.id}`;
-            remove.title = '从队列删除这条消息';
-            remove.setAttribute('aria-label', `删除队列消息 ${item.text}`);
-            ops.append(remove);
-            row.append(chip, ops);
-          }
-          queueList.append(row);
-        }
-        form.append(queueList);
-      }
-      const input = el('textarea'); input.name = 'message'; input.required = true; input.rows = 1; input.dataset.autogrow = '';
-      input.placeholder = session.busy ? '排队跟进：本轮结束后自动发送；需要立即介入请点「打断」' : '继续指挥这次调度，例如：现在重点看哪一项？回车发送，Alt/Shift+回车换行';
-      input.setAttribute('aria-label', `发消息给会话 ${session.id}`);
-      const submit = button('发送', '', '', 'primary');
-      submit.type = 'submit';
-      form.append(input, submit);
-      if (session.busy) form.append(button('打断', 'interrupt-session', session.id, 'danger'));
-      card.append(form);
-      if (artifactsPanel && artifactsPanel.sessionId === session.id) {
-        const panel = el('div', 'artifact-panel');
-        panel.setAttribute('aria-label', '会话产物文件');
-        if (!artifactsPanel.files.length) panel.append(el('p', 'row-meta', '没有找到 md/html 产物文件。'));
-        for (const file of artifactsPanel.files) {
-          const item = el('button', 'artifact-file', file.path);
-          item.type = 'button';
-          item.dataset.action = 'artifact-view';
-          item.dataset.id = session.id;
-          item.dataset.path = file.path;
-          item.title = `${file.name} · ${Math.max(1, Math.round(file.size / 1024))}KB · 点击打开查看`;
-          panel.append(item);
-        }
-        card.append(panel);
-      }
-      const actions = el('div', 'actions');
-      actions.append(button('产物', 'artifact-list', session.id, 'secondary'));
-      actions.append(button('关闭会话', 'close-session', session.id, 'danger'));
-      card.append(actions);
-    }
-    return card;
+    const status = session.statusText || session.status || '未知';
+    item.append(select, badge(status, session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
+    return item;
   });
 }
+
+// 右侧会话工作区：单张会话卡（沿用 Codex App 会话布局：转录 + 排队芯片 + 输入框 + 操作）。
+export function renderSessionCard(session, { queueEditing = null, artifactsPanel = null, draft = '' } = {}) {
+  const card = el('article', 'run-card session-card');
+  card.dataset.session = session.id; card.dataset.ws = `s:${session.id}`;
+  const top = el('div', 'run-top');
+  const title = el('div');
+  const status = session.statusText || session.status || '未知';
+  title.append(
+    el('div', 'run-name', `${session.agent || 'Codex ACP'} · ${session.id.slice(0, 8)}`),
+    el('div', 'row-meta', `${SESSION_KIND_LABELS[session.kind] || '调度'}会话 · ACP · ${session.sessionId || '未识别'} · ${formatTime(session.createdAt)}${session.stopReason ? ` · ${session.stopReason}` : ''}`),
+  );
+  top.append(title, badge(status, session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
+  const meta = el('div', 'rule-meta');
+  const projectChip = el('span', 'chip', `项目 · ${projectName(session.project || '')}`); if (session.project) projectChip.title = session.project;
+  meta.append(projectChip, el('span', 'chip', `更新 · ${formatTime(session.updatedAt)}`));
+  card.append(top, meta);
+  if (session.error) card.append(el('p', 'run-summary run-error', session.error));
+
+  const closed = ['closing', 'closed'].includes(session.status);
+  const log = el('div', 'chat-log');
+  for (const message of session.messages || []) log.append(chatBubble(message));
+  if (session.liveText) {
+    const streaming = el('div', 'bubble agent streaming');
+    streaming.append(el('div', 'bubble-text', session.liveText), el('div', 'bubble-time', '正在输出…'));
+    log.append(streaming);
+  }
+  if (!(session.messages || []).length && !session.liveText) log.append(el('div', 'empty', session.busy ? 'Agent 正在处理首轮分析…' : '还没有对话，发一条消息开始。'));
+  card.append(log);
+
+  if (!closed) {
+    const form = el('form', 'session-message');
+    form.dataset.action = 'session-message'; form.dataset.id = session.id;
+    // 排队消息与输入框一体（与 Codex 原生一致：芯片排在输入框上方，头部提供整批清空）
+    if (session.queued?.length) {
+      const queueList = el('div', 'queue-list');
+      const queueHead = el('div', 'queue-head');
+      queueHead.append(el('span', 'queue-head-label', `排队中的消息 ${session.queued.length}`));
+      queueHead.append(queueOp('清空队列', 'queue-clear', session.id, null));
+      queueList.append(queueHead);
+      queueList.setAttribute('aria-label', '排队中的消息');
+      for (const item of session.queued) {
+        const row = el('div', 'queue-item');
+        if (queueEditing && queueEditing.sessionId === session.id && queueEditing.itemId === item.id) {
+          row.classList.add('queue-item-editing'); // 编辑态：编辑器横向展开，高度封顶 3 行（主人定的交互口径）
+          const editor = el('textarea', 'queue-editor');
+          editor.value = item.text;
+          editor.rows = 2;
+          editor.dataset.autogrow = '';
+          editor.dataset.autogrowMax = '76'; // 高度最多 3 行：横向展开阅读，纵向符合阅读习惯
+          editor.setAttribute('aria-label', '编辑排队消息内容');
+          const ops = el('span', 'queue-ops');
+          ops.append(
+            queueOp('保存', 'queue-save', `${session.id}:${item.id}`, '保存编辑'),
+            queueOp('取消', 'queue-cancel', `${session.id}:${item.id}`, '取消编辑'),
+          );
+          row.append(editor, ops);
+        } else {
+          const chip = el('button', 'queue-chip', item.text);
+          chip.type = 'button';
+          chip.dataset.action = 'queue-steer';
+          chip.dataset.id = `${session.id}:${item.id}`;
+          chip.title = '立即发送这条（steer in：注入当前轮，agent 马上看到）';
+          const ops = el('span', 'queue-ops');
+          ops.append(
+            queueOp('编辑', 'queue-edit', `${session.id}:${item.id}`, `编辑排队消息 ${item.text}`),
+            queueOp('↑', 'queue-move', `${session.id}:${item.id}:up`, `上移排队消息 ${item.text}`),
+            queueOp('↓', 'queue-move', `${session.id}:${item.id}:down`, `下移排队消息 ${item.text}`),
+          );
+          const remove = el('button', 'queue-op queue-remove', '×');
+          remove.type = 'button';
+          remove.dataset.action = 'queue-delete';
+          remove.dataset.id = `${session.id}:${item.id}`;
+          remove.title = '从队列删除这条消息';
+          remove.setAttribute('aria-label', `删除队列消息 ${item.text}`);
+          ops.append(remove);
+          row.append(chip, ops);
+        }
+        queueList.append(row);
+      }
+      form.append(queueList);
+    }
+    const input = el('textarea'); input.name = 'message'; input.required = true; input.rows = 1; input.dataset.autogrow = ''; input.value = draft;
+    input.placeholder = session.busy ? '排队跟进：本轮结束后自动发送；需要立即介入请点「打断」' : '继续指挥这次会话，例如：现在重点看哪一项？回车发送，Alt/Shift+回车换行';
+    input.setAttribute('aria-label', `发消息给会话 ${session.id}`);
+    const submit = button('发送', '', '', 'primary');
+    submit.type = 'submit';
+    form.append(input, submit);
+    if (session.busy) form.append(button('打断', 'interrupt-session', session.id, 'danger'));
+    card.append(form);
+    if (artifactsPanel && artifactsPanel.sessionId === session.id) {
+      const panel = el('div', 'artifact-panel');
+      panel.setAttribute('aria-label', '会话产物文件');
+      if (!artifactsPanel.files.length) panel.append(el('p', 'row-meta', '没有找到 md/html 产物文件。'));
+      for (const file of artifactsPanel.files) {
+        const item = el('button', 'artifact-file', file.path);
+        item.type = 'button';
+        item.dataset.action = 'artifact-view';
+        item.dataset.id = session.id;
+        item.dataset.path = file.path;
+        item.title = `${file.name} · ${Math.max(1, Math.round(file.size / 1024))}KB · 点击打开查看`;
+        panel.append(item);
+      }
+      card.append(panel);
+    }
+    const actions = el('div', 'actions');
+    actions.append(button('产物', 'artifact-list', session.id, 'secondary'));
+    if ((session.kind || 'scheduling') === 'design') actions.append(button('确认执行范围 →', 'design-authorize', session.id, 'secondary'));
+    actions.append(button('关闭会话', 'close-session', session.id, 'danger'));
+    card.append(actions);
+  }
+  return card;
+}
+
 export function renderCards(snapshot, rules = []) {
   const cards = (snapshot.cards || []).filter(card => ['open', 'decided'].includes(card.state));
   if (!cards.length) return [el('div', 'empty', '没有等待您回答的卡片。')];
@@ -206,6 +231,28 @@ export function renderCards(snapshot, rules = []) {
   });
 }
 
+// 已归档与历史（默认折叠区）：紧凑条目，提供只读查看与恢复入口。
+export function renderArchivedEntries(archived = [], discoveredProjects = []) {
+  if (!archived.length) return [el('div', 'empty', '还没有已存档的会话。')];
+  const known = new Set(discoveredProjects.map(project => projectName(project.path)));
+  return archived.map(record => {
+    const entry = el('div', 'archived-entry');
+    entry.dataset.archive = record.id;
+    const [label, kind] = ARCHIVE_STATUS[record.endStatus] || ['已存档', ''];
+    const title = el('span', 'archived-entry-title');
+    title.append(el('strong', '', `${record.agent || 'Codex ACP'} · ${record.id.slice(0, 8)}`), document.createTextNode(` · ${projectName(record.project)} · ${record.messages.length} 条转录`));
+    const actions = el('span', 'archived-entry-actions');
+    const view = el('button', '', '查看'); view.type = 'button'; view.dataset.action = 'view-archive'; view.dataset.id = record.id; view.title = '在右侧工作区只读查看转录';
+    const restore = el('button', '', '恢复'); restore.type = 'button'; restore.dataset.action = 'continue-session'; restore.dataset.id = record.id;
+    const canContinue = known.has(projectName(record.project));
+    restore.disabled = !canContinue;
+    restore.title = canContinue ? '继续 = 新建会话并注入最近 10 轮转录，会启动 Codex 消耗模型额度' : '该项目已不在已发现的 Git 仓库列表中';
+    actions.append(view, restore);
+    entry.append(title, badge(label, kind), actions);
+    return entry;
+  });
+}
+
 const ARCHIVE_STATUS = { interrupted: ['被重启中断', 'warn'], error: ['异常结束', 'bad'], closed: ['已关闭', ''] };
 
 export function renderArchivedSessions(archived = [], discoveredProjects = []) {
@@ -213,7 +260,7 @@ export function renderArchivedSessions(archived = [], discoveredProjects = []) {
   const known = new Set(discoveredProjects.map(project => projectName(project.path)));
   return archived.map(record => {
     const card = el('article', 'run-card archived');
-    card.dataset.archive = record.id; // 供后台刷新时恢复转录滚动位置
+    card.dataset.archive = record.id; card.dataset.ws = `a:${record.id}`; // 供后台刷新时恢复转录滚动位置
     const top = el('div', 'run-top');
     const title = el('div');
     title.append(

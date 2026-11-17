@@ -1,10 +1,10 @@
 import { openRuleForm } from './rule-form.mjs';
-import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSchedulingSessions, renderProjectProgress, renderArchivedSessions } from './views.mjs';
+import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSessionItems, renderSessionCard, renderArchivedSessions, renderArchivedEntries, renderProjectProgress } from './views.mjs';
 import { projectName } from './format.mjs';
 import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject } from './status-sections.mjs';
 import { el } from './views.mjs';
 import { initDag } from './dag-app.mjs';
-const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null, queueEditing: null, artifactsPanel: null };
+const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null, queueEditing: null, artifactsPanel: null, sessionTab: 'scheduling', selectedSession: '', archivedOpen: false, archivedView: '', sessionDrafts: {} };
 const $ = id => document.getElementById(id);
 function replace(id, nodes) { $(id).replaceChildren(...nodes); }
 let noticeError = false;
@@ -163,7 +163,7 @@ function render() {
   }
   const work = renderWorkSections(view.snapshot, view.rules, Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)), state.detours || []);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
-  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); replaceKeyedPreserving('sessions-list', renderSchedulingSessions(view.sessions, state.queueEditing, state.artifactsPanel), 'session', state.skipPinOnce); replace('archived-sessions-list', renderArchivedSessions((state.archived || []).filter(item => matchesProject(item.project, state.projectFilter)), state.projects)); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
+  replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); renderSessionsChrome(view.sessions); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
   syncProjectFilter();
   document.querySelectorAll('form[data-action="answer-text"]').forEach(form => { if (draftAnswers[form.dataset.id] !== undefined && form.elements.answer.value !== draftAnswers[form.dataset.id]) { form.elements.answer.value = draftAnswers[form.dataset.id]; autoGrow(form.elements.answer); } });
   document.querySelectorAll('form[data-action="session-message"]').forEach(form => { if (draftMessages[form.dataset.id] !== undefined && form.elements.message.value !== draftMessages[form.dataset.id]) { form.elements.message.value = draftMessages[form.dataset.id]; autoGrow(form.elements.message); } });
@@ -176,6 +176,37 @@ function render() {
   const count = state.snapshot.cards?.filter(card => card.state === 'open').length || 0; $('card-count').textContent = String(count); $('card-count').hidden = !count;
   restoreFocus(focus);
 }
+// 会话管理屏（设计基线 screen-design）：左侧类型 tab + 会话条目 + 默认折叠的已归档与历史；
+// 右侧工作区放选中的会话卡（沿用 Codex App 会话布局）或归档只读视图。工作区按 data-ws 键控替换，钉住输入中的卡片。
+function renderSessionsChrome(sessions) {
+  const byKind = { normal: [], scheduling: [], design: [] };
+  for (const session of sessions) { const kind = session.kind || 'scheduling'; (byKind[kind] ||= []).push(session); }
+  for (const [kind, list] of Object.entries(byKind)) {
+    const count = document.querySelector(`[data-kind-count="${kind}"]`); if (count) count.textContent = String(list.length);
+    const tab = document.querySelector(`.session-kind-tabs [data-kind="${kind}"]`);
+    if (tab) { const active = kind === state.sessionTab; tab.classList.toggle('active', active); tab.setAttribute('aria-selected', active ? 'true' : 'false'); }
+  }
+  const tabList = byKind[state.sessionTab] || [];
+  replace('session-items', renderSessionItems(tabList));
+  const archived = (state.archived || []).filter(item => matchesProject(item.project, state.projectFilter));
+  $('archived-count').textContent = String(archived.length);
+  $('archived-toggle').setAttribute('aria-expanded', state.archivedOpen ? 'true' : 'false');
+  $('archived-entries').hidden = !state.archivedOpen;
+  replace('archived-entries', renderArchivedEntries(archived, state.projects));
+  // 显式打开过归档视图时优先展示（只读），否则跟随选中会话；都没有则空态引导
+  const archive = archived.find(item => item.id === state.archivedView) || null;
+  const selected = tabList.find(session => session.id === state.selectedSession) || tabList[0] || null;
+  let workspaceNodes;
+  if (archive) {
+    workspaceNodes = renderArchivedSessions([archive], state.projects);
+  } else if (selected) {
+    workspaceNodes = [renderSessionCard(selected, { queueEditing: state.queueEditing, artifactsPanel: state.artifactsPanel, draft: state.sessionDrafts[selected.id] || '' })];
+  } else {
+    workspaceNodes = [el('div', 'workspace-empty', '从左侧选择一个会话，或输入首轮提示词新建会话。')];
+  }
+  replaceKeyedPreserving('session-workspace-body', workspaceNodes, 'ws', state.skipPinOnce ? `s:${state.skipPinOnce}` : null);
+}
+
 function showView(name) {
   state.view = name;
   document.querySelectorAll('.view').forEach(view => { view.hidden = view.id !== `view-${name}`; });
@@ -247,11 +278,15 @@ document.addEventListener('click', async event => {
       await refresh();
       return;
     }
+    if (action === 'select-session') { state.selectedSession = id; state.archivedView = ''; render(); return; }
+    if (action === 'view-archive') { state.archivedView = id; state.selectedSession = ''; render(); return; }
+    if (action === 'design-authorize') { showView('authorize'); return; }
     if (action === 'continue-session') {
       if (!confirm('继续调度将新建会话、注入该存档最近 10 轮转录，并启动 Codex 消耗模型额度。继续？')) return;
       const resumed = await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/continue`, { method: 'POST', body: JSON.stringify({}) });
       showNotice(`会话 ${resumed.id.slice(0, 8)} 已从存档继续。`);
       state.projectFilter = projectName(resumed.project || '');
+      state.sessionTab = resumed.kind || 'scheduling'; state.selectedSession = resumed.id; state.archivedView = '';
       await refresh();
       return;
     }
@@ -407,7 +442,11 @@ function autoGrow(node) {
   node.style.height = 'auto';
   node.style.height = `${Math.min(node.scrollHeight, cap)}px`;
 }
-document.addEventListener('input', event => { if (event.target?.dataset?.autogrow !== undefined) autoGrow(event.target); });
+document.addEventListener('input', event => {
+  if (event.target?.dataset?.autogrow !== undefined) autoGrow(event.target);
+  const messageForm = event.target.closest?.('form[data-action="session-message"]');
+  if (messageForm) state.sessionDrafts[messageForm.dataset.id] = event.target.value; // 切换会话后草稿仍保留
+});
 document.addEventListener('submit', async event => {
   const answerForm = event.target.closest('form[data-action="answer-text"]');
   if (answerForm) {
@@ -430,6 +469,7 @@ document.addEventListener('submit', async event => {
     const liveInput = liveFormInput('session-message', sessionId, 'message');
     if (liveInput && liveInput.value === text) { liveInput.value = ''; autoGrow(liveInput); } // 发送后仍原样才清空；慢请求期间用户已改内容则不打扰
     state.skipPinOnce = sessionId;
+    delete state.sessionDrafts[sessionId];
     const queued = result.queuedCount || 0;
     await refresh();
     showNotice(queued ? `已排队，本轮结束后自动跟进（队列 ${queued} 条）。` : '已发送。');
@@ -437,6 +477,10 @@ document.addEventListener('submit', async event => {
   catch (error) { showNotice(error.message); }
 });
 $('new-rule').addEventListener('click', () => openRuleForm({ agents: state.agents, sources: state.sources, api, onSaved: refresh }));
+$('session-new-dag').addEventListener('click', () => showView('authorize'));
+$('authorize-back').addEventListener('click', () => showView('sessions'));
+$('archived-toggle').addEventListener('click', () => { state.archivedOpen = !state.archivedOpen; render(); });
+document.querySelectorAll('.session-kind-tabs [data-kind]').forEach(tab => tab.addEventListener('click', () => { state.sessionTab = tab.dataset.kind; state.selectedSession = ''; render(); }));
 // 创建流：输入首轮提示词 → 服务端语义分类 → 用户确认/覆盖 kind → 一次性发送首轮。确认前不创建会话。
 const KIND_NAMES = { normal: '普通会话', scheduling: '调度会话', design: '设计会话' };
 let suggestedPrompt = null;
@@ -471,6 +515,7 @@ $('start-session').addEventListener('click', async event => {
     const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project, prompt, kind }) });
     showNotice(`${KIND_NAMES[session.kind] || '会话'} ${session.id} 已开启。`);
     state.projectFilter = projectName(session.project || '');
+    state.sessionTab = session.kind || 'scheduling'; state.selectedSession = session.id; state.archivedView = '';
     $('session-project').selectedIndex = 0;
     $('session-prompt').value = '';
     resetSessionSuggest();
