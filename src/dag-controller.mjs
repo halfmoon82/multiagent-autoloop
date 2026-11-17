@@ -111,8 +111,16 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     const n = st.nodes[id];
     if (!['dev', 'review'].includes(n.state) || n.todo) return;
     const run = latest(root, id, n.state); if (!run) return;
-    if (run.status === 'claimed') {
-      if (!run.hub?.hubRunId) return send(root, id, run, n); // 上次派发中断，补发
+    if (run.status === 'queued' || run.status === 'claimed') {
+      if (!run.hub?.hubRunId) {
+        // 派发中断补发：claimed 已备好槽位只补 send；queued 说明 prepare/send 抛错前
+        // 状态机已落盘但 Hub 从未接单，必须重跑 prepare 再 claim+send，否则节点静默卡住。
+        if (run.status === 'queued') {
+          await rt.prepare({ slot: n.slot, nodeId: id, branch: n.branch, base: n.prepareBase || baseRef });
+          return send(root, id, store.claim(run.runId, { slot: n.slot }), n);
+        }
+        return send(root, id, run, n);
+      }
       const h = await hub.getRun(run.hub.hubRunId);
       if (h.status === 'unknown') { store.markUnknown(run.runId, { at: now() }); return; }
       if (h.status === 'queued' && run.attempt >= MAX_ATTEMPTS) { await hub.cancel(run.hub.hubRunId); store.cancel(run.runId, { reason: 'attempts-exhausted' }); return failure(root, st, id, run, 'queued-attempts'); }
@@ -150,7 +158,9 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       throw error;
     }
     n.todo = null; n.state = role; n.blockedRole = null; n.blockedReason = null; n.slot = slot;
-    await rt.prepare({ slot, nodeId: id, branch: prepBranch, base: role === 'dev' ? baseRef : n.commit });
+    // 记录 prepare 基准：queued 补发时重跑 prepare 必须沿用同一基准（review 用原 commit）。
+    n.prepareBase = role === 'dev' ? baseRef : n.commit;
+    await rt.prepare({ slot, nodeId: id, branch: prepBranch, base: n.prepareBase });
     await send(root, id, store.claim(run.runId, { slot }), n);
     return true;
   }
