@@ -140,3 +140,32 @@ async function seedOld(t, root) {
   const raw = JSON.parse(readFileSync(file, 'utf8')); raw.unknownSince = Date.now() - 25 * 3600 * 1000;
   writeFileSync(file, JSON.stringify(raw)); return recent;
 }
+
+test('GET /api/dag-plan 只读预览：服务端 planDigest、节点文件范围、允许/排除动作与预检', async () => {
+  const t = setup(); const url = await listen(t.server);
+  try {
+    const res = await fetch(`${url}/api/dag-plan?project=${encodeURIComponent(t.project)}&planId=plan-one`);
+    assert.equal(res.status, 200);
+    const plan = await res.json();
+    assert.equal(plan.planDigest, t.planDigest);
+    assert.equal(plan.maxParallel, 5);
+    assert.deepEqual(plan.nodes.map(n => [n.id, n.files, n.wave]), [['a', ['src/a.mjs'], 1]]);
+    assert.deepEqual(plan.allowedActions, [...ALLOWED_ACTIONS]);    assert.deepEqual(plan.deniedActions, ['deploy', 'release', 'production-write', 'credentials', 'external-communication']);
+    assert.equal(plan.project, t.project);
+    assert.equal((await fetch(`${url}/api/dag-plan?project=${encodeURIComponent(t.project)}&planId=nope-plan`)).status, 400);
+    assert.equal((await fetch(`${url}/api/dag-plan?project=%2Fetc&planId=plan-one`)).status, 400);
+  } finally { await close(t.server); }
+});
+
+test('GET /api/dag-preflight 如实返回初始化与能力记录检查，不代写', async () => {
+  const t = setup(); const url = await listen(t.server);
+  try {
+    const res = await fetch(`${url}/api/dag-preflight?project=${encodeURIComponent(t.project)}`);
+    assert.equal(res.status, 200);
+    const { checks } = await res.json();
+    const byId = Object.fromEntries(checks.map(c => [c.id, c]));
+    assert.equal(byId.initialized.ok, false);
+    assert.equal(byId.capabilities.ok, false);
+    assert.match(byId.capabilities.message, /vibe attest/);
+  } finally { await close(t.server); }
+});
