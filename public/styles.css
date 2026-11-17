@@ -92,3 +92,36 @@ form.session-message .button{white-space:nowrap}
 
 .session-start textarea{min-width:220px;resize:vertical}.session-suggest{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}
 .session-suggest[hidden]{display:none}
+
+/* 会话管理屏（设计基线 screen-design）：左侧列表 + 右侧工作区，移动端正交堆叠 */
+.session-start{display:flex;gap:10px;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap}
+.dag-toolbar{display:flex;justify-content:flex-end;margin-bottom:10px}
+.session-layout{display:grid;grid-template-columns:300px minmax(0,1fr);align-items:stretch}
+#session-sidebar{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
+.session-kind-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:12px;border-bottom:1px solid var(--line)}
+.session-kind-tabs button{border:1px solid var(--line);background:#fafbfa;border-radius:8px;padding:7px 4px;font-size:12px;color:var(--muted);white-space:nowrap}
+.session-kind-tabs button.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-dark);font-weight:650}
+.kind-count{background:#eef2f0;border-radius:12px;padding:1px 6px;font-size:11px;margin-left:2px}
+.session-kind-tabs button.active .kind-count{background:#fff}
+.session-items{overflow-y:auto;flex:1}
+.session-item{display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.session-item.selected{background:var(--accent-soft)}
+.session-select{border:0;background:none;text-align:left;display:flex;flex-direction:column;gap:2px;flex:1;min-width:0;padding:2px;color:var(--ink)}
+.session-select:hover strong{color:var(--accent-dark)}
+.session-select strong{font-size:13px;overflow-wrap:anywhere}
+.session-select span,.session-select small{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-item .status{margin-top:2px}
+.archived-sessions{border-top:1px solid var(--line);margin-top:auto}
+#archived-toggle{display:flex;width:100%;align-items:center;gap:8px;border:0;background:none;padding:12px 14px;font-size:13px;font-weight:600;color:var(--ink)}
+#archived-toggle .archive-chevron{margin-left:auto;color:var(--muted)}
+#archived-toggle[aria-expanded="true"] .archive-chevron{transform:rotate(180deg)}
+#archived-entries{padding:0 10px 10px}
+.archived-entry{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:12px;min-width:0}
+.archived-entry-title{overflow-wrap:anywhere;min-width:0}
+.archived-entry-actions{display:inline-flex;gap:6px;flex-shrink:0}
+.archived-entry-actions button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:3px 8px;font-size:11px;color:var(--accent-dark)}
+.archived-entry-actions button:disabled{opacity:.5;cursor:not-allowed}
+#session-workspace{padding:14px;min-width:0}
+#session-workspace-body .run-card{box-shadow:none}
+.workspace-empty{padding:48px 20px;text-align:center;color:var(--muted);font-size:13px}
+@media(max-width:900px){.session-layout{grid-template-columns:minmax(0,1fr)}#session-sidebar{border-right:0;border-bottom:1px solid var(--line)}.session-items{max-height:240px}}

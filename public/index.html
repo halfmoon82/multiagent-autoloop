@@ -17,10 +17,8 @@
   <nav class="navigation" aria-label="控制台工作区">
     <button class="nav-item active" data-view="overview" aria-current="page">总览</button>
     <button class="nav-item" data-view="rules">调度规则</button>
-    <button class="nav-item" data-view="sessions">调度会话</button>
+    <button class="nav-item" data-view="sessions">会话管理</button>
     <button class="nav-item" data-view="runs">执行轮次</button>
-    <button class="nav-item" data-view="dag">DAG 运行</button>
-    <button class="nav-item" data-view="authorize">执行授权</button>
     <button class="nav-item" data-view="cards">待我处理 <span id="card-count" class="count" hidden>0</span></button>
   </nav>
   <main>
@@ -28,7 +26,7 @@
     <section id="view-overview" class="view" aria-labelledby="overview-title">
       <div class="page-heading"><div><p class="eyebrow">PILOT OVERVIEW</p><h1 id="overview-title">今天的自动化</h1><p class="subtle">看见进展，只处理真正需要你的事。</p></div></div>
       <div id="summary" class="summary-grid" aria-live="polite"></div>
-      <section class="panel" aria-labelledby="progress-title"><div class="panel-heading"><h2 id="progress-title">项目任务进度</h2><span class="subtle">串行节点计划与整体进度 · 点击节点看摘要</span></div><div id="progress-list" class="list" aria-live="polite"></div><div id="dag-overview-list" class="dag-overview-list" aria-live="polite"></div></section>
+      <section class="panel" aria-labelledby="progress-title"><div class="panel-heading"><h2 id="progress-title">项目任务进度</h2><span class="subtle">串行链与并行 DAG 在同一项目中汇总 · 点击节点看详情</span></div><div id="progress-list" class="list" aria-live="polite"></div><div id="dag-overview-list" class="dag-overview-list" aria-live="polite"></div></section>
       <div class="work-grid" aria-live="polite">
         <section class="panel"><div class="panel-heading"><h2>正在运行</h2><span class="subtle">最近 5 条</span></div><div id="running-list" class="list compact-list"></div></section>
         <section class="panel"><div class="panel-heading"><h2>等待重试</h2><span class="subtle">最近 5 条</span></div><div id="retrying-list" class="list compact-list"></div></section>
@@ -45,25 +43,37 @@
       <div id="rules-list" class="rule-grid"></div>
     </section>
     <section id="view-sessions" class="view" hidden aria-labelledby="sessions-title">
-      <div class="page-heading"><div><p class="eyebrow">COORDINATION</p><h1 id="sessions-title">调度会话</h1><p class="subtle">每个项目一个会话，从本地 Git 仓库选择；开始时会读取目标项目的 AGENTS.md 等文件。</p></div><div class="session-start"><select id="session-project" aria-label="项目标识"></select><textarea id="session-prompt" rows="3" aria-label="首轮提示词" placeholder="先输入首轮提示词，系统会判定会话类型"></textarea><button id="classify-session" class="button" type="button">分析首轮提示词</button></div></div>
+      <div class="page-heading"><div><p class="eyebrow">SESSIONS</p><h1 id="sessions-title">会话管理</h1><p class="subtle">普通对话、调度协调与 PRD 设计，在同一个项目工作区里各就其位。</p></div><button id="session-new-dag" class="button secondary" type="button">新建 DAG（执行授权）</button></div>
+      <div class="session-start"><select id="session-project" aria-label="项目标识"></select><textarea id="session-prompt" rows="3" aria-label="首轮提示词" placeholder="先输入首轮提示词，系统会判定会话类型"></textarea><button id="classify-session" class="button" type="button">分析首轮提示词</button></div>
       <div id="session-suggest" class="session-suggest" hidden><span id="session-suggest-reason" class="subtle"></span><label>会话类型 <select id="session-kind" aria-label="会话类型"><option value="normal">普通会话</option><option value="scheduling">调度会话</option><option value="design">设计会话</option></select></label><button id="start-session" class="button primary" type="button">确认并发送首轮</button><button id="cancel-session-suggest" class="button" type="button">返回修改</button></div>
-      <div id="sessions-list" class="run-list"></div>
-      <h2 class="section-sub">已存档会话</h2>
-      <p class="subtle">控制台重启不会丢失：转录完整保留，可一键继续（继续会新建会话并消耗模型额度）。</p>
-      <div id="archived-sessions-list" class="run-list archived-list"></div>
+      <div class="session-layout panel">
+        <aside id="session-sidebar" aria-label="会话列表">
+          <div class="session-kind-tabs" role="tablist" aria-label="按类型筛选会话">
+            <button role="tab" data-kind="normal" aria-selected="false">普通 <span class="kind-count" data-kind-count="normal">0</span></button>
+            <button role="tab" data-kind="scheduling" aria-selected="false">调度 <span class="kind-count" data-kind-count="scheduling">0</span></button>
+            <button role="tab" data-kind="design" aria-selected="false">设计 <span class="kind-count" data-kind-count="design">0</span></button>
+          </div>
+          <div id="session-items" class="session-items"></div>
+          <div class="archived-sessions">
+            <button id="archived-toggle" type="button" aria-expanded="false">已归档与历史 <span id="archived-count">0</span><span class="archive-chevron">⌄</span></button>
+            <div id="archived-entries" hidden></div>
+          </div>
+        </aside>
+        <section id="session-workspace" aria-label="会话工作区"><div id="session-workspace-body"></div></section>
+      </div>
     </section>
     <section id="view-runs" class="view" hidden aria-labelledby="runs-title">
       <div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h1 id="runs-title">执行轮次</h1><p class="subtle">每个结果都能追溯，异常不会被静默吞掉。</p></div></div>
       <div id="runs-list" class="run-list"></div>
     </section>
-    <section id="view-dag" class="view" hidden aria-labelledby="dag-title">
-      <div class="page-heading"><div><p class="eyebrow">PARALLEL DAG RUN</p><h1 id="dag-title">DAG 运行</h1><p class="subtle">节点、波次与槽位实时状态。费用与 Token 以上报为准，未上报如实标注。</p></div><button id="dag-new" class="button primary" type="button">新建 DAG（执行授权）</button></div>
+    <section id="view-dag" class="view" hidden aria-label="DAG 运行详情">
+      <div class="dag-toolbar"><button id="dag-new" class="button secondary" type="button">新建 DAG（执行授权）</button></div>
       <div id="dag-state" class="state-banner" role="status" hidden></div>
       <div id="dag-detail" class="dag-detail-host"></div>
       <div id="dag-history"></div>
     </section>
     <section id="view-authorize" class="view" hidden aria-labelledby="authorize-title">
-      <div class="page-heading"><div><p class="eyebrow">EXECUTION CONFIRMATION</p><h1 id="authorize-title">确认 PRD、DAG 与执行范围</h1><p class="subtle">这是进入 Hub 事件链的唯一授权确认。</p></div></div>
+      <div class="page-heading"><div><p class="eyebrow">EXECUTION CONFIRMATION</p><h1 id="authorize-title">确认 PRD、DAG 与执行范围</h1><p class="subtle">这是进入 Hub 事件链的唯一授权确认。</p></div><button id="authorize-back" class="button secondary" type="button">返回会话管理</button></div>
       <div class="authorize-picker"><label>项目 <select id="authorize-project" aria-label="目标项目"></select></label><label>计划编号 <input id="authorize-plan" aria-label="计划编号" placeholder="例如 demo-plan" autocomplete="off"></label><button id="authorize-load" class="button" type="button">读取计划与预检</button></div>
       <h2 class="section-sub">接入预检</h2>
       <div id="authorize-preflight"></div>
