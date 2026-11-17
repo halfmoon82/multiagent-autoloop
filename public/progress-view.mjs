@@ -230,7 +230,7 @@ export function renderSerialDetail(chain, { selectedNode = '', usageText = '' } 
 
 // opts: { selectedNode, slotNote, active, cancelRequested, titleOverride, statusText, statusKind }
 export function renderProgressDetail(view, opts = {}) {
-  const { selectedNode = '', slotNote = {}, active = false, cancelRequested = false, titleOverride = '', statusText = '', statusKind = '' } = opts;
+  const { selectedNode = '', slotNote = {}, active = false, cancelRequested = false, titleOverride = '', statusText = '', statusKind = '', extraSide = null } = opts;
   const root = el('div', 'dag-detail');
   if (view.kind === 'dag') root.dataset.dagRun = view.id; else root.dataset.serialRun = view.id;
 
