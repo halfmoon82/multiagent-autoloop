@@ -34,7 +34,18 @@ writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ rules: [] }));
 const store = createRunStore({ directory: path.join(root, 'dag-runs') });
 const dagService = createDagService({ root, store });
 const hub = await fakeHub((req, res) => json(res, req.url === '/v1/state' ? { seq: 1, totals: {}, spending: { today: {} }, cards: [], agents: [], channels: [], lines: [], runs: [], timers: [] } : { ok: true }));
-const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'k', rulesFile: path.join(root, 'rules.json'), root, projectRoots: [root], dagService }, { async list() { return []; }, async listArchived() { return []; }, dispose() {} });
+const sessionsFake = {
+  record: null,
+  async list() { return this.record ? [this.record] : []; },
+  async listArchived() { return []; },
+  async start({ prompt, project, kind } = {}) {
+    const now = new Date().toISOString();
+    this.record = { id: 'design-session', sessionId: 'acp-design', agent: 'Codex ACP', cwd: project, project, kind: kind || 'design', status: 'idle', statusText: '待命', prompt: prompt || '', messages: [{ role: 'user', text: prompt || '', at: now }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: now, updatedAt: now };
+    return this.record;
+  },
+  dispose() {},
+};
+const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'k', rulesFile: path.join(root, 'rules.json'), root, projectRoots: [root], dagService }, sessionsFake);
 const url = await listen(server);
 let context;
 try {
@@ -59,13 +70,20 @@ try {
   await page.getByRole('heading', { name: '正在运行' }).waitFor();
 
   // 会话管理屏：左侧类型 tab + 列表，右侧工作区（新建会话流与语义分类保留）
-  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: false }).click();
   await page.locator('.session-kind-tabs [data-kind="scheduling"]').waitFor();
   await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, 'design-desktop.png'), fullPage: true });
   await noOverflow('sessions-desktop');
 
-  // 授权范围确认页（情境屏幕）：从会话管理的「新建 DAG（执行授权）」进入，逐项展示，确认前不可创建
-  await page.getByRole('button', { name: '新建 DAG（执行授权）', exact: true }).click();
+  // 授权范围确认页（情境屏幕）：设计会话 →「确认执行范围」进入，逐项展示，确认前不可创建
+  await page.locator('#session-new').click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'visible' });
+  await page.locator('#new-session-project').selectOption(project);
+  await page.locator('#new-session-request').fill('设计一个多租户计费方案并进入 PRD、DAG 与授权确认');
+  await page.waitForFunction(() => document.querySelector('#classification-title')?.textContent?.includes('设计会话'), null, { timeout: 5000 });
+  await page.locator('#create-session').click();
+  await page.locator('#session-workspace [data-action="design-authorize"]').waitFor({ timeout: 5000 });
+  await page.locator('#session-workspace [data-action="design-authorize"]').click();
   assert.equal(await page.locator('#view-authorize').isVisible(), true);
   assert.equal(await page.locator('#view-sessions').isHidden(), true, '授权确认接管主区域，不再与导航页并列');
   await page.locator('#authorize-project').selectOption(project);
@@ -138,11 +156,11 @@ try {
   await page.waitForTimeout(250);
   await noOverflow('dag-mobile');
   await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, 'dag-mobile.png'), fullPage: true });
-  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: false }).click();
   await page.waitForTimeout(250);
   await noOverflow('sessions-mobile');
   await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, 'design-mobile.png'), fullPage: true });
-  await page.getByRole('button', { name: '新建 DAG（执行授权）', exact: true }).click();
+  await page.locator('#session-workspace [data-action="design-authorize"]').click();
   await page.waitForTimeout(250);
   await noOverflow('authorize-mobile');
   await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, 'authorize-mobile.png'), fullPage: true });

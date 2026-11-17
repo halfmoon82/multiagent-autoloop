@@ -195,10 +195,10 @@ try {
   await page.locator('#project-filter').selectOption(path.basename(root));
   assert.match(await metric(0), /正在运行[\s\S]*1/, 'scoped summary counts only the filtered project running rounds');
   assert.match(await metric(2), /今日完成[\s\S]*2[\s\S]*1,000 Token/, 'scoped summary totals come from that project rule lines');
-  assert.match(await metric(3), /今日费用 \$0\.50/, 'scoped summary cost comes from that project usage');
+  assert.match(await metric(2), /今日费用 \$0\.50/, 'scoped summary cost comes from that project usage');
   await page.locator('#project-filter').selectOption('beta');
-  assert.match(await metric(1), /等待与重试[\s\S]*2/, 'switching the filter rescopes every metric');
-  assert.match(await metric(3), /未上报/, 'a project without reported cost must not fabricate one');
+  assert.match(await metric(1), /等待重试[\s\S]*2/, 'switching the filter rescopes every metric');
+  assert.match(await metric(2), /未上报/, 'a project without reported cost must not fabricate one');
   assert.ok(!(await page.locator('#running-list').innerText()).includes('恢复测试'), 'project filter must hide other projects from running list');
   assert.ok((await page.locator('#retrying-list').innerText()).includes('beta 项目等待重试'), 'project filter must keep the matching retrying run');
   const retryingText = await page.locator('#retrying-list').innerText();
@@ -213,9 +213,11 @@ try {
   await page.screenshot({ path: path.join(output, 'console-desktop.png'), fullPage: true });
   await page.getByRole('button', { name: '调度规则', exact: true }).click();
   const recoveryCard = page.locator('.rule-card').filter({ hasText: '恢复测试' });
-  const beforeDismiss = hub.requests.length; acceptDialogs = false;
+  // 后台每 2s 会读 /v1/state，按 pause 路径计数才不会把轮询算成误调用
+  const pauseCalls = () => hub.requests.filter(request => request.url.includes('/pause')).length;
+  const beforeDismiss = pauseCalls(); acceptDialogs = false;
   await recoveryCard.locator('[data-action="pause"]').click(); await page.waitForTimeout(150);
-  assert.equal(hub.requests.length, beforeDismiss, 'dismissing pause must not call the hub'); acceptDialogs = true;
+  assert.equal(pauseCalls(), beforeDismiss, 'dismissing pause must not call the hub'); acceptDialogs = true;
   await recoveryCard.locator('[data-action="pause"]').click(); await recoveryCard.locator('[data-action="resume"]').waitFor();
   await recoveryCard.locator('[data-action="resume"]').click(); await recoveryCard.locator('[data-action="pause"]').waitFor();
   await recoveryCard.locator('[data-action="run"]').click();
@@ -256,19 +258,43 @@ try {
   try { await page.locator('#rule-dialog').waitFor({ state: 'hidden', timeout: 5000 }); }
   catch (error) { console.log('DIALOG DIAGNOSTIC:', await page.locator('#rule-dialog').innerText()); console.log('HUB REQUESTS:', hub.requests.map(x => x.url)); throw error; }
   const saved = JSON.parse(readFileSync(rulesFile, 'utf8')); assert.equal(saved.rules.at(-1).name, '手机创建测试');
-  await page.getByRole('button', { name: '会话管理', exact: true }).click();
-  await page.getByLabel('项目标识').selectOption(demoRepo);
-  // 创建流全链：输入首轮提示词 → 分类建议 → 确认前不创建会话 → 确认后一次性发送首轮。
-  await page.getByLabel('首轮提示词').fill('排查失败任务并恢复调度规则');
-  await page.getByRole('button', { name: '分析首轮提示词', exact: true }).click();
-  await page.locator('#session-suggest').waitFor();
-  assert.ok((await page.locator('#session-suggest-reason').innerText()).includes('调度会话'), 'classification suggestion must be shown');
-  assert.equal(await page.getByLabel('会话类型').inputValue(), 'scheduling');
+  await page.getByRole('button', { name: '会话管理', exact: false }).click();
+  // 新建会话对话框全链（设计基线）：打开 → 输入首轮提示词 → 语义分类 → 手动覆盖 → 确认门 → 创建后出现在列表。
+  await page.locator('#session-new').click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'visible' });
+  // 步骤1 打开：对话框结构与初始态
+  assert.ok((await page.locator('#new-session-dialog .dialog-heading').innerText()).includes('新建会话'), 'dialog heading must show 新建会话');
+  assert.equal(await page.locator('#new-session-project').isVisible(), true, 'dialog project select must be visible');
+  assert.equal(await page.locator('#new-session-request').isVisible(), true, 'dialog prompt textarea must be visible');
+  assert.equal(await page.locator('#classification-title').innerText(), '等待输入', 'classification must start at waiting state');
+  assert.equal(await page.locator('[data-type-override]').count(), 4, 'dialog must offer 4 override options');
+  assert.equal(await page.locator('#create-session').isDisabled(), true, 'create button must be disabled before a prompt is entered');
+  await page.locator('#new-session-project').selectOption(demoRepo);
+  // 步骤2 输入首轮提示词：实时语义分类 + 理由 + 契约
+  await page.locator('#new-session-request').fill('设计一个多租户计费方案并拆解为可并行的 DAG');
+  await page.waitForFunction(() => document.querySelector('#classification-title')?.textContent?.includes('设计会话'), null, { timeout: 5000 });
+  assert.ok((await page.locator('#classification-reason').innerText()).includes('PRD'), 'classification reason must be shown');
+  assert.ok((await page.locator('#classification-contract').innerText()).includes('Plan Mode'), 'design contract must be shown');
+  assert.equal(await page.locator('#create-session').isEnabled(), true, 'create button must enable after a prompt is entered');
+  // 步骤3 手动覆盖：按钮态与标题、契约同步
+  await page.locator('[data-type-override="normal"]').click();
+  assert.ok((await page.locator('#classification-title').innerText()).includes('普通会话 · 手动指定'), 'manual override must mark the classification');
+  assert.equal(await page.locator('[data-type-override="normal"]').getAttribute('aria-pressed'), 'true', 'override button must expose pressed state');
+  assert.ok((await page.locator('#classification-contract').innerText()).includes('不组装额外提示词'), 'override must update the contract');
+  await page.locator('[data-type-override="auto"]').click();
+  assert.ok((await page.locator('#classification-title').innerText()).includes('设计会话 · 推荐'), 'returning to auto must restore the recommendation');
+  // 步骤4 确认门：确认前不创建会话、不发送首轮
+  await page.locator('#new-session-request').fill('排查失败任务并恢复调度规则');
+  await page.waitForFunction(() => document.querySelector('#classification-title')?.textContent?.includes('调度会话'), null, { timeout: 5000 });
   assert.equal(schedulingSessions.startCalls?.length || 0, 0, 'no session turn may run before the user confirms');
-  await page.getByRole('button', { name: '确认并发送首轮', exact: true }).click();
+  // 步骤5 确认创建：会话出现在对应 tab 与列表，对话框关闭
+  await page.locator('#create-session').click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#toast').isVisible(), true, 'creating a session must show a toast confirmation');
+  assert.ok((await page.locator('#toast').innerText()).includes('已创建'), 'toast must confirm the session was created');
   const sessionCard = page.locator('#session-workspace .run-card.session-card').filter({ hasText: 'browser-' });
   await sessionCard.waitFor();
-  await page.locator('#session-items .session-item').filter({ hasText: 'browser-' }).waitFor('attached');
+  await page.locator('#session-items .session-item[data-session="browser-session"]').waitFor('attached');
   assert.equal(await page.locator('.session-kind-tabs [data-kind="scheduling"]').getAttribute('aria-selected'), 'true', 'creating a scheduling session must activate the scheduling kind tab');
   assert.deepEqual(schedulingSessions.startCalls, [{ prompt: '排查失败任务并恢复调度规则', project: demoRepo, kind: 'scheduling' }], 'first turn must be sent once with the confirmed kind');
   assert.ok((await sessionCard.innerText()).includes('项目 · demo-repo'), 'scheduling session must show its bound project name');
@@ -325,8 +351,7 @@ try {
   await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
   assert.ok(!(await pop.isVisible()), 'Escape must close the popover');
-  await segTwo.focus();
-  await page.keyboard.press('Enter');
+  await segTwo.press('Enter'); // 直接对 locator 聚焦并按键，避免后台刷新在 focus 与 press 之间替换节点
   assert.ok(await pop.isVisible(), 'Enter on a focused node segment must open the popover');
   await page.keyboard.press('Escape');
   await page.locator('#project-filter').selectOption('demo-repo');
@@ -341,13 +366,17 @@ try {
   await page.waitForTimeout(200);
   await page.locator('#clear-project-filter').click();
   assert.equal(await page.locator('#project-filter').inputValue(), '', 'clear-filter must reset the project filter');
-  await page.getByRole('button', { name: '会话管理', exact: true }).click();
-  await page.locator('#session-project').selectOption({ index: 0 });
-  await page.getByLabel('首轮提示词').fill('占位项目测试');
-  await page.getByRole('button', { name: '分析首轮提示词', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: false }).click();
+  await page.locator('#session-new').click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'visible' });
+  await page.locator('#new-session-project').selectOption({ index: 0 }); // 占位项必须被拒绝
+  await page.locator('#new-session-request').fill('占位项目测试');
+  await page.locator('#create-session').click();
   await page.waitForTimeout(300);
   assert.ok((await page.locator('#notice').innerText()).includes('请先从列表选择'), 'placeholder selection must be rejected before starting a session');
   assert.equal(await page.locator('#session-workspace .run-card.session-card').count(), 1, 'no session must be created for placeholder selection');
+  await page.locator('#new-session-dialog .js-close-new-session').first().click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'hidden' });
   await page.getByLabel('发消息给会话 browser-session').fill('重点看执行轮次');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.waitForTimeout(300);
@@ -505,14 +534,21 @@ try {
   await archivedEntry.getByRole('button', { name: '查看', exact: true }).click();
   const archiveLog = page.locator('#session-workspace .run-card.archived .chat-log').first();
   await archiveLog.waitFor();
-  await archiveLog.evaluate(node => { node.scrollTop = 40; });
+  // 取一个明确不在底部的滚动位置（固定 40 在短转录里会贴底，被"停在最新"逻辑合法重置）
+  const scrollTarget = await archiveLog.evaluate(node => {
+    const max = node.scrollHeight - node.clientHeight;
+    const top = Math.min(Math.max(1, Math.floor(max * 0.25)), Math.max(0, max - 1));
+    node.scrollTop = top;
+    return { top, max };
+  });
+  assert.ok(scrollTarget.max > 4, 'archived transcript must be scrollable to verify scroll survival');
   await page.waitForTimeout(4500); // 跨过后台刷新周期
-  assert.equal(await archiveLog.evaluate(node => node.scrollTop), 40, 'archived transcript scroll position must survive background refreshes');
+  assert.equal(await archiveLog.evaluate(node => node.scrollTop), scrollTarget.top, 'archived transcript scroll position must survive background refreshes');
   // 视图切换：离开再回来后转录框必须停在最新消息（隐藏视图零尺寸不能被误判为底部而重置）
   await archiveLog.evaluate(node => { node.scrollTop = node.scrollHeight; });
   await page.getByRole('button', { name: '总览', exact: true }).click();
   await page.waitForTimeout(4500); // 隐藏期间跨多次后台刷新
-  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: false }).click();
   await page.waitForTimeout(400);
   const atBottom = await archiveLog.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight < 40);
   assert.equal(atBottom, true, 'returning to the sessions view must land the transcript at the latest message, not the top');
