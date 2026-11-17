@@ -4,9 +4,12 @@ import { projectName } from './format.mjs';
 import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject } from './status-sections.mjs';
 import { el } from './views.mjs';
 import { initDag } from './dag-app.mjs';
+import { stableReplace, hasLiveInteraction } from './dom-stable.mjs';
 const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null, queueEditing: null, artifactsPanel: null, sessionTab: 'scheduling', selectedSession: '', sessionQuery: '', collapsedSessions: {}, archivedOpen: false, archivedView: '', sessionDrafts: {} };
 const $ = id => document.getElementById(id);
-function replace(id, nodes) { $(id).replaceChildren(...nodes); }
+// 非键控列表统一走稳定替换：容器内有选区/聚焦输入/指针按下时冻结本轮，
+// 交互结束后下一轮轮询自动补齐（键控列表见下方 replaceKeyedPreserving）
+function replace(id, nodes) { stableReplace(id, nodes); }
 let noticeError = false;
 function showNotice(text) { noticeError = false; const box = $('notice'); box.textContent = text; box.hidden = !text; }
 function showErrorNotice(text) { showNotice(text); noticeError = true; }
@@ -46,6 +49,7 @@ function projectView() {
 
 function syncProjectFilter() {
   const select = $('project-filter');
+  if (hasLiveInteraction(select)) return; // 下拉展开或聚焦时不动选项，避免打断选择
   const projects = collectProjects({ rules: state.rules, runs: state.snapshot.runs || [], cards: state.snapshot.cards || [], sessions: state.sessions });
   const byKey = new Map();
   for (const project of projects) {
@@ -62,6 +66,8 @@ function syncProjectFilter() {
   const projectSelect = $('new-session-project');
   const projectsKey = state.projects.map(project => `${project.name}${project.path}`).join('|');
   if (projectsKey !== state.projectsKey) {
+    // 守卫通过前不写 projectsKey：写后再 return 会把这次重建永久跳过（直到项目列表再变化）
+    if (hasLiveInteraction(projectSelect)) return; // 下拉展开或聚焦时不动选项，避免打断选择
     state.projectsKey = projectsKey;
     const previousProject = projectSelect.value;
     projectSelect.replaceChildren(...[['', state.projects.length ? '选择被调度的项目' : '未发现 Git 项目（配置 AUTOLOOP_PROJECT_ROOTS）'], ...state.projects.map(project => [project.path, project.name])].map(([value, label]) => { const option = el('option', '', label); option.value = value; if (value) option.title = value; return option; }));
