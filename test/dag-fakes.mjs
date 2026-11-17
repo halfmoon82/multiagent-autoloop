@@ -37,9 +37,9 @@ export const fakePublisher = () => { const calls = []; return {
   async baseline() { calls.push(['baseline']); return {}; },
 }; };
 
-export function setup(nodes, { chooseApproach, blockedEvidence } = {}) {
+export function setup(nodes, { chooseApproach, blockedEvidence, designBaseline = null } = {}) {
   const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-ctl-')) });
-  const root = store.createRun({ project: '/proj', planId: 'p1', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes });
+  const root = store.createRun({ project: '/proj', planId: 'p1', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes, designBaseline });
   const hub = new FakeHub(); const rt = fakeRt(); const wip = fakeWip(); const publisher = fakePublisher();
   const clock = { t: 1_000_000_000_000 };
   const ctl = createController({ store, rootRunId: root.runId, hub, rt, wip, publisher, now: () => clock.t, chooseApproach, blockedEvidence });

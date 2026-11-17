@@ -148,3 +148,36 @@ test('Hub 已终态但回执未消费：重启对账时补处理合法回执；�
   assert.ok(s.publisher.calls.some(c => c[0] === 'commitPr'), '进入发布流程');
   assert.ok(s.runOf('a').failures >= 1, '畸形回执计一次失败而非吞掉');
 });
+
+const designBaseline = () => ({
+  designDigest: 'a'.repeat(64), manifestPath: 'docs/design/demo/design-manifest.json',
+  manifest: { schema: 1, designId: 'demo', artifacts: [{ path: 'docs/design/demo/reference.png', sha256: 'b'.repeat(64) }], surfaces: [{ id: 'overview', route: '/', viewports: ['1440x900'], states: ['normal'], interactions: ['open'], referencePaths: ['docs/design/demo/reference.png'] }] },
+  readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png'],
+});
+
+test('设计合同校验在占槽前按节点隔离，其他 ready 节点照常派发', async () => {
+  const bad = mkNode('bad-ui'); bad.contract.design = { surfaceIds: ['missing'] };
+  const good = mkNode('good-backend');
+  const s = setup([bad, good], { designBaseline: designBaseline() });
+  await s.ctl.tick();
+  assert.ok(s.hub.last('good-backend'), '无关节点不得被坏 UI 合同阻断');
+  assert.equal(s.hub.last('bad-ui'), undefined);
+  assert.equal(s.rt.events.some(e => e[0] === 'prepare' && e[2] === 'bad-ui'), false);
+  assert.equal(s.runOf('bad-ui'), undefined, '合同失败前不得创建节点 run');
+  assert.match(s.ctl.snapshot().nodes['bad-ui'].lastError, /surface/);
+});
+
+test('UI worker 收到冻结的设计摘要与定向合同，新稿对象变化不影响旧 run', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'], states: ['normal'] };
+  const backend = mkNode('backend');
+  const baseline = designBaseline(); const s = setup([ui, backend], { designBaseline: baseline });
+  await s.ctl.tick();
+  const prompt = s.hub.last('ui').prompt;
+  assert.match(prompt, /a{64}/);
+  assert.match(prompt, /设计合同/);
+  assert.match(prompt, /overview/);
+  assert.doesNotMatch(s.hub.last('backend').prompt, /设计基线/);
+  baseline.designDigest = 'c'.repeat(64);
+  await s.ctl.tick();
+  assert.match(s.hub.last('ui').prompt, /a{64}/, 'run 快照不得随外部新稿变化');
+});

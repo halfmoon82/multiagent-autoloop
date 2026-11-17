@@ -9,6 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publishProductSpec, buildPublishSnapshot, PUBLISH_ACTIONS } from '../src/design-publish.mjs';
 import { extractProductSpec, VIBE_MAJOR_VERSION } from '../src/vibe-adapter.mjs';
+import { loadDesignManifest } from '../src/design-baseline.mjs';
+import { createHash } from 'node:crypto';
 
 const fixtureDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'vibe-5.2.7');
 const fakeVibe = path.join(fixtureDir, 'bin', 'vibe');
@@ -174,4 +176,45 @@ test('publish refuses when the current branch is detached or equals the publish 
   assert.equal(r.error.code, 'publish_failed');
   assert.equal(git(root, 'worktree', 'list').split('\n').length, 1);
   assert.equal(git(root, 'rev-parse', '--abbrev-ref', 'HEAD'), 'main');
+});
+
+function addDesign(root) {
+  mkdirSync(path.join(root, 'docs', 'design', 'demo'), { recursive: true });
+  writeFileSync(path.join(root, 'docs', 'design', 'demo', 'reference.png'), 'reference');
+  const manifest = {
+    schema: 1, designId: 'demo',
+    artifacts: [{ path: 'docs/design/demo/reference.png', sha256: createHash('sha256').update('reference').digest('hex') }],
+    surfaces: [{ id: 'overview', route: '/', viewports: ['1440x900'], states: ['normal'], interactions: [], referencePaths: ['docs/design/demo/reference.png'] }],
+  };
+  const manifestPath = 'docs/design/demo/design-manifest.json';
+  writeFileSync(path.join(root, manifestPath), JSON.stringify(manifest));
+  return { manifestPath };
+}
+
+test('publish requires the confirmed designDigest before writes and publishes one immutable approved design package', async () => {
+  const { root, origin } = makeProject();
+  const design = addDesign(root);
+  const spec = { ...SPEC, design };
+  const transcript = `设计完成。\n\n\`\`\`product-spec\n${JSON.stringify(spec)}\n\`\`\`\n`;
+  const specDigest = extractProductSpec(transcript).specDigest;
+  const missingRunner = makeRunner();
+  let result = await publishProductSpec(base(root, missingRunner.runner, { transcript, specDigest, now: () => '2026-11-17T12:00:00.000Z' }));
+  assert.equal(result.error.code, 'design_confirmation_required');
+  assert.equal(missingRunner.calls.length, 0);
+  assert.equal(existsSync(path.join(root, '.vibe', 'plans', 'demo-plan', 'product-spec.input.json')), false);
+  const designDigest = loadDesignManifest({ projectRoot: root, manifestPath: design.manifestPath }).designDigest;
+  const wrong = await publishProductSpec(base(root, makeRunner().runner, { transcript, specDigest, designDigest: '0'.repeat(64) }));
+  assert.equal(wrong.error.code, 'design_digest_mismatch');
+  result = await publishProductSpec(base(root, makeRunner().runner, { transcript, specDigest, designDigest, now: () => '2026-11-17T12:00:00.000Z' }));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const files = git(origin, 'ls-tree', '-r', '--name-only', 'docs/demo-plan').split('\n');
+  assert.ok(files.includes('docs/design/demo/design-manifest.json'));
+  assert.ok(files.includes('docs/design/demo/reference.png'));
+  assert.ok(files.includes('docs/prd/demo-plan/design-approval.json'));
+  const approval = JSON.parse(git(origin, 'show', 'docs/demo-plan:docs/prd/demo-plan/design-approval.json'));
+  assert.deepEqual(approval, { schema: 1, designDigest, confirmedAt: '2026-11-17T12:00:00.000Z' });
+  const head = git(origin, 'rev-parse', 'docs/demo-plan');
+  const repeated = await publishProductSpec(base(root, makeRunner({ existingPr: { url: 'https://github.com/owner/repo/pull/7', number: 7 } }).runner, { transcript, specDigest, designDigest, now: () => '2026-11-18T12:00:00.000Z' }));
+  assert.equal(repeated.ok, true, JSON.stringify(repeated));
+  assert.equal(git(origin, 'rev-parse', 'docs/demo-plan'), head, '同设计重复确认不得制造新提交');
 });

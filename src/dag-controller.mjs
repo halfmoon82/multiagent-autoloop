@@ -1,6 +1,7 @@
 // DAG 控制器：无模型，每次 tick 读 run.json → 推进节点 → 派发。只做授权快照内动作。
 // 依赖全部注入（store/hub/rt/wip/publisher），便于离线测试。
 import { readyNodes, validateDag } from './dag.mjs';
+import { assertNodeDesignSnapshot } from './design-baseline.mjs';
 import { MAX_SLOTS, MAX_ATTEMPTS, QUARANTINE_AFTER_MS, isTerminal, ROOT_NODE, DagRunError } from './dag-run.mjs';
 import { seg } from './dag-slots.mjs';
 
@@ -56,18 +57,29 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
   };
   const freeSlot = (root, st, except) => { const used = usedSlots(root, st, except); for (let s = 1; s <= MAX_SLOTS; s++) if (!used.has(s)) return s; return null; };
 
-  const prompt = (root, id, run, n) => [
-    `DAG 节点 ${id}（${run.role}，generation ${run.generation}，attempt ${run.attempt}）。`,
-    `slot=${n.slot} worktree=${rt.slotPath(n.slot)} branch=${n.branch}`,
-    `expectedAdvanceId=${run.expectedAdvanceId}（回执必须逐字一致，只从本事件 detail 读取，不得猜测）`,
-    `节点契约：${JSON.stringify((root.nodes.find(x => x.id === id) || {}).contract || {})}`,
-  ].join('\n');
+  const prompt = (root, id, run, n) => {
+    const node = root.nodes.find(x => x.id === id) || {};
+    const design = assertNodeDesignSnapshot(root, node).design;
+    const lines = [
+      `DAG 节点 ${id}（${run.role}，generation ${run.generation}，attempt ${run.attempt}）。`,
+      `slot=${n.slot} worktree=${rt.slotPath(n.slot)} branch=${n.branch}`,
+      `expectedAdvanceId=${run.expectedAdvanceId}（回执必须逐字一致，只从本事件 detail 读取，不得猜测）`,
+      `节点契约：${JSON.stringify(node.contract || {})}`,
+    ];
+    if (design) lines.push(
+      `设计基线：${root.designBaseline.designDigest}（冻结于本 DAG；不得读取新稿替代）`,
+      `设计合同：${JSON.stringify(node.contract.design)}`,
+      '设计基线、参考图与验证器只读；如需改变设计语义，返回 DESIGN_CHANGE_REQUIRED，不得自行修改基线或阈值。',
+    );
+    return lines.join('\n');
+  };
 
   async function send(root, id, run, n) {
     const res = await hub.dispatch({ run, slot: n.slot, worktree: rt.slotPath(n.slot), branch: n.branch, expectedAdvanceId: run.expectedAdvanceId, model: n.model, prompt: prompt(root, id, run, n) });
     store.updateRun(run.runId, { hub: { hubRunId: res.hubRunId } });
   }
   async function start(root, st, id, run, slot, { prepare }) {
+    assertNodeDesignSnapshot(root, root.nodes.find(node => node.id === id));
     const n = st.nodes[id]; n.slot = slot;
     if (prepare) await rt.prepare({ slot, nodeId: id, branch: n.branch, base: baseRef });
     const claimed = store.claim(run.runId, { slot });
@@ -243,17 +255,20 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     const blockedIds = Object.entries(st.nodes).filter(([, n]) => ['blocked', 'gated'].includes(n.state)).map(([id]) => id);
     for (const node of readyNodes(view, { blockedIds })) {
       const n = st.nodes[node.id];
-      // 崩溃恢复：上次在 createNodeRun 落盘之后、节点状态落盘之前退出，run 已存在而节点仍是 pending。
-      // 直接 createNodeRun 会永远抛 NODE_EXISTS（死锁）；改为收养既有 run，由 advanceNode 补发/对账。
-      const existing = latest(root, node.id, 'dev');
-      if (existing) {
-        const adopted = existing.slot ?? freeSlot(root, st, node.id); if (adopted == null) break;
-        n.state = 'dev'; n.slot = adopted; n.prepareBase = baseRef;
-        await advanceNode(root, st, node.id); continue; // 同一 tick 立即补发/对账，不多等一轮
-      }
-      const slot = freeSlot(root, st, node.id); if (slot == null) break;
-      const run = store.createNodeRun(root.runId, { nodeId: node.id, role: 'dev' });
-      n.state = 'dev'; await start(root, st, node.id, run, slot, { prepare: true });
+      try {
+        // 设计快照错误按节点隔离，且必须早于收养、槽位、prepare、claim 与 Hub 操作。
+        assertNodeDesignSnapshot(root, node);
+        // 崩溃恢复：run 已存在而节点仍 pending 时收养，避免 NODE_EXISTS 死锁。
+        const existing = latest(root, node.id, 'dev');
+        if (existing) {
+          const adopted = existing.slot ?? freeSlot(root, st, node.id); if (adopted == null) break;
+          n.state = 'dev'; n.slot = adopted; n.prepareBase = baseRef;
+          await advanceNode(root, st, node.id); continue;
+        }
+        const slot = freeSlot(root, st, node.id); if (slot == null) break;
+        const run = store.createNodeRun(root.runId, { nodeId: node.id, role: 'dev' });
+        n.state = 'dev'; await start(root, st, node.id, run, slot, { prepare: true });
+      } catch (error) { n.lastError = msg(error); }
     }
   }
 

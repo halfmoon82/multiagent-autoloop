@@ -10,10 +10,10 @@ import { createPublisher, PublishError } from '../src/dag-publish.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
-async function boot({ actions = ALLOWED_ACTIONS } = {}) {
+async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign } = {}) {
   const { project, remote } = makeRepo();
   const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-pub-')) });
-  const root = store.createRun({ project, planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [node('a', ['src/a.mjs']), node('b', ['src/b.mjs'])] });
+  const root = store.createRun({ project, planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), node('b', ['src/b.mjs'])], designBaseline });
   const rt = createSlotRuntime({ project, runId: root.runId });
   await rt.ensureSlots();
   await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
@@ -22,7 +22,7 @@ async function boot({ actions = ALLOWED_ACTIONS } = {}) {
     async prHead(url) { return this.prs.get(url).sha; }, async mergePr(url) { this.merged.push(url); return {}; },
     closed: [], async closePr(url, a) { this.closed.push([url, a.comment]); } };
   const tests = []; const runTests = async (cwd) => { tests.push(cwd); return { exitCode: 0, summary: '1 passed' }; };
-  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests });
+  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests, verifyDesign });
   const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId };
   const write = (rel, c) => { mkdirSync(path.dirname(path.join(ctx.worktree, rel)), { recursive: true }); writeFileSync(path.join(ctx.worktree, rel), c); };
   return { project, remote, store, root, rt, gh, pub, ctx, write, tests };
@@ -125,4 +125,13 @@ test('requireOptionalGrant：执行层按授权记录拒绝未选高风险动作
   // 选中后执行层放行
   const grant = buildGrantRecordForPub({ project: 'p', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], selectedOptionalActions: ['deploy'], planOptionalActions: ['deploy'] });
   assert.equal(canExecForPub(grant, 'deploy').ok, true);
+});
+
+test('commitPr：设计清单、批准记录和参考产物始终只读，即使误加入节点 scope', async () => {
+  const designBaseline = { designDigest: 'a'.repeat(64), readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png'] };
+  const t = await boot({ designBaseline, designInScope: true });
+  t.write('src/a.mjs', 'ok\n');
+  t.write('docs/design/demo/design-manifest.json', 'changed\n');
+  await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'DESIGN_BASELINE_READONLY');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
 });

@@ -2,12 +2,13 @@
 // 设计会话自身保持 read-only；本模块是服务端代行的落地通道，只执行服务端生成的授权快照内动作：
 // push-branch（仅 docs/<planId>）与 create-pr。不 merge、不 deploy/release、不碰凭据、不做对外通信。
 import { execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, copyFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { extractProductSpec, checkCapabilities, resolveProjectRoot, runVibe, sanitizeHostEnv } from './vibe-adapter.mjs';
 import { loadVibePlan } from './vibe-plan.mjs';
+import { loadDesignManifest } from './design-baseline.mjs';
 
 const execFileAsync = promisify(execFile);
 const PLAN_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -45,7 +46,7 @@ async function defaultRunner(command, args, { cwd, env } = {}) {
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
 
 export async function publishProductSpec({
-  projectRoot, planId, transcript, specDigest, confirm, runner = defaultRunner, vibeCommand = 'vibe', env,
+  projectRoot, planId, transcript, specDigest, designDigest, confirm, runner = defaultRunner, vibeCommand = 'vibe', env, now = Date.now,
 } = {}) {
   if (confirm !== true) return fail('confirmation_required', 'publish 需要 confirm=true');
   let root;
@@ -58,6 +59,15 @@ export async function publishProductSpec({
   if (extracted.specDigest !== specDigest) return fail('spec_digest_mismatch', 'specDigest 与会话转录中的 product-spec 不一致，请重新确认');
   const capability = checkCapabilities({ projectRoot: root });
   if (!capability.ok) return capability;
+  let design = null;
+  const designRef = extracted.productSpec.design;
+  if (designRef != null) {
+    if (typeof designRef !== 'object' || !String(designRef.manifestPath || '').trim()) return fail('invalid_design_reference', 'productSpec.design 必须声明 manifestPath');
+    try { design = loadDesignManifest({ projectRoot: root, manifestPath: designRef.manifestPath }); }
+    catch (error) { return fail(error.code || 'invalid_design_baseline', error.message); }
+    if (!designDigest) return fail('design_confirmation_required', '声明了设计基线，publish 需要当前 designDigest 与 confirm=true');
+    if (design.designDigest !== designDigest) return fail('design_digest_mismatch', 'designDigest 与当前设计产物不一致，请重新确认');
+  }
 
   // 既有链路：转录原文 → product-spec.input.json → vibe plan --from-prd（产物留在目标项目 .vibe/，不入提交）。
   const planDir = path.join(root, '.vibe', 'plans', planId);
@@ -94,20 +104,39 @@ export async function publishProductSpec({
     writeFileSync(path.join(dir, 'product-spec.json'), json(loaded.productSpec));
     writeFileSync(path.join(dir, 'plan.json'), json(loaded.plan));
     writeFileSync(path.join(dir, 'nodes.json'), json(loaded.nodes));
-    await run('git', ['add', '--', `docs/prd/${planId}`], worktree);
-    const dirty = await out('git', ['status', '--porcelain', '--', `docs/prd/${planId}`], worktree);
+    const designPaths = [];
+    if (design) {
+      for (const relative of design.readOnlyPaths) {
+        designPaths.push(relative);
+        const target = path.join(worktree, relative);
+        mkdirSync(path.dirname(target), { recursive: true });
+        copyFileSync(path.join(root, relative), target);
+      }
+      const approvalPath = path.join(dir, 'design-approval.json');
+      let approval = null;
+      if (existsSync(approvalPath)) {
+        try {
+          const previous = JSON.parse(readFileSync(approvalPath, 'utf8'));
+          if (previous.schema === 1 && previous.designDigest === design.designDigest && Number.isFinite(Date.parse(previous.confirmedAt))) approval = previous;
+        } catch { /* 损坏旧记录由本次明确确认替换 */ }
+      }
+      approval ||= { schema: 1, designDigest: design.designDigest, confirmedAt: new Date(now()).toISOString() };
+      writeFileSync(approvalPath, json(approval));
+    }
+    await run('git', ['add', '--', `docs/prd/${planId}`, ...designPaths], worktree);
+    const dirty = await out('git', ['status', '--porcelain', '--', `docs/prd/${planId}`, ...designPaths], worktree);
     if (dirty) {
       await run('git', ['commit', '-m', `docs(prd): ${planId} product-spec`], worktree);
       await run('git', ['push', 'origin', `HEAD:refs/heads/${branch}`], worktree);
     }
     const existing = JSON.parse((await out('gh', ['pr', 'list', '--head', branch, '--base', snapshot.baseBranch, '--state', 'open', '--json', 'url,number'])) || '[]');
     if (existing.length > 0) {
-      return { ok: true, branch, baseBranch: snapshot.baseBranch, prUrl: existing[0].url, reused: true, authorizationSnapshot: snapshot };
+      return { ok: true, branch, baseBranch: snapshot.baseBranch, prUrl: existing[0].url, reused: true, designDigest: design?.designDigest || null, authorizationSnapshot: snapshot };
     }
     const title = `docs(prd): ${String(loaded.productSpec.title || planId).slice(0, 80)}`;
-    const body = `由设计会话 product-spec 确认后发布。\n\n- planId: ${planId}\n- specDigest: ${specDigest}\n\n仅包含 PRD/spec 与 vibe 计划产物；未授权 merge/deploy/release。`;
+    const body = `由设计会话 product-spec 确认后发布。\n\n- planId: ${planId}\n- specDigest: ${specDigest}${design ? `\n- designDigest: ${design.designDigest}` : ''}\n\n仅包含 PRD/spec、已确认设计产物与计划产物；未授权 merge/deploy/release。`;
     const prUrl = (await out('gh', ['pr', 'create', '--base', snapshot.baseBranch, '--head', branch, '--title', title, '--body', body])).split('\n').pop();
-    return { ok: true, branch, baseBranch: snapshot.baseBranch, prUrl, reused: false, authorizationSnapshot: snapshot };
+    return { ok: true, branch, baseBranch: snapshot.baseBranch, prUrl, reused: false, designDigest: design?.designDigest || null, authorizationSnapshot: snapshot };
   } catch (error) {
     return fail('publish_failed', `publish 失败：${error.message}`);
   } finally {

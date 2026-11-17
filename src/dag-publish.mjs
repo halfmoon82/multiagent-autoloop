@@ -55,6 +55,9 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, baseRef = 
       const root = need(['push-branch', 'create-pr'], 'commit-pr');
       const scopes = scopesOf(root, nodeId);
       const files = await changed(worktree);
+      const readOnlyDesign = new Set((root.designBaseline?.readOnlyPaths || []).map(normalizeProjectPath));
+      const protectedDesign = files.filter(file => readOnlyDesign.has(file));
+      if (protectedDesign.length) throw new PublishError(`设计基线/参考产物只读：${protectedDesign.join(', ')}`, 'DESIGN_BASELINE_READONLY');
       const outside = files.filter(file => !inScope(file, scopes));
       if (outside.length) throw new PublishError(`改动超出节点文件范围：${outside.join(', ')}`, 'OUT_OF_SCOPE');
       if (files.length) {
