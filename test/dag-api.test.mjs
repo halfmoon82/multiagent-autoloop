@@ -7,6 +7,7 @@ import { createConsoleServer } from '../src/server.mjs';
 import { createDagService } from '../src/dag-service.mjs';
 import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
 import { createPlanDigest } from '../src/vibe-plan.mjs';
+import { fileURLToPath } from 'node:url';
 import { listen, close } from './helpers.mjs';
 
 const headers = { 'content-type': 'application/json', 'x-console-request': '1' };
@@ -237,5 +238,75 @@ test('revive 审计写失败：复活待办已落盘，仍返回成功但留日�
     assert.equal(res.status, 200);
     assert.equal(t.store.getRun(root.runId).publish.nodes.a.todo.reason, 'blocked-resolved');
     assert.ok(logs.some(l => /审计写入失败/.test(l) && /磁盘满/.test(l)));
+  } finally { await close(t.server); }
+});
+
+// ---- 原生 DAG 计划入口（无需 .vibe）----
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const BOOTSTRAP_PLAN_ID = 'console-hub-native-and-card-routing';
+const bootstrapNodes = () => JSON.parse(readFileSync(path.join(repoRoot, 'docs', 'dag-plans', `${BOOTSTRAP_PLAN_ID}.json`), 'utf8'));
+
+function setupNative() {
+  const root = mkdtempSync(path.join(tmpdir(), 'dag-native-api-'));
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'dag-native-api-proj-'));
+  const project = path.join(projectRoot, 'native-demo');
+  mkdirSync(path.join(project, '.git'), { recursive: true });
+  const plans = path.join(project, 'docs', 'dag-plans'); mkdirSync(plans, { recursive: true });
+  const nodes = bootstrapNodes();
+  writeFileSync(path.join(plans, `${BOOTSTRAP_PLAN_ID}.json`), JSON.stringify(nodes));
+  writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ rules: [] }));
+  const planDigest = createPlanDigest({
+    productSpec: {},
+    plan: { plan_id: BOOTSTRAP_PLAN_ID, title: BOOTSTRAP_PLAN_ID, source: 'native' },
+    nodes,
+    authorizationSnapshot: null,
+  });
+  const store = createRunStore({ directory: path.join(root, 'dag-runs') });
+  const dagService = createDagService({ root, store });
+  const sessions = { async start() { return { id: 's' }; }, dispose() {} };
+  const server = createConsoleServer({ hubUrl: 'http://127.0.0.1:1', ownerKey: 'k', host: '127.0.0.1', root, rulesFile: path.join(root, 'rules.json'), projectRoots: [projectRoot], dagService }, sessions);
+  const payload = over => JSON.stringify({ project, planId: BOOTSTRAP_PLAN_ID, planDigest, confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, ...over });
+  return { server, project, store, planDigest, payload };
+}
+
+test('GET /api/dag-plan 原生计划无需 .vibe：返回六节点、波次与一致 digest', async () => {
+  const t = setupNative(); const url = await listen(t.server);
+  try {
+    assert.ok(!existsSync(path.join(t.project, '.vibe')), '夹具无 .vibe 目录');
+    const res = await fetch(`${url}/api/dag-plan?project=${encodeURIComponent(t.project)}&planId=${BOOTSTRAP_PLAN_ID}`);
+    assert.equal(res.status, 200);
+    const plan = await res.json();
+    assert.equal(plan.planDigest, t.planDigest);
+    assert.equal(plan.nodes.length, 6);
+    assert.deepEqual(plan.nodes.map(n => [n.id, n.wave]), [
+      ['execution-grants', 1], ['hub-scheduling', 1], ['card-delegation', 1],
+      ['dag-recovery', 2], ['card-routing-filter', 2], ['integration-review', 3],
+    ]);
+    assert.deepEqual(plan.allowedActions, [...ALLOWED_ACTIONS]);
+  } finally { await close(t.server); }
+});
+
+test('POST /api/dag-runs 原生 planId+planDigest 创建成功，digest 不符拒绝', async () => {
+  const t = setupNative(); const url = await listen(t.server);
+  try {
+    const res = await post(url, '/api/dag-runs', t.payload());
+    assert.equal(res.status, 201);
+    const run = await res.json();
+    assert.equal(run.planId, BOOTSTRAP_PLAN_ID);
+    assert.equal(run.planDigest, t.planDigest);
+    assert.equal((await post(url, '/api/dag-runs', t.payload({ planDigest: 'wrong' }))).status, 400);
+    assert.equal(t.store.listRuns().filter(r => r.nodeId === ROOT_NODE).length, 1);
+  } finally { await close(t.server); }
+});
+
+test('GET /api/dag-plan 无原生计划也无 vibe 计划时返回可读 400', async () => {
+  const t = setup(); const url = await listen(t.server);
+  try {
+    const res = await fetch(`${url}/api/dag-plan?project=${encodeURIComponent(t.project)}&planId=no-such-plan`);
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /无法加载计划/);
+    assert.match(body.error, /原生/);
+    assert.match(body.error, /vibe/);
   } finally { await close(t.server); }
 });
