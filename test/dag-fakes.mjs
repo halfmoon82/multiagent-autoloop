@@ -24,7 +24,7 @@ export function fakeRt(project = '/proj') {
   return {
     project, runId: 'r', events, slotPath: slot => `${project}/.worktrees/dag-r-slot-${slot}`,
     loadState: () => JSON.parse(JSON.stringify(state)), saveState: next => { state = JSON.parse(JSON.stringify(next)); },
-    async prepare(a) { events.push(['prepare', a.slot, a.nodeId]); return { ...a, reused: false }; },
+    async prepare(a) { events.push(['prepare', a.slot, a.nodeId, a.base]); return { ...a, reused: false }; },
     async dirty() { return false; },
   };
 }
