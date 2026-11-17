@@ -149,7 +149,7 @@ const text = value => String(value ?? '').trim();
 const iso = () => new Date().toISOString();
 const newRunId = () => `dagrun-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
 
-class DagRunError extends Error {
+export class DagRunError extends Error {
   constructor(code, message) { super(message); this.name = 'DagRunError'; this.code = code; }
 }
 

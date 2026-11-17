@@ -37,12 +37,12 @@ export const fakePublisher = () => { const calls = []; return {
   async baseline() { calls.push(['baseline']); return {}; },
 }; };
 
-export function setup(nodes, { chooseApproach } = {}) {
+export function setup(nodes, { chooseApproach, blockedEvidence } = {}) {
   const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-ctl-')) });
   const root = store.createRun({ project: '/proj', planId: 'p1', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes });
   const hub = new FakeHub(); const rt = fakeRt(); const wip = fakeWip(); const publisher = fakePublisher();
   const clock = { t: 1_000_000_000_000 };
-  const ctl = createController({ store, rootRunId: root.runId, hub, rt, wip, publisher, now: () => clock.t, chooseApproach });
+  const ctl = createController({ store, rootRunId: root.runId, hub, rt, wip, publisher, now: () => clock.t, chooseApproach, blockedEvidence });
   const runOf = (nodeId, role = 'dev') => store.listRuns().filter(r => r.nodeId === nodeId && r.role === role).sort((a, b) => a.generation - b.generation || a.attempt - b.attempt).at(-1);
   const receipt = (nodeId, role, outcome, over = {}) => {
     const run = runOf(nodeId, role);

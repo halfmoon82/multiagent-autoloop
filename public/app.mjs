@@ -5,7 +5,7 @@ import { projectForRun, projectForCard, matchesProject, collectProjects, scopedT
 import { el } from './views.mjs';
 import { initDag } from './dag-app.mjs';
 import { stableReplace, hasLiveInteraction } from './dom-stable.mjs';
-const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null, queueEditing: null, artifactsPanel: null, sessionTab: 'scheduling', selectedSession: '', archivedOpen: false, archivedView: '', sessionDrafts: {} };
+const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null, queueEditing: null, artifactsPanel: null, sessionTab: 'scheduling', selectedSession: '', sessionQuery: '', collapsedSessions: {}, archivedOpen: false, archivedView: '', sessionDrafts: {} };
 const $ = id => document.getElementById(id);
 // 非键控列表统一走稳定替换：容器内有选区/聚焦输入/指针按下时冻结本轮，
 // 交互结束后下一轮轮询自动补齐（键控列表见下方 replaceKeyedPreserving）
@@ -13,6 +13,8 @@ function replace(id, nodes) { stableReplace(id, nodes); }
 let noticeError = false;
 function showNotice(text) { noticeError = false; const box = $('notice'); box.textContent = text; box.hidden = !text; }
 function showErrorNotice(text) { showNotice(text); noticeError = true; }
+let toastTimer;
+function showToast(text) { const box = $('toast'); box.textContent = text; box.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { box.hidden = true; }, 2800); }
 function setConnection(online, text) { const node = $('connection'); node.className = `connection ${online ? 'online' : 'offline'}`; node.replaceChildren(el('span', 'dot'), document.createTextNode(text)); }
 export async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...(options.body ? { 'content-type': 'application/json', 'x-console-request': '1' } : {}), ...options.headers } });
@@ -61,7 +63,7 @@ function syncProjectFilter() {
   }));
   select.value = state.projectFilter;
   $('clear-project-filter').hidden = !state.projectFilter;
-  const projectSelect = $('session-project');
+  const projectSelect = $('new-session-project');
   const projectsKey = state.projects.map(project => `${project.name}${project.path}`).join('|');
   if (projectsKey !== state.projectsKey) {
     // 守卫通过前不写 projectsKey：写后再 return 会把这次重建永久跳过（直到项目列表再变化）
@@ -180,6 +182,7 @@ function render() {
     log.scrollTop = Math.min(previous.top, Math.max(log.scrollHeight - log.clientHeight, 0));
   });
   const count = state.snapshot.cards?.filter(card => card.state === 'open').length || 0; $('card-count').textContent = String(count); $('card-count').hidden = !count;
+  const sessionCount = state.sessions.length; $('session-nav-count').textContent = String(sessionCount); $('session-nav-count').hidden = !sessionCount;
   restoreFocus(focus);
 }
 // 会话管理屏（设计基线 screen-design）：左侧类型 tab + 会话条目 + 默认折叠的已归档与历史；
@@ -193,7 +196,12 @@ function renderSessionsChrome(sessions) {
     if (tab) { const active = kind === state.sessionTab; tab.classList.toggle('active', active); tab.setAttribute('aria-selected', active ? 'true' : 'false'); }
   }
   const tabList = byKind[state.sessionTab] || [];
-  replace('session-items', renderSessionItems(tabList));
+  const query = (state.sessionQuery || '').trim().toLowerCase();
+  const visibleList = query ? tabList.filter(session => `${session.prompt || ''} ${session.id || ''} ${projectName(session.project || '')}`.toLowerCase().includes(query)) : tabList;
+  replace('session-items', renderSessionItems(visibleList, { collapsed: state.collapsedSessions || {} }));
+  const activeId = state.selectedSession || visibleList[0]?.id || '';
+  const activeItem = [...document.querySelectorAll('#session-items .session-item')].find(item => item.dataset.session === activeId);
+  if (activeItem) activeItem.classList.add('active');
   const archived = (state.archived || []).filter(item => matchesProject(item.project, state.projectFilter));
   $('archived-count').textContent = String(archived.length);
   $('archived-toggle').setAttribute('aria-expanded', state.archivedOpen ? 'true' : 'false');
@@ -285,6 +293,16 @@ document.addEventListener('click', async event => {
       return;
     }
     if (action === 'select-session') { state.selectedSession = id; state.archivedView = ''; render(); return; }
+    if (action === 'collapse-session') { state.collapsedSessions[id] = !state.collapsedSessions[id]; render(); return; }
+    if (action === 'archive-session') {
+      if (!confirm('归档这条会话？转录会保留在“已归档与历史”，可只读查看或继续。')) return;
+      await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/close`, { method: 'POST', body: JSON.stringify({}) });
+      showToast('会话已归档，转录保留在“已归档与历史”。');
+      if (state.selectedSession === id) state.selectedSession = '';
+      delete state.collapsedSessions[id];
+      await refresh();
+      return;
+    }
     if (action === 'view-archive') { state.archivedView = id; state.selectedSession = ''; render(); return; }
     if (action === 'design-authorize') { showView('authorize'); return; }
     if (action === 'continue-session') {
@@ -483,48 +501,93 @@ document.addEventListener('submit', async event => {
   catch (error) { showNotice(error.message); }
 });
 $('new-rule').addEventListener('click', () => openRuleForm({ agents: state.agents, sources: state.sources, api, onSaved: refresh }));
-$('session-new-dag').addEventListener('click', () => showView('authorize'));
 $('authorize-back').addEventListener('click', () => showView('sessions'));
 $('archived-toggle').addEventListener('click', () => { state.archivedOpen = !state.archivedOpen; render(); });
-document.querySelectorAll('.session-kind-tabs [data-kind]').forEach(tab => tab.addEventListener('click', () => { state.sessionTab = tab.dataset.kind; state.selectedSession = ''; render(); }));
-// 创建流：输入首轮提示词 → 服务端语义分类 → 用户确认/覆盖 kind → 一次性发送首轮。确认前不创建会话。
+document.querySelectorAll('.session-kind-tabs [data-kind]').forEach(tab => tab.addEventListener('click', () => { state.sessionTab = tab.dataset.kind; state.selectedSession = ''; state.sessionQuery = ''; $('session-search').value = ''; render(); }));
+$('session-search').addEventListener('input', event => { state.sessionQuery = event.target.value; render(); });
+
+// 新建会话对话框（设计基线 new-session-dialog）：打开 → 输入首轮提示词实时语义分类 → 手动覆盖 → 确认门 → 创建反馈。
+// 确认前不创建会话、不发送任何首轮；确认后一次调用按确认的 kind 创建并随首轮发送。
 const KIND_NAMES = { normal: '普通会话', scheduling: '调度会话', design: '设计会话' };
-let suggestedPrompt = null;
-function resetSessionSuggest() { suggestedPrompt = null; $('session-suggest').hidden = true; $('classify-session').hidden = false; }
-$('session-prompt').addEventListener('input', () => { if (suggestedPrompt !== null && $('session-prompt').value.trim() !== suggestedPrompt) resetSessionSuggest(); });
-$('cancel-session-suggest').addEventListener('click', resetSessionSuggest);
-$('classify-session').addEventListener('click', async () => {
-  const project = $('session-project').value.trim();
-  if (!project) { showNotice('请先从列表选择被调度的项目。'); return; }
-  const text = $('session-prompt').value.trim();
-  if (!text) { showNotice('请先输入首轮提示词。'); return; }
+const CLASS_META = {
+  normal: { icon: '○', title: '普通会话', reason: '单次问答、分析或普通开发，不需要调度协调或 PRD 引导。', contract: '普通会话：直接创建于项目工作区，不组装额外提示词。' },
+  scheduling: { icon: '↻', title: '调度会话', reason: '意图是读取状态、诊断失败或恢复规则，沿用现有调度协议。', contract: '调度会话：保留现有调度提示词与 Hub 状态工具，负责协调、自愈和最小升级。' },
+  design: { icon: '▣', title: '设计会话', reason: '涉及跨模块新能力或产品取舍，需要先形成 PRD、Spec 与 DAG。', contract: '设计会话：原生 Plan Mode + read-only；服务端 vibe 负责 PRD/Spec/DAG 校验。' },
+};
+const newSessionDialog = $('new-session-dialog');
+const overrideButtons = [...document.querySelectorAll('[data-type-override]')];
+let typeOverride = 'auto';
+let classification = null; // 服务端语义分类结果 { kind, reason }
+let classifiedText = '';
+
+function paintClassification() {
+  const text = $('new-session-request').value.trim();
+  $('create-session').disabled = !text;
+  const kind = typeOverride === 'auto' ? classification?.kind : typeOverride;
+  const meta = kind ? CLASS_META[kind] : null;
+  if (!text || !meta) {
+    classification = text ? classification : null;
+    $('classification-icon').textContent = '○';
+    $('classification-title').textContent = '等待输入';
+    $('classification-reason').textContent = '普通问答/分析、调度协调、复杂 PRD 设计会进入不同会话协议。';
+    $('classification-contract').textContent = CLASS_META.normal.contract;
+    return;
+  }
+  $('classification-icon').textContent = meta.icon;
+  $('classification-title').textContent = `${meta.title}${typeOverride === 'auto' ? ' · 推荐' : ' · 手动指定'}`;
+  $('classification-reason').textContent = typeOverride === 'auto' ? (classification?.reason || meta.reason) : meta.reason;
+  $('classification-contract').textContent = meta.contract;
+}
+function openNewSession() {
+  showView('sessions');
+  if (!$('new-session-project').options.length) { showNotice('未发现可用项目，请先配置 AUTOLOOP_PROJECT_ROOTS。'); return; }
+  typeOverride = 'auto'; classification = null; classifiedText = '';
+  overrideButtons.forEach(button => { const active = button.dataset.typeOverride === 'auto'; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); });
+  $('new-session-request').value = '';
+  paintClassification();
+  newSessionDialog.showModal();
+  $('new-session-request').focus();
+}
+function closeNewSession() { newSessionDialog.close(); }
+$('overview-new-session').addEventListener('click', openNewSession);
+$('session-new').addEventListener('click', openNewSession);
+newSessionDialog.querySelectorAll('.js-close-new-session').forEach(button => button.addEventListener('click', closeNewSession));
+overrideButtons.forEach(button => button.addEventListener('click', () => {
+  typeOverride = button.dataset.typeOverride;
+  overrideButtons.forEach(item => { const active = item === button; item.classList.toggle('active', active); item.setAttribute('aria-pressed', String(active)); });
+  paintClassification();
+}));
+$('new-session-request').addEventListener('input', async () => {
+  const text = $('new-session-request').value.trim();
+  paintClassification();
+  if (!text) { classification = null; classifiedText = ''; return; }
+  if (typeOverride !== 'auto' || text === classifiedText) return;
+  const pending = text;
   try {
     const result = await api('/api/session-classify', { method: 'POST', body: JSON.stringify({ text }) });
-    if (!result.kind) { showNotice(result.reason || '无法判定会话类型，请补充提示词。'); return; }
-    suggestedPrompt = text;
-    $('session-kind').value = result.kind;
-    $('session-suggest-reason').textContent = `建议：${KIND_NAMES[result.kind]}。${result.reason}`;
-    $('session-suggest').hidden = false;
-    $('classify-session').hidden = true;
-  } catch (error) { showNotice(error.message); }
+    if ($('new-session-request').value.trim() !== pending) return; // 输入已变化，丢弃过期结果
+    classification = result.kind ? result : null;
+    classifiedText = pending;
+    paintClassification();
+  } catch { /* 分类暂不可用不阻断创建 */ }
 });
-$('start-session').addEventListener('click', async event => {
+$('create-session').addEventListener('click', async event => {
   const button = event.currentTarget;
-  const project = $('session-project').value.trim();
-  const prompt = $('session-prompt').value.trim();
-  const kind = $('session-kind').value;
-  if (!project) { showNotice('请先从列表选择被调度的项目。'); return; }
+  const project = $('new-session-project').value.trim();
+  const prompt = $('new-session-request').value.trim();
+  if (!project) { showNotice('请先从列表选择项目工作区。'); return; }
   if (!prompt) { showNotice('请先输入首轮提示词。'); return; }
-  if (!confirm(`为项目 ${project} 开启${KIND_NAMES[kind]}并发送首轮？这会启动 Codex，并可能消耗模型额度。`)) return;
+  // 确认门：手动覆盖优先，自动则用语义分类；确认后创建会话并随首轮一次性发送。
+  const kind = typeOverride !== 'auto' ? typeOverride : (classification?.kind || null);
+  if (!confirm(`为项目 ${projectName(project)} 开启${KIND_NAMES[kind] || '会话'}并发送首轮？这会启动 Codex，并可能消耗模型额度。`)) return;
   button.disabled = true;
   try {
     const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project, prompt, kind }) });
-    showNotice(`${KIND_NAMES[session.kind] || '会话'} ${session.id} 已开启。`);
+    showToast(`${KIND_NAMES[session.kind] || '会话'}已创建并进入${KIND_NAMES[session.kind] || '会话'}列表。`);
     state.projectFilter = projectName(session.project || '');
-    state.sessionTab = session.kind || 'scheduling'; state.selectedSession = session.id; state.archivedView = '';
-    $('session-project').selectedIndex = 0;
-    $('session-prompt').value = '';
-    resetSessionSuggest();
+    state.sessionTab = session.kind || 'scheduling'; state.selectedSession = session.id; state.archivedView = ''; state.sessionQuery = '';
+    $('session-search').value = '';
+    closeNewSession();
     await refresh();
   } catch (error) { showNotice(error.message); }
   finally { button.disabled = false; }

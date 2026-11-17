@@ -90,11 +90,7 @@ form.session-message input,form.session-message textarea{flex:1;min-width:0}
 .md-view a{color:var(--accent-dark)}form.session-message textarea,.text-answer textarea{resize:none;overflow-y:auto;min-height:38px;max-height:132px}
 form.session-message .button{white-space:nowrap}
 
-.session-start textarea{min-width:220px;resize:vertical}.session-suggest{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}
-.session-suggest[hidden]{display:none}
-
 /* 会话管理屏（设计基线 screen-design）：左侧列表 + 右侧工作区，移动端正交堆叠 */
-.session-start{display:flex;gap:10px;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap}
 .dag-toolbar{display:flex;justify-content:flex-end;margin-bottom:10px}
 .session-layout{display:grid;grid-template-columns:300px minmax(0,1fr);align-items:stretch}
 #session-sidebar{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
@@ -125,3 +121,58 @@ form.session-message .button{white-space:nowrap}
 #session-workspace-body .run-card{box-shadow:none}
 .workspace-empty{padding:48px 20px;text-align:center;color:var(--muted);font-size:13px}
 @media(max-width:900px){.session-layout{grid-template-columns:minmax(0,1fr)}#session-sidebar{border-right:0;border-bottom:1px solid var(--line)}.session-items{max-height:240px}}
+
+/* 设计稿对齐（docs/design/2026-11-16-parallel-dag）：会话管理左侧与新建会话对话框 */
+:root{--warning-soft:#fff3df;--blue-soft:#eaf2f9}
+.count.info{background:var(--accent-soft);color:var(--accent-dark)}
+.button-icon{font-size:15px;font-weight:400;line-height:1}
+.session-page-heading{margin-bottom:16px}
+.session-page-heading .button.primary{padding:8px 12px;font-size:12px;min-height:34px}
+.session-search{padding:12px 12px 9px}
+.session-search input{width:100%;border:1px solid var(--line);border-radius:7px;background:#fff;padding:7px 9px;font-size:11px;color:var(--ink)}
+#session-sidebar{background:#fafcfb}
+.session-kind-tabs{gap:4px;padding:0 12px 10px}
+.session-kind-tabs button{border:0;border-radius:6px;background:transparent;padding:8px 4px;font-size:11px}
+.session-kind-tabs button.active{background:var(--accent-soft);border-color:transparent;color:var(--accent-dark);font-weight:650}
+.kind-count{background:transparent;color:var(--muted)}
+.session-kind-tabs button.active .kind-count{background:rgba(255,255,255,.7);color:var(--accent-dark)}
+.session-item{position:relative;gap:3px;padding:8px 8px 7px 10px;border-bottom:0;border-radius:8px;margin-bottom:3px}
+.session-item:hover{background:#f0f4f2}
+.session-item.active{background:var(--accent-soft);border-color:#cce4db}
+.session-select{display:block;width:100%;gap:0;padding:0}
+.session-select strong{font-size:11px;line-height:1.45;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-select span,.session-select small{font-size:9px;line-height:1.45;margin-top:3px}
+.session-item.collapsed .session-select small{display:none}
+.session-item-actions{display:flex;gap:0;opacity:0;transition:opacity .12s}
+.session-item:hover .session-item-actions,.session-item.active .session-item-actions{opacity:1}
+.session-item-actions button{border:0;background:transparent;color:var(--muted);width:17px;height:20px;padding:0;font-size:11px}
+.session-item-actions button:hover{color:var(--accent)}
+.session-item>.status{margin-top:0;align-self:center}
+.archived-sessions{padding:8px 10px}
+.archived-sessions>button{color:var(--muted);font-size:10px}
+.archived-entry{font-size:10px}
+.archived-entry-actions button{padding:2px 7px;font-size:9px}
+.new-session-dialog{border:1px solid var(--line);border-radius:14px;padding:0;width:min(590px,calc(100vw - 28px));box-shadow:0 24px 70px rgba(22,42,34,.2);color:var(--ink)}
+.new-session-dialog::backdrop{background:rgba(17,33,27,.35);backdrop-filter:blur(2px)}
+.dialog-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:20px 22px 13px;border-bottom:1px solid var(--line)}
+.dialog-heading h2{font-size:18px}
+.dialog-heading .subtle{font-size:10px;margin-top:6px}
+.dialog-heading .icon-button{width:30px;height:30px;flex:none}
+.form-field{display:flex;flex-direction:column;gap:6px;margin:14px 22px;color:var(--muted);font-size:10px;font-weight:600}
+.form-field select,.form-field textarea{border:1px solid var(--line);border-radius:8px;padding:10px;color:var(--ink);background:#fff;font-size:12px;font-weight:400}
+.form-field textarea{height:88px;resize:none}
+.session-classification{margin:14px 22px;padding:13px;background:#f5f8f6;border:1px solid var(--line);border-radius:9px}
+.classification-top{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:9px}
+.classification-result{display:flex;gap:10px;align-items:flex-start;margin:12px 0}
+.classification-result>span{display:grid;place-items:center;width:28px;height:28px;border-radius:8px;background:#fff;color:var(--accent);font-size:16px;flex:none}
+.classification-result strong{font-size:12px}
+.classification-result p{color:var(--muted);font-size:10px;line-height:1.5;margin:3px 0 0}
+.classification-override{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+.classification-override button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px;color:var(--muted);font-size:10px}
+.classification-override button.active{background:var(--accent-soft);border-color:#afd4c6;color:var(--accent-dark);font-weight:650}
+.classification-contract{margin:0 22px 14px;padding:9px 11px;background:var(--accent-soft);border-radius:7px;color:var(--accent-dark);font-size:10px;line-height:1.55}
+.new-session-dialog .dialog-actions{padding:13px 22px;border-top:1px solid var(--line);gap:8px}
+@media(max-width:600px){.dialog-heading{padding:16px}.form-field,.session-classification{margin-left:16px;margin-right:16px}.classification-contract{margin:0 16px 12px}.new-session-dialog .dialog-actions{padding:12px 16px}}
+.toast{position:fixed;right:24px;bottom:24px;max-width:340px;background:#172521;color:#fff;padding:12px 16px;border-radius:9px;box-shadow:0 12px 32px rgba(0,0,0,.18);font-size:12px;z-index:10}
+.toast[hidden]{display:none}
+@media(max-width:600px){.toast{left:12px;right:12px;bottom:12px;max-width:none}}

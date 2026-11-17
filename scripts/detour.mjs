@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// 频限绕行 CLI：登记（record）、核实到期绕行（verify）、人工回归（revert）、查看状态（status）。
+// 频限绕行 CLI：登记（record）、核实到期绕行（verify / verify-all 批量）、人工回归（revert）、查看状态（status）。
+// verify-all 是 cron 用批量入口：退出码 0=全部核实完成/无到期，1=探测未通过或处理出错，2=用法/配置错误。
 // 用法：
 //   node scripts/detour.mjs status
 //   node scripts/detour.mjs record --id wb-hy4-20261115 --blocked-agent workbuddy --blocked-model hy4free \
@@ -35,6 +36,58 @@ export function runProbe(command, timeoutMs) {
   });
 }
 
+/** 核实到期绕行的共用实现。strict=true（verify-all，cron 用）退出码 0/1/2；
+ *  strict=false（旧 verify）保持兼容：只有处理出错才退出 1，探测未通过仍退出 0。 */
+async function runVerify(config, { id, timeoutMs, strict = false } = {}) {
+  let due;
+  const notes = [];
+  try {
+    due = id ? readDetours(config).filter((d) => d.id === id && d.status === 'detoured') : dueForProbe(config);
+  } catch (error) {
+    if (!(error instanceof DetourError) || !/损坏|缺少 detours 数组/.test(error.message)) throw error;
+    quarantineCorruptDetours(config); // 损坏文件留档隔离后按空集合重试一轮
+    due = id ? [] : dueForProbe(config);
+    notes.push('detours.json 已损坏，已改名留档，本次按无绕行处理');
+  }
+  if (!due.length) {
+    notes.push('没有到期的绕行要核实');
+    return { due: 0, ok: 0, failed: 0, skipped: 0, results: [], notes, exitCode: 0 };
+  }
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) throw new DetourError('--timeout 要是至少 1000 毫秒的整数');
+  let ok = 0;
+  let failed = 0;
+  let skipped = 0;
+  let errors = 0;
+  const results = [];
+  for (const detour of due) {
+    try {
+      if (!detour.probe?.command?.length) {
+        notes.push(`${detour.id}：没有探测命令，跳过（用 revert 人工回归）`);
+        skipped += 1;
+        results.push({ id: detour.id, outcome: 'skipped' });
+        continue;
+      }
+      const probeOk = await runProbe(detour.probe.command, timeoutMs);
+      const result = markProbeResult(config, detour.id, probeOk);
+      notes.push(`${detour.id}：探测${probeOk ? '通过，已回归' : '未通过，继续绕行'}${result.skipped.length ? `；跳过 ${result.skipped.map((item) => `${item.name}（${item.reason}：现在 ${item.currentTo ?? '不存在'}）`).join('、')}` : ''}`);
+      if (probeOk) ok += 1;
+      else failed += 1;
+      results.push({ id: detour.id, outcome: probeOk ? 'ok' : 'failed', skipped: result.skipped });
+    } catch (error) {
+      if (/没有进行中的绕行/.test(error.message)) { // 并发 verify 已处理
+        skipped += 1;
+        results.push({ id: detour.id, outcome: 'skipped' });
+        continue;
+      }
+      errors += 1; // 一条失败不阻断其余到期的绕行
+      notes.push(`${detour.id}：${error.message}`);
+      results.push({ id: detour.id, outcome: 'error', error: error.message });
+    }
+  }
+  const exitCode = strict ? (failed + errors ? 1 : 0) : (errors ? 1 : 0);
+  return { due: due.length, ok, failed, errors, skipped, results, notes, exitCode };
+}
+
 const command = process.argv[2];
 const options = args();
 const config = loadConsoleConfig();
@@ -61,39 +114,28 @@ try {
       probe: { command: probeCommand, cooldownMinutes: Number(options.cooldown || 30) },
     });
     console.log(`已登记绕行 ${record.id}：${record.rules.map((rule) => rule.name).join('、')} 切到 ${record.fallbackAgent}`);
-  } else if (command === 'verify') {
-    let due;
+  } else if (command === 'verify' || command === 'verify-all') {
+    const strict = command === 'verify-all';
+    let summary;
     try {
-      due = options.id ? readDetours(config).filter((d) => d.id === options.id && d.status === 'detoured') : dueForProbe(config);
+      summary = await runVerify(config, {
+        id: strict ? undefined : options.id,
+        timeoutMs: Number(options.timeout || 120000),
+        strict,
+      });
     } catch (error) {
-      if (!(error instanceof DetourError) || !/损坏|缺少 detours 数组/.test(error.message)) throw error;
-      quarantineCorruptDetours(config); // 损坏文件留档隔离后按空集合重试一轮
-      due = options.id ? [] : dueForProbe(config);
-      console.log('detours.json 已损坏，已改名留档，本次按无绕行处理');
+      if (error instanceof DetourError) { console.error(error.message); process.exit(strict ? 2 : 1); }
+      throw error;
     }
-    if (!due.length) { console.log('没有到期的绕行要核实'); process.exit(0); }
-    const timeoutMs = Number(options.timeout || 120000);
-    if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) throw new DetourError('--timeout 要是至少 1000 毫秒的整数');
-    let failures = 0;
-    for (const detour of due) {
-      try {
-        if (!detour.probe?.command?.length) { console.log(`${detour.id}：没有探测命令，跳过（用 revert 人工回归）`); continue; }
-        const ok = await runProbe(detour.probe.command, timeoutMs);
-        const result = markProbeResult(config, detour.id, ok);
-        console.log(`${detour.id}：探测${ok ? '通过，已回归' : '未通过，继续绕行'}${result.skipped.length ? `；跳过 ${result.skipped.map((item) => `${item.name}（${item.reason}：现在 ${item.currentTo ?? '不存在'}）`).join('、')}` : ''}`);
-      } catch (error) {
-        if (/没有进行中的绕行/.test(error.message)) continue; // 并发 verify 已处理
-        failures += 1; // 一条失败不阻断其余到期的绕行
-        console.error(`${detour.id}：${error.message}`);
-      }
-    }
-    process.exit(failures ? 1 : 0);
+    if (strict && options.json === true) console.log(JSON.stringify(summary, null, 2));
+    else for (const note of summary.notes) console.log(note);
+    process.exit(summary.exitCode);
   } else if (command === 'revert') {
     const result = revertDetour(config, String(options.id || ''));
     if (result.already) console.log(`${result.record.id}：已于 ${result.record.revertedAt} 回归，无需重复操作`);
     else console.log(`已回归 ${result.record.id}：恢复 ${result.reverted.join('、') || '（无）'}${result.skipped.length ? `；跳过 ${result.skipped.map((item) => `${item.name}（${item.reason}）`).join('、')}` : ''}`);
   } else {
-    console.log('用法：node scripts/detour.mjs status|record|verify|revert');
+    console.log('用法：node scripts/detour.mjs status|record|verify|verify-all|revert');
     process.exit(command ? 1 : 0);
   }
 } catch (error) {

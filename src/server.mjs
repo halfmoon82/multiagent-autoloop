@@ -107,6 +107,10 @@ async function handleApi(config, req, res, url) {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
     return jsonResponse(res, 200, config.dagService.cancel(decodeURIComponent(dagMatch[1])));
   }
+  if (req.method === 'POST' && (dagMatch = url.pathname.match(/^\/api\/dag-runs\/([^/]+)\/revive$/))) {
+    if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
+    return jsonResponse(res, 200, config.dagService.revive(decodeURIComponent(dagMatch[1]), String(body.nodeId || ''), body));
+  }
   if (req.method === 'POST' && (dagMatch = url.pathname.match(/^\/api\/dag-runs\/([^/]+)\/slots\/([^/]+)\/slot-release$/))) {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
     return jsonResponse(res, 200, await config.dagService.slotRelease(decodeURIComponent(dagMatch[1]), decodeURIComponent(dagMatch[2]), body));
