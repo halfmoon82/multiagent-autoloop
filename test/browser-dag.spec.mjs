@@ -1,6 +1,7 @@
 // DAG 生产 UI 浏览器验收：授权范围确认 → 创建 → 总览分组/详情，桌面 1440×900 与移动 390×844。
 // 使用真实 dagService + 临时 Git 仓库 + 假 Hub，不调用任何真实模型。
 import assert from 'node:assert/strict';
+import test from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -170,3 +171,75 @@ try {
   if (context) await context.close(); await close(server); await close(hub.server);
   rmSync(root, { recursive: true, force: true }); rmSync(profile, { recursive: true, force: true });
 }
+
+// ---- #67 execution-grants：轻量授权记录在 UI 呈现（独立用例，避免污染主流程）----
+test('授权确认页呈现可选高风险动作收益/代价，DAG 详情显示轻量授权记录', async () => {
+  const broot = mkdtempSync(path.join(tmpdir(), 'dag-grant-ui-'));
+  const bprofile = mkdtempSync(path.join(tmpdir(), 'dag-grant-profile-'));
+  const bproject = path.join(broot, 'demo-repo'); mkdirSync(path.join(bproject, '.git'), { recursive: true });
+  const bnodes = [
+    { id: 'a', title: '节点 A', depends_on: [], contract: { input: 'i', output: 'o', error_behavior: 'e', acceptance_example: 'x', files: ['src/a.mjs'] } },
+  ];
+  const bdir = path.join(bproject, '.vibe', 'plans', 'plan-one'); mkdirSync(bdir, { recursive: true });
+  writeFileSync(path.join(bdir, 'plan.json'), JSON.stringify({ plan_id: 'plan-one', decisions: [], optionalHighRiskActions: ['deploy'] }));
+  writeFileSync(path.join(bdir, 'nodes.json'), JSON.stringify(bnodes));
+  writeFileSync(path.join(bdir, 'product-spec.input.json'), JSON.stringify({ decisions: [] }));
+  writeFileSync(path.join(bproject, '.vibe', 'state.json'), JSON.stringify({ capabilities: { adapter: 'codex', attest_command: 'vibe attest', attested_at: new Date().toISOString(), host_major_version: 5, dispatch: 'visible' } }));
+  writeFileSync(path.join(broot, 'rules.json'), JSON.stringify({ rules: [] }));
+  const bstore = createRunStore({ directory: path.join(broot, 'dag-runs') });
+  const bdagService = createDagService({ root: broot, store: bstore });
+  const bhub = await fakeHub((req, res) => json(res, req.url === '/v1/state' ? { seq: 1, totals: {}, spending: { today: {} }, cards: [], agents: [], channels: [], lines: [], runs: [], timers: [] } : { ok: true }));
+  const bsessions = {
+    record: null,
+    async list() { return this.record ? [this.record] : []; },
+    async listArchived() { return []; },
+    async start({ prompt, project, kind } = {}) {
+      const now = new Date().toISOString();
+      this.record = { id: 'design-session', sessionId: 'acp-design', agent: 'Codex ACP', cwd: project, project, kind: kind || 'design', status: 'idle', statusText: '待命', prompt: prompt || '', messages: [{ role: 'user', text: prompt || '', at: now }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: now, updatedAt: now };
+      return this.record;
+    },
+    dispose() {},
+  };
+  const bserver = createConsoleServer({ hubUrl: bhub.url, ownerKey: 'k', rulesFile: path.join(broot, 'rules.json'), root: broot, projectRoots: [broot], dagService: bdagService }, bsessions);
+  const burl = await listen(bserver);
+  let bctx;
+  try {
+    bctx = await chromium.launchPersistentContext(bprofile, { channel: 'chrome', headless: true, viewport: { width: 1440, height: 900 } });
+    const page = await bctx.newPage();
+    page.on('dialog', dialog => dialog.accept());
+    await page.goto(burl); await page.getByRole('heading', { name: '今天的自动化' }).waitFor();
+    await page.getByRole('button', { name: '会话管理', exact: false }).click();
+    await page.locator('#session-new').click();
+    await page.locator('#new-session-dialog').waitFor({ state: 'visible' });
+    await page.locator('#new-session-project').selectOption(bproject);
+    await page.locator('#new-session-request').fill('设计一个多租户计费方案并进入 PRD、DAG 与授权确认');
+    await page.waitForFunction(() => document.querySelector('#classification-title')?.textContent?.includes('设计会话'), null, { timeout: 5000 });
+    await page.locator('#create-session').click();
+    await page.locator('#session-workspace [data-action="design-authorize"]').waitFor({ timeout: 5000 });
+    await page.locator('#session-workspace [data-action="design-authorize"]').click();
+    await page.locator('#authorize-project').selectOption(bproject);
+    await page.locator('#authorize-plan').fill('plan-one');
+    await page.getByRole('button', { name: '读取计划与预检' }).click();
+    await page.locator('[data-optional-grant="deploy"]').waitFor();
+    // 默认关闭、收益与代价在页面呈现
+    assert.equal(await page.locator('[data-optional-grant="deploy"]').isChecked(), false, '高风险动作默认关闭');
+    const optText = await page.locator('[data-optional-grant="deploy"]').locator('..').innerText();
+    const preview = await (await fetch(`${burl}/api/dag-plan?project=${encodeURIComponent(bproject)}&planId=plan-one`)).json();
+    const deploy = preview.optionalActions.find(a => a.id === 'deploy');
+    assert.ok(optText.includes(deploy.benefit), '收益文案呈现');
+    assert.ok(optText.includes(deploy.cost), '代价文案呈现');
+    // 勾选后创建 → 授权记录含 deploy
+    await page.locator('[data-optional-grant="deploy"]').check();
+    await page.locator('#authorize-check').check();
+    await page.locator('#authorize-button').click();
+    await page.locator('#dag-detail .dag-detail').waitFor();
+    const runs = bstore.listRuns();
+    assert.deepEqual(runs[0].authorizationSnapshot.optionalGrants, ['deploy']);
+    // DAG 详情显示轻量授权记录
+    assert.ok((await page.locator('#dag-detail').innerText()).includes('执行授权记录'), '详情须显示轻量授权记录');
+    assert.ok((await page.locator('#dag-detail').innerText()).includes('部署'), '详情须列出已选高风险动作');
+  } finally {
+    if (bctx) await bctx.close(); await close(bserver); await close(bhub.server);
+    rmSync(broot, { recursive: true, force: true }); rmSync(bprofile, { recursive: true, force: true });
+  }
+});

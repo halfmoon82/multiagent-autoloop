@@ -10,6 +10,17 @@ export const ALLOWED_ACTIONS = Object.freeze([
   'independent-review', 'rework-p0-p2', 'squash-merge', 'close-superseded-pr',
 ]);
 export const DENIED_ACTIONS = Object.freeze(['deploy', 'release', 'production-write', 'credentials', 'external-communication']);
+// 可选高风险动作与 DENIED_ACTIONS 同源；每项用产品语言写明收益与代价（Spec §5.3-5.5）。
+export const HIGH_RISK_ACTIONS = DENIED_ACTIONS;
+export const HIGH_RISK_ACTION_INFO = Object.freeze({
+  deploy: { title: '部署', benefit: '把已合并的改动发布到运行环境，让目标用户尽快用到新版本', cost: '一旦出错会影响线上服务，需要有人值守并备好回滚方案' },
+  release: { title: '发布', benefit: '按既定节奏对外发布一个新版本，便于统一管理变更', cost: '发布窗口内需盯盘，版本兼容问题会影响所有使用者' },
+  'production-write': { title: '生产数据写入', benefit: '直接修正或迁移线上数据，省去人工逐条操作', cost: '误写会污染真实数据且大多不可逆，必须可验证、可回滚' },
+  credentials: { title: '凭据', benefit: '让流程在受控范围内自动获取所需访问权限', cost: '凭据泄露或扩散会带来安全与合规风险，需最小权限并定期轮换' },
+  'external-communication': { title: '对外通信', benefit: '自动向客户或合作方同步结果，减少人工传达', cost: '误发会造成误导或隐私外泄，发出前往往需要人工确认措辞' },
+});
+// 授权记录 schema：1 为历史格式（digest 必须逐字保留），2 为轻量执行授权记录。
+export const GRANT_SCHEMA = 2;
 export const ROOT_NODE = '__root__';
 export const MAX_SLOTS = 5;
 export const MAX_ATTEMPTS = 3;
@@ -45,19 +56,93 @@ const canonical = value => {
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 
 // 快照摘要覆盖 planDigest、授权动作、目标仓库与合并策略；动作顺序归一保证稳定。
+// schema 1 走历史公式，逐字兼容已创建的旧 run（如 dagrun-mwklgr10-e4c17e57）；
+// schema 2 追加标准动作/可选高风险动作/修订号，digest 覆盖全部授权字段，动作顺序归一。
 export function snapshotDigest(snapshot) {
   const { project, repo, mergeStrategy, planDigest, allowedActions } = snapshot || {};
+  if (snapshot && snapshot.schema === GRANT_SCHEMA) {
+    const { standardActions = [], optionalGrants = [], revision = 1 } = snapshot;
+    return sha256(canonical({
+      schema: GRANT_SCHEMA, project: project ?? null, repo: repo ?? null, mergeStrategy: mergeStrategy ?? null,
+      planDigest: planDigest ?? null, standardActions, optionalGrants, allowedActions: allowedActions ?? [], revision,
+    }));
+  }
   return sha256(canonical({ project: project ?? null, repo: repo ?? null, mergeStrategy: mergeStrategy ?? null, planDigest: planDigest ?? null, allowedActions: allowedActions ?? [] }));
 }
 
+// 轻量执行授权记录（schema 2）：标准动作自动继承，高风险动作默认关闭，
+// 仅当「计划声明 + 本轮明确勾选」才写入 optionalGrants。每项带产品语言的收益/代价。
+export function buildGrantRecord({ project, repo, mergeStrategy, planDigest, confirmedActionIds, selectedOptionalActions = [], planOptionalActions = [], revision = 1 }) {
+  const standardActions = [...new Set(confirmedActionIds)].sort();
+  for (const action of standardActions) {
+    if (typeof action !== 'string' || !text(action)) throw new DagRunError('BAD_INPUT', '标准授权动作必须是字符串');
+    if (HIGH_RISK_ACTIONS.includes(action)) throw new DagRunError('ACTION_DENIED', `标准动作 "${action}" 不能混入高风险动作`);
+    if (!ALLOWED_ACTIONS.includes(action)) throw new DagRunError('ACTION_NOT_ALLOWED', `授权动作 "${action}" 不在白名单，整体拒绝`);
+  }
+  for (const action of selectedOptionalActions) {
+    if (!HIGH_RISK_ACTIONS.includes(action)) throw new DagRunError('ACTION_NOT_ALLOWED', `可选动作 "${action}" 不在高风险目录，整体拒绝`);
+    if (!planOptionalActions.includes(action)) throw new DagRunError('ACTION_NOT_IN_PLAN', `可选高风险动作 "${action}" 未被计划声明，整体拒绝`);
+  }
+  const optionalGrants = [...new Set(selectedOptionalActions)].sort();
+  const allowedActions = [...new Set([...standardActions, ...optionalGrants])].sort();
+  const record = {
+    schema: GRANT_SCHEMA, project: text(project), repo: repo == null ? null : text(repo), mergeStrategy: text(mergeStrategy) || 'squash',
+    planDigest: text(planDigest), standardActions, optionalGrants, allowedActions, revision, createdAt: new Date().toISOString(),
+  };
+  return { ...record, digest: snapshotDigest(record) };
+}
+
+// 旧版构造器保留给历史调用；新 run 一律走 buildGrantRecord。
 export function buildAuthorizationSnapshot({ project, repo, mergeStrategy, planDigest, confirmedActionIds }) {
-  // 与 run 字段同口径（text() 归一），digest 数据源统一，避免带空白输入导致读取时 digest 失配。
   const allowedActions = [...new Set(confirmedActionIds)].sort();
   const snapshot = {
     schema: 1, project: text(project), repo: repo == null ? null : text(repo), mergeStrategy: text(mergeStrategy) || 'squash',
     planDigest: text(planDigest), allowedActions, createdAt: new Date().toISOString(),
   };
   return { ...snapshot, digest: snapshotDigest(snapshot) };
+}
+
+// 执行层动作裁定：digest 不一致 fail closed；高风险动作须显式选中才放行。
+export function canExecuteAction(snapshot, action) {
+  if (!snapshotIntact(snapshot)) return { ok: false, reason: 'GRANT_INCONSISTENT' };
+  const info = HIGH_RISK_ACTION_INFO[action];
+  if (HIGH_RISK_ACTIONS.includes(action)) {
+    const selected = (snapshot.optionalGrants || []).includes(action);
+    return selected
+      ? { ok: true, reason: 'SELECTED', title: info?.title, benefit: info?.benefit, cost: info?.cost }
+      : { ok: false, reason: 'HIGH_RISK_NOT_SELECTED', title: info?.title };
+  }
+  if (!ALLOWED_ACTIONS.includes(action)) return { ok: false, reason: 'UNKNOWN_ACTION' };
+  return (snapshot.allowedActions || []).includes(action)
+    ? { ok: true, reason: 'STANDARD' }
+    : { ok: false, reason: 'ACTION_NOT_GRANTED' };
+}
+
+// 摘要不一致的诊断：给出可诊断原因与修复入口；schema2 且字段结构完整才允许重建。
+export function grantDiagnostic(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    return { intact: false, repairable: false, reason: 'MISSING', message: '授权记录缺失，无法校验，fail closed' };
+  }
+  if (snapshotIntact(snapshot)) return { intact: true, repairable: false, reason: 'OK' };
+  const structured = snapshot.schema === GRANT_SCHEMA
+    && Array.isArray(snapshot.standardActions) && Array.isArray(snapshot.optionalGrants) && Array.isArray(snapshot.allowedActions)
+    && typeof snapshot.digest === 'string';
+  if (structured) return { intact: false, repairable: true, reason: 'DIGEST_MISMATCH', message: '授权记录摘要不一致（字段结构完整），暂停相关写入；可通过 rebuildGrant 重建摘要，不永久砖化 DAG' };
+  return { intact: false, repairable: false, reason: 'UNSTRUCTURED', message: '授权记录摘要不一致且字段结构损坏，无法安全重建，fail closed' };
+}
+
+// 授权修订：实际计划或动作范围扩大才形成新修订；未变化则沿用原记录（attempt 继承不重新授权）。
+export function reconcileGrant(prevGrant, { confirmedActionIds, selectedOptionalActions = [], planOptionalActions = [] } = {}) {
+  const standard = confirmedActionIds || (prevGrant?.standardActions ?? prevGrant?.allowedActions ?? []);
+  const optional = [...new Set(selectedOptionalActions)].sort();
+  const sameStandard = JSON.stringify([...new Set(standard)].sort()) === JSON.stringify(prevGrant?.standardActions ?? []);
+  const sameOptional = JSON.stringify(optional) === JSON.stringify(prevGrant?.optionalGrants ?? []);
+  if (sameStandard && sameOptional) return { changed: false, grant: prevGrant };
+  const grant = buildGrantRecord({
+    project: prevGrant?.project, repo: prevGrant?.repo, mergeStrategy: prevGrant?.mergeStrategy, planDigest: prevGrant?.planDigest,
+    confirmedActionIds: standard, selectedOptionalActions: optional, planOptionalActions, revision: (prevGrant?.revision ?? 1) + 1,
+  });
+  return { changed: true, grant, reason: 'SCOPE_EXPANDED' };
 }
 
 const DONE_OUTCOMES = new Set(['done', 'accepted', 'merged']);
@@ -173,7 +258,10 @@ export function createRunStore({ directory } = {}) {
     try { raw = JSON.parse(readFileSync(file, 'utf8')); }
     catch (error) { throw new DagRunError('CORRUPT_STATE', `run 状态文件损坏（blocked_unknown 语义）：${error.message}`); }
     if (!raw || typeof raw !== 'object' || !text(raw.runId)) throw new DagRunError('CORRUPT_STATE', 'run 状态文件损坏：缺少 runId');
-    if (!snapshotIntact(raw.authorizationSnapshot)) throw new DagRunError('CORRUPT_STATE', `run ${raw.runId} 授权快照 digest 校验失败（被篡改或缺失），fail closed`);
+    if (!snapshotIntact(raw.authorizationSnapshot)) {
+      const diag = grantDiagnostic(raw.authorizationSnapshot);
+      throw new DagRunError('CORRUPT_STATE', `run ${raw.runId} 授权快照 digest 校验失败（${diag.reason}）：${diag.message}`);
+    }
     return raw;
   };
   const getRun = runId => loadFile(runFile(text(runId)));
@@ -209,8 +297,8 @@ export function createRunStore({ directory } = {}) {
     if (!Array.isArray(ids) || !ids.length) throw new DagRunError('BAD_INPUT', 'confirmedActionIds 至少确认一个授权动作');
     for (const id of ids) {
       if (typeof id !== 'string' || !text(id)) throw new DagRunError('BAD_INPUT', '授权动作必须是字符串');
-      if (DENIED_ACTIONS.includes(id)) {
-        throw new DagRunError('ACTION_DENIED', `授权动作 "${id}" 属于永远拒绝范围（deploy/release/生产写入/凭据/对外通信），出现即整体拒绝`);
+      if (HIGH_RISK_ACTIONS.includes(id)) {
+        throw new DagRunError('ACTION_DENIED', `授权动作 "${id}" 是高风险动作，须经计划声明并单独勾选，不能混入标准动作`);
       }
       if (!ALLOWED_ACTIONS.includes(id)) throw new DagRunError('ACTION_NOT_ALLOWED', `授权动作 "${id}" 不在白名单，整体拒绝`);
     }
@@ -233,9 +321,9 @@ export function createRunStore({ directory } = {}) {
       // 非终态 run 即拒绝创建，与 planId 是否相同无关；DAG 内并行/重派走 createAttempt，不受此限。
       const active = listRuns().find(run => run.project === input.project && !isTerminal(run.status));
       if (active) throw new DagRunError('CONFLICT', `项目 ${input.project} 已存在活跃 run ${active.runId}（planId ${active.planId}，状态 ${active.status}），每项目最多一个活跃 DAG，409`);
-      const snapshot = buildAuthorizationSnapshot(input);
+      const snapshot = buildGrantRecord({ ...input, planOptionalActions: input.planOptionalActions ?? input.selectedOptionalActions ?? [] });
       return saveRun({
-        schema: 1, runId: newRunId(), project: text(input.project), planId: text(input.planId),
+        schema: GRANT_SCHEMA, runId: newRunId(), project: text(input.project), planId: text(input.planId),
         planDigest: text(input.planDigest), nodeId: text(input.nodeId), role: input.role,
         generation: 1, attempt: 1, status: 'queued', slot: null, expectedAdvanceId: null,
         failures: 0, outcome: null, prs: [], appliedAdvance: null, supersededBy: null,
@@ -435,6 +523,29 @@ export function createRunStore({ directory } = {}) {
         if (existing) return existing; // 幂等登记
         const pr = { prUrl, nodeId, state: 'open', registeredAt: iso() };
         return saveRun({ ...run, prs: [...(run.prs || []), pr] }).prs.find(entry => entry.prUrl === prUrl);
+      });
+    },
+
+    // 授权记录摘要不一致的可诊断重建：仅当 schema2 字段结构完整才重算 digest（剥离越权写入），
+    // 重写 run.json 后恢复可读写，不永久砖化 DAG。结构损坏的记录拒绝重建（fail closed）。
+    rebuildGrant(runId) {
+      return withRunLock(runId, () => {
+        const target = runFile(text(runId));
+        let raw;
+        try { raw = JSON.parse(readFileSync(target, 'utf8')); }
+        catch (error) { throw new DagRunError('CORRUPT_STATE', `run 状态文件损坏，无法重建：${error.message}`); }
+        const diag = grantDiagnostic(raw.authorizationSnapshot);
+        if (diag.intact) return { rebuilt: false, authorizationSnapshot: raw.authorizationSnapshot };
+        if (!diag.repairable) throw new DagRunError('GRANT_UNREPAIRABLE', diag.message);
+        const grant = raw.authorizationSnapshot;
+        const standardActions = [...new Set(grant.standardActions)].sort();
+        const optionalGrants = [...new Set(grant.optionalGrants)].filter(a => HIGH_RISK_ACTIONS.includes(a)).sort();
+        const allowedActions = [...new Set([...standardActions, ...optionalGrants])].sort();
+        const rebuilt = { ...grant, standardActions, optionalGrants, allowedActions, revision: grant.revision ?? 1 };
+        delete rebuilt.digest;
+        rebuilt.digest = snapshotDigest(rebuilt);
+        const saved = saveRun({ ...raw, authorizationSnapshot: rebuilt });
+        return { rebuilt: true, authorizationSnapshot: saved.authorizationSnapshot };
       });
     },
 

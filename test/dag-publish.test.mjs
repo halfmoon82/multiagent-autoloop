@@ -113,3 +113,16 @@ test('merge：fetch 失败即报错，不回退本地 baseRef tip', async () => 
   const realGit = t.rt.git; t.rt.git = async (cwd, args) => { if (args[0] === 'fetch') throw new Error('network down'); return realGit(cwd, args); };
   await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), /network down/);
 });
+
+// ---- #67 execution-grants：执行层拒绝未选高风险动作 ----
+import { buildGrantRecord as buildGrantRecordForPub, canExecuteAction as canExecForPub } from '../src/dag-run.mjs';
+
+test('requireOptionalGrant：执行层按授权记录拒绝未选高风险动作，即使快照有该目录项', async () => {
+  const t = await boot();
+  // 标准动作授权记录 default 无 deploy，执行层拒绝
+  assert.equal(canExecForPub(t.store.getRun(t.root.runId).authorizationSnapshot, 'deploy').reason, 'HIGH_RISK_NOT_SELECTED');
+  assert.throws(() => t.pub.requireOptionalGrant('deploy', '部署'), /未选高风险动作|拒绝/);
+  // 选中后执行层放行
+  const grant = buildGrantRecordForPub({ project: 'p', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], selectedOptionalActions: ['deploy'], planOptionalActions: ['deploy'] });
+  assert.equal(canExecForPub(grant, 'deploy').ok, true);
+});

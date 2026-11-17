@@ -1,11 +1,11 @@
 // DAG 页面控制器：拉取 /api/dag-runs、渲染总览分组/详情/历史，授权确认与取消/释放槽位。
-import { renderDagOverview, renderDagDetail, renderDagHistory, isDagActive } from './dag-views.mjs';
+import { renderDagOverview, renderDagDetail, renderDagHistory, isDagActive, renderOptionalGrants } from './dag-views.mjs';
 import { renderAuthorize, renderPreflight } from './dag-authorize.mjs';
 import { stableReplace } from './dom-stable.mjs';
 
 export function initDag({ api, notify, showView, getProjects }) {
   const $ = id => document.getElementById(id);
-  const s = { details: [], loaded: false, failed: '', loading: false, selectedRun: '', selectedNode: '', slotNote: {}, historyOpen: false, plan: null, planError: '', preflight: null, preflightError: '', checked: false, submitting: false, created: null, authProject: '' };
+  const s = { details: [], loaded: false, failed: '', loading: false, selectedRun: '', selectedNode: '', slotNote: {}, historyOpen: false, plan: null, planError: '', preflight: null, preflightError: '', checked: false, submitting: false, created: null, authProject: '', optionalGrants: [] };
   const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) });
 
   function banner() {
@@ -32,8 +32,10 @@ export function initDag({ api, notify, showView, getProjects }) {
     const feedbackKey = s.submitting ? 'submitting' : s.planError ? `plan:${s.planError}` : s.preflightError ? `pre:${s.preflightError}` : '';
     const force = s.submitting === true || (feedbackKey !== '' && feedbackKey !== s.lastAuthFeedback);
     s.lastAuthFeedback = feedbackKey;
+    const bodyNodes = [renderAuthorize(s.plan, { checked: s.checked, submitting: s.submitting, error: s.planError, created: s.created, blocked: s.preflight && !s.preflight.checks.every(c => c.ok) ? '接入预检未全部通过，暂不能创建 DAG。' : '' })];
+    if (s.plan) bodyNodes.push(renderOptionalGrants(s.plan, { selected: s.optionalGrants }));
     stableReplace('authorize-preflight', [renderPreflight(s.preflight, { error: s.preflightError })], { force });
-    stableReplace('authorize-body', [renderAuthorize(s.plan, { checked: s.checked, submitting: s.submitting, error: s.planError, created: s.created, blocked: s.preflight && !s.preflight.checks.every(c => c.ok) ? '接入预检未全部通过，暂不能创建 DAG。' : '' })], { force });
+    stableReplace('authorize-body', bodyNodes, { force });
   }
   function syncProjects() {
     const select = $('authorize-project'); const projects = getProjects();
@@ -55,7 +57,7 @@ export function initDag({ api, notify, showView, getProjects }) {
   }
   async function loadPlan() {
     const project = $('authorize-project').value; const planId = $('authorize-plan').value.trim();
-    s.checked = false; s.created = null; s.planError = ''; s.preflightError = '';
+    s.checked = false; s.created = null; s.planError = ''; s.preflightError = ''; s.optionalGrants = [];
     if (!project || !planId) { s.plan = null; s.planError = '请选择项目并填写计划编号'; renderAuth(); return; }
     s.authProject = project;
     const [plan, pre] = await Promise.allSettled([api(`/api/dag-plan?project=${encodeURIComponent(project)}&planId=${encodeURIComponent(planId)}`), api(`/api/dag-preflight?project=${encodeURIComponent(project)}`)]);
@@ -67,7 +69,7 @@ export function initDag({ api, notify, showView, getProjects }) {
     if (!s.plan || !s.checked || s.submitting) return;
     s.submitting = true; s.planError = ''; renderAuth();
     try {
-      s.created = await post('/api/dag-runs', { project: s.plan.project, planId: s.plan.planId, planDigest: s.plan.planDigest, confirm: true, confirmedActionIds: s.plan.allowedActions });
+      s.created = await post('/api/dag-runs', { project: s.plan.project, planId: s.plan.planId, planDigest: s.plan.planDigest, confirm: true, confirmedActionIds: s.plan.allowedActions, selectedOptionalActions: s.optionalGrants });
       notify('已创建 DAG，授权快照由服务端生成。'); s.selectedRun = s.created.runId; await refreshDag(); showView('dag');
     } catch (error) { s.planError = error.message; }
     finally { s.submitting = false; renderAuth(); }
@@ -94,7 +96,14 @@ export function initDag({ api, notify, showView, getProjects }) {
       if (find('[data-dag-authorize]')) { await authorize(); }
     } catch (error) { notify(error.message); }
   });
-  document.addEventListener('change', event => { if (event.target.id === 'authorize-check') { s.checked = event.target.checked; renderAuth(); } });
+  document.addEventListener('change', event => {
+    if (event.target.id === 'authorize-check') { s.checked = event.target.checked; renderAuth(); return; }
+    const grant = event.target.dataset?.optionalGrant;
+    if (grant) {
+      s.optionalGrants = event.target.checked ? [...new Set([...s.optionalGrants, grant])] : s.optionalGrants.filter(id => id !== grant);
+      renderAuth();
+    }
+  });
   renderAuth(); renderAll();
   return { refreshDag };
 }

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   createRunStore, ALLOWED_ACTIONS, DENIED_ACTIONS, MAX_SLOTS, MAX_ATTEMPTS,
-  transition, isTerminal, evaluateSlotRelease, snapshotDigest, TERMINAL_STATUSES,
+  transition, isTerminal, evaluateSlotRelease, snapshotDigest, TERMINAL_STATUSES, ROOT_NODE,
 } from '../src/dag-run.mjs';
 
 const setup = () => createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-run-')) });
@@ -326,7 +326,7 @@ test('run.json 原子落盘：注入目录、可重读、无临时残留、损�
 
 // ---- PR #44 返工回归（reviewer P1-1 / P2-1 / P2-3 / P3）----
 import { writeFileSync as fsWrite } from 'node:fs';
-import { canClosePr, buildAuthorizationSnapshot } from '../src/dag-run.mjs';
+import { canClosePr, buildAuthorizationSnapshot, buildGrantRecord, canExecuteAction, grantDiagnostic, reconcileGrant, snapshotDigest as sd, GRANT_SCHEMA, HIGH_RISK_ACTIONS, HIGH_RISK_ACTION_INFO } from '../src/dag-run.mjs';
 
 test('P1-1 授权快照被篡改（allowedActions 加项）后 digest 校验失败，publish 与读取 fail closed', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'dag-run-tamper-'));
@@ -440,4 +440,119 @@ test('终态复活白名单：blocked_unknown 满 3 次必须 change-approach；
   doneStore.advance(doneRun.runId, validReceipt(doneStore.getRun(doneRun.runId)));
   assert.equal(doneStore.getRun(doneRun.runId).status, 'done');
   assert.equal(doneStore.createAttempt(doneRun.runId).attempt, 2, 'done（含 rework 落 done）维持既有重派口径');
+});
+
+// ---- #67 execution-grants：轻量执行授权记录、可选高风险动作、可重建 ----
+
+const HIGH_RISK = ['deploy', 'release', 'production-write', 'credentials', 'external-communication'];
+
+test('授权记录 schema2：标准动作自动继承、高风险动作默认关闭，digest 覆盖 actionIds', () => {
+  const grant = buildGrantRecord({ project: ' demo ', planDigest: ' d ', confirmedActionIds: ['worktree', 'run-tests'] });
+  assert.equal(grant.schema, 2);
+  assert.equal(grant.project, 'demo');
+  assert.equal(grant.planDigest, 'd');
+  assert.deepEqual(grant.standardActions, ['run-tests', 'worktree']);
+  assert.deepEqual(grant.optionalGrants, []);
+  assert.deepEqual(grant.allowedActions, ['run-tests', 'worktree']);
+  assert.equal(grant.revision, 1);
+  assert.match(grant.digest, /^[a-f0-9]{64}$/);
+  assert.equal(sd(grant), grant.digest, 'digest 必须覆盖授权记录字段且稳定');
+
+  // 高风险动作默认关闭：未进入 allowedActions，执行层拒绝
+  assert.equal(canExecuteAction(grant, 'deploy').ok, false);
+  assert.equal(canExecuteAction(grant, 'deploy').reason, 'HIGH_RISK_NOT_SELECTED');
+  // 摘要变化必须改变 digest（动作范围扩大形成新修订的数据基础）
+  const wider = buildGrantRecord({ project: 'demo', planDigest: 'd', confirmedActionIds: ['worktree', 'run-tests', 'create-pr'] });
+  assert.notEqual(wider.digest, grant.digest);
+});
+
+test('可选高风险动作：显式勾选且计划包含才生效，每项带产品语言收益/代价', () => {
+  const grant = buildGrantRecord({
+    project: 'demo', planDigest: 'd',
+    confirmedActionIds: [...ALLOWED_ACTIONS],
+    selectedOptionalActions: ['deploy'],
+    planOptionalActions: ['deploy', 'release'],
+  });
+  assert.deepEqual(grant.optionalGrants, ['deploy']);
+  assert.ok(grant.allowedActions.includes('deploy'), '勾选且计划包含的高风险动作进入 allowedActions');
+  assert.ok(!grant.allowedActions.includes('release'), '未勾选的高风险动作不进入');
+  const decision = canExecuteAction(grant, 'deploy');
+  assert.equal(decision.ok, true);
+  assert.ok(decision.benefit && decision.cost, '每项高风险动作必须带产品语言收益与代价');
+  const labels = HIGH_RISK_ACTION_INFO;
+  assert.match(labels.deploy.benefit, /\S/);
+  assert.match(labels.deploy.cost, /\S/);
+});
+
+test('可选高风险动作白名单：选择未列入计划或不在目录的动作整体拒绝', () => {
+  assert.throws(() => buildGrantRecord({ project: 'p', planDigest: 'd', confirmedActionIds: ['worktree'], selectedOptionalActions: ['deploy'], planOptionalActions: [] }), /计划/);
+  assert.throws(() => buildGrantRecord({ project: 'p', planDigest: 'd', confirmedActionIds: ['worktree'], selectedOptionalActions: ['rm-rf'], planOptionalActions: ['rm-rf'] }), /高风险目录/);
+});
+
+test('createRun 生成 schema2 授权记录，默认无高风险动作；摘要稳定', () => {
+  const store = setup();
+  const run = store.createRun(baseInput());
+  assert.equal(run.authorizationSnapshot.schema, 2);
+  assert.deepEqual(run.authorizationSnapshot.optionalGrants, []);
+  assert.deepEqual(run.authorizationSnapshot.allowedActions, [...ALL_ACTIONS].sort());
+  assert.equal(run.authorizationSnapshot.digest, sd(run.authorizationSnapshot));
+});
+
+test('授权记录继承：换打法/new attempt 逐字继承不重新授权，范围扩大才升 revision', () => {
+  const store = setup();
+  const root = store.createRun(baseInput({ project: 'p', planDigest: 'd', selectedOptionalActions: ['deploy'], planOptionalActions: ['deploy'] }));
+  const grant = root.authorizationSnapshot;
+  assert.equal(grant.schema, 2);
+  assert.deepEqual(grant.optionalGrants, ['deploy']);
+  assert.ok(grant.allowedActions.includes('deploy'));
+  const next = store.createAttempt(root.runId, { reason: 'change-approach' });
+  assert.deepEqual(next.authorizationSnapshot, grant, '换打法不重新授权、不升 revision');
+  // 未扩大范围：不形成新修订
+  const same = reconcileGrant(grant, { confirmedActionIds: [...ALLOWED_ACTIONS], selectedOptionalActions: ['deploy'], planOptionalActions: ['deploy'] });
+  assert.equal(same.changed, false);
+  // 扩大动作范围：revision+1
+  const wider = reconcileGrant(grant, { confirmedActionIds: [...ALLOWED_ACTIONS], selectedOptionalActions: ['deploy', 'release'], planOptionalActions: ['deploy', 'release'] });
+  assert.equal(wider.changed, true);
+  assert.equal(wider.grant.revision, grant.revision + 1);
+  assert.ok(wider.grant.allowedActions.includes('release'));
+});
+
+test('摘要不一致给可诊断错误并可重建，不永久砖化；无结构则不可重建', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'dag-grant-rebuild-'));
+  const store = createRunStore({ directory });
+  const run = store.createRun(baseInput());
+  const file = path.join(directory, `${run.runId}.json`);
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  raw.authorizationSnapshot.allowedActions.push('deploy'); // 篡改：签名不再匹配
+  fsWrite(file, JSON.stringify(raw));
+  const diag = grantDiagnostic(raw.authorizationSnapshot);
+  assert.equal(diag.intact, false);
+  const before = (() => { try { store.getRun(run.runId); return null; } catch (e) { return e; } })();
+  assert.ok(before && /授权记录摘要不一致|可重建/.test(before.message), '失败必须是可诊断错误且给出修复入口');
+  const rebuilt = store.rebuildGrant(run.runId);
+  assert.equal(rebuilt.rebuilt, true);
+  assert.deepEqual(rebuilt.authorizationSnapshot.allowedActions, [...ALL_ACTIONS].sort(), '重建剥离越权动作）；');
+  assert.equal(store.getRun(run.runId).status, 'queued', '重建后 DAG 不再砖化');
+  // 完全无结构的记录不可重建
+  const bad = grantDiagnostic({ digest: 'x' });
+  assert.equal(bad.repairable, false);
+});
+
+test('兼容读取旧快照格式（schema1）：digest 公式原样保留，只读验证不砖化', () => {
+  const legacy = { project: '/Volumes/Storage/auto调度', repo: null, mergeStrategy: 'squash',
+    planDigest: 'a491da735a05fc71cb976cb4256f7b4e5417b16439364f9e82e7af5d77f7d620',
+    allowedActions: ['close-superseded-pr', 'create-pr', 'independent-review', 'push-branch', 'rework-p0-p2', 'run-tests', 'squash-merge', 'worktree'],
+    createdAt: '2026-11-17T11:13:41.844Z' };
+  legacy.digest = sd(legacy);
+  assert.equal(legacy.digest, '7c764cada1d0eb51fd22af8b3eef5dceba4b441f01bf6c000334a1c98ce137a5', 'schema1 digest 必须逐字保持');
+  assert.equal(snapshotDigest(legacy), legacy.digest);
+  const directory = mkdtempSync(path.join(tmpdir(), 'dag-grant-legacy-'));
+  const store = createRunStore({ directory });
+  const raw = { schema: 1, runId: 'dagrun-mwklgr10-e4c17e57', project: legacy.project, planId: 'console-hub-native-and-card-routing',
+    planDigest: legacy.planDigest, nodeId: ROOT_NODE, role: 'dev', generation: 1, attempt: 1, status: 'queued',
+    failures: 0, prs: [], nodes: [], authorizationSnapshot: legacy, createdAt: legacy.createdAt, updatedAt: legacy.createdAt };
+  fsWrite(path.join(directory, `${raw.runId}.json`), JSON.stringify(raw));
+  assert.equal(store.getRun(raw.runId).status, 'queued', '旧 run 必须只读验证通过，不得砖化');
+  assert.equal(canExecuteAction(store.getRun(raw.runId).authorizationSnapshot, 'worktree').ok, true);
+  assert.equal(canExecuteAction(store.getRun(raw.runId).authorizationSnapshot, 'deploy').ok, false);
 });

@@ -310,3 +310,58 @@ test('GET /api/dag-plan 无原生计划也无 vibe 计划时返回可读 400', a
     assert.match(body.error, /vibe/);
   } finally { await close(t.server); }
 });
+
+// ---- #67 execution-grants：高风险动作需计划声明且明确选择 ----
+
+test('GET /api/dag-plan 返回可选高风险动作（含收益/代价）；deploy 默认关闭', async () => {
+  const t = setupWithOptions({ optionalHighRiskActions: ['deploy'] }); const url = await listen(t.server);
+  try {
+    const res = await fetch(`${url}/api/dag-plan?project=${encodeURIComponent(t.project)}&planId=plan-one`);
+    assert.equal(res.status, 200);
+    const plan = await res.json();
+    assert.ok(Array.isArray(plan.optionalActions));
+    const deploy = plan.optionalActions.find(a => a.id === 'deploy');
+    assert.ok(deploy, '计划须声明可用的可选高风险动作');
+    assert.match(deploy.benefit, /\S/); assert.match(deploy.cost, /\S/);
+    assert.equal(deploy.selectedByDefault, false, '高风险动作默认关闭');
+  } finally { await close(t.server); }
+});
+
+test('POST /api/dag-runs 只有计划声明且勾选的高风险动作才写入授权记录；未声明/未勾选则拒绝或关闭', async () => {
+  const t = setup(); const url = await listen(t.server);
+  try {
+    // 未勾选 deploy → 授权记录无高风险动作
+    const plain = await (await post(url, '/api/dag-runs', t.payload())).json();
+    assert.deepEqual(plain.authorizationSnapshot.optionalGrants, []);
+    assert.equal(plain.authorizationSnapshot.allowedActions.includes('deploy'), false);
+  } finally { await close(t.server); }
+
+  // 勾选未声明的 release：计划未声明 → 400；勾选声明的 deploy → 成功写入
+  const t2 = setupWithOptions({ optionalHighRiskActions: ['deploy'] }); const url2 = await listen(t2.server);
+  try {
+    const denied = await post(url2, '/api/dag-runs', t2.payload({ selectedOptionalActions: ['release'] }));
+    assert.equal(denied.status, 400);
+    assert.match((await denied.json()).error, /计划/);
+    const ok = await (await post(url2, '/api/dag-runs', t2.payload({ selectedOptionalActions: ['deploy'] }))).json();
+    assert.deepEqual(ok.authorizationSnapshot.optionalGrants, ['deploy']);
+    assert.equal(ok.authorizationSnapshot.allowedActions.includes('deploy'), true);
+  } finally { await close(t2.server); }
+});
+
+function setupWithOptions(planExtra, evidence = async () => ({})) {
+  const root = mkdtempSync(path.join(tmpdir(), 'dag-api-opt-'));
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'dag-api-opt-proj-'));
+  const project = path.join(projectRoot, 'demo'); mkdirSync(path.join(project, '.git'), { recursive: true });
+  const dir = path.join(project, '.vibe', 'plans', 'plan-one'); mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, 'plan.json'), JSON.stringify({ plan_id: 'plan-one', decisions: [], ...planExtra }));
+  writeFileSync(path.join(dir, 'nodes.json'), JSON.stringify(nodes));
+  writeFileSync(path.join(dir, 'product-spec.input.json'), JSON.stringify({ decisions: [] }));
+  writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ rules: [] }));
+  const planDigest = createPlanDigest({ productSpec: { decisions: [] }, plan: { plan_id: 'plan-one', decisions: [], ...planExtra }, nodes });
+  const store = createRunStore({ directory: path.join(root, 'dag-runs') });
+  const dagService = createDagService({ root, store, hubEvidence: evidence });
+  const sessions = { async start() { return { id: 's' }; }, dispose() {} };
+  const server = createConsoleServer({ hubUrl: 'http://127.0.0.1:1', ownerKey: 'k', host: '127.0.0.1', root, rulesFile: path.join(root, 'rules.json'), projectRoots: [projectRoot], dagService }, sessions);
+  const payload = over => JSON.stringify({ project, planId: 'plan-one', planDigest, confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, ...over });
+  return { server, project, store, root, payload, planDigest };
+}

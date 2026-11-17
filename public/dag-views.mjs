@@ -7,6 +7,40 @@ const TERMINAL = new Set(['done', 'cancelled', 'abandoned', 'blocked_unknown']);
 export const isDagActive = run => !TERMINAL.has(run?.status);
 const safeHref = url => /^https:\/\//.test(String(url || '')) ? url : '';
 
+// 授权确认页的「可选高风险动作」：默认关闭，逐项写明产品语言的收益与代价，勾选后才随计划生效。
+export function renderOptionalGrants(plan, { selected = [] } = {}) {
+  const section = el('section', 'panel authorization-section optional-grants');
+  section.append(el('h2', '', '可选高风险动作（默认关闭）'));
+  section.append(el('p', 'subtle', '以下动作默认不执行；只有逐项勾选并随本计划确认后才写入授权记录。'));
+  const list = el('div', 'permission-grid');
+  for (const option of plan?.optionalActions || []) {
+    const label = el('label', 'optional-grant');
+    const box = el('input'); box.type = 'checkbox'; box.checked = selected.includes(option.id);
+    box.dataset.optionalGrant = option.id;
+    const text = el('span');
+    text.append(el('strong', '', option.title || option.id));
+    text.append(el('small', 'grant-benefit', `收益：${option.benefit || '未提供'}`));
+    text.append(el('small', 'grant-cost', `代价：${option.cost || '未提供'}`));
+    label.append(box, text); list.append(label);
+  }
+  if (!(plan?.optionalActions || []).length) list.append(el('p', 'empty', '本计划未声明可选高风险动作。'));
+  section.append(list);
+  return section;
+}
+
+// DAG 详情的轻量授权记录：标准动作自动继承 + 已选高风险动作 + 摘要与修订号。
+export function renderGrantRecord(grant) {
+  const panel = el('section', 'panel side-card grant-record'); panel.id = 'dag-grant-record';
+  const head = el('div', 'panel-heading'); head.append(el('h3', '', '执行授权记录')); panel.append(head);
+  if (!grant) { panel.append(el('p', 'side-copy', '暂无授权记录。')); return panel; }
+  panel.append(el('p', 'side-copy', `修订 #${grant.revision ?? 1} · 摘要 ${String(grant.digest || '').slice(0, 12)}`));
+  panel.append(el('p', 'side-copy', `标准动作（自动继承 ${(grant.standardActions || []).length} 项）：${(grant.standardActions || []).join('、') || '无'}`));
+  const optional = grant.optionalGrants || [];
+  panel.append(el('p', 'side-copy', `可选高风险动作：${optional.length ? optional.map(id => HIGH_RISK_TITLE[id] || id).join('、') : '均未开启（默认关闭）'}`));
+  return panel;
+}
+const HIGH_RISK_TITLE = { deploy: '部署', release: '发布', 'production-write': '生产数据写入', credentials: '凭据', 'external-communication': '对外通信' };
+
 function badge(text, kind = '') { return el('span', `status ${kind}`.trim(), text); }
 function planTitle(detail) { return detail.run.planId || detail.run.runId; }
 
@@ -108,7 +142,7 @@ export function renderDagDetail(detail, { selectedNode = '', slotNote = {} } = {
     quarantine.append(label, release);
     if (slotNote[item.slot]) quarantine.append(el('p', 'side-copy', slotNote[item.slot]));
   }
-  side.append(quarantine);
+  side.append(quarantine, renderGrantRecord(run.authorizationSnapshot));
   layout.append(wavesPanel, side); root.append(heading, metrics, usage, layout); return root;
 }
 

@@ -1,7 +1,7 @@
 // publish（无模型）：commit-pr / verify / merge / baseline。只执行授权快照内动作，幂等；
 // 永远不做 deploy/release/凭据/对外通信。gh 与测试执行器由调用方注入（CI 离线用假实现）。
 import { normalizeProjectPath } from './dag.mjs';
-import { canClosePr } from './dag-run.mjs';
+import { canClosePr, canExecuteAction } from './dag-run.mjs';
 
 export class PublishError extends Error {
   constructor(message, code = 'PUBLISH_ERROR') { super(message); this.name = 'PublishError'; this.code = code; }
@@ -44,6 +44,13 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, baseRef = 
   };
 
   return {
+    // 执行层高风险动作门禁：不只靠 UI，须按授权记录逐项判定（显式选中且摘要一致才放行）。
+    requireOptionalGrant(action, why = '执行') {
+      const root = store.getRun(rootRunId); // 读取时已校验摘要一致性
+      const decision = canExecuteAction(root.authorizationSnapshot, action);
+      if (!decision.ok) throw new PublishError(`${why}：未选高风险动作 "${action}"（${decision.reason}），执行层拒绝`, 'HIGH_RISK_NOT_GRANTED');
+      return decision;
+    },
     async commitPr({ nodeId, branch, worktree }) {
       const root = need(['push-branch', 'create-pr'], 'commit-pr');
       const scopes = scopesOf(root, nodeId);
