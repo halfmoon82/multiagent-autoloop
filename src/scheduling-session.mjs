@@ -457,20 +457,22 @@ export class SchedulingSessionManager {
     for (const record of this.sessions.values()) this.#destroyRecord(record);
   }
 
-  // 设计会话护栏：set_mode(read-only) → set_config_option(collaboration_mode=plan)，逐个核验返回的 configOptions。
+  // 设计会话护栏：read-only（经 #applySandboxMode）+ 原生 Plan Mode，逐个核验返回的 configOptions。
   async #applyDesignGuards(record) {
-    const mode = await record.connection.agent.request(methods.agent.session.setMode, { sessionId: record.sessionId, modeId: 'read-only' });
-    const modeOptions = Array.isArray(mode?.configOptions) ? mode.configOptions : [];
-    if (!modeOptions.some(option => option.id === 'mode' && option.currentValue === 'read-only')) throw new Error('无法将会话设置为只读模式');
+    await this.#applySandboxMode(record, 'read-only');
     const plan = await record.connection.agent.request(methods.agent.session.setConfigOption, { sessionId: record.sessionId, configId: 'collaboration_mode', value: 'plan' });
     const planOptions = Array.isArray(plan?.configOptions) ? plan.configOptions : [];
     if (!planOptions.some(option => option.id === 'collaboration_mode' && option.currentValue === 'plan')) throw new Error('无法将协作模式设置为 plan');
   }
 
   // 沙箱模式机械化：调度=read-only，普通=workspace-write；设置并核验失败即拒绝创建，不降级。
+  // codex-acp@2.6.0 的 session/set_mode 成功响应按协议是空对象（SDK 声明 emptyObjectResponse），无法从响应自核验；
+  // 故随后用等价的 session/set_config_option(configId='mode') 复读——适配器内同样走 applyModeChange，幂等——
+  // 并核验其响应 configOptions 中 mode 的落账值；set_mode 或复读核验任一失败即拒绝创建，不降级。
   async #applySandboxMode(record, modeId) {
-    const mode = await record.connection.agent.request(methods.agent.session.setMode, { sessionId: record.sessionId, modeId });
-    const options = Array.isArray(mode?.configOptions) ? mode.configOptions : [];
+    await record.connection.agent.request(methods.agent.session.setMode, { sessionId: record.sessionId, modeId });
+    const applied = await record.connection.agent.request(methods.agent.session.setConfigOption, { sessionId: record.sessionId, configId: 'mode', value: modeId });
+    const options = Array.isArray(applied?.configOptions) ? applied.configOptions : [];
     if (!options.some(option => option.id === 'mode' && option.currentValue === modeId)) throw new Error(`无法将会话设置为 ${modeId} 模式`);
   }
 

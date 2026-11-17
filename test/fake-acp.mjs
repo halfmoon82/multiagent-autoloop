@@ -4,7 +4,7 @@ const line = value => `${JSON.stringify(value)}\n`;
 
 // 最小假 ACP 适配器：首个 prompt 返回后依次下发 permissions 中的 session/request_permission，
 // 并按 id 收集控制台的裁决（outcomes[id]）。
-export function fakeAcp({ permissions = [], updates = [], failSetMode = false } = {}) {
+export function fakeAcp({ permissions = [], updates = [], failSetMode = false, modeMismatch = false } = {}) {
   const requests = [];
   const outcomes = {};
   const stdin = new PassThrough(); const stdout = new PassThrough(); const stderr = new PassThrough();
@@ -21,10 +21,12 @@ export function fakeAcp({ permissions = [], updates = [], failSetMode = false } 
       if (!message.method) { if (message.result) outcomes[message.id] = message.result.outcome; continue; }
       if (message.method === 'initialize') respond(message, { agentInfo: { name: 'fake-codex' }, agentCapabilities: {} });
       else if (message.method === 'session/new') respond(message, { sessionId: 'fake-session' });
+      // 对齐 @agentclientprotocol/codex-acp@2.6.0 真实行为：set_mode 成功响应是空对象，configOptions 只在 set_config_option 响应里。
       else if (message.method === 'session/set_mode') {
         if (failSetMode) stdout.write(line({ jsonrpc: '2.0', id: message.id, error: { code: -32603, message: 'mode unavailable' } }));
-        else respond(message, { configOptions: [{ id: 'mode', currentValue: message.params.modeId }] });
-      } else if (message.method === 'session/set_config_option') respond(message, { configOptions: [{ id: message.params.configId, currentValue: message.params.value }] });
+        else respond(message, {});
+      // modeMismatch：模拟适配器落账值与请求值不一致（如漂移或被改写），用于锁住复读核验的 fail-closed 分支。
+      } else if (message.method === 'session/set_config_option') respond(message, { configOptions: [{ id: message.params.configId, currentValue: message.params.configId === 'mode' && modeMismatch ? 'workspace-write' : message.params.value }] });
       else if (message.method === 'session/prompt') {
         setTimeout(() => {
           updates.forEach(update => stdout.write(line({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'fake-session', update } })));
