@@ -7,13 +7,14 @@ import path from 'node:path';
 import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
 import { createSlotRuntime } from '../src/dag-slots.mjs';
 import { createPublisher, PublishError } from '../src/dag-publish.mjs';
+import { designContractDigest } from '../src/design-baseline.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
-async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign } = {}) {
+async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false } = {}) {
   const { project, remote } = makeRepo();
   const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-pub-')) });
-  const root = store.createRun({ project, planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), node('b', ['src/b.mjs'])], designBaseline });
+  const root = store.createRun({ project, planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [{ ...node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), contract: { files: designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'], ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline });
   const rt = createSlotRuntime({ project, runId: root.runId });
   await rt.ensureSlots();
   await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
@@ -134,4 +135,81 @@ test('commitPr：设计清单、批准记录和参考产物始终只读，即使
   t.write('docs/design/demo/design-manifest.json', 'changed\n');
   await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'DESIGN_BASELINE_READONLY');
   assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+const uiDesign = () => ({
+  designDigest: 'a'.repeat(64), manifestPath: 'docs/design/demo/design-manifest.json',
+  manifest: { schema: 1, designId: 'demo', artifacts: [{ path: 'docs/design/demo/reference.png', sha256: 'b'.repeat(64) }], surfaces: [{ id: 'overview', route: '/', viewports: ['1440x900'], states: ['normal'], interactions: ['open'], referencePaths: ['docs/design/demo/reference.png'] }] },
+  readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png'],
+});
+const evidenceFor = (root, commit, over = {}) => ({
+  commit, designDigest: root.designBaseline.designDigest,
+  contractDigest: designContractDigest({ designDigest: root.designBaseline.designDigest, contract: root.nodes[0].contract.design }),
+  checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }], ...over,
+});
+
+test('verify：非 UI 节点完全不调用设计 verifier', async () => {
+  let calls = 0;
+  const t = await boot({ verifyDesign: async () => { calls++; throw new Error('must not run'); } });
+  t.write('src/a.mjs', 'x\n'); await t.pub.commitPr(t.ctx);
+  const result = await t.pub.verify({ ...t.ctx, commit: 'sha' });
+  assert.equal(result.ok, true); assert.equal(calls, 0);
+  assert.equal(result.designEvidence, undefined);
+});
+
+test('verify：UI 节点只跑定向 checks，visualDiffs 默认不形成硬失败', async () => {
+  const designBaseline = uiDesign(); let received;
+  const verifyDesign = async input => {
+    received = input;
+    return { ok: true, evidence: { ...evidenceFor(input.designBaseline ? { designBaseline, nodes: [{ contract: { design: input.contract } }] } : null, input.commit), visualDiffs: [{ surfaceId: 'overview', ok: false, note: 'review-only' }] } };
+  };
+  const t = await boot({ designBaseline, ui: true, verifyDesign });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
+  const result = await t.pub.verify({ ...t.ctx, commit: pr.commit });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(received.contract.surfaceIds[0], 'overview');
+  assert.equal(result.designEvidence.visualDiffs[0].ok, false);
+});
+
+test('verify：UI 缺 verifier 属设施错误；定向断言失败才返回实现失败', async () => {
+  const missing = await boot({ designBaseline: uiDesign(), ui: true });
+  missing.write('src/a.mjs', 'x\n'); await missing.pub.commitPr(missing.ctx);
+  await assert.rejects(missing.pub.verify({ ...missing.ctx, commit: 'sha' }), error => error.code === 'DESIGN_VERIFIER_UNAVAILABLE');
+  const failing = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async input => ({ ok: false, evidence: evidenceFor({ designBaseline: uiDesign(), nodes: [{ contract: { design: input.contract } }] }, input.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] }) }) });
+  failing.write('src/a.mjs', 'x\n'); await failing.pub.commitPr(failing.ctx);
+  const result = await failing.pub.verify({ ...failing.ctx, commit: 'sha' });
+  assert.equal(result.ok, false); assert.equal(result.designEvidence.checks[0].ok, false);
+});
+
+test('merge：UI 证据必须与已审 commit 和根 designDigest 匹配；merge 本身不重跑验证', async () => {
+  let verifyCalls = 0;
+  const designBaseline = uiDesign();
+  const t = await boot({ designBaseline, ui: true, verifyDesign: async input => { verifyCalls++; return { ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit) }; } });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), error => error.code === 'DESIGN_EVIDENCE_MISSING');
+  const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit);
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, designDigest: 'c'.repeat(64) } }), error => error.code === 'DESIGN_EVIDENCE_MISMATCH');
+  const out = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence });
+  assert.ok(out.mergeCommit); assert.equal(verifyCalls, 0, 'merge 不得重跑浏览器验证');
+});
+
+test('merge：失败 checks 即便身份匹配也不得合并', async () => {
+  const designBaseline = uiDesign();
+  const t = await boot({ designBaseline, ui: true, verifyDesign: async () => { throw new Error('not called'); } });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] });
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence }), error => error.code === 'DESIGN_EVIDENCE_FAILED');
+  assert.equal(t.gh.merged.length, 0);
+});
+
+test('verify：设计 verifier 造成的槽位变化同样被记录', async () => {
+  const designBaseline = uiDesign();
+  const verifyDesign = async input => {
+    writeFileSync(path.join(input.worktree, 'src', 'a.mjs'), 'verifier mutation\n');
+    return { ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit) };
+  };
+  const t = await boot({ designBaseline, ui: true, verifyDesign });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
+  const result = await t.pub.verify({ ...t.ctx, commit: pr.commit });
+  assert.equal(result.slotStateChanged, true);
 });

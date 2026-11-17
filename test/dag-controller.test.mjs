@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkNode, setup } from './dag-fakes.mjs';
+import { designContractDigest } from '../src/design-baseline.mjs';
 
 const six = () => ['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(id => mkNode(id));
 // 驱动一个节点从开发回执到 accepted（两个 tick）。
@@ -180,4 +181,44 @@ test('UI worker 收到冻结的设计摘要与定向合同，新稿对象变化�
   baseline.designDigest = 'c'.repeat(64);
   await s.ctl.tick();
   assert.match(s.hub.last('ui').prompt, /a{64}/, 'run 快照不得随外部新稿变化');
+});
+
+test('UI 证据丢失但 SHA 未变：自动补验并重新 review，不直接 merge', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => {
+    s.publisher.calls.push(['verify', input.nodeId]);
+    return {
+      ok: true, tests: { exitCode: 0 },
+      designEvidence: { commit: input.commit, designDigest: baseline.designDigest, contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }), checks: [{ ok: true }] },
+    };
+  };
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  assert.ok(s.hub.last('ui', 'review'));
+  assert.match(s.hub.last('ui', 'review').prompt, /设计验证证据/);
+  const snapshot = s.ctl.snapshot(); snapshot.nodes.ui.designEvidence = null;
+  s.store.updateRun(s.root.runId, { publish: { nodes: snapshot.nodes, approachChanges: snapshot.approachChanges } });
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.publisher.calls.filter(c => c[0] === 'verify').length, 2);
+  assert.equal(s.publisher.calls.some(c => c[0] === 'merge'), false);
+  assert.equal(s.runOf('ui', 'review').attempt, 2, '补验后必须重新独立审阅');
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.publisher.calls.filter(c => c[0] === 'merge').length, 1);
+});
+
+test('设计 runner 设施抛错不计 worker 失败，下一 tick 同 attempt 自动重试', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const s = setup([ui], { designBaseline: designBaseline() });
+  const originalVerify = s.publisher.verify; let fail = true;
+  s.publisher.verify = async input => {
+    if (fail) throw new Error('browser unavailable');
+    return { ok: true, tests: { exitCode: 0 }, designEvidence: { commit: input.commit, designDigest: 'a'.repeat(64), contractDigest: designContractDigest({ designDigest: 'a'.repeat(64), contract: ui.contract.design }), checks: [{ ok: true }] } };
+  };
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  assert.equal(s.runOf('ui', 'dev').attempt, 1);
+  assert.equal(s.runOf('ui', 'dev').failures, 0);
+  assert.match(s.ctl.snapshot().nodes.ui.lastError, /browser unavailable/);
+  fail = false; await s.ctl.tick();
+  assert.ok(s.hub.last('ui', 'review'));
+  assert.equal(s.runOf('ui', 'dev').attempt, 1);
 });

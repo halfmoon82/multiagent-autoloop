@@ -1,7 +1,7 @@
 // DAG 控制器：无模型，每次 tick 读 run.json → 推进节点 → 派发。只做授权快照内动作。
 // 依赖全部注入（store/hub/rt/wip/publisher），便于离线测试。
 import { readyNodes, validateDag } from './dag.mjs';
-import { assertNodeDesignSnapshot } from './design-baseline.mjs';
+import { assertNodeDesignSnapshot, designContractDigest } from './design-baseline.mjs';
 import { MAX_SLOTS, MAX_ATTEMPTS, QUARANTINE_AFTER_MS, isTerminal, ROOT_NODE, DagRunError } from './dag-run.mjs';
 import { seg } from './dag-slots.mjs';
 
@@ -71,6 +71,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       `设计合同：${JSON.stringify(node.contract.design)}`,
       '设计基线、参考图与验证器只读；如需改变设计语义，返回 DESIGN_CHANGE_REQUIRED，不得自行修改基线或阈值。',
     );
+    if (design && run.role === 'review') lines.push(`设计验证证据：${JSON.stringify(n.designEvidence ? { commit: n.designEvidence.commit, designDigest: n.designEvidence.designDigest, contractDigest: n.designEvidence.contractDigest, checks: n.designEvidence.checks, visualDiffs: n.designEvidence.visualDiffs || [] } : null)}`);
     return lines.join('\n');
   };
 
@@ -117,6 +118,16 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     n.state = 'dev';
   }
 
+  const designEvidenceCurrent = (root, id, n) => {
+    const node = root.nodes.find(item => item.id === id);
+    if (!node?.contract?.design) return true;
+    const evidence = n.designEvidence;
+    return Boolean(evidence && root.designBaseline
+      && evidence.commit === n.commit && evidence.designDigest === root.designBaseline.designDigest
+      && evidence.contractDigest === designContractDigest({ designDigest: root.designBaseline.designDigest, contract: node.contract.design })
+      && Array.isArray(evidence.checks) && evidence.checks.length && evidence.checks.every(check => check.ok));
+  };
+
   async function onDone(root, st, id, run) {
     const n = st.nodes[id];
     if (!SUCCESS.has(run.outcome)) return failure(root, st, id, run.role === 'dev' ? run : latest(root, id, 'dev'), `outcome:${run.outcome}`);
@@ -125,13 +136,23 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       const pr = await publisher.commitPr(ctx);
       store.registerPr(root.runId, id, pr.prUrl); n.prUrl = pr.prUrl; n.commit = pr.commit;
       const ver = await publisher.verify({ ...ctx, commit: pr.commit });
-      n.tests = ver.tests ?? null;
+      n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
       if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
       if (!ver.ok) return failure(root, st, id, run, 'verify-failed');
       n.state = 'review'; n.todo = { kind: 'review' }; return;
     }
     if (run.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'review'; n.blockedReason = 'review-changed-slot'; await releaseNodeSlot(root, st, id); return; }
-    const merged = await publisher.merge({ nodeId: id, prUrl: n.prUrl, commit: n.commit, runId: root.runId });
+    if (!designEvidenceCurrent(root, id, n)) {
+      // 同 SHA 证据丢失/失效：自动补验，并重新创建独立 review；不直接 merge，也不重新确认设计。
+      const dev = latest(root, id, 'dev');
+      const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, commit: n.commit };
+      const ver = await publisher.verify(ctx);
+      n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
+      if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
+      if (!ver.ok) return failure(root, st, id, dev, 'verify-failed');
+      n.todo = { kind: 'review' }; return;
+    }
+    const merged = await publisher.merge({ nodeId: id, prUrl: n.prUrl, commit: n.commit, runId: root.runId, evidence: n.designEvidence });
     store.markPrMerged(root.runId, n.prUrl, { mergeCommit: merged.mergeCommit });
     await publisher.baseline({ nodeId: id, mergeCommit: merged.mergeCommit });
     n.state = 'accepted'; n.mergeCommit = merged.mergeCommit;
