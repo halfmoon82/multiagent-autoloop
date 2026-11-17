@@ -18,6 +18,7 @@ const PUBLIC = path.join(MODULE_DIR, '..', 'public');
 const FILES = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']], ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/app.mjs', ['app.mjs', 'text/javascript; charset=utf-8']], ['/format.mjs', ['format.mjs', 'text/javascript; charset=utf-8']],
+  ['/dom-stable.mjs', ['dom-stable.mjs', 'text/javascript; charset=utf-8']],
   ['/status-sections.mjs', ['status-sections.mjs', 'text/javascript; charset=utf-8']],
   ['/views.mjs', ['views.mjs', 'text/javascript; charset=utf-8']], ['/rule-form.mjs', ['rule-form.mjs', 'text/javascript; charset=utf-8']],
   ['/dag-model.mjs', ['dag-model.mjs', 'text/javascript; charset=utf-8']], ['/dag-views.mjs', ['dag-views.mjs', 'text/javascript; charset=utf-8']], ['/dag-authorize.mjs', ['dag-authorize.mjs', 'text/javascript; charset=utf-8']], ['/dag-app.mjs', ['dag-app.mjs', 'text/javascript; charset=utf-8']], ['/dag.css', ['dag.css', 'text/css; charset=utf-8']],

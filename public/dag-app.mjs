@@ -1,6 +1,7 @@
 // DAG 页面控制器：拉取 /api/dag-runs、渲染总览分组/详情/历史，授权确认与取消/释放槽位。
 import { renderDagOverview, renderDagDetail, renderDagHistory, isDagActive } from './dag-views.mjs';
 import { renderAuthorize, renderPreflight } from './dag-authorize.mjs';
+import { stableReplace } from './dom-stable.mjs';
 
 export function initDag({ api, notify, showView, getProjects }) {
   const $ = id => document.getElementById(id);
@@ -16,17 +17,18 @@ export function initDag({ api, notify, showView, getProjects }) {
   }
   function renderAll() {
     const active = s.details.filter(d => isDagActive(d.run));
-    $('dag-overview-list').replaceChildren(...renderDagOverview(s.details));
+    // 全部走稳定替换：DAG 详情里有大量可复制的契约/摘要文本，轮询重建同样会打散选区
+    stableReplace('dag-overview-list', [...renderDagOverview(s.details)]);
     const current = s.details.find(d => d.run.runId === s.selectedRun) || active[0] || s.details[0];
     if (current) s.selectedRun = current.run.runId;
-    $('dag-detail').replaceChildren(...(current ? [renderDagDetail(current, { selectedNode: s.selectedNode, slotNote: s.slotNote })] : []));
+    stableReplace('dag-detail', current ? [renderDagDetail(current, { selectedNode: s.selectedNode, slotNote: s.slotNote })] : []);
     const history = renderDagHistory(s.details); history.querySelector('#dag-history-list').hidden = !s.historyOpen;
-    $('dag-history').replaceChildren(history);
+    stableReplace('dag-history', [history]);
     banner();
   }
   function renderAuth() {
-    $('authorize-preflight').replaceChildren(renderPreflight(s.preflight, { error: s.preflightError }));
-    $('authorize-body').replaceChildren(renderAuthorize(s.plan, { checked: s.checked, submitting: s.submitting, error: s.planError, created: s.created, blocked: s.preflight && !s.preflight.checks.every(c => c.ok) ? '接入预检未全部通过，暂不能创建 DAG。' : '' }));
+    stableReplace('authorize-preflight', [renderPreflight(s.preflight, { error: s.preflightError })]);
+    stableReplace('authorize-body', [renderAuthorize(s.plan, { checked: s.checked, submitting: s.submitting, error: s.planError, created: s.created, blocked: s.preflight && !s.preflight.checks.every(c => c.ok) ? '接入预检未全部通过，暂不能创建 DAG。' : '' })]);
   }
   function syncProjects() {
     const select = $('authorize-project'); const projects = getProjects();
