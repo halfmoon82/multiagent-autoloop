@@ -61,3 +61,13 @@ test('rejects DNS rebinding even when Host and Origin share an attacker domain',
     assert.equal(status, 403); assert.equal(hub.requests.length, 0);
   } finally { await close(server); await close(hub.server); }
 });
+
+test('retired dispatch_task routes are gone', async () => {
+  const { hub, server, url } = await setup();
+  try {
+    assert.equal((await fetch(`${url}/api/dispatch-tasks`)).status, 404);
+    assert.equal((await action(url, '/api/dispatch-tasks', { subject: 'task-one', project: '/tmp' })).status, 404);
+    assert.equal((await action(url, '/api/dispatch-tasks/x/cost', { tokens: 1 })).status, 404);
+    assert.equal(hub.requests.length, 0);
+  } finally { await close(server); await close(hub.server); }
+});
