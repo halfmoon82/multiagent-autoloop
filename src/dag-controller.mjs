@@ -137,7 +137,18 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     const prepBranch = role === 'dev' ? (newSlot || n.slot == null ? `${n.branch.replace(/-att[0-9a-z]+$/, '')}-att${stamp}` : n.branch) : `${n.branch}-rv${stamp}`;
     if (role === 'dev') n.branch = prepBranch;
     const prev = latest(root, id, role);
-    const run = store.createAttempt(prev.runId, { reason });
+    let run;
+    try {
+      run = store.createAttempt(prev.runId, { reason });
+    } catch (error) {
+      // 复活/重派用 blocked-resolved 但 attempt 已满 3：状态机拒绝并要求换打法。
+      // 自动升级 gate（等待人工决策）并清空待办，避免下一 tick 同一错误空转重试。
+      if (error?.code === 'CHANGE_APPROACH_REQUIRED') {
+        await gate(root, st, id, `auto-escalated: ${msg(error)}`);
+        return true;
+      }
+      throw error;
+    }
     n.todo = null; n.state = role; n.blockedRole = null; n.blockedReason = null; n.slot = slot;
     await rt.prepare({ slot, nodeId: id, branch: prepBranch, base: role === 'dev' ? baseRef : n.commit });
     await send(root, id, store.claim(run.runId, { slot }), n);
