@@ -25,8 +25,10 @@ export async function api(path, options = {}) {
 export async function refresh() {
   if (state.loading) return; state.loading = true;
   try {
-    const [snapshot, ruleData, sessions, projectData, serial, archives, detourData] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null), api('/api/session-archives').catch(() => ({ sessions: [] })), api('/api/detours').catch(() => ({ detours: [] }))]);
+    const [snapshot, ruleData, sessions, projectData, serial, archives, detourData, projectUsage] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null), api('/api/session-archives').catch(() => ({ sessions: [] })), api('/api/detours').catch(() => ({ detours: [] })), api('/api/project-usage').catch(() => null)]);
     state.serial = serial || { chains: [] };
+    state.projectUsage = projectUsage?.projects || [];
+    state.projectUsageFailed = !projectUsage;
     state.archived = archives?.sessions || [];
     state.serialFailed = !serial;
     state.detours = detourData?.detours || []; state.models = ruleData.models || {}; snapshot.models = state.models; state.snapshot = snapshot; state.rules = ruleData.rules || []; state.sessions = sessions || []; state.projects = projectData.projects || []; state.agents = ruleData.agents || []; state.sources = ruleData.sources || []; setConnection(true, '已连接'); if (noticeError) { noticeError = false; showNotice(''); } render(); dag.refreshDag();
@@ -164,7 +166,7 @@ function render() {
   const summarySnapshot = scoped ? { ...view.snapshot, totals: scoped, spending: { today: spending } } : state.snapshot;
   replace('summary', renderSummary(summarySnapshot));
   const openNode = (() => { const pop = document.querySelector('.node-pop:not([hidden])'); if (!pop) return null; const row = pop.closest('.list-row'); const seg = row?.querySelector(`[data-node="${CSS.escape(pop.dataset.for)}"]`); return row?.dataset.chain && seg ? { chain: row.dataset.chain, node: seg.dataset.node } : null; })();
-  replace('progress-list', renderProjectProgress({ chains: (state.serial?.chains || []).filter(chain => matchesProject(chain.project, filter)), sessions: view.sessions, rules: view.rules, snapshot: view.snapshot, loadError: !!state.serialFailed }));
+  replace('progress-list', renderProjectProgress({ chains: (state.serial?.chains || []).filter(chain => matchesProject(chain.project, filter)), sessions: view.sessions, rules: view.rules, snapshot: view.snapshot, loadError: !!state.serialFailed, projectUsage: state.projectUsage || [], usageLoadError: !!state.projectUsageFailed }));
   if (openNode) {
     const seg = document.querySelector(`.list-row[data-chain="${CSS.escape(openNode.chain)}"] [data-node="${CSS.escape(openNode.node)}"]`);
     if (seg) openNodePop(seg);

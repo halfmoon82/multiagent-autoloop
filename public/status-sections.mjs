@@ -5,6 +5,21 @@ export function billingText(run) {
   if (typeof usage.input === 'number' || typeof usage.output === 'number') return `${(usage.input || 0) + (usage.output || 0)} Token · 费用未上报`;
   return '费用未上报';
 }
+// 项目级今日/累计用量的展示口径：已上报费用 → Token + 费用未上报 → 暂无用量。
+// 只展示 Hub 自报值，缺失如实标注，不折算、不按模型名估算。
+export function projectUsageText(label, usage) {
+  if (!usage || !usage.reported) return `${label} · 暂无用量`;
+  const fmt = value => Number(value || 0).toLocaleString('en-US');
+  const tokens = fmt(usage.tokens);
+  const split = (usage.input > 0 || usage.output > 0) ? `（入 ${fmt(usage.input)} / 出 ${fmt(usage.output)}）` : '';
+  const cost = typeof usage.cost === 'number' ? `费用 $${usage.cost.toFixed(2)}` : null;
+  const token = usage.tokens > 0 ? `Token ${tokens}${split}` : null;
+  if (cost && token) return `${label} · ${cost} · ${token}`;
+  if (cost) return `${label} · ${cost}`;
+  if (token) return `${label} · ${token} · 费用未上报`;
+  return `${label} · 暂无用量`;
+}
+
 export function projectForRun(run, rules = []) {
   const direct = String(run.project || run.cwd || '').trim();
   if (direct) return direct;
