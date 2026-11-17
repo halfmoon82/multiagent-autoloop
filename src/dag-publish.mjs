@@ -1,6 +1,7 @@
 // publish（无模型）：commit-pr / verify / merge / baseline。只执行授权快照内动作，幂等；
 // 永远不做 deploy/release/凭据/对外通信。gh 与测试执行器由调用方注入（CI 离线用假实现）。
 import { normalizeProjectPath } from './dag.mjs';
+import { canClosePr } from './dag-run.mjs';
 
 export class PublishError extends Error {
   constructor(message, code = 'PUBLISH_ERROR') { super(message); this.name = 'PublishError'; this.code = code; }
@@ -31,6 +32,17 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, baseRef = 
   };
   const changed = async cwd => parseStatus(await rt.git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all']));
 
+  // 换分支后的新 attempt 发布新 PR 时，关闭同节点旧 PR 并注明被替代。仅关 run.json 登记且归属本节点的 PR；
+  // 快照未授权 close-superseded-pr 则保留旧 PR（fail closed）。幂等：已 closed 的跳过。
+  const closeSuperseded = async (runId, nodeId, newUrl) => {
+    const run = store.getRun(runId);
+    for (const pr of (run.prs || []).filter(entry => entry.nodeId === nodeId && entry.prUrl !== newUrl && entry.state === 'open')) {
+      if (!canClosePr(run, nodeId, pr.prUrl).ok) continue;
+      await gh.closePr(pr.prUrl, { comment: `被同节点新 attempt 的 PR ${newUrl} 替代（superseded-by），由 DAG publish 自动关闭。` });
+      store.publishClosePr(runId, nodeId, pr.prUrl, { supersededBy: newUrl });
+    }
+  };
+
   return {
     async commitPr({ nodeId, branch, worktree }) {
       const root = need(['push-branch', 'create-pr'], 'commit-pr');
@@ -49,6 +61,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, baseRef = 
       let prUrl = await gh.findPr({ branch });
       if (!prUrl) prUrl = await gh.createPr({ branch, title: `${nodeId} (${root.runId})` });
       store.registerPr(root.runId, nodeId, prUrl);
+      await closeSuperseded(root.runId, nodeId, prUrl);
       return { prUrl, commit };
     },
 
@@ -68,8 +81,10 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, baseRef = 
       const head = await gh.prHead(prUrl);
       if (head !== commit) throw new PublishError(`远端 PR head ${head} 与已审 SHA ${commit} 不一致（head 变化），拒绝合并`, 'HEAD_MISMATCH');
       const result = (await gh.mergePr(prUrl, { strategy: root.authorizationSnapshot.mergeStrategy })) || {};
-      await rt.git(rt.project, ['fetch', '-q', 'origin']).catch(() => {});
-      const tip = (await rt.git(rt.project, ['rev-parse', baseRef]).catch(() => commit)).trim();
+      // fetch/rev-parse 失败直接抛错由控制器下一 tick 重试：mergePr 与 markPrMerged 均幂等，
+      // 不再回退到本地陈旧 baseRef tip 冒充 mergeCommit。
+      await rt.git(rt.project, ['fetch', '-q', 'origin']);
+      const tip = (await rt.git(rt.project, ['rev-parse', baseRef])).trim();
       return { mergeCommit: result.mergeCommit || tip };
     },
 

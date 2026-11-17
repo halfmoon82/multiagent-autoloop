@@ -57,12 +57,13 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       const evidence = { now: now(), workerOnline: hub.workerOnline, offlineSince: hub.offlineSince, processGroupVerified: body.processGroupVerified === true };
       const decision = store.evaluateSlotRelease(holder, evidence);
       if (!decision.allowed) throw new DagServiceError(`slot-release 被拒绝：${decision.reason}（fail closed）`, 409);
-      // 审计命令文件先落盘再释放：控制器据此把 Hub run 标 abandoned。
+      // 释放成功后再写审计文件：被拒绝/失败的释放不留下“已执行”的假审计；控制器据此把 Hub run 标 abandoned。
+      const released = wrap(() => store.releaseSlot(holder.runId, evidence));
       const dir = path.join(root, 'dag-commands'); mkdirSync(dir, { recursive: true });
       writeFileSync(path.join(dir, `${now()}-${holder.runId}-slot-${slot}.json`), JSON.stringify({
         command: 'slot-release', rootRunId: id, runId: holder.runId, slot, evidence, note: String(body.note || '').slice(0, 500), at: new Date(now()).toISOString(),
       }, null, 2));
-      return wrap(() => store.releaseSlot(holder.runId, evidence));
+      return released;
     },
   };
 }

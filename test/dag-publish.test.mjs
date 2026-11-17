@@ -19,7 +19,8 @@ async function boot({ actions = ALLOWED_ACTIONS } = {}) {
   await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
   const gh = { prs: new Map(), merged: [], async createPr(a) { const url = `https://gh/pr/${this.prs.size + 1}`; this.prs.set(url, { head: a.branch, sha: null }); return url; },
     async findPr(a) { return [...this.prs].find(([, p]) => p.head === a.branch)?.[0] ?? null; },
-    async prHead(url) { return this.prs.get(url).sha; }, async mergePr(url) { this.merged.push(url); return {}; } };
+    async prHead(url) { return this.prs.get(url).sha; }, async mergePr(url) { this.merged.push(url); return {}; },
+    closed: [], async closePr(url, a) { this.closed.push([url, a.comment]); } };
   const tests = []; const runTests = async (cwd) => { tests.push(cwd); return { exitCode: 0, summary: '1 passed' }; };
   const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests });
   const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId };
@@ -78,4 +79,37 @@ test('merge：远端 PR head 与已审 SHA 不一致拒绝；一致则合并，�
 test('merge 拒绝未登记的 PR（publish 只处理 run.json 登记的 PR）', async () => {
   const t = await boot();
   await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: 'https://gh/pr/999', commit: 'c' }), /未登记/);
+});
+
+test('commitPr：同节点换分支发新 PR 时关闭旧 PR 并注明被替代；已 merged/他节点 PR 不动；未授权则保留', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'export const a = 1;\n');
+  const first = await t.pub.commitPr(t.ctx);
+  t.store.registerPr(t.root.runId, 'b', 'https://gh/pr/other');
+  t.write('src/a.mjs', 'export const a = 2;\n');
+  const second = await t.pub.commitPr({ ...t.ctx, branch: 'feat/a-att2' });
+  assert.notEqual(second.prUrl, first.prUrl);
+  assert.deepEqual(t.gh.closed.map(c => c[0]), [first.prUrl]);
+  assert.match(t.gh.closed[0][1], new RegExp(second.prUrl.replace(/[/.]/g, '.')));
+  const prs = t.store.getRun(t.root.runId).prs;
+  assert.equal(prs.find(p => p.prUrl === first.prUrl).state, 'closed');
+  assert.equal(prs.find(p => p.prUrl === first.prUrl).supersededBy, second.prUrl);
+  assert.equal(prs.find(p => p.prUrl === 'https://gh/pr/other').state, 'open');
+  await t.pub.commitPr({ ...t.ctx, branch: 'feat/a-att2' });
+  assert.equal(t.gh.closed.length, 1, '重复调用幂等');
+});
+
+test('commitPr：快照未授权 close-superseded-pr 时旧 PR 保留', async () => {
+  const t = await boot({ actions: ALLOWED_ACTIONS.filter(a => a !== 'close-superseded-pr') });
+  t.write('src/a.mjs', 'export const a = 1;\n'); await t.pub.commitPr(t.ctx);
+  t.write('src/a.mjs', 'export const a = 2;\n'); await t.pub.commitPr({ ...t.ctx, branch: 'feat/a-att2' });
+  assert.equal(t.gh.closed.length, 0);
+});
+
+test('merge：fetch 失败即报错，不回退本地 baseRef tip', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'export const a = 1;\n');
+  const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  const realGit = t.rt.git; t.rt.git = async (cwd, args) => { if (args[0] === 'fetch') throw new Error('network down'); return realGit(cwd, args); };
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), /network down/);
 });

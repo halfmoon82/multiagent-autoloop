@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConsoleServer } from '../src/server.mjs';
@@ -109,6 +109,7 @@ test('slot-release：claimed 但离线证据缺失/不足 24h/无进程组依据
     ev = { workerOnline: false, offlineSince: Date.now() - 25 * 3600 * 1000 };
     assert.equal((await rel({})).status, 409, '无进程组依据');
     assert.equal(t.store.getRun(node.runId).status, 'claimed');
+    assert.ok(!existsSync(path.join(t.root, 'dag-commands')), '被拒绝的释放不落审计文件');
     const ok = await rel({ processGroupVerified: true, note: '已在 worker 机器核实进程组退出' });
     assert.equal(ok.status, 200);
     assert.equal(t.store.getRun(node.runId).status, 'abandoned');
