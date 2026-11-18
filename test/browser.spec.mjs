@@ -454,7 +454,7 @@ try {
   await page.locator('#new-session-dialog').waitFor({ state: 'hidden' });
   await page.getByLabel('发消息给会话 browser-session').fill('重点看执行轮次');
   await page.getByRole('button', { name: '发送', exact: true }).click();
-  await page.waitForTimeout(300);
+  await page.waitForFunction(() => document.querySelector('#session-workspace').innerText.includes('重点看执行轮次'), null, { timeout: 6000 });
   assert.ok((await sessionCard.innerText()).includes('重点看执行轮次'), 'user message must appear in the conversation');
   // 回车必须直接发送（与 Codex 输入体验一致）；Alt/Option+回车必须换行而不是发送
   await page.getByLabel('发消息给会话 browser-session').fill('回车发送测试');

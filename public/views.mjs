@@ -318,9 +318,11 @@ function countsChips(activity, cardsHere) {
 // 整条链累计口径与计费优先级契约一致（服务端台账真累计，缺台账回退今日窗口）：已上报费用 → Token +「费用未上报」→「暂无用量」。
 function chainUsageText(usage) {
   const tokens = (usage.tokens || 0).toLocaleString('en-US');
-  if (typeof usage.cost === 'number') return `链累计 · ${tokens} Token · $${usage.cost.toFixed(2)}`;
-  if (usage.tokens > 0) return `链累计 · ${tokens} Token · 费用未上报`;
-  return '链累计 · 暂无用量';
+  // 台账还没翻到底（历史回填中）时如实标注，不把部分覆盖冒充全量。
+  const pending = usage.backfillPending ? ' · 历史补全中' : '';
+  if (typeof usage.cost === 'number') return `链累计 · ${tokens} Token · $${usage.cost.toFixed(2)}${pending}`;
+  if (usage.tokens > 0) return `链累计 · ${tokens} Token · 费用未上报${pending}`;
+  return `链累计 · 暂无用量${pending}`;
 }
 
 // 项目级今日/累计费用与 Token：只展示服务端聚合的 Hub 自报值，读取失败如实标注。
