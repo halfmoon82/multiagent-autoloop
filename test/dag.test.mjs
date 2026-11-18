@@ -30,6 +30,22 @@ test('write scope overlaps must be serialized by depends_on', () => {
   const b = node('b', { contract: { ...node('b').contract, files: ['src/shared.ts'] } });
   assert.match(validateDag([a, b]).errors.join('\n'), /写范围重叠/);
   assert.equal(validateDag([a, { ...b, depends_on: ['a'] }]).valid, true);
+  assert.equal(validateDag([{ ...b, depends_on: ['a'] }, a]).valid, true, '依赖方向不影响判定');
+});
+
+test('write scope overlaps are serialized by a transitive dependency too', () => {
+  const shared = { contract: { ...node('x').contract, files: ['src/shared.ts'] } };
+  const a = node('a', shared);
+  const mid = node('mid', { depends_on: ['a'] });
+  const far = node('far', { depends_on: ['mid'], ...shared });
+  // a → mid → far：a 与 far 永不同时运行，不需要额外的直接依赖。
+  assert.equal(validateDag([a, mid, far]).valid, true);
+  // 兄弟节点（同一父下并行）仍必须显式串行。
+  const sibling = node('sibling', { depends_on: ['mid'], ...shared });
+  assert.match(validateDag([a, mid, far, sibling]).errors.join('\n'), /写范围重叠/);
+});
+
+test('writeScopeOverlap compares directory prefixes literally', () => {
   assert.equal(writeScopeOverlap('src/a', 'src/a/b.ts'), true);
   assert.equal(writeScopeOverlap('src/a.ts', 'src/ab.ts'), false);
 });
