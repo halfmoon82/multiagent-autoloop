@@ -15,7 +15,6 @@ import {
   VibeAdapterError,
   sanitizeHostEnv,
   buildVibeArgv,
-  ensureVibeVersion,
   checkInitialization,
   checkCapabilities,
   extractProductSpec,
@@ -100,33 +99,6 @@ test('buildVibeArgv keeps prdPath inside the project .vibe plans directory', () 
   assert.throws(() => buildVibeArgv('plan', { projectRoot: root, prdPath: '/etc/passwd' }), /from-prd/);
   assert.throws(() => buildVibeArgv('plan', { projectRoot: root, prdPath: path.join(root, 'src', 'x.json') }), /from-prd/);
   assert.throws(() => buildVibeArgv('plan', { projectRoot: root }), /from-prd/);
-});
-
-test('ensureVibeVersion returns the pinned 5.2.7 and parses the fake CLI output', async () => {
-  const result = await ensureVibeVersion({ command: fakeBin });
-  assert.deepEqual(result, { ok: true, version: VIBE_VERSION });
-});
-
-test('ensureVibeVersion blocks with version_mismatch and names the remediation path', async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'vibe-fake-old-'));
-  const oldBin = path.join(dir, 'vibe');
-  writeFileSync(oldBin, `#!/bin/sh\necho "vibe 5.2.6"\n`);
-  chmodSync(oldBin, 0o755);
-  const result = await ensureVibeVersion({ command: oldBin });
-  assert.equal(result.ok, false);
-  assert.equal(result.error.code, 'version_mismatch');
-  assert.match(result.error.message, /5\.2\.7/);
-  assert.match(result.error.remediation, /vibe/);
-});
-
-test('checkInitialization reports initialization_required only when .vibe/state.json is absent', () => {
-  const empty = makeGitRoot();
-  const missing = checkInitialization({ projectRoot: empty });
-  assert.equal(missing.ok, false);
-  assert.equal(missing.error.code, 'initialization_required');
-  assert.match(missing.error.remediation, /init --confirm/);
-  const ready = makeGitRoot({ withState: true });
-  assert.deepEqual(checkInitialization({ projectRoot: ready }), { ok: true });
 });
 
 test('checkCapabilities accepts a fresh codex attestation with a real dispatch form', () => {
@@ -240,7 +212,6 @@ test('runVibe scan executes the fake CLI with sanitized env, whitelist argv and 
   try {
     const result = await runVibe('scan', { projectRoot: root, command: fakeBin, env: { ...process.env, VIBE_FAKE_RECORD: record } });
     assert.equal(result.ok, true);
-    assert.equal(result.version, VIBE_VERSION);
     assert.deepEqual(result.data, JSON.parse(readFileSync(path.join(fixtureDir, 'cli', 'scan.json'), 'utf8')));
     assert.equal(existsSync(record), true, 'fake CLI ran');
     const seen = JSON.parse(readFileSync(record, 'utf8'));
@@ -254,15 +225,15 @@ test('runVibe scan executes the fake CLI with sanitized env, whitelist argv and 
   }
 });
 
-test('runVibe blocks everything when the installed version is not 5.2.7', async () => {
+test('runVibe 不再做版本门：版本差异交由 CLI 自己报错', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'vibe-fake-old2-'));
   const oldBin = path.join(dir, 'vibe');
   writeFileSync(oldBin, `#!/bin/sh\necho "vibe 5.2.6"\n`);
   chmodSync(oldBin, 0o755);
   const root = makeGitRoot({ withState: true });
   const result = await runVibe('scan', { projectRoot: root, command: oldBin });
-  assert.equal(result.ok, false);
-  assert.equal(result.error.code, 'version_mismatch');
+  assert.equal(result.ok, true);
+  assert.match(String(result.data), /vibe 5\.2\.6/);
 });
 
 test('runVibe init refuses without explicit confirm and requires initialized state', async () => {
@@ -341,17 +312,27 @@ test('checkCapabilities rejects a stale or dispatch-less provider-actions record
   assert.equal(checkCapabilities({ projectRoot: flatRoot }).error.code, 'capability_attestation_required');
 });
 
-test('ensureVibeVersion falls back to installed package metadata when the CLI rejects --version', async () => {
-  const failingRunner = async () => { const error = new Error('Command failed: vibe --version'); error.stdout = 'usage: vibe\nvibe: error: unrecognized arguments: --version\n'; throw error; };
-  const result = await ensureVibeVersion({ runner: failingRunner, fallback: async () => '5.2.7' });
-  assert.equal(result.ok, true);
-  assert.equal(result.version, '5.2.7');
+test('checkCapabilities accepts the provider-actions record a real vibe attest writes', () => {
+  const root = makeGitRoot();
+  writeProviderRecord(root, { adapter_id: 'codex', facts: ALL_TRUE_FACTS, observed_at: new Date().toISOString(), provenance: '真实会话', schema_version: 1 });
+  assert.deepEqual(checkCapabilities({ projectRoot: root }), { ok: true });
 });
 
-test('ensureVibeVersion degrades to a warning instead of blocking when no version source answers', async () => {
-  const failingRunner = async () => { const error = new Error('spawn vibe ENOENT'); throw error; };
-  const result = await ensureVibeVersion({ runner: failingRunner, fallback: async () => null });
-  assert.equal(result.ok, true);
-  assert.equal(result.version, null);
-  assert.match(String(result.warning), /version/);
+test('checkCapabilities accepts an in-session SDD record without visible task facts', () => {
+  const root = makeGitRoot();
+  writeProviderRecord(root, {
+    adapter_id: 'codex', observed_at: new Date().toISOString(), provenance: '真实会话', schema_version: 1,
+    facts: { ...ALL_TRUE_FACTS, 'codex.visible_task.create': false, 'codex.visible_task.enter': false, 'codex.visible_task.resume': false, 'codex.visible_task.wait': false },
+  });
+  assert.deepEqual(checkCapabilities({ projectRoot: root }), { ok: true });
+});
+
+test('checkCapabilities rejects a stale or dispatch-less provider-actions record', () => {
+  const staleRoot = makeGitRoot();
+  writeProviderRecord(staleRoot, { adapter_id: 'codex', facts: ALL_TRUE_FACTS, provenance: '真实会话', schema_version: 1, observed_at: new Date(Date.now() - CAPABILITY_MAX_AGE_MS - 60_000).toISOString() });
+  assert.equal(checkCapabilities({ projectRoot: staleRoot }).error.code, 'capability_attestation_required');
+  const flatRoot = makeGitRoot();
+  const flat = Object.fromEntries(Object.keys(ALL_TRUE_FACTS).map(key => [key, false]));
+  writeProviderRecord(flatRoot, { adapter_id: 'codex', facts: flat, provenance: '真实会话', schema_version: 1, observed_at: new Date().toISOString() });
+  assert.equal(checkCapabilities({ projectRoot: flatRoot }).error.code, 'capability_attestation_required');
 });

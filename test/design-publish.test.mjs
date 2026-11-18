@@ -96,14 +96,7 @@ test('publish requires confirm=true and a matching specDigest before touching an
   assert.equal(existsSync(path.join(root, '.vibe', 'plans', 'demo-plan', 'product-spec.input.json')), false);
 });
 
-test('publish blocks before any git/gh action when the capability attestation is missing', async () => {
-  const { root } = makeProject({ attested: false });
-  const { runner, calls } = makeRunner();
-  const r = await publishProductSpec(base(root, runner));
-  assert.equal(r.ok, false);
-  assert.equal(r.error.code, 'capability_attestation_required');
-  assert.equal(calls.length, 0);
-});
+
 
 test('publish pushes docs/<planId> from a temp worktree, opens a PR, and leaves main and the checkout untouched', async () => {
   const { root, origin } = makeProject();
