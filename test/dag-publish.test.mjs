@@ -337,7 +337,10 @@ test('commitPr：凭据/CI/发布脚本类敏感路径仍然硬拦', async () =>
 test('commitPr：凭据类永远拦；.env.example 与显式声明的受保护路径放行', async () => {
   const creds = await boot();
   creds.write('src/a.mjs', 'ok\n'); creds.write('src/i18n/en.key', 'k\n');
-  await assert.rejects(creds.pub.commitPr(creds.ctx), error => error.code === 'SENSITIVE_PATH');
+  await assert.rejects(creds.pub.commitPr(creds.ctx), error => error.code === 'SENSITIVE_PATH', '范围外的 .key 仍拦');
+  const i18n = await boot({ aFiles: ['src/'] });
+  i18n.write('src/i18n/en.key', 'k\n');
+  assert.ok((await i18n.pub.commitPr(i18n.ctx)).commit, '显式声明目录下的 .key 放行（i18n 等资源文件）');
   const env = await boot();
   env.write('src/a.mjs', 'ok\n'); env.write('.env.example', 'A=1\n');
   const out = await env.pub.commitPr(env.ctx);

@@ -14,13 +14,13 @@ const inScope = (file, scopes) => scopes.some(scope => file === scope || file.st
 // 只有这一类路径仍硬拦：凭据、CI 定义、发布/部署脚本、环境变量。业务代码一律只报告。
 // 凭据类：任何情况下都硬拦，即使计划里显式声明也不放行。
 const CREDENTIAL_PATH = [
-  /^\.env($|\.)/, /\.(pem|key|p12|pfx|jks|keystore|crt)$/i, /(^|\/)id_(rsa|ed25519)($|\.)/,
+  /^\.env($|\.)/, /\.(pem|p12|pfx|jks|keystore|crt)$/i, /(^|\/)id_(rsa|ed25519)($|\.)/,
   /^\.npmrc$/, /^\.netrc$/, /^\.yarnrc\.yml$/, /\.tfstate(\.backup)?$/,
   /^\.docker\//, /^k8s\/.*(secret|credential)/i,
 ];
 // 高危但显式写进节点范围的可以放行（授权页能看到这一点）。
 const GUARDED_PATH = [
-  /^\.github\//, /^\.git\//, /^\.vibe\//, /^\.husky\//,
+  /^\.github\//, /^\.git\//, /^\.vibe\//, /^\.husky\//, /\.key$/i,
   /^scripts\/(deploy|release|publish)(\.|$)/i,
 ];
 const hitAny = (path, patterns) => patterns.some(pattern => pattern.test(path));
