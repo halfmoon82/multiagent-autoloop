@@ -34,7 +34,11 @@
 | `src/serial-progress.mjs` | 串行编排状态文件（`*-serial.json`）读取、项目映射与进度计算 | 编排状态写入、节点计划定义 |
 | `src/chain-closeout.mjs` | 串行链收口巡检（无模型）：完成链独占 cron 规则暂停（中台 pause）、链文件归档（`.done-<日期>` 后缀）与收口审计（`closeouts.jsonl`） | rules.json 编辑、编排状态写入、事件路由 |
 | `src/detour.mjs` | 频限绕行登记（`detours.json`）、冷却核实、rules.json 原子回归与状态锁（`withStateLock`，rules.mjs 表单保存共用） | 探测命令实现、Hub 事件、规则表单校验 |
-| `src/design-publish.mjs` | product-spec 确认后在目标项目 `docs/<planId>` 分支提交 PRD 并创建 PR（授权快照、幂等、临时 worktree） | HTTP 路由、merge、deploy/release、凭据 |
+| `src/design-baseline.mjs` | 可选设计清单、产物 hash、一次批准记录、不可变 run 快照与 UI 节点合同子集校验 | 浏览器渲染、PRD 自由文本语义判定、执行授权 |
+| `src/git-safe.mjs` | 控制器侧 hardened Git、无 clean/smudge filter 的 tree 构造与工作区恢复 | worker 可信 Git config、任意 hooks/filter/shell 执行 |
+| `src/dag-mirror.mjs` | 控制器 owned mirror、可信 remote/base 快照与 remote URL 校验 | worker 可写项目 ref/config、任意 ext transport |
+| `src/design-verify.mjs` | 从精确 commit 建临时只读 worktree、校验 verifier sha256，在净化子进程执行并用专用 fd+nonce 回传有上限结果 | PRD 语义、执行授权、任意 shell 命令、控制器进程内导入项目代码 |
+| `src/design-publish.mjs` | product-spec 与设计摘要确认后在目标项目 `docs/<planId>` 分支提交 PRD、设计包并创建 PR（授权快照、幂等、临时 worktree） | HTTP 路由、merge、deploy/release、凭据 |
 | `src/server.mjs` | 本机 HTTP API、静态资源、安全校验和路由允许列表 | 调度业务状态存储 |
 | `public/` | 状态展示、表单和交互 | 密钥、直接 Hub 访问、业务文件写入 |
 | `scripts/` | 通用启动入口、`detour.mjs` 频限绕行 CLI | 真实试点绝对路径或项目部署逻辑 |

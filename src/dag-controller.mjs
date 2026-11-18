@@ -1,6 +1,7 @@
 // DAG 控制器：无模型，每次 tick 读 run.json → 推进节点 → 派发。只做授权快照内动作。
 // 依赖全部注入（store/hub/rt/wip/publisher），便于离线测试。
 import { readyNodes, validateDag } from './dag.mjs';
+import { assertNodeDesignSnapshot, designContractDigest } from './design-baseline.mjs';
 import { MAX_SLOTS, MAX_ATTEMPTS, QUARANTINE_AFTER_MS, isTerminal, ROOT_NODE, DagRunError } from './dag-run.mjs';
 import { seg } from './dag-slots.mjs';
 
@@ -56,20 +57,36 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
   };
   const freeSlot = (root, st, except) => { const used = usedSlots(root, st, except); for (let s = 1; s <= MAX_SLOTS; s++) if (!used.has(s)) return s; return null; };
 
-  const prompt = (root, id, run, n) => [
-    `DAG 节点 ${id}（${run.role}，generation ${run.generation}，attempt ${run.attempt}）。`,
-    `slot=${n.slot} worktree=${rt.slotPath(n.slot)} branch=${n.branch}`,
-    `expectedAdvanceId=${run.expectedAdvanceId}（回执必须逐字一致，只从本事件 detail 读取，不得猜测）`,
-    `节点契约：${JSON.stringify((root.nodes.find(x => x.id === id) || {}).contract || {})}`,
-  ].join('\n');
+  const prompt = (root, id, run, n) => {
+    const node = root.nodes.find(x => x.id === id) || {};
+    const design = assertNodeDesignSnapshot(root, node).design;
+    const lines = [
+      `DAG 节点 ${id}（${run.role}，generation ${run.generation}，attempt ${run.attempt}）。`,
+      `slot=${n.slot} worktree=${rt.slotPath(n.slot)} branch=${n.branch}`,
+      `expectedAdvanceId=${run.expectedAdvanceId}（回执必须逐字一致，只从本事件 detail 读取，不得猜测）`,
+      `节点契约：${JSON.stringify(node.contract || {})}`,
+    ];
+    if (design) lines.push(
+      `设计基线：${root.designBaseline.designDigest}（冻结于本 DAG；不得读取新稿替代）`,
+      `设计合同：${JSON.stringify(node.contract.design)}`,
+      '设计基线、参考图与验证器只读；如需改变设计语义，返回 DESIGN_CHANGE_REQUIRED，不得自行修改基线或阈值。',
+    );
+    if (design && run.role === 'review') lines.push(`设计验证证据：${JSON.stringify(n.designEvidence ? { commit: n.designEvidence.commit, designDigest: n.designEvidence.designDigest, contractDigest: n.designEvidence.contractDigest, checks: n.designEvidence.checks, visualDiffs: n.designEvidence.visualDiffs || [] } : null)}`);
+    return lines.join('\n');
+  };
 
   async function send(root, id, run, n) {
     const res = await hub.dispatch({ run, slot: n.slot, worktree: rt.slotPath(n.slot), branch: n.branch, expectedAdvanceId: run.expectedAdvanceId, model: n.model, prompt: prompt(root, id, run, n) });
     store.updateRun(run.runId, { hub: { hubRunId: res.hubRunId } });
   }
   async function start(root, st, id, run, slot, { prepare }) {
+    assertNodeDesignSnapshot(root, root.nodes.find(node => node.id === id));
     const n = st.nodes[id]; n.slot = slot;
-    if (prepare) await rt.prepare({ slot, nodeId: id, branch: n.branch, base: baseRef });
+    if (prepare) {
+      n.prepareBase = (await rt.prepare({ slot, nodeId: id, branch: n.branch, base: baseRef })).baseCommit;
+      // 在 claim/派发前先把冻结 base 写入服务端 root run，崩溃恢复不依赖 slot 状态。
+      persist(root, st);
+    }
     const claimed = store.claim(run.runId, { slot });
     await send(root, id, claimed, n);
   }
@@ -105,21 +122,41 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     n.state = 'dev';
   }
 
+  const designEvidenceCurrent = (root, id, n) => {
+    const node = root.nodes.find(item => item.id === id);
+    if (!node?.contract?.design) return true;
+    const evidence = n.designEvidence;
+    return Boolean(evidence && root.designBaseline
+      && evidence.commit === n.commit && evidence.designDigest === root.designBaseline.designDigest
+      && evidence.contractDigest === designContractDigest({ designDigest: root.designBaseline.designDigest, contract: node.contract.design })
+      && Array.isArray(evidence.checks) && evidence.checks.length && evidence.checks.every(check => check.ok));
+  };
+
   async function onDone(root, st, id, run) {
     const n = st.nodes[id];
     if (!SUCCESS.has(run.outcome)) return failure(root, st, id, run.role === 'dev' ? run : latest(root, id, 'dev'), `outcome:${run.outcome}`);
     if (run.role === 'dev') {
-      const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId };
+      const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, base: n.prepareBase };
       const pr = await publisher.commitPr(ctx);
       store.registerPr(root.runId, id, pr.prUrl); n.prUrl = pr.prUrl; n.commit = pr.commit;
       const ver = await publisher.verify({ ...ctx, commit: pr.commit });
-      n.tests = ver.tests ?? null;
+      n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
       if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
       if (!ver.ok) return failure(root, st, id, run, 'verify-failed');
       n.state = 'review'; n.todo = { kind: 'review' }; return;
     }
     if (run.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'review'; n.blockedReason = 'review-changed-slot'; await releaseNodeSlot(root, st, id); return; }
-    const merged = await publisher.merge({ nodeId: id, prUrl: n.prUrl, commit: n.commit, runId: root.runId });
+    if (!designEvidenceCurrent(root, id, n)) {
+      // 同 SHA 证据丢失/失效：自动补验，并重新创建独立 review；不直接 merge，也不重新确认设计。
+      const dev = latest(root, id, 'dev');
+      const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, commit: n.commit };
+      const ver = await publisher.verify(ctx);
+      n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
+      if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
+      if (!ver.ok) return failure(root, st, id, dev, 'verify-failed');
+      n.todo = { kind: 'review' }; return;
+    }
+    const merged = await publisher.merge({ nodeId: id, prUrl: n.prUrl, commit: n.commit, runId: root.runId, evidence: n.designEvidence });
     store.markPrMerged(root.runId, n.prUrl, { mergeCommit: merged.mergeCommit });
     await publisher.baseline({ nodeId: id, mergeCommit: merged.mergeCommit });
     n.state = 'accepted'; n.mergeCommit = merged.mergeCommit;
@@ -135,8 +172,14 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         // 派发中断补发：claimed 已备好槽位只补 send；queued 说明 prepare/send 抛错前
         // 状态机已落盘但 Hub 从未接单，必须重跑 prepare 再 claim+send，否则节点静默卡住。
         if (run.status === 'queued') {
-          await rt.prepare({ slot: n.slot, nodeId: id, branch: n.branch, base: n.prepareBase || baseRef });
+          const prepared = await rt.prepare({ slot: n.slot, nodeId: id, branch: n.branch, base: n.prepareBase || baseRef });
+          n.prepareBase = prepared.baseCommit; // queued 补发也冻结实际 SHA，不再传符号 ref 给 commitPr
+          persist(root, st);
           return send(root, id, store.claim(run.runId, { slot: n.slot }), n);
+        }
+        if (!n.prepareBase) {
+          n.lastError = 'claimed run 缺少服务端冻结 prepare base，拒绝补发';
+          return;
         }
         return send(root, id, run, n);
       }
@@ -184,8 +227,10 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     }
     n.todo = null; n.state = role; n.blockedRole = null; n.blockedReason = null; n.slot = slot;
     // 记录 prepare 基准：queued 补发时重跑 prepare 必须沿用同一基准（review 用原 commit）。
-    n.prepareBase = role === 'dev' ? baseRef : n.commit;
-    await rt.prepare({ slot, nodeId: id, branch: prepBranch, base: n.prepareBase });
+    n.prepareBase = role === 'dev' ? null : n.commit;
+    const prepared = await rt.prepare({ slot, nodeId: id, branch: prepBranch, base: n.prepareBase || baseRef });
+    if (role === 'dev') n.prepareBase = prepared.baseCommit;
+    persist(root, st);
     await send(root, id, store.claim(run.runId, { slot }), n);
     return true;
   }
@@ -243,17 +288,20 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     const blockedIds = Object.entries(st.nodes).filter(([, n]) => ['blocked', 'gated'].includes(n.state)).map(([id]) => id);
     for (const node of readyNodes(view, { blockedIds })) {
       const n = st.nodes[node.id];
-      // 崩溃恢复：上次在 createNodeRun 落盘之后、节点状态落盘之前退出，run 已存在而节点仍是 pending。
-      // 直接 createNodeRun 会永远抛 NODE_EXISTS（死锁）；改为收养既有 run，由 advanceNode 补发/对账。
-      const existing = latest(root, node.id, 'dev');
-      if (existing) {
-        const adopted = existing.slot ?? freeSlot(root, st, node.id); if (adopted == null) break;
-        n.state = 'dev'; n.slot = adopted; n.prepareBase = baseRef;
-        await advanceNode(root, st, node.id); continue; // 同一 tick 立即补发/对账，不多等一轮
-      }
-      const slot = freeSlot(root, st, node.id); if (slot == null) break;
-      const run = store.createNodeRun(root.runId, { nodeId: node.id, role: 'dev' });
-      n.state = 'dev'; await start(root, st, node.id, run, slot, { prepare: true });
+      try {
+        // 设计快照错误按节点隔离，且必须早于收养、槽位、prepare、claim 与 Hub 操作。
+        assertNodeDesignSnapshot(root, node);
+        // 崩溃恢复：run 已存在而节点仍 pending 时收养，避免 NODE_EXISTS 死锁。
+        const existing = latest(root, node.id, 'dev');
+        if (existing) {
+          const adopted = existing.slot ?? freeSlot(root, st, node.id); if (adopted == null) break;
+          n.state = 'dev'; n.slot = adopted; n.prepareBase = null;
+          await advanceNode(root, st, node.id); continue;
+        }
+        const slot = freeSlot(root, st, node.id); if (slot == null) break;
+        const run = store.createNodeRun(root.runId, { nodeId: node.id, role: 'dev' });
+        n.state = 'dev'; await start(root, st, node.id, run, slot, { prepare: true });
+      } catch (error) { n.lastError = msg(error); }
     }
   }
 

@@ -3,12 +3,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, cpSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publishProductSpec, buildPublishSnapshot, PUBLISH_ACTIONS } from '../src/design-publish.mjs';
 import { extractProductSpec, VIBE_MAJOR_VERSION } from '../src/vibe-adapter.mjs';
+import { loadDesignManifest } from '../src/design-baseline.mjs';
+import { defaultGit } from '../src/git-safe.mjs';
+import { createHash } from 'node:crypto';
 
 const fixtureDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'vibe-5.2.7');
 const fakeVibe = path.join(fixtureDir, 'bin', 'vibe');
@@ -52,7 +55,7 @@ function makeRunner({ existingPr = null, failGh = false } = {}) {
   const runner = async (command, args, options = {}) => {
     calls.push({ command, args, cwd: options.cwd, env: options.env });
     if (command === fakeVibe) return { stdout: execFileSync(command, args, { cwd: options.cwd, encoding: 'utf8', env: options.env }) };
-    if (command === 'git') return { stdout: execFileSync('git', args, { cwd: options.cwd, encoding: 'utf8', env: options.env }) };
+    if (command === 'git') return { stdout: await defaultGit(options.cwd, args, { env: options.env }) };
     if (command === 'gh') {
       if (failGh) throw new Error('gh boom');
       if (args[0] === 'pr' && args[1] === 'list') return { stdout: JSON.stringify(existingPr ? [existingPr] : []) };
@@ -129,7 +132,7 @@ test('publish pushes docs/<planId> from a temp worktree, opens a PR, and leaves 
   // 只执行快照内动作：没有 merge/release/deploy，push 目标只有 docs 分支
   const pushes = calls.filter(c => c.command === 'git' && c.args.includes('push'));
   assert.equal(pushes.length, 1);
-  assert.ok(pushes[0].args.includes('HEAD:refs/heads/docs/demo-plan'));
+  assert.match(pushes[0].args.find(arg => /:refs\/heads\/docs\/demo-plan$/.test(arg)), /^[0-9a-f]{40}:refs\/heads\/docs\/demo-plan$/);
   assert.ok(!pushes.some(p => p.args.some(a => /(^|[:/])main$/.test(a) || a.includes('--force'))));
   const gh = calls.filter(c => c.command === 'gh').map(c => c.args.slice(0, 2).join(' '));
   assert.deepEqual(gh, ['pr list', 'pr create']);
@@ -174,4 +177,94 @@ test('publish refuses when the current branch is detached or equals the publish 
   assert.equal(r.error.code, 'publish_failed');
   assert.equal(git(root, 'worktree', 'list').split('\n').length, 1);
   assert.equal(git(root, 'rev-parse', '--abbrev-ref', 'HEAD'), 'main');
+});
+
+function addDesign(root) {
+  mkdirSync(path.join(root, 'docs', 'design', 'demo'), { recursive: true });
+  writeFileSync(path.join(root, 'docs', 'design', 'demo', 'reference.png'), 'reference');
+  const manifest = {
+    schema: 1, designId: 'demo',
+    artifacts: [{ path: 'docs/design/demo/reference.png', sha256: createHash('sha256').update('reference').digest('hex') }],
+    surfaces: [{ id: 'overview', route: '/', viewports: ['1440x900'], states: ['normal'], interactions: [], referencePaths: ['docs/design/demo/reference.png'] }],
+  };
+  const manifestPath = 'docs/design/demo/design-manifest.json';
+  writeFileSync(path.join(root, manifestPath), JSON.stringify(manifest));
+  return { manifestPath };
+}
+
+test('publish requires the confirmed designDigest before writes and publishes one immutable approved design package', async () => {
+  const { root, origin } = makeProject();
+  const design = addDesign(root);
+  const spec = { ...SPEC, design };
+  const transcript = `设计完成。\n\n\`\`\`product-spec\n${JSON.stringify(spec)}\n\`\`\`\n`;
+  const specDigest = extractProductSpec(transcript).specDigest;
+  const missingRunner = makeRunner();
+  let result = await publishProductSpec(base(root, missingRunner.runner, { transcript, specDigest, now: () => '2026-11-17T12:00:00.000Z' }));
+  assert.equal(result.error.code, 'design_confirmation_required');
+  assert.equal(missingRunner.calls.length, 0);
+  assert.equal(existsSync(path.join(root, '.vibe', 'plans', 'demo-plan', 'product-spec.input.json')), false);
+  const designDigest = loadDesignManifest({ projectRoot: root, manifestPath: design.manifestPath }).designDigest;
+  const wrong = await publishProductSpec(base(root, makeRunner().runner, { transcript, specDigest, designDigest: '0'.repeat(64) }));
+  assert.equal(wrong.error.code, 'design_digest_mismatch');
+  result = await publishProductSpec(base(root, makeRunner().runner, { transcript, specDigest, designDigest, now: () => '2026-11-17T12:00:00.000Z' }));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const files = git(origin, 'ls-tree', '-r', '--name-only', 'docs/demo-plan').split('\n');
+  assert.ok(files.includes('docs/design/demo/design-manifest.json'));
+  assert.ok(files.includes('docs/design/demo/reference.png'));
+  assert.ok(files.includes('docs/prd/demo-plan/design-approval.json'));
+  const approval = JSON.parse(git(origin, 'show', 'docs/demo-plan:docs/prd/demo-plan/design-approval.json'));
+  assert.deepEqual(approval, { schema: 1, designDigest, confirmedAt: '2026-11-17T12:00:00.000Z' });
+  const head = git(origin, 'rev-parse', 'docs/demo-plan');
+  const repeated = await publishProductSpec(base(root, makeRunner({ existingPr: { url: 'https://github.com/owner/repo/pull/7', number: 7 } }).runner, { transcript, specDigest, designDigest, now: () => '2026-11-18T12:00:00.000Z' }));
+  assert.equal(repeated.ok, true, JSON.stringify(repeated));
+  assert.equal(git(origin, 'rev-parse', 'docs/demo-plan'), head, '同设计重复确认不得制造新提交');
+});
+
+test('publish refuses design paths that collide with generated PRD outputs before any write', async () => {
+  for (const reserved of ['product-spec.json', 'plan.json', 'nodes.json', 'design-approval.json']) {
+    const { root } = makeProject(); const design = addDesign(root);
+    const manifestPath = ['product-spec.json', 'plan.json', 'nodes.json'].includes(reserved) ? `docs/prd/demo-plan/${reserved}` : design.manifestPath;
+    const manifest = JSON.parse(readFileSync(path.join(root, design.manifestPath), 'utf8'));
+    if (reserved === 'design-approval.json') {
+      const target = `docs/prd/demo-plan/${reserved}`;
+      mkdirSync(path.dirname(path.join(root, target)), { recursive: true });
+      writeFileSync(path.join(root, target), 'approval-collision');
+      manifest.artifacts[0].path = target;
+      manifest.artifacts[0].sha256 = createHash('sha256').update('approval-collision').digest('hex');
+      manifest.surfaces[0].referencePaths = [target];
+    }
+    mkdirSync(path.dirname(path.join(root, manifestPath)), { recursive: true });
+    writeFileSync(path.join(root, manifestPath), JSON.stringify(manifest));
+    const spec = { ...SPEC, design: { manifestPath } };
+    const transcript = `\`\`\`product-spec\n${JSON.stringify(spec)}\n\`\`\`\n`;
+    const specDigest = extractProductSpec(transcript).specDigest;
+    const designDigest = loadDesignManifest({ projectRoot: root, manifestPath }).designDigest;
+    const runner = makeRunner();
+    const result = await publishProductSpec(base(root, runner.runner, { transcript, specDigest, designDigest }));
+    assert.equal(result.error?.code, 'design_output_conflict', reserved);
+    assert.equal(runner.calls.length, 0, reserved);
+    assert.equal(existsSync(path.join(root, '.vibe', 'plans', 'demo-plan', 'product-spec.input.json')), false, reserved);
+  }
+});
+
+test('publish does not execute worker-configured clean or smudge filters', async () => {
+  const { root } = makeProject();
+  const design = addDesign(root);
+  const spec = { ...SPEC, design };
+  const transcript = `\`\`\`product-spec\n${JSON.stringify(spec)}\n\`\`\`\n`;
+  const designDigest = loadDesignManifest({ projectRoot: root, manifestPath: design.manifestPath }).designDigest;
+  const stamp = `${process.pid}-${Date.now()}`;
+  const marker = path.join(tmpdir(), `design-publish-filter-${stamp}.txt`);
+  const script = path.join(tmpdir(), `design-publish-filter-${stamp}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  mkdirSync(path.join(root, '.git', 'info'), { recursive: true });
+  writeFileSync(path.join(root, '.git', 'info', 'attributes'), '* filter=bad\n');
+  execFileSync('git', ['config', 'filter.bad.clean', script], { cwd: root });
+  execFileSync('git', ['config', 'filter.bad.smudge', script], { cwd: root });
+  try {
+    const { runner } = makeRunner();
+    const result = await publishProductSpec(base(root, runner, { transcript, specDigest: extractProductSpec(transcript).specDigest, designDigest }));
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(existsSync(marker), false, 'design publish 不得执行 Git filter');
+  } finally { rmSync(marker, { force: true }); rmSync(script, { force: true }); }
 });

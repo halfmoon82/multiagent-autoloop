@@ -59,20 +59,24 @@ const sha256 = value => createHash('sha256').update(value).digest('hex');
 // schema 1 走历史公式，逐字兼容已创建的旧 run（如 dagrun-mwklgr10-e4c17e57）；
 // schema 2 追加标准动作/可选高风险动作/修订号，digest 覆盖全部授权字段，动作顺序归一。
 export function snapshotDigest(snapshot) {
-  const { project, repo, mergeStrategy, planDigest, allowedActions } = snapshot || {};
+  const { project, repo, remoteUrl, mergeStrategy, planDigest, allowedActions } = snapshot || {};
   if (snapshot && snapshot.schema === GRANT_SCHEMA) {
     const { standardActions = [], optionalGrants = [], revision = 1 } = snapshot;
-    return sha256(canonical({
+    const value = {
       schema: GRANT_SCHEMA, project: project ?? null, repo: repo ?? null, mergeStrategy: mergeStrategy ?? null,
       planDigest: planDigest ?? null, standardActions, optionalGrants, allowedActions: allowedActions ?? [], revision,
-    }));
+    };
+    if (remoteUrl !== undefined) value.remoteUrl = remoteUrl ?? null;
+    return sha256(canonical(value));
   }
-  return sha256(canonical({ project: project ?? null, repo: repo ?? null, mergeStrategy: mergeStrategy ?? null, planDigest: planDigest ?? null, allowedActions: allowedActions ?? [] }));
+  const value = { project: project ?? null, repo: repo ?? null, mergeStrategy: mergeStrategy ?? null, planDigest: planDigest ?? null, allowedActions: allowedActions ?? [] };
+  if (remoteUrl !== undefined) value.remoteUrl = remoteUrl ?? null;
+  return sha256(canonical(value));
 }
 
 // 轻量执行授权记录（schema 2）：标准动作自动继承，高风险动作默认关闭，
 // 仅当「计划声明 + 本轮明确勾选」才写入 optionalGrants。每项带产品语言的收益/代价。
-export function buildGrantRecord({ project, repo, mergeStrategy, planDigest, confirmedActionIds, selectedOptionalActions = [], planOptionalActions = [], revision = 1 }) {
+export function buildGrantRecord({ project, repo, remoteUrl, mergeStrategy, planDigest, confirmedActionIds, selectedOptionalActions = [], planOptionalActions = [], revision = 1 }) {
   const standardActions = [...new Set(confirmedActionIds)].sort();
   for (const action of standardActions) {
     if (typeof action !== 'string' || !text(action)) throw new DagRunError('BAD_INPUT', '标准授权动作必须是字符串');
@@ -89,6 +93,7 @@ export function buildGrantRecord({ project, repo, mergeStrategy, planDigest, con
     schema: GRANT_SCHEMA, project: text(project), repo: repo == null ? null : text(repo), mergeStrategy: text(mergeStrategy) || 'squash',
     planDigest: text(planDigest), standardActions, optionalGrants, allowedActions, revision, createdAt: new Date().toISOString(),
   };
+  if (remoteUrl != null) record.remoteUrl = text(remoteUrl);
   return { ...record, digest: snapshotDigest(record) };
 }
 
@@ -328,7 +333,7 @@ export function createRunStore({ directory } = {}) {
         generation: 1, attempt: 1, status: 'queued', slot: null, expectedAdvanceId: null,
         failures: 0, outcome: null, prs: [], appliedAdvance: null, supersededBy: null,
         unknownSince: null, quarantine: false, nodes: Array.isArray(input.nodes) ? input.nodes : [],
-        authorizationSnapshot: snapshot, createdAt: iso(), updatedAt: iso(),
+        authorizationSnapshot: snapshot, designBaseline: input.designBaseline ? JSON.parse(JSON.stringify(input.designBaseline)) : null, remoteUrl: text(input.remoteUrl) || null, mirrorPath: text(input.mirrorPath) || null, baseBranch: text(input.baseBranch) || null, baseCommit: text(input.baseCommit) || null, createdAt: iso(), updatedAt: iso(),
       });
     },
 
@@ -425,7 +430,7 @@ export function createRunStore({ directory } = {}) {
           generation, attempt, status: 'queued', slot: null, expectedAdvanceId: null,
           failures: 0, outcome: null, prs: [], appliedAdvance: null, supersededBy: null,
           unknownSince: null, quarantine: false, nodes: prev.nodes,
-          authorizationSnapshot: prev.authorizationSnapshot,
+          authorizationSnapshot: prev.authorizationSnapshot, designBaseline: prev.designBaseline || null, remoteUrl: prev.remoteUrl || null, mirrorPath: prev.mirrorPath || null, baseBranch: prev.baseBranch || null, baseCommit: prev.baseCommit || null,
           supersedes: prev.runId, attemptReason: reason ?? null,
           revivedFrom: ['blocked_unknown'].includes(prev.status) ? prev.runId : null,
           reviveReason: ['blocked_unknown'].includes(prev.status) ? (reason ?? null) : null,
@@ -478,7 +483,7 @@ export function createRunStore({ directory } = {}) {
         planDigest: root.planDigest, nodeId, role, generation: 1, attempt: 1, status: 'queued',
         slot: null, expectedAdvanceId: null, failures: 0, outcome: null, prs: [], appliedAdvance: null,
         supersededBy: null, unknownSince: null, quarantine: false, nodes: root.nodes,
-        authorizationSnapshot: root.authorizationSnapshot, rootRunId: root.rootRunId || root.runId,
+        authorizationSnapshot: root.authorizationSnapshot, designBaseline: root.designBaseline || null, remoteUrl: root.remoteUrl || null, mirrorPath: root.mirrorPath || null, baseBranch: root.baseBranch || null, baseCommit: root.baseCommit || null, rootRunId: root.rootRunId || root.runId,
         createdAt: iso(), updatedAt: iso(),
       });
     },

@@ -54,8 +54,11 @@ export function loadVibePlan({ projectRoot, planId }) {
   return { planId, plan, nodes, productSpec };
 }
 
-export function createPlanDigest({ productSpec, plan, nodes, authorizationSnapshot = null }) {
-  return digest({ productSpec, plan, nodes, authorizationSnapshot });
+export function createPlanDigest({ productSpec, plan, nodes, authorizationSnapshot = null, designBaseline = null }) {
+  const value = { productSpec, plan, nodes, authorizationSnapshot };
+  // 无设计计划保持历史字节口径；只有 UI 计划新增 design 字段。
+  if (designBaseline) value.design = { manifestPath: designBaseline.manifestPath, designDigest: designBaseline.designDigest };
+  return digest(value);
 }
 
 export function createRunSnapshot(loaded, { authorizationSnapshot, maxParallel = 5 } = {}) {
@@ -74,6 +77,7 @@ export function createRunSnapshot(loaded, { authorizationSnapshot, maxParallel =
     planDigest,
     maxParallel,
     authorizationSnapshot: JSON.parse(JSON.stringify(authorizationSnapshot)),
+    designBaseline: loaded.designBaseline ? JSON.parse(JSON.stringify(loaded.designBaseline)) : null,
     nodes: Object.fromEntries(loaded.nodes.map(node => [node.id, {
       id: node.id,
       title: node.title,

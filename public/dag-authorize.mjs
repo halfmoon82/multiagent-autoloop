@@ -42,7 +42,8 @@ export function renderAuthorize(plan, { checked = false, submitting = false, err
   const summary = el('div', 'confirmation-summary');
   const business = plan.nodes.filter(n => !n.integrationReview).length; const review = plan.nodes.length - business;
   for (const [label, value] of [['项目', projectName(plan.project)], ['节点', `${business} 业务${review ? ` + ${review} 整合审查` : ''}`], ['最大并行', `${plan.maxParallel} 路`], ['合并策略', '独立审阅后 squash']]) { const cell = el('div'); cell.append(el('span', '', label), el('strong', '', value)); summary.append(cell); }
-  const repo = el('div', 'authorization-section'); repo.append(el('h2', '', '目标仓库')); const repoLine = el('p', 'repo-path'); repoLine.dataset.authRepo = '1'; repoLine.textContent = plan.project; repo.append(repoLine);
+  const repo = el('div', 'authorization-section'); repo.append(el('h2', '', '目标仓库')); const repoLine = el('p', 'repo-path'); repoLine.dataset.authRepo = '1'; repoLine.textContent = plan.project;
+  const remoteLine = el('p', 'repo-path'); remoteLine.dataset.authRemote = '1'; remoteLine.textContent = plan.remoteUrl || '未发现远端（不能推送）'; repo.append(repoLine, remoteLine);
   const nodes = el('div', 'authorization-section'); nodes.append(el('h2', '', '节点及文件范围'));
   const table = el('div', 'scope-list'); table.setAttribute('role', 'list');
   for (const node of plan.nodes) {

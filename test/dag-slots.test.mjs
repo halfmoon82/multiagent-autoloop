@@ -1,9 +1,10 @@
 // 固定槽位运行时：槽位=worktree、沙箱拒绝越界写、同节点保留改动、WIP 精确保留与新文件找回。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createSlotRuntime, SlotError } from '../src/dag-slots.mjs';
+import { createSlotRuntime, defaultGit, SlotError } from '../src/dag-slots.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 
 const boot = async () => {
@@ -47,4 +48,80 @@ test('prepare：节点分支从基线创建；同节点重试保留未提交改�
 test('prepare 基线核对：基线 ref 不存在时拒绝', async () => {
   const { rt } = await boot();
   await assert.rejects(rt.prepare({ slot: 2, nodeId: 'a', branch: 'feat/a', base: 'origin/nope' }), /基线/);
+});
+
+test('defaultGit disables repository hooks and does not inherit controller-only environment', async () => {
+  const { project } = makeRepo();
+  const hook = path.join(project, '.git', 'hooks', 'post-checkout');
+  const marker = path.join(tmpdir(), `default-git-hook-${process.pid}.txt`);
+  mkdirSync(path.dirname(hook), { recursive: true });
+  writeFileSync(hook, `#!/bin/sh\nprintf 'hook-ran-with-env:%s\\n' "$AGENT_AUTOLOOP_HOME" > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  const target = path.join(project, '.worktrees', 'default-git-hook-test');
+  const previous = process.env.AGENT_AUTOLOOP_HOME;
+  process.env.AGENT_AUTOLOOP_HOME = 'controller-secret';
+  try {
+    await defaultGit(project, ['worktree', 'add', '--detach', target, 'HEAD']);
+    assert.equal(existsSync(marker), false, 'defaultGit 不得执行仓库 hooks');
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_AUTOLOOP_HOME; else process.env.AGENT_AUTOLOOP_HOME = previous;
+    await defaultGit(project, ['worktree', 'remove', '--force', target]).catch(() => {});
+    rmSync(marker, { force: true });
+  }
+});
+
+test('defaultGit disables config-driven fsmonitor during status', async () => {
+  const { project } = makeRepo();
+  const marker = path.join(tmpdir(), `default-git-fsmonitor-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `default-git-fsmonitor-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'fsmonitor-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  sh(project, 'config', 'core.fsmonitor', script);
+  try {
+    await defaultGit(project, ['status', '--porcelain']);
+    assert.equal(existsSync(marker), false, 'core.fsmonitor 不得在控制器侧执行');
+  } finally {
+    rmSync(marker, { force: true }); rmSync(script, { force: true });
+  }
+});
+
+test('defaultGit disables external diff and textconv during diff', async () => {
+  const { project } = makeRepo();
+  const marker = path.join(tmpdir(), `default-git-diff-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `default-git-diff-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'diff-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  mkdirSync(path.join(project, 'src'), { recursive: true });
+  writeFileSync(path.join(project, 'src/a.mjs'), 'x\n');
+  sh(project, 'add', 'src/a.mjs'); sh(project, 'commit', '-qm', 'diff fixture');
+  sh(project, 'config', 'diff.external', script);
+  try {
+    await defaultGit(project, ['diff', '--name-only', 'HEAD^', 'HEAD']);
+    assert.equal(existsSync(marker), false, 'external diff 不得在控制器侧执行');
+  } finally {
+    rmSync(marker, { force: true }); rmSync(script, { force: true });
+  }
+});
+
+test('prepare rejects slot state whose frozen base was tampered', async () => {
+  const { project, rt } = await boot();
+  const first = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
+  const stateFile = path.join(project, '.git', 'dag-run1-slots.json');
+  const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+  const other = sh(project, 'commit-tree', sh(project, 'rev-parse', 'main^{tree}'), '-m', 'other');
+  state['1'].baseCommit = other;
+  writeFileSync(stateFile, JSON.stringify(state));
+  await assert.rejects(() => rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' }), /base|状态|不一致/);
+  assert.equal(first.baseCommit, sh(project, 'rev-parse', 'main'));
+});
+
+test('prepare and ensureSlots do not execute Git smudge filters', async () => {
+  const { project, rt } = await boot();
+  const marker = path.join(tmpdir(), `slot-smudge-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `slot-smudge-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'smudge-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  mkdirSync(path.join(project, '.git', 'info'), { recursive: true });
+  writeFileSync(path.join(project, '.git', 'info', 'attributes'), '*.md filter=bad\n');
+  sh(project, 'config', 'filter.bad.smudge', script);
+  try {
+    await rt.prepare({ slot: 2, nodeId: 'b', branch: 'feat/b', base: 'main' });
+    assert.equal(existsSync(marker), false, 'prepare 不得执行 smudge filter');
+  } finally { rmSync(marker, { force: true }); rmSync(script, { force: true }); }
 });

@@ -10,6 +10,7 @@ import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
 import { createSlotRuntime } from '../src/dag-slots.mjs';
 import { createPublisher } from '../src/dag-publish.mjs';
 import { makeRepo } from './helpers-git.mjs';
+import { ensureMirror } from '../src/dag-mirror.mjs';
 
 const PR = 'https://github.com/o/r/pull/12';
 
@@ -52,12 +53,15 @@ test('适配器其余方法契约：findPr/createPr/prHead/mergePr', async () =>
 });
 
 test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', async () => {
-  const { project } = makeRepo();
-  const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-gh-pub-')) });
-  const root = store.createRun({ project, planId: 'p', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [{ id: 'a', depends_on: [], contract: { files: ['src/a.mjs'] } }] });
-  const rt = createSlotRuntime({ project, runId: root.runId });
+  const { project, remote } = makeRepo();
+  const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-gh-pub-'));
+  const store = createRunStore({ directory: storeDirectory });
+  const mirror = await ensureMirror({ root: storeDirectory, remoteUrl: remote, baseBranch: 'main' });
+  const root = store.createRun({ project, remoteUrl: remote, mirrorPath: mirror.mirrorPath, baseBranch: mirror.baseBranch, baseCommit: mirror.baseCommit, planId: 'p', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [{ id: 'a', depends_on: [], contract: { files: ['src/a.mjs'] } }] });
+  const rt = createSlotRuntime({ project: mirror.mirrorPath, gitDir: mirror.mirrorPath, runId: root.runId });
   await rt.ensureSlots();
-  await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
+  const { baseCommit } = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'refs/heads/main' });
+  store.updateRun(root.runId, { publish: { nodes: { a: { prepareBase: baseCommit } } } });
   const closed = []; let prNo = 0;
   const runner = async (cmd, args) => {
     if (args[1] === 'list') return { stdout: '[]' };
@@ -65,8 +69,8 @@ test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', a
     if (args[1] === 'close') { closed.push(args[2]); return { stdout: '' }; }
     return { stdout: '' };
   };
-  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh: createGhAdapter({ runner }), runTests: async () => ({ exitCode: 0 }) });
-  const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId };
+  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh: createGhAdapter({ runner }), runTests: async () => ({ exitCode: 0 }), baseRef: 'refs/heads/main' });
+  const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId, base: baseCommit };
   const write = c => { mkdirSync(path.join(ctx.worktree, 'src'), { recursive: true }); writeFileSync(path.join(ctx.worktree, 'src/a.mjs'), c); };
   write('export const a = 1;\n');
   await pub.commitPr(ctx);

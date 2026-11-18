@@ -4,6 +4,8 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createController, HUB_TERMINAL } from './dag-controller.mjs';
 import { createGhAdapter } from './dag-gh.mjs';
 import { acquireControllerLock } from './dag-lock.mjs';
@@ -12,6 +14,8 @@ import { ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
 import { createSlotRuntime, seg } from './dag-slots.mjs';
 import * as wip from './dag-wip.mjs';
 import { hubRequest } from './hub.mjs';
+import { verifyDesign as defaultVerifyDesign } from './design-verify.mjs';
+import { ensureMirror } from './dag-mirror.mjs';
 
 export const MIN_POLL_MS = 5000;
 const HUB_STATES = new Set(['queued', 'claimed', 'unknown', 'done', 'nothing', 'cancelled']);
@@ -64,8 +68,13 @@ export function createHubAdapter({ config, request = hubRequest, project } = {})
   };
 }
 
-const defaultRunTests = cwd => new Promise(resolve => {
-  execFile('npm', ['test'], { cwd, timeout: 20 * 60 * 1000, maxBuffer: 32 * 1024 * 1024 }, (error, stdout) => {
+export const defaultRunTests = cwd => new Promise(resolve => {
+  const home = mkdtempSync(path.join(tmpdir(), 'dag-test-home-'));
+  execFile('npm', ['test'], {
+    cwd, timeout: 20 * 60 * 1000, maxBuffer: 32 * 1024 * 1024,
+    env: { PATH: process.env.PATH || '/usr/bin:/bin', HOME: home, TMPDIR: tmpdir(), NODE_OPTIONS: '' },
+  }, (error, stdout) => {
+    rmSync(home, { recursive: true, force: true });
     resolve({ exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0, tail: String(stdout).slice(-2000) });
   });
 });
@@ -80,13 +89,15 @@ export function createBlockedEvidence({ request, config }) {
   };
 }
 
-export async function createDagRuntime({ rootRun, config, store, request = hubRequest, gh, runTests = defaultRunTests, git, now = Date.now, chooseApproach } = {}) {
-  const rt = createSlotRuntime({ project: rootRun.project, runId: rootRun.runId, ...(git ? { git } : {}) });
+export async function createDagRuntime({ rootRun, config, store, request = hubRequest, gh, runTests = defaultRunTests, verifyDesign = defaultVerifyDesign, git, now = Date.now, chooseApproach } = {}) {
+  if (!rootRun.mirrorPath || !rootRun.baseCommit) throw new Error('DAG run 缺少控制器 mirror/base 快照，拒绝在 worker 可写仓库执行');
+  const rt = createSlotRuntime({ project: rootRun.mirrorPath, gitDir: rootRun.mirrorPath, runId: rootRun.runId, ...(git ? { git } : {}) });
   await rt.ensureSlots();
   const adapter = gh || createGhAdapter({ cwd: rootRun.project });
-  const publisher = createPublisher({ store, rootRunId: rootRun.runId, rt, gh: adapter, runTests });
+  const publisher = createPublisher({ store, rootRunId: rootRun.runId, rt, gh: adapter, runTests, verifyDesign, baseRef: `refs/heads/${rootRun.baseBranch}` });
   const hub = createHubAdapter({ config, request, project: rootRun.project });
-  return createController({ store, rootRunId: rootRun.runId, hub, rt, wip, publisher, now, chooseApproach, blockedEvidence: createBlockedEvidence({ request, config }) });
+  const baseRef = rootRun.baseBranch ? `refs/heads/${rootRun.baseBranch}` : 'origin/main';
+  return createController({ store, rootRunId: rootRun.runId, hub, rt, wip, publisher, baseRef, now, chooseApproach, blockedEvidence: createBlockedEvidence({ request, config }) });
 }
 
 // 启动接线：发现全部未终结 DAG，逐个恢复控制器并以有界频率轮询。单 DAG 单写入者（进程锁 + 本进程 in-flight 守卫）。

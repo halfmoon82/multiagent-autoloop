@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, existsSync, readFileSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConsoleServer } from '../src/server.mjs';
 import { createDagService } from '../src/dag-service.mjs';
 import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
 import { createPlanDigest } from '../src/vibe-plan.mjs';
+import { loadNativePlan } from '../src/dag-plan.mjs';
 import { fileURLToPath } from 'node:url';
 import { listen, close } from './helpers.mjs';
 
@@ -244,7 +245,7 @@ test('revive 审计写失败：复活待办已落盘，仍返回成功但留日�
 // ---- 原生 DAG 计划入口（无需 .vibe）----
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BOOTSTRAP_PLAN_ID = 'console-hub-native-and-card-routing';
-const bootstrapNodes = () => JSON.parse(readFileSync(path.join(repoRoot, 'docs', 'dag-plans', `${BOOTSTRAP_PLAN_ID}.json`), 'utf8'));
+const bootstrapPlan = () => JSON.parse(readFileSync(path.join(repoRoot, 'docs', 'dag-plans', `${BOOTSTRAP_PLAN_ID}.json`), 'utf8'));
 
 function setupNative() {
   const root = mkdtempSync(path.join(tmpdir(), 'dag-native-api-'));
@@ -252,15 +253,12 @@ function setupNative() {
   const project = path.join(projectRoot, 'native-demo');
   mkdirSync(path.join(project, '.git'), { recursive: true });
   const plans = path.join(project, 'docs', 'dag-plans'); mkdirSync(plans, { recursive: true });
-  const nodes = bootstrapNodes();
-  writeFileSync(path.join(plans, `${BOOTSTRAP_PLAN_ID}.json`), JSON.stringify(nodes));
+  writeFileSync(path.join(plans, `${BOOTSTRAP_PLAN_ID}.json`), JSON.stringify(bootstrapPlan()));
+  cpSync(path.join(repoRoot, 'docs', 'design', '2026-11-16-parallel-dag'), path.join(project, 'docs', 'design', '2026-11-16-parallel-dag'), { recursive: true });
+  cpSync(path.join(repoRoot, 'docs', 'prd', BOOTSTRAP_PLAN_ID), path.join(project, 'docs', 'prd', BOOTSTRAP_PLAN_ID), { recursive: true });
   writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ rules: [] }));
-  const planDigest = createPlanDigest({
-    productSpec: {},
-    plan: { plan_id: BOOTSTRAP_PLAN_ID, title: BOOTSTRAP_PLAN_ID, source: 'native' },
-    nodes,
-    authorizationSnapshot: null,
-  });
+  const loaded = loadNativePlan({ projectRoot: project, planId: BOOTSTRAP_PLAN_ID });
+  const planDigest = createPlanDigest({ ...loaded, authorizationSnapshot: null });
   const store = createRunStore({ directory: path.join(root, 'dag-runs') });
   const dagService = createDagService({ root, store });
   const sessions = { async start() { return { id: 's' }; }, dispose() {} };

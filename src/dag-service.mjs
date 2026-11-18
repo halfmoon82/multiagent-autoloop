@@ -8,6 +8,8 @@ import { parallelShape } from './dag.mjs';
 import { loadNativePlan } from './dag-plan.mjs';
 import { checkCapabilities, checkInitialization } from './vibe-adapter.mjs';
 import { createPlanDigest, loadVibePlan } from './vibe-plan.mjs';
+import { defaultGit } from './git-safe.mjs';
+import { ensureMirror } from './dag-mirror.mjs';
 
 export class DagServiceError extends Error {
   constructor(message, status = 400) { super(message); this.name = 'DagServiceError'; this.status = status; }
@@ -59,14 +61,14 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       return { run, nodeRuns: store.listRuns().filter(r => r.project === run.project && r.planId === run.planId && r.nodeId !== ROOT_NODE) };
     },
     // 授权确认页数据源：只读加载已发布计划；planDigest 与 create() 同口径，确认页直接回传。
-    preview(project, planId) {
+    async preview(project, planId) {
       const loaded = loadPlan(project, String(planId || ''));
       const shape = parallelShape(loaded.nodes);
       const waveOf = new Map();
       (shape.parallelWaves || []).forEach((wave, index) => wave.forEach(id => waveOf.set(id, index + 1)));
       const lastWave = (shape.parallelWaves || []).length + 1;
       return {
-        project, planId: loaded.planId,
+        project, remoteUrl: await (async () => { try { return String(await defaultGit(project, ['remote', 'get-url', 'origin'])).trim() || null; } catch { return null; } })(), planId: loaded.planId,
         planDigest: createPlanDigest({ ...loaded, authorizationSnapshot: null }),
         title: String(loaded.plan.title || loaded.plan.name || loaded.planId),
         maxParallel: MAX_SLOTS, mergeStrategy: 'squash',
@@ -88,15 +90,23 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       checks.push({ id: 'capabilities', label: 'Codex 能力记录', ok: caps.ok, message: caps.ok ? '能力记录有效' : `${caps.error.message}。${caps.error.remediation || ''}` });
       return { project, checks };
     },
-    create(body, project) {
+    async create(body, project) {
       const loaded = loadPlan(project, String(body.planId || ''));
       if (createPlanDigest({ ...loaded, authorizationSnapshot: null }) !== body.planDigest) throw new DagServiceError('planDigest 与服务端计划不一致，计划已变化需重新确认');
       // 计划未声明的高风险动作即便勾选也不写入：planOptionalActions 作为授权白名单交给 store 校验。
       const planOptionalActions = optionalActionOptions(loaded).map(a => a.id);
+      // run 创建时冻结用户确认的 remote URL；之后 worker 改 remote.origin.url/insteadOf 不影响 push 目标。
+      let remoteUrl = String(body.remoteUrl ?? '').trim() || null;
+      if (!remoteUrl) {
+        try { remoteUrl = String(await defaultGit(project, ['remote', 'get-url', 'origin'])).trim() || null; }
+        catch { remoteUrl = null; }
+      }
+      let mirror = null;
+      if (remoteUrl) mirror = await ensureMirror({ root, remoteUrl, baseBranch: 'main' });
       return wrap(() => store.createRun({
         project, planId: loaded.planId, planDigest: body.planDigest, confirmedActionIds: body.confirmedActionIds,
         selectedOptionalActions: body.selectedOptionalActions ?? [], planOptionalActions,
-        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes,
+        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes, designBaseline: loaded.designBaseline || null, remoteUrl: mirror?.remoteUrl ?? remoteUrl, mirrorPath: mirror?.mirrorPath ?? null, baseBranch: mirror?.baseBranch ?? null, baseCommit: mirror?.baseCommit ?? null,
       }));
     },
     cancel(id) {

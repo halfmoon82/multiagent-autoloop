@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkNode, setup } from './dag-fakes.mjs';
+import { designContractDigest } from '../src/design-baseline.mjs';
 
 const six = () => ['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(id => mkNode(id));
 // 驱动一个节点从开发回执到 accepted（两个 tick）。
@@ -147,4 +148,112 @@ test('Hub 已终态但回执未消费：重启对账时补处理合法回执；�
   assert.equal(s.runOf('a').status, 'done', '合法回执被补消费');
   assert.ok(s.publisher.calls.some(c => c[0] === 'commitPr'), '进入发布流程');
   assert.ok(s.runOf('a').failures >= 1, '畸形回执计一次失败而非吞掉');
+});
+
+const designBaseline = () => ({
+  designDigest: 'a'.repeat(64), manifestPath: 'docs/design/demo/design-manifest.json',
+  manifest: { schema: 1, designId: 'demo', artifacts: [{ path: 'docs/design/demo/reference.png', sha256: 'b'.repeat(64) }], surfaces: [{ id: 'overview', route: '/', viewports: ['1440x900'], states: ['normal'], interactions: ['open'], referencePaths: ['docs/design/demo/reference.png'] }] },
+  readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png'],
+});
+
+test('设计合同校验在占槽前按节点隔离，其他 ready 节点照常派发', async () => {
+  const bad = mkNode('bad-ui'); bad.contract.design = { surfaceIds: ['missing'] };
+  const good = mkNode('good-backend');
+  const s = setup([bad, good], { designBaseline: designBaseline() });
+  await s.ctl.tick();
+  assert.ok(s.hub.last('good-backend'), '无关节点不得被坏 UI 合同阻断');
+  assert.equal(s.hub.last('bad-ui'), undefined);
+  assert.equal(s.rt.events.some(e => e[0] === 'prepare' && e[2] === 'bad-ui'), false);
+  assert.equal(s.runOf('bad-ui'), undefined, '合同失败前不得创建节点 run');
+  assert.match(s.ctl.snapshot().nodes['bad-ui'].lastError, /surface/);
+});
+
+test('UI worker 收到冻结的设计摘要与定向合同，新稿对象变化不影响旧 run', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'], states: ['normal'] };
+  const backend = mkNode('backend');
+  const baseline = designBaseline(); const s = setup([ui, backend], { designBaseline: baseline });
+  await s.ctl.tick();
+  const prompt = s.hub.last('ui').prompt;
+  assert.match(prompt, /a{64}/);
+  assert.match(prompt, /设计合同/);
+  assert.match(prompt, /overview/);
+  assert.doesNotMatch(s.hub.last('backend').prompt, /设计基线/);
+  baseline.designDigest = 'c'.repeat(64);
+  await s.ctl.tick();
+  assert.match(s.hub.last('ui').prompt, /a{64}/, 'run 快照不得随外部新稿变化');
+});
+
+test('UI 证据丢失但 SHA 未变：自动补验并重新 review，不直接 merge', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => {
+    s.publisher.calls.push(['verify', input.nodeId]);
+    return {
+      ok: true, tests: { exitCode: 0 },
+      designEvidence: { commit: input.commit, designDigest: baseline.designDigest, contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }), checks: [{ ok: true }] },
+    };
+  };
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  assert.ok(s.hub.last('ui', 'review'));
+  assert.match(s.hub.last('ui', 'review').prompt, /设计验证证据/);
+  const snapshot = s.ctl.snapshot(); snapshot.nodes.ui.designEvidence = null;
+  s.store.updateRun(s.root.runId, { publish: { nodes: snapshot.nodes, approachChanges: snapshot.approachChanges } });
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.publisher.calls.filter(c => c[0] === 'verify').length, 2);
+  assert.equal(s.publisher.calls.some(c => c[0] === 'merge'), false);
+  assert.equal(s.runOf('ui', 'review').attempt, 2, '补验后必须重新独立审阅');
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.publisher.calls.filter(c => c[0] === 'merge').length, 1);
+});
+
+test('设计 runner 设施抛错不计 worker 失败，下一 tick 同 attempt 自动重试', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const s = setup([ui], { designBaseline: designBaseline() });
+  const originalVerify = s.publisher.verify; let fail = true;
+  s.publisher.verify = async input => {
+    if (fail) throw new Error('browser unavailable');
+    return { ok: true, tests: { exitCode: 0 }, designEvidence: { commit: input.commit, designDigest: 'a'.repeat(64), contractDigest: designContractDigest({ designDigest: 'a'.repeat(64), contract: ui.contract.design }), checks: [{ ok: true }] } };
+  };
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  assert.equal(s.runOf('ui', 'dev').attempt, 1);
+  assert.equal(s.runOf('ui', 'dev').failures, 0);
+  assert.match(s.ctl.snapshot().nodes.ui.lastError, /browser unavailable/);
+  fail = false; await s.ctl.tick();
+  assert.ok(s.hub.last('ui', 'review'));
+  assert.equal(s.runOf('ui', 'dev').attempt, 1);
+});
+
+test('崩溃收养路径把 prepare 返回的实际 base commit 传给 commitPr', async () => {
+  const s = setup([mkNode('a')]);
+  s.store.createNodeRun(s.root.runId, { nodeId: 'a', role: 'dev' });
+  const realPrepare = s.rt.prepare.bind(s.rt);
+  s.rt.prepare = async input => ({ ...(await realPrepare(input)), baseCommit: 'frozen-abc' });
+  let commitBase = null;
+  s.publisher.commitPr = async input => {
+    commitBase = input.base;
+    return { prUrl: `https://x/pr/${input.nodeId}`, commit: `sha-${input.nodeId}` };
+  };
+  await s.ctl.tick();
+  s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  assert.equal(commitBase, 'frozen-abc', '崩溃收养不得把 origin/main 传给 scope 检查');
+});
+
+test('prepare base is persisted to the server-side root run before Hub dispatch', async () => {
+  const ui = mkNode('a');
+  const s = setup([ui]);
+  const realPrepare = s.rt.prepare.bind(s.rt);
+  s.rt.prepare = async input => ({ ...(await realPrepare(input)), baseCommit: 'f'.repeat(40) });
+  await s.ctl.tick();
+  assert.ok(s.hub.last('a'));
+  const root = s.store.getRun(s.root.runId);
+  assert.equal(root.publish.nodes.a.prepareBase, 'f'.repeat(40));
+});
+
+test('claimed crash window without a server-frozen base does not redispatch', async () => {
+  const s = setup([mkNode('a')]);
+  const run = s.store.createNodeRun(s.root.runId, { nodeId: 'a', role: 'dev' });
+  s.store.claim(run.runId, { slot: 1 });
+  await s.ctl.tick();
+  assert.equal(s.hub.last('a'), undefined);
+  assert.match(s.ctl.snapshot().nodes.a.lastError, /冻结 prepare base/);
 });

@@ -1,11 +1,14 @@
 // #54 生产装配：Hub 适配（经 /v1/events，不起 ACP）、启动恢复、有界轮询、blocked 证据。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ALLOWED_ACTIONS, ROOT_NODE, createRunStore } from '../src/dag-run.mjs';
-import { createBlockedEvidence, createHubAdapter, dagEventType, startDagControllers, MIN_POLL_MS } from '../src/dag-runtime.mjs';
+import { createBlockedEvidence, createHubAdapter, createDagRuntime, dagEventType, defaultRunTests, startDagControllers, MIN_POLL_MS } from '../src/dag-runtime.mjs';
+import { designContractDigest } from '../src/design-baseline.mjs';
+import { ensureMirror } from '../src/dag-mirror.mjs';
+import { makeRepo, sh } from './helpers-git.mjs';
 import { mkNode } from './dag-fakes.mjs';
 
 const recorder = (responses = {}) => {
@@ -95,4 +98,68 @@ test('startDagControllers：另一进程持锁时不接管；装配失败只记�
   await mgr.tickOnce();
   assert.ok(logs.some(m => /恢复控制器失败.*boom/.test(m)));
   mgr.stop();
+});
+
+test('createDagRuntime：真实 publisher 使用控制器 mirror，不受 worker 移动 origin/main 影响', async () => {
+  const { project, remote } = makeRepo();
+  const stateRoot = mkdtempSync(path.join(tmpdir(), 'dag-runtime-mirror-'));
+  const mirror = await ensureMirror({ root: stateRoot, remoteUrl: remote, baseBranch: 'main' });
+  const store = createRunStore({ directory: path.join(stateRoot, 'dag-runs') });
+  const designBaseline = {
+    designDigest: 'a'.repeat(64), manifestPath: 'docs/design/demo/design-manifest.json',
+    manifest: { schema: 1, designId: 'demo', artifacts: [{ path: 'docs/design/demo/reference.png', sha256: 'b'.repeat(64) }], surfaces: [{ id: 'overview', route: '/', viewports: ['1440x900'], states: ['normal'], interactions: [], referencePaths: ['docs/design/demo/reference.png'] }] },
+    readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png'],
+  };
+  const ui = mkNode('a'); ui.contract.design = { surfaceIds: ['overview'] };
+  const root = store.createRun({
+    project, remoteUrl: remote, mirrorPath: mirror.mirrorPath, baseBranch: mirror.baseBranch, baseCommit: mirror.baseCommit,
+    planId: 'p1', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true,
+    nodeId: ROOT_NODE, role: 'dev', nodes: [ui], designBaseline,
+  });
+  // worker 在目标项目移动 origin/main，控制器 mirror 不受影响。
+  mkdirSync(path.join(project, 'secret'), { recursive: true }); writeFileSync(path.join(project, 'secret/extra.txt'), 'evil\n');
+  sh(project, 'add', 'secret/extra.txt'); sh(project, 'commit', '-qm', 'evil base');
+  sh(project, 'update-ref', 'refs/remotes/origin/main', sh(project, 'rev-parse', 'HEAD'));
+  const gh = { async findPr() { return null; }, async createPr() { return 'https://gh/pr/1'; }, async closePr() {} };
+  const request = async (config, p, opts = {}) => {
+    if (p === '/v1/events' && opts.method === 'POST') return { event: 42 };
+    if (p === '/v1/events/42') {
+      const current = store.listRuns().find(item => item.nodeId === 'a');
+      const receipt = { advanceId: current.expectedAdvanceId, runId: current.runId, nodeId: 'a', role: 'dev', generation: 1, attempt: 1, outcome: 'done' };
+      return { event: 42, runs: [{ run: 7, state: 'done', events: [{ type: 'dag.a.advance', detail: JSON.stringify(receipt) }] }] };
+    }
+    return {};
+  };
+  let called = 0; let received;
+  const verifyDesign = async input => {
+    called++; received = input;
+    return { ok: true, evidence: { commit: input.commit, designDigest: designBaseline.designDigest, contractDigest: designContractDigest({ designDigest: designBaseline.designDigest, contract: ui.contract.design }), checks: [{ ok: true }] } };
+  };
+  const ctl = await createDagRuntime({ rootRun: root, config: {}, store, request, gh, runTests: async () => ({ exitCode: 0 }), verifyDesign });
+  await ctl.tick();
+  const slotDir = path.join(mirror.mirrorPath, '.worktrees', `dag-${root.runId}-slot-1`);
+  mkdirSync(path.join(slotDir, 'src'), { recursive: true }); writeFileSync(path.join(slotDir, 'src', 'a.mjs'), 'export const a = 1;\n');
+  await ctl.tick();
+  assert.equal(called, 1);
+  assert.equal(received.project, mirror.mirrorPath);
+  assert.match(received.evidenceDir, /design-evidence/);
+  assert.equal(ctl.snapshot().nodes.a.state, 'review');
+  assert.equal(sh(mirror.mirrorPath, 'rev-parse', 'refs/heads/main'), mirror.baseCommit);
+});
+
+test('defaultRunTests uses a sanitized environment without controller-only variables', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'dag-run-tests-env-'));
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+    private: true, type: 'module',
+    scripts: { test: 'node -e "if (process.env.AGENT_AUTOLOOP_HOME !== undefined) process.exit(1)"' },
+  }));
+  const previous = process.env.AGENT_AUTOLOOP_HOME;
+  process.env.AGENT_AUTOLOOP_HOME = 'controller-secret';
+  try {
+    const result = await defaultRunTests(root);
+    assert.equal(result.exitCode, 0);
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_AUTOLOOP_HOME; else process.env.AGENT_AUTOLOOP_HOME = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
 });

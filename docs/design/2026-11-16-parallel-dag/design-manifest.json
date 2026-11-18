@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "designId": "2026-11-16-parallel-dag",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-16-parallel-dag/prototype.html",
+      "sha256": "64ba803a1c58549532fb6581f6f7100534820759b650e95a8492893672743f4d"
+    },
+    {
+      "path": "docs/design/2026-11-16-parallel-dag/prototype.css",
+      "sha256": "2200808267076e7ade395c97e1bedf97bab31b364c506e203278598cc99c2229"
+    },
+    {
+      "path": "docs/design/2026-11-16-parallel-dag/prototype.mjs",
+      "sha256": "0e1e32e3e784f1ea8321cd39629776459f3a6b92f58166389c00ff0e62168a62"
+    },
+    {
+      "path": "docs/design/2026-11-16-parallel-dag/render.mjs",
+      "sha256": "f4e0c8be31f48181960e823408d39fcbf14f98217e72b7459fff918fce118c7d"
+    },
+    {
+      "path": "docs/design/2026-11-16-parallel-dag/renders/overview-desktop.png",
+      "sha256": "427ae95fcbeedcad0ee3cf6ae92b8dfa934d2a3dee28f2e68cfd43fed9475727"
+    },
+    {
+      "path": "docs/design/2026-11-16-parallel-dag/renders/overview-mobile.png",
+      "sha256": "6880244062d44e6189d1f9050f27f5e39fcf52969b1909336afbf06a5403275a"
+    },
+    {
+      "path": "docs/design/2026-11-16-parallel-dag/renders/authorize-desktop.png",
+      "sha256": "bf6d2919f189c57e15001ac7c4832a2c8bb054689cbe8833247e1fd0982b14ad"
+    },
+    {
+      "path": "docs/design/2026-11-16-parallel-dag/renders/authorize-mobile.png",
+      "sha256": "574100425c08985b5118576e08ab6d6b4801bf54d86800a18fc5bdf0119111e7"
+    },
+    {
+      "path": "docs/design/2026-11-16-parallel-dag/verify-production.mjs",
+      "sha256": "59352394cece8361bc8a8ac853393115eef78490bfd132aa30c08f76a0be15ce"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "overview",
+      "route": "#overview",
+      "viewports": [
+        "1440x900",
+        "390x844"
+      ],
+      "states": [
+        "normal",
+        "empty",
+        "loading",
+        "failed",
+        "blocked"
+      ],
+      "interactions": [
+        "open-dag"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-16-parallel-dag/renders/overview-desktop.png",
+        "docs/design/2026-11-16-parallel-dag/renders/overview-mobile.png"
+      ]
+    },
+    {
+      "id": "authorize",
+      "route": "#authorize",
+      "viewports": [
+        "1440x900",
+        "390x844"
+      ],
+      "states": [
+        "normal",
+        "empty",
+        "loading",
+        "failed",
+        "blocked"
+      ],
+      "interactions": [
+        "load-plan",
+        "confirm-scope"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-16-parallel-dag/renders/authorize-desktop.png",
+        "docs/design/2026-11-16-parallel-dag/renders/authorize-mobile.png"
+      ]
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-16-parallel-dag/verify-production.mjs"
+}

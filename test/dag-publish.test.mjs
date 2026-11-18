@@ -1,31 +1,40 @@
 // publish：commit-pr / verify / merge 在真实 git（本地 bare 远端）+ 假 gh 上的行为。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
 import { createSlotRuntime } from '../src/dag-slots.mjs';
 import { createPublisher, PublishError } from '../src/dag-publish.mjs';
+import { designContractDigest } from '../src/design-baseline.mjs';
+import { ensureMirror } from '../src/dag-mirror.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
-async function boot({ actions = ALLOWED_ACTIONS } = {}) {
+async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false } = {}) {
   const { project, remote } = makeRepo();
-  const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-pub-')) });
-  const root = store.createRun({ project, planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [node('a', ['src/a.mjs']), node('b', ['src/b.mjs'])] });
-  const rt = createSlotRuntime({ project, runId: root.runId });
+  const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-pub-'));
+  const store = createRunStore({ directory: storeDirectory });
+  const mirror = await ensureMirror({ root: storeDirectory, remoteUrl: remote, baseBranch: 'main' });
+  const root = store.createRun({
+    project, remoteUrl: remote, mirrorPath: mirror.mirrorPath, baseBranch: mirror.baseBranch, baseCommit: mirror.baseCommit,
+    planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev',
+    nodes: [{ ...node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), contract: { files: designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'], ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline,
+  });
+  const rt = createSlotRuntime({ project: mirror.mirrorPath, gitDir: mirror.mirrorPath, runId: root.runId });
   await rt.ensureSlots();
-  await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
+  const prepared = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'refs/heads/main' });
+  store.updateRun(root.runId, { publish: { nodes: { a: { prepareBase: prepared.baseCommit } } } });
   const gh = { prs: new Map(), merged: [], async createPr(a) { const url = `https://gh/pr/${this.prs.size + 1}`; this.prs.set(url, { head: a.branch, sha: null }); return url; },
     async findPr(a) { return [...this.prs].find(([, p]) => p.head === a.branch)?.[0] ?? null; },
     async prHead(url) { return this.prs.get(url).sha; }, async mergePr(url) { this.merged.push(url); return {}; },
     closed: [], async closePr(url, a) { this.closed.push([url, a.comment]); } };
   const tests = []; const runTests = async (cwd) => { tests.push(cwd); return { exitCode: 0, summary: '1 passed' }; };
-  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests });
-  const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId };
+  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests, verifyDesign, baseRef: 'refs/heads/main' });
+  const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId, base: prepared.baseCommit };
   const write = (rel, c) => { mkdirSync(path.dirname(path.join(ctx.worktree, rel)), { recursive: true }); writeFileSync(path.join(ctx.worktree, rel), c); };
-  return { project, remote, store, root, rt, gh, pub, ctx, write, tests };
+  return { project, remote, store, root, rt, gh, pub, ctx, write, tests, mirror };
 }
 
 test('commitPr：只提交文件范围内改动，推送分支，创建 PR 并回传 SHA；重复调用幂等', async () => {
@@ -125,4 +134,182 @@ test('requireOptionalGrant：执行层按授权记录拒绝未选高风险动作
   // 选中后执行层放行
   const grant = buildGrantRecordForPub({ project: 'p', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], selectedOptionalActions: ['deploy'], planOptionalActions: ['deploy'] });
   assert.equal(canExecForPub(grant, 'deploy').ok, true);
+});
+
+test('commitPr：设计清单、批准记录和参考产物始终只读，即使误加入节点 scope', async () => {
+  const designBaseline = { designDigest: 'a'.repeat(64), readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png', 'docs/prd/demo/design-approval.json'] };
+  const t = await boot({ designBaseline, designInScope: true });
+  t.write('src/a.mjs', 'ok\n');
+  t.write('docs/design/demo/design-manifest.json', 'changed\n');
+  t.write('docs/design/demo/reference.png', 'changed\n');
+  t.write('docs/prd/demo/design-approval.json', 'changed\n');
+  await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'DESIGN_BASELINE_READONLY');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+const uiDesign = () => ({
+  designDigest: 'a'.repeat(64), manifestPath: 'docs/design/demo/design-manifest.json',
+  manifest: { schema: 1, designId: 'demo', artifacts: [{ path: 'docs/design/demo/reference.png', sha256: 'b'.repeat(64) }], surfaces: [{ id: 'overview', route: '/', viewports: ['1440x900'], states: ['normal'], interactions: ['open'], referencePaths: ['docs/design/demo/reference.png'] }] },
+  readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png'],
+});
+const evidenceFor = (root, commit, over = {}) => ({
+  commit, designDigest: root.designBaseline.designDigest,
+  contractDigest: designContractDigest({ designDigest: root.designBaseline.designDigest, contract: root.nodes[0].contract.design }),
+  checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }], ...over,
+});
+
+test('verify：非 UI 节点完全不调用设计 verifier', async () => {
+  let calls = 0;
+  const t = await boot({ verifyDesign: async () => { calls++; throw new Error('must not run'); } });
+  t.write('src/a.mjs', 'x\n'); await t.pub.commitPr(t.ctx);
+  const result = await t.pub.verify({ ...t.ctx, commit: 'sha' });
+  assert.equal(result.ok, true); assert.equal(calls, 0);
+  assert.equal(result.designEvidence, undefined);
+});
+
+test('verify：UI 节点只跑定向 checks，visualDiffs 默认不形成硬失败', async () => {
+  const designBaseline = uiDesign(); let received;
+  const verifyDesign = async input => {
+    received = input;
+    return { ok: true, evidence: { ...evidenceFor(input.designBaseline ? { designBaseline, nodes: [{ contract: { design: input.contract } }] } : null, input.commit), visualDiffs: [{ surfaceId: 'overview', ok: false, note: 'review-only' }] } };
+  };
+  const t = await boot({ designBaseline, ui: true, verifyDesign });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
+  const result = await t.pub.verify({ ...t.ctx, commit: pr.commit });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(received.contract.surfaceIds[0], 'overview');
+  assert.equal(result.designEvidence.visualDiffs[0].ok, false);
+});
+
+test('verify：UI 缺 verifier 属设施错误；定向断言失败才返回实现失败', async () => {
+  const missing = await boot({ designBaseline: uiDesign(), ui: true });
+  missing.write('src/a.mjs', 'x\n'); const missingPr = await missing.pub.commitPr(missing.ctx);
+  await assert.rejects(missing.pub.verify({ ...missing.ctx, commit: missingPr.commit }), error => error.code === 'DESIGN_VERIFIER_UNAVAILABLE');
+  const failing = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async input => ({ ok: false, evidence: evidenceFor({ designBaseline: uiDesign(), nodes: [{ contract: { design: input.contract } }] }, input.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] }) }) });
+  failing.write('src/a.mjs', 'x\n'); const failingPr = await failing.pub.commitPr(failing.ctx);
+  const result = await failing.pub.verify({ ...failing.ctx, commit: failingPr.commit });
+  assert.equal(result.ok, false); assert.equal(result.designEvidence.checks[0].ok, false);
+});
+
+test('merge：UI 证据必须与已审 commit 和根 designDigest 匹配；merge 本身不重跑验证', async () => {
+  let verifyCalls = 0;
+  const designBaseline = uiDesign();
+  const t = await boot({ designBaseline, ui: true, verifyDesign: async input => { verifyCalls++; return { ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit) }; } });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), error => error.code === 'DESIGN_EVIDENCE_MISSING');
+  const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit);
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, designDigest: 'c'.repeat(64) } }), error => error.code === 'DESIGN_EVIDENCE_MISMATCH');
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, commit: 'other' } }), error => error.code === 'DESIGN_EVIDENCE_MISMATCH');
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, contractDigest: 'c'.repeat(64) } }), error => error.code === 'DESIGN_EVIDENCE_MISMATCH');
+  const out = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence });
+  assert.ok(out.mergeCommit); assert.equal(verifyCalls, 0, 'merge 不得重跑浏览器验证');
+});
+
+test('merge：失败 checks 即便身份匹配也不得合并', async () => {
+  const designBaseline = uiDesign();
+  const t = await boot({ designBaseline, ui: true, verifyDesign: async () => { throw new Error('not called'); } });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] });
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence }), error => error.code === 'DESIGN_EVIDENCE_FAILED');
+  assert.equal(t.gh.merged.length, 0);
+});
+
+test('verify：设计 verifier 造成的槽位变化同样被记录', async () => {
+  const designBaseline = uiDesign();
+  const verifyDesign = async input => {
+    writeFileSync(path.join(input.worktree, 'src', 'a.mjs'), 'verifier mutation\n');
+    return { ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit) };
+  };
+  const t = await boot({ designBaseline, ui: true, verifyDesign });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
+  const result = await t.pub.verify({ ...t.ctx, commit: pr.commit });
+  assert.equal(result.slotStateChanged, true);
+});
+
+test('commitPr：worker 先提交的范围外文件仍拒绝，不推送不建 PR', async () => {
+  const t = await boot();
+  t.write('src/b.mjs', 'not mine\n');
+  sh(t.ctx.worktree, 'add', 'src/b.mjs'); sh(t.ctx.worktree, 'commit', '-qm', 'worker precommit');
+  await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'OUT_OF_SCOPE');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr：worker 先提交的设计只读文件仍拒绝，不推送不建 PR', async () => {
+  const t = await boot({ designBaseline: uiDesign(), ui: true });
+  t.write('docs/design/demo/reference.png', 'changed\n');
+  sh(t.ctx.worktree, 'add', 'docs/design/demo/reference.png'); sh(t.ctx.worktree, 'commit', '-qm', 'worker precommit design');
+  await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'DESIGN_BASELINE_READONLY');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('verify：UI verifier 执行前槽位 HEAD 必须等于待验证 commit', async () => {
+  const designBaseline = uiDesign();
+  const verifyDesign = async input => evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit);
+  const t = await boot({ designBaseline, ui: true, verifyDesign });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
+  t.write('src/a.mjs', 'post-commit\n'); sh(t.ctx.worktree, 'add', 'src/a.mjs'); sh(t.ctx.worktree, 'commit', '-qm', 'post commit');
+  await assert.rejects(t.pub.verify({ ...t.ctx, commit: pr.commit }), error => error.code === 'DESIGN_WORKTREE_HEAD_MISMATCH');
+});
+
+test('verify：UI verifier 执行前槽位必须干净', async () => {
+  const designBaseline = uiDesign();
+  const verifyDesign = async input => evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit);
+  const t = await boot({ designBaseline, ui: true, verifyDesign });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
+  t.write('src/a.mjs', 'dirty after commit\n');
+  await assert.rejects(t.pub.verify({ ...t.ctx, commit: pr.commit }), error => error.code === 'DESIGN_WORKTREE_DIRTY');
+});
+
+test('commitPr：worker 移动 origin/main 不能绕过冻结 base 的 scope 检查', async () => {
+  const t = await boot();
+  const frozenBase = sh(t.project, 'rev-parse', 'main');
+  t.write('secret/extra.txt', 'out of scope\n');
+  sh(t.ctx.worktree, 'add', 'secret/extra.txt'); sh(t.ctx.worktree, 'commit', '-qm', 'out of scope');
+  const moved = sh(t.ctx.worktree, 'rev-parse', 'HEAD');
+  sh(t.mirror.mirrorPath, 'update-ref', 'refs/heads/main', moved);
+  t.write('src/a.mjs', 'in scope\n');
+  sh(t.ctx.worktree, 'add', 'src/a.mjs'); sh(t.ctx.worktree, 'commit', '-qm', 'in scope');
+  await assert.rejects(t.pub.commitPr({ ...t.ctx, base: frozenBase }), error => error.code === 'OUT_OF_SCOPE');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr rejects symbolic base refs such as origin/main', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'x\n');
+  await assert.rejects(t.pub.commitPr({ ...t.ctx, base: 'origin/main' }), error => error.code === 'BASE_NOT_COMMIT');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr does not execute Git clean filters configured by worker', async () => {
+  const t = await boot();
+  const marker = path.join(tmpdir(), `commit-filter-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `commit-filter-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'filter-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  mkdirSync(path.join(t.project, '.git', 'info'), { recursive: true });
+  writeFileSync(path.join(t.project, '.git', 'info', 'attributes'), 'src/a.mjs filter=bad\n');
+  sh(t.project, 'config', 'filter.bad.clean', script);
+  try {
+    t.write('src/a.mjs', 'export const a = 1;\n');
+    await t.pub.commitPr(t.ctx);
+    assert.equal(existsSync(marker), false, 'commitPr 不得执行 clean filter');
+  } finally { rmSync(marker, { force: true }); rmSync(script, { force: true }); }
+});
+
+test('commitPr requires the base frozen in the server-side root run', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'x\n');
+  const other = sh(t.project, 'commit-tree', sh(t.project, 'rev-parse', 'main^{tree}'), '-m', 'other');
+  await assert.rejects(t.pub.commitPr({ ...t.ctx, base: other }), error => error.code === 'BASE_MISMATCH');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr pushes to the remote URL frozen in the root run, not worker-modified origin', async () => {
+  const t = await boot();
+  const evil = `${t.remote}-evil`;
+  sh(path.dirname(t.remote), 'init', '-q', '--bare', evil);
+  sh(t.project, 'remote', 'set-url', 'origin', evil);
+  t.write('src/a.mjs', 'export const a = 1;\n');
+  const pr = await t.pub.commitPr(t.ctx);
+  assert.equal(sh(t.remote, 'rev-parse', 'feat/a'), pr.commit);
+  assert.throws(() => sh(evil, 'rev-parse', 'feat/a'));
 });

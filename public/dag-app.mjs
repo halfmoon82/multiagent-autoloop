@@ -82,7 +82,7 @@ export function initDag({ api, notify, showView, getProjects }) {
     if (!s.plan || !s.checked || s.submitting) return;
     s.submitting = true; s.planError = ''; renderAuth();
     try {
-      s.created = await post('/api/dag-runs', { project: s.plan.project, planId: s.plan.planId, planDigest: s.plan.planDigest, confirm: true, confirmedActionIds: s.plan.allowedActions, selectedOptionalActions: s.optionalGrants });
+      s.created = await post('/api/dag-runs', { project: s.plan.project, planId: s.plan.planId, planDigest: s.plan.planDigest, remoteUrl: s.plan.remoteUrl, confirm: true, confirmedActionIds: s.plan.allowedActions, selectedOptionalActions: s.optionalGrants });
       notify('已创建 DAG，授权快照由服务端生成。'); s.selectedRun = s.created.runId; await refreshDag(); showView('dag');
     } catch (error) { s.planError = error.message; }
     finally { s.submitting = false; renderAuth(); }

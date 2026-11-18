@@ -11,6 +11,15 @@
 1. Claude Opus 5.5 只读审阅本计划，主 Agent 核实并修订，同会话复审至 P0–P2 清零；再在 feat/<topic> 提交 docs/2026-11-16-parallel-dag-design.md、推送 GitHub、开 PR，按仓库流程独立 Review 和 squash 合并。计划合入不等于运行切换。
 2. 设计稿门：控制台总览、设计会话、DAG 详情、项目接入预检、执行授权范围确认五类页面；本地 HTML/CSS + PNG，桌面 1440×900、移动 390×844，附交互与空/加载/失败/阻塞状态。用户明确确认后才写任何实现代码；稿子变更重新确认。
 
+### 可选设计基线与定向执行门（2026-11-17 精简审阅后）
+- 只有包含 `contract.design.surfaceIds` 的 UI 节点才加载 `design-manifest.json` 与批准记录；纯后端节点和旧数组计划无需新增字段，也不读取设计设施。设计批准只绑定 `designDigest`，不绑定 PRD 全文；只有设计语义或产物变化才重新确认。
+- `designDigest` 纳入现有 `planDigest`，根 run 保存一份不可变快照，节点 run/attempt 原样继承。活跃 run 不读取当前工作目录的新稿；新稿只用于新 run，用户显式修改活跃计划范围时才修订并重新确认。
+- 发布时做一次设计确认，执行时做一次定向设计验证。preview/create/dispatch/review/merge 只做廉价一致性检查；merge 不重跑浏览器。controller 在槽位分配、prepare、claim 前按节点校验快照，单节点失败不影响其他 ready 节点。
+- `createDagRuntime` 默认从精确 commit 建临时只读 worktree，校验已批准 `design-manifest.verifierPath` 的 sha256 后，把批准字节复制到 worker 不可写目录并在净化子进程执行；只验证该节点声明的 surface/viewport/state/interaction，并把证据写入服务端 `dag-runs/design-evidence/`。结果走专用 fd、一次性 nonce 与忽略 `toJSON` 的安全序列化，stdout/stderr 仅作有上限日志，不可伪造结果。`checks` 是硬断言；PNG 与 `visualDiffs` 默认仅为审阅证据。runner/证据设施故障自动重试，不计 worker 实现失败。
+- run 创建时在服务端 root run 冻结 origin URL，并在 `AGENT_AUTOLOOP_HOME/dag-mirrors/` 建控制器 owned mirror；base 从 mirror 获取，push/fetch 也从 mirror 走显式 URL，不信任 worker 可改的项目 ref/config。remote URL 纳入授权记录摘要。
+- 证据绑定 `commit/designDigest/contractDigest`。同 SHA 证据丢失时自动补验并重新独立 review；只有实际设计语义改变才以 `DESIGN_CHANGE_REQUIRED` 升级。worker 不得修改基线、参考图、批准记录或验证阈值。控制器侧 Git 统一走 `src/git-safe.mjs`：禁 hooks、fsmonitor、untrackedCache、external diff/textconv，不继承控制器环境，不在 worker worktree 执行 `git add`/`checkout`/`restore`；WIP 与提交用 `hash-object --no-filters`、`update-index`、`write-tree`、`commit-tree` 构树，恢复用 `ls-tree`/`cat-file` 写文件，避免 clean/smudge filter。`npm test` 使用净化环境。`prepare` 从 mirror 冻结实际 base commit SHA 并在 claim/派发前写入服务端 root run；`commitPr` 的已提交/未提交 scope 均相对该 SHA 核对，不信任 worker 可移动的 `origin/main` 或 slot 状态。
+- 共享 surface 的跨节点回归只复用现有 integration-review，且只阻塞 DAG 最终完成与对应返工节点；不新增 Hub 协议或第二套状态机。
+
 ## 原生 Codex Plan Mode + 只读沙箱
 - kind=design 使用现有 ACP 底座；普通会话不变。
 - 首轮顺序固定：session.new → session/set_mode {modeId:"read-only"} 并核验 → session/set_config_option {configId:"collaboration_mode",value:"plan"} 并核验 → 首个 runTurn。任一失败即创建失败，不降级。
@@ -26,7 +35,7 @@
 - 设计会话使用专用 PRD 引导提示词，不复用 buildSchedulingPrompt 的可写/派发 worker 文案；kind=design 不挂载 Hub MCP，并读取用户配置后对每个 mcp_servers.<name> 显式设置 enabled=false；启动后必须核验工具列表无任何 MCP 工具，任何残余 MCP 权限请求一律取消。
 - 设计会话以约定 JSON 块输出 product-spec；服务端从会话转录提取并计算 specDigest，浏览器只能提交 specDigest + confirm，不能直接提交可信 spec 内容。
 - 确认后服务端把该转录原文写到 .vibe/plans/<planId>/product-spec.input.json，再执行 vibe plan --from-prd；vibe 产物留在目标项目 .vibe/，不进入控制台仓库。
-- **publish（决策 #4）**：确认后由服务端代行落地，设计会话自身仍 read-only。服务端先校验能力记录，再在目标项目临时 worktree 中从当前基线分支建 `docs/<planId>`，仅提交 `docs/prd/<planId>/{product-spec,plan,nodes}.json`，推送该分支并创建 PR（已有同分支 open PR 则复用，全流程幂等）。授权快照由服务端生成，只含 push-branch 与 create-pr，明确排除 merge/deploy/release/生产写入/凭据/对外通信；不直推基线分支、不 force push、不 merge。实现见 src/design-publish.mjs。
+- **publish（决策 #4）**：确认后由服务端代行落地，设计会话自身仍 read-only。服务端先校验能力记录，再在目标项目临时 worktree 中从当前基线分支建 `docs/<planId>`，提交 `docs/prd/<planId>/{product-spec,plan,nodes}.json`；若声明设计，再提交已确认设计产物与 `design-approval.json`，推送该分支并创建 PR（已有同分支 open PR 则复用，全流程幂等）。授权快照由服务端生成，只含 push-branch 与 create-pr，明确排除 merge/deploy/release/生产写入/凭据/对外通信；不直推基线分支、不 force push、不 merge。实现见 src/design-publish.mjs。
 - vibe 产物中的 execution_engine=vibeguide_monitor 和授权卡均为副产物，不作为本链执行引擎或授权事实。
 - planDigest 覆盖 product-spec.input.json、plan.json、nodes.json 和服务端生成的 authorizationSnapshot。创建运行时把全部节点契约快照写入 run.json；worker 从 run.json 快照和绝对证据路径获取合同。计划变化须重新确认。
 
