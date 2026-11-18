@@ -71,6 +71,8 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       `设计合同：${JSON.stringify(node.contract.design)}`,
       '设计基线、参考图与验证器只读；如需改变设计语义，返回 DESIGN_CHANGE_REQUIRED，不得自行修改基线或阈值。',
     );
+    const warnings = n.warnings ? Object.entries(n.warnings).map(([kind, value]) => `${kind}: ${Array.isArray(value) ? value.join(', ') : value}`).join('；') : '';
+    if (warnings) lines.push(`本节点已上报警示（只作参考，不阻断）：${warnings}`);
     if (design && run.role === 'review') lines.push(`设计验证证据：${JSON.stringify(n.designEvidence ? { commit: n.designEvidence.commit, designDigest: n.designEvidence.designDigest, contractDigest: n.designEvidence.contractDigest, checks: n.designEvidence.checks, visualDiffs: n.designEvidence.visualDiffs || [] } : null)}`);
     return lines.join('\n');
   };
@@ -137,7 +139,12 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     if (!SUCCESS.has(run.outcome)) return failure(root, st, id, run.role === 'dev' ? run : latest(root, id, 'dev'), `outcome:${run.outcome}`);
     if (run.role === 'dev') {
       const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, base: n.prepareBase };
-      const pr = await publisher.commitPr(ctx);
+      let pr;
+      try { pr = await publisher.commitPr(ctx); }
+      catch (error) {
+        if (error?.code === 'SENSITIVE_PATH') return failure(root, st, id, run, 'sensitive-path');
+        throw error;
+      }
       store.registerPr(root.runId, id, pr.prUrl); n.prUrl = pr.prUrl; n.commit = pr.commit;
       if (pr.outOfScope?.length) n.warnings = { ...(n.warnings || {}), outOfScope: pr.outOfScope };
       const ver = await publisher.verify({ ...ctx, commit: pr.commit });

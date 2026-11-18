@@ -32,7 +32,7 @@
 - **接入预检只报不拦（2026-11-18）**：原生计划（docs/dag-plans/<planId>.json）直接通过，不要求 `.vibe`；回退 vibe 计划时也只在面板上显示初始化/能力记录状态，不阻止创建与派发。检查项仅供参考，修复方式写在面板上（`vibe init --confirm`、`vibe attest --adapter codex --facts <facts.json> --provenance "<依据>"`）。
 - **能力记录**由真实 Codex 会话的 `vibe attest` 写入 `.vibe/provider-actions/capabilities-codex.json`；控制台只读展示（72 小时有效期、provenance、事实派发形态），不代写、不编造，也不再作为发布阻断条件。
 - **门禁口径（2026-11-18）**：只有不可逆、对外、花钱、凭据与生产数据类动作保留硬拦（授权快照 allowedActions、deploy/release/production-write/credentials/external-communication、远端 HEAD 一致性、冻结 base）。写范围、设计证据、卡片语言质量、路由评测结果一律**只报不拦**，由 PR 审阅与独立 worktree 兜底。
-- **publish（决策 #4）**：确认后由服务端代行落地，设计会话自身仍 read-only。服务端先校验能力记录，再在目标项目临时 worktree 中从当前基线分支建 `docs/<planId>`，提交 `docs/prd/<planId>/{product-spec,plan,nodes}.json`；若声明设计，再提交已确认设计产物与 `design-approval.json`，推送该分支并创建 PR（已有同分支 open PR 则复用，全流程幂等）。授权快照由服务端生成，只含 push-branch 与 create-pr，明确排除 merge/deploy/release/生产写入/凭据/对外通信；不直推基线分支、不 force push、不 merge。实现见 src/design-publish.mjs。
+- **publish（决策 #4）**：确认后由服务端代行落地，设计会话自身仍 read-only。服务端先在目标项目临时 worktree 中从当前基线分支建 `docs/<planId>`，提交 `docs/prd/<planId>/{product-spec,plan,nodes}.json`；若声明设计，再提交已确认设计产物与 `design-approval.json`，推送该分支并创建 PR（已有同分支 open PR 则复用，全流程幂等）。授权快照由服务端生成，只含 push-branch 与 create-pr，明确排除 merge/deploy/release/生产写入/凭据/对外通信；不直推基线分支、不 force push、不 merge。实现见 src/design-publish.mjs。
 - vibe 产物中的 execution_engine=vibeguide_monitor 和授权卡均为副产物，不作为本链执行引擎或授权事实。
 - planDigest 覆盖 product-spec.input.json、plan.json、nodes.json 和服务端生成的 authorizationSnapshot。创建运行时把全部节点契约快照写入 run.json；worker 从 run.json 快照和绝对证据路径获取合同。计划变化须重新确认。
 

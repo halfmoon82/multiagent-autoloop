@@ -12,7 +12,7 @@ import { ensureMirror } from '../src/dag-mirror.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
-async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false } = {}) {
+async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, aFiles = null } = {}) {
   const { project, remote } = makeRepo();
   const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-pub-'));
   const store = createRunStore({ directory: storeDirectory });
@@ -20,7 +20,7 @@ async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designIn
   const root = store.createRun({
     project, remoteUrl: remote, mirrorPath: mirror.mirrorPath, baseBranch: mirror.baseBranch, baseCommit: mirror.baseCommit,
     planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev',
-    nodes: [{ ...node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), contract: { files: designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'], ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline,
+    nodes: [{ ...node('a', aFiles || (designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'])), contract: { files: aFiles || (designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline,
   });
   const rt = createSlotRuntime({ project: mirror.mirrorPath, gitDir: mirror.mirrorPath, runId: root.runId });
   await rt.ensureSlots();
@@ -332,4 +332,18 @@ test('commitPr：凭据/CI/发布脚本类敏感路径仍然硬拦', async () =>
   t.write('.github/workflows/ci.yml', 'name: ci\n');
   await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'SENSITIVE_PATH');
   assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr：凭据类永远拦；.env.example 与显式声明的受保护路径放行', async () => {
+  const creds = await boot();
+  creds.write('src/a.mjs', 'ok\n'); creds.write('src/i18n/en.key', 'k\n');
+  await assert.rejects(creds.pub.commitPr(creds.ctx), error => error.code === 'SENSITIVE_PATH');
+  const env = await boot();
+  env.write('src/a.mjs', 'ok\n'); env.write('.env.example', 'A=1\n');
+  const out = await env.pub.commitPr(env.ctx);
+  assert.ok(out.commit, '.env.example 是模板，不是凭据');
+  const scoped = await boot({ aFiles: ['src/a.mjs', '.github/workflows/dag.yml'] });
+  scoped.write('src/a.mjs', 'ok\n'); scoped.write('.github/workflows/dag.yml', 'name: dag\n');
+  const scopedOut = await scoped.pub.commitPr(scoped.ctx);
+  assert.ok(scopedOut.commit, '显式写进节点范围的受保护路径放行');
 });
