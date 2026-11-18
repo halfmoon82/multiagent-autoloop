@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { MAX_SLOTS } from './dag-run.mjs';
-import { defaultGit, restoreWorktree } from './git-safe.mjs';
+import { defaultGit, restoreWorktree, worktreeChanges } from './git-safe.mjs';
 
 export class SlotError extends Error {
   constructor(message, code = 'SLOT_ERROR') { super(message); this.name = 'SlotError'; this.code = code; }
@@ -20,9 +20,9 @@ const realOf = file => {
 const inside = (root, file) => file === root || file.startsWith(root + path.sep);
 export const seg = value => String(value).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
 
-export function createSlotRuntime({ project, runId, remoteUrl = null, git = defaultGit } = {}) {
+export function createSlotRuntime({ project, runId, gitDir = null, remoteUrl = null, git = defaultGit } = {}) {
   if (!project || !runId) throw new SlotError('槽位运行时需要 project 与 runId', 'BAD_INPUT');
-  const stateFile = path.join(project, '.git', `dag-${seg(runId)}-slots.json`);
+  const stateFile = path.join(gitDir || path.join(project, '.git'), `dag-${seg(runId)}-slots.json`);
   const loadState = () => { try { return JSON.parse(readFileSync(stateFile, 'utf8')); } catch { return {}; } };
   const saveState = state => { writeFileSync(`${stateFile}.tmp`, JSON.stringify(state)); renameSync(`${stateFile}.tmp`, stateFile); };
   const checkSlot = slot => {
@@ -30,10 +30,10 @@ export function createSlotRuntime({ project, runId, remoteUrl = null, git = defa
     return slot;
   };
   const slotPath = slot => path.join(project, '.worktrees', `dag-${runId}-slot-${checkSlot(slot)}`);
-  const dirty = async slot => (await git(slotPath(slot), ['status', '--porcelain', '--untracked-files=all'])).trim().length > 0;
+  const dirty = async slot => (await worktreeChanges({ git, cwd: slotPath(slot) })).length > 0;
 
   return {
-    project, runId, remoteUrl, slotPath, git, dirty, loadState, saveState,
+    project, runId, gitDir: gitDir || path.join(project, '.git'), remoteUrl, slotPath, git, dirty, loadState, saveState,
     async ensureSlots() {
       mkdirSync(path.join(project, '.worktrees'), { recursive: true });
       for (let slot = 1; slot <= MAX_SLOTS; slot++) {
@@ -68,7 +68,6 @@ export function createSlotRuntime({ project, runId, remoteUrl = null, git = defa
         return { slot, nodeId, branch, reused: true, baseCommit: requestedBaseCommit };
       }
       if (await dirty(slot)) throw new SlotError(`槽位 ${slot} 有未保存改动（脏），换节点前必须先保存 WIP 再释放`, 'SLOT_DIRTY');
-      if (remoteUrl) await git(dir, ['fetch', remoteUrl]).catch(() => {}); // 离线测试允许无远端
       const baseCommit = requestedBaseCommit;
       // 不用 checkout/restore：symbolic-ref + read-tree + archive 恢复，避免 smudge filter。
       await git(dir, ['update-ref', `refs/heads/${branch}`, baseCommit]);

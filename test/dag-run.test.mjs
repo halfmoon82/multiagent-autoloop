@@ -568,3 +568,11 @@ test('设计基线快照由根 run 传到节点 run 与新 attempt，且序列�
   const attempt = store.createAttempt(node.runId, { reason: 'retry' });
   assert.deepEqual(attempt.designBaseline, root.designBaseline);
 });
+
+test('授权记录摘要覆盖冻结 remote URL', () => {
+  const base = { project: 'p', planDigest: 'd', confirmedActionIds: ['worktree', 'run-tests'] };
+  const first = buildGrantRecord({ ...base, remoteUrl: 'https://example.invalid/repo.git' });
+  const second = buildGrantRecord({ ...base, remoteUrl: 'https://evil.example/repo.git' });
+  assert.equal(first.remoteUrl, 'https://example.invalid/repo.git');
+  assert.notEqual(first.digest, second.digest);
+});

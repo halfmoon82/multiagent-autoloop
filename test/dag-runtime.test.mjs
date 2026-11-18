@@ -7,7 +7,8 @@ import path from 'node:path';
 import { ALLOWED_ACTIONS, ROOT_NODE, createRunStore } from '../src/dag-run.mjs';
 import { createBlockedEvidence, createHubAdapter, createDagRuntime, dagEventType, defaultRunTests, startDagControllers, MIN_POLL_MS } from '../src/dag-runtime.mjs';
 import { designContractDigest } from '../src/design-baseline.mjs';
-import { makeRepo } from './helpers-git.mjs';
+import { ensureMirror } from '../src/dag-mirror.mjs';
+import { makeRepo, sh } from './helpers-git.mjs';
 import { mkNode } from './dag-fakes.mjs';
 
 const recorder = (responses = {}) => {
@@ -99,16 +100,26 @@ test('startDagControllers：另一进程持锁时不接管；装配失败只记�
   mgr.stop();
 });
 
-test('createDagRuntime：真实 publisher 装配接收 verifyDesign 与服务端证据目录', async () => {
+test('createDagRuntime：真实 publisher 使用控制器 mirror，不受 worker 移动 origin/main 影响', async () => {
   const { project, remote } = makeRepo();
-  const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-runtime-design-')) });
+  const stateRoot = mkdtempSync(path.join(tmpdir(), 'dag-runtime-mirror-'));
+  const mirror = await ensureMirror({ root: stateRoot, remoteUrl: remote, baseBranch: 'main' });
+  const store = createRunStore({ directory: path.join(stateRoot, 'dag-runs') });
   const designBaseline = {
     designDigest: 'a'.repeat(64), manifestPath: 'docs/design/demo/design-manifest.json',
     manifest: { schema: 1, designId: 'demo', artifacts: [{ path: 'docs/design/demo/reference.png', sha256: 'b'.repeat(64) }], surfaces: [{ id: 'overview', route: '/', viewports: ['1440x900'], states: ['normal'], interactions: [], referencePaths: ['docs/design/demo/reference.png'] }] },
     readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png'],
   };
   const ui = mkNode('a'); ui.contract.design = { surfaceIds: ['overview'] };
-  const root = store.createRun({ project, remoteUrl: remote, planId: 'p1', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [ui], designBaseline });
+  const root = store.createRun({
+    project, remoteUrl: remote, mirrorPath: mirror.mirrorPath, baseBranch: mirror.baseBranch, baseCommit: mirror.baseCommit,
+    planId: 'p1', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true,
+    nodeId: ROOT_NODE, role: 'dev', nodes: [ui], designBaseline,
+  });
+  // worker 在目标项目移动 origin/main，控制器 mirror 不受影响。
+  mkdirSync(path.join(project, 'secret'), { recursive: true }); writeFileSync(path.join(project, 'secret/extra.txt'), 'evil\n');
+  sh(project, 'add', 'secret/extra.txt'); sh(project, 'commit', '-qm', 'evil base');
+  sh(project, 'update-ref', 'refs/remotes/origin/main', sh(project, 'rev-parse', 'HEAD'));
   const gh = { async findPr() { return null; }, async createPr() { return 'https://gh/pr/1'; }, async closePr() {} };
   const request = async (config, p, opts = {}) => {
     if (p === '/v1/events' && opts.method === 'POST') return { event: 42 };
@@ -126,13 +137,14 @@ test('createDagRuntime：真实 publisher 装配接收 verifyDesign 与服务端
   };
   const ctl = await createDagRuntime({ rootRun: root, config: {}, store, request, gh, runTests: async () => ({ exitCode: 0 }), verifyDesign });
   await ctl.tick();
-  const slot = path.join(project, '.worktrees', `dag-${root.runId}-slot-1`);
-  mkdirSync(path.join(slot, 'src'), { recursive: true }); writeFileSync(path.join(slot, 'src', 'a.mjs'), 'export const a = 1;\n');
+  const slotDir = path.join(mirror.mirrorPath, '.worktrees', `dag-${root.runId}-slot-1`);
+  mkdirSync(path.join(slotDir, 'src'), { recursive: true }); writeFileSync(path.join(slotDir, 'src', 'a.mjs'), 'export const a = 1;\n');
   await ctl.tick();
   assert.equal(called, 1);
-  assert.equal(received.nodeId, 'a');
+  assert.equal(received.project, mirror.mirrorPath);
   assert.match(received.evidenceDir, /design-evidence/);
   assert.equal(ctl.snapshot().nodes.a.state, 'review');
+  assert.equal(sh(mirror.mirrorPath, 'rev-parse', 'refs/heads/main'), mirror.baseCommit);
 });
 
 test('defaultRunTests uses a sanitized environment without controller-only variables', async () => {

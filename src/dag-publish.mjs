@@ -4,7 +4,7 @@ import path from 'node:path';
 import { normalizeProjectPath } from './dag.mjs';
 import { canClosePr, canExecuteAction } from './dag-run.mjs';
 import { assertNodeDesignSnapshot, designContractDigest } from './design-baseline.mjs';
-import { buildWorktreeTree } from './git-safe.mjs';
+import { buildWorktreeTree, worktreeChanges } from './git-safe.mjs';
 
 export class PublishError extends Error {
   constructor(message, code = 'PUBLISH_ERROR') { super(message); this.name = 'PublishError'; this.code = code; }
@@ -33,7 +33,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
     if (!node) throw new PublishError(`节点 ${nodeId} 不在快照中`, 'UNKNOWN_NODE');
     return [...(node.contract?.files || []), ...(node.files || [])].map(normalizeProjectPath);
   };
-  const changed = async cwd => parseStatus(await rt.git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all']));
+  const changed = async cwd => worktreeChanges({ git: rt.git, cwd });
   // worker 可能先 git commit：scope 必须同时覆盖未提交状态和 base..HEAD 已提交差异。
   const committed = async (cwd, base) => String(await rt.git(cwd, ['diff', '--no-ext-diff', '--no-textconv', '--name-only', '-z', base, 'HEAD']) ?? '').split('\0').filter(Boolean);
   const nodeOf = (root, nodeId) => {
@@ -90,6 +90,10 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (protectedDesign.length) throw new PublishError(`设计基线/参考产物只读：${protectedDesign.join(', ')}`, 'DESIGN_BASELINE_READONLY');
       const outside = files.filter(file => !inScope(file, scopes));
       if (outside.length) throw new PublishError(`改动超出节点文件范围：${outside.join(', ')}`, 'OUT_OF_SCOPE');
+      // 目标分支先指向当前 HEAD 并成为本 worktree HEAD，避免跨分支重试生成 sibling commit。
+      const currentHead = String(await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
+      await rt.git(worktree, ['update-ref', `refs/heads/${branch}`, currentHead]);
+      await rt.git(worktree, ['symbolic-ref', 'HEAD', `refs/heads/${branch}`]);
       let commit;
       if (uncommittedFiles.length) {
         // 不执行 git add/commit：用 no-filter hash-object + update-index + commit-tree，
@@ -149,12 +153,12 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       const result = (await gh.mergePr(prUrl, { strategy: root.authorizationSnapshot.mergeStrategy })) || {};
       // fetch/rev-parse 失败直接抛错由控制器下一 tick 重试：mergePr 与 markPrMerged 均幂等，
       // 不再回退到本地陈旧 baseRef tip 冒充 mergeCommit。
-      await rt.git(rt.project, ['fetch', '-q', 'origin']);
+      await rt.git(rt.project, ['fetch', '-q', root.remoteUrl, '+refs/heads/main:refs/heads/main']);
       const tip = (await rt.git(rt.project, ['rev-parse', baseRef])).trim();
       return { mergeCommit: result.mergeCommit || tip };
     },
 
     // 下游基线推进：fetch 更新后，后续 prepare 从合并后的基线建分支。
-    async baseline() { await rt.git(rt.project, ['fetch', '-q', 'origin']); return {}; },
+    async baseline() { await rt.git(rt.project, ['fetch', '-q', root.remoteUrl, '+refs/heads/main:refs/heads/main']); return {}; },
   };
 }

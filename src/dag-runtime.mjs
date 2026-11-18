@@ -15,6 +15,7 @@ import { createSlotRuntime, seg } from './dag-slots.mjs';
 import * as wip from './dag-wip.mjs';
 import { hubRequest } from './hub.mjs';
 import { verifyDesign as defaultVerifyDesign } from './design-verify.mjs';
+import { ensureMirror } from './dag-mirror.mjs';
 
 export const MIN_POLL_MS = 5000;
 const HUB_STATES = new Set(['queued', 'claimed', 'unknown', 'done', 'nothing', 'cancelled']);
@@ -89,12 +90,14 @@ export function createBlockedEvidence({ request, config }) {
 }
 
 export async function createDagRuntime({ rootRun, config, store, request = hubRequest, gh, runTests = defaultRunTests, verifyDesign = defaultVerifyDesign, git, now = Date.now, chooseApproach } = {}) {
-  const rt = createSlotRuntime({ project: rootRun.project, runId: rootRun.runId, remoteUrl: rootRun.remoteUrl || null, ...(git ? { git } : {}) });
+  if (!rootRun.mirrorPath || !rootRun.baseCommit) throw new Error('DAG run 缺少控制器 mirror/base 快照，拒绝在 worker 可写仓库执行');
+  const rt = createSlotRuntime({ project: rootRun.mirrorPath, gitDir: rootRun.mirrorPath, runId: rootRun.runId, ...(git ? { git } : {}) });
   await rt.ensureSlots();
   const adapter = gh || createGhAdapter({ cwd: rootRun.project });
-  const publisher = createPublisher({ store, rootRunId: rootRun.runId, rt, gh: adapter, runTests, verifyDesign });
+  const publisher = createPublisher({ store, rootRunId: rootRun.runId, rt, gh: adapter, runTests, verifyDesign, baseRef: `refs/heads/${rootRun.baseBranch}` });
   const hub = createHubAdapter({ config, request, project: rootRun.project });
-  return createController({ store, rootRunId: rootRun.runId, hub, rt, wip, publisher, now, chooseApproach, blockedEvidence: createBlockedEvidence({ request, config }) });
+  const baseRef = rootRun.baseBranch ? `refs/heads/${rootRun.baseBranch}` : 'origin/main';
+  return createController({ store, rootRunId: rootRun.runId, hub, rt, wip, publisher, baseRef, now, chooseApproach, blockedEvidence: createBlockedEvidence({ request, config }) });
 }
 
 // 启动接线：发现全部未终结 DAG，逐个恢复控制器并以有界频率轮询。单 DAG 单写入者（进程锁 + 本进程 in-flight 守卫）。

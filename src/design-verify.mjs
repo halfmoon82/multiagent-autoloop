@@ -1,14 +1,17 @@
 // 默认定向设计验证适配器：从精确 commit 建临时只读 worktree，
 // 校验 verifier sha256 后在净化子进程执行；结果走专用 fd + nonce，不信任 stdout。
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { designContractDigest } from './design-baseline.mjs';
-import { createGitRunner } from './git-safe.mjs';
+import { chmodSync } from 'node:fs';
+import { createGitRunner, removeWorktree, restoreWorktree } from './git-safe.mjs';
 
+const execFileAsync = promisify(execFile);
 const CHILD_TIMEOUT_MS = 5 * 60 * 1000;
 const LOG_LIMIT_BYTES = 1024 * 1024;
 const RESULT_LIMIT_BYTES = 4 * 1024 * 1024;
@@ -48,7 +51,8 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
 
   let result = null; let execDir = null;
   try {
-    await safeGit(project, ['worktree', 'add', '--detach', source, commit]);
+    await safeGit(project, ['worktree', 'add', '--no-checkout', '--detach', source, commit]);
+    await restoreWorktree({ git: safeGit, cwd: source, commit });
     const root = realpathSync(source);
     const file = realpathSync(path.resolve(root, verifierPath));
     if (file !== root && !file.startsWith(`${root}${path.sep}`)) throw new Error('设计 verifier 逃逸精确 commit worktree');
@@ -56,12 +60,18 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
     const actual = createHash('sha256').update(sourceBytes).digest('hex');
     if (actual !== expected) throw new Error(`设计 verifier sha256 摘要不符：${verifierPath}`);
     // 执行字节与 hash 字节一致：先读入，再写入 worker 不可写的临时执行目录。
-    const execDir = mkdtempSync(path.join(tmpdir(), 'design-verify-exec-'));
+    execDir = mkdtempSync(path.join(tmpdir(), 'design-verify-exec-'));
     cpSync(source, execDir, { recursive: true });
+    rmSync(path.join(execDir, '.git'), { recursive: true, force: true });
     const execFile = path.join(execDir, verifierPath);
-    writeFileSync(execFile, sourceBytes, { mode: 0o600 });
-    const projectNodeModules = path.join(realpathSync(project), 'node_modules');
-    if (existsSync(projectNodeModules)) symlinkSync(projectNodeModules, path.join(execDir, 'node_modules'));
+    writeFileSync(execFile, sourceBytes);
+    chmodSync(execFile, 0o600);
+    // 依赖从 exact commit 的 lockfile 安装到控制器临时目录，不 symlink worker 可写 node_modules。
+    if (existsSync(path.join(execDir, 'package-lock.json'))) {
+      await execFileAsync('npm', ['ci', '--ignore-scripts', '--prefer-offline'], {
+        cwd: execDir, env: childEnv, timeout: 10 * 60 * 1000, maxBuffer: 32 * 1024 * 1024,
+      });
+    }
 
     const nonce = randomBytes(32).toString('hex');
     const verifierPayload = { nodeId, worktree: source, contract, designBaseline, evidenceDir, commit };
@@ -116,7 +126,7 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
       }
     `;
     const child = spawn(process.execPath, ['--input-type=module', '--eval', script], {
-      cwd: source, env: childEnv, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+      cwd: execDir, env: childEnv, stdio: ['pipe', 'pipe', 'pipe', 'pipe'], detached: true,
     });
     child.stdin.on('error', () => {}); // 子进程提前退出时避免 EPIPE 掩盖真实错误
     child.stdin.end(JSON.stringify(payload));
@@ -124,14 +134,17 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
     const stderr = new LimitedBuffer(LOG_LIMIT_BYTES, 'stderr');
     const resultChannel = new LimitedBuffer(RESULT_LIMIT_BYTES, 'result');
     let timedOut = false; let exitCode = null;
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, CHILD_TIMEOUT_MS);
-    child.stdout.on('data', chunk => { if (!stdout.push(chunk)) child.kill('SIGKILL'); });
-    child.stderr.on('data', chunk => { if (!stderr.push(chunk)) child.kill('SIGKILL'); });
-    child.stdio[3].on('data', chunk => { if (!resultChannel.push(chunk)) child.kill('SIGKILL'); });
+    const killGroup = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } };
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, CHILD_TIMEOUT_MS);
+    child.stdout.on('data', chunk => { if (!stdout.push(chunk)) killGroup(); });
+    child.stderr.on('data', chunk => { if (!stderr.push(chunk)) killGroup(); });
+    child.stdio[3].on('data', chunk => { if (!resultChannel.push(chunk)) killGroup(); });
     exitCode = await new Promise((resolve, reject) => {
       child.on('error', reject);
       child.on('close', code => resolve(code));
     }).finally(() => clearTimeout(timer));
+    // 正常退出也清理整个进程组，防止 verifier 留下 Chrome 等孙进程。
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* group 已退出 */ }
     if (timedOut) throw new Error(`设计 verifier 子进程超时（${CHILD_TIMEOUT_MS}ms）`);
     if (stdout.over || stderr.over || resultChannel.over) throw new Error('设计 verifier 输出超过上限，fail closed');
     const rawResult = resultChannel.text().trim();
@@ -144,9 +157,9 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
     if (exitCode !== 0) throw new Error(`设计 verifier 子进程退出码 ${exitCode}：${stderr.text().slice(-500) || stdout.text().slice(-500)}`);
     if (!result || typeof result.ok !== 'boolean' || !Array.isArray(result.checks) || result.checks.some(check => !check || typeof check.ok !== 'boolean')) throw new Error('设计 verifier 返回形态无效：需要 ok 与 checks');
   } finally {
-    try { await safeGit(project, ['worktree', 'remove', '--force', source]); } catch { /* rmSync 兜底 */ }
-    rmSync(source, { recursive: true, force: true });
+    removeWorktree({ project, worktree: source });
     rmSync(childHome, { recursive: true, force: true });
+    if (execDir) rmSync(execDir, { recursive: true, force: true });
   }
 
   return {

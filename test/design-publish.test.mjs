@@ -3,13 +3,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, cpSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publishProductSpec, buildPublishSnapshot, PUBLISH_ACTIONS } from '../src/design-publish.mjs';
 import { extractProductSpec, VIBE_MAJOR_VERSION } from '../src/vibe-adapter.mjs';
 import { loadDesignManifest } from '../src/design-baseline.mjs';
+import { defaultGit } from '../src/git-safe.mjs';
 import { createHash } from 'node:crypto';
 
 const fixtureDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'vibe-5.2.7');
@@ -54,7 +55,7 @@ function makeRunner({ existingPr = null, failGh = false } = {}) {
   const runner = async (command, args, options = {}) => {
     calls.push({ command, args, cwd: options.cwd, env: options.env });
     if (command === fakeVibe) return { stdout: execFileSync(command, args, { cwd: options.cwd, encoding: 'utf8', env: options.env }) };
-    if (command === 'git') return { stdout: execFileSync('git', args, { cwd: options.cwd, encoding: 'utf8', env: options.env }) };
+    if (command === 'git') return { stdout: await defaultGit(options.cwd, args, { env: options.env }) };
     if (command === 'gh') {
       if (failGh) throw new Error('gh boom');
       if (args[0] === 'pr' && args[1] === 'list') return { stdout: JSON.stringify(existingPr ? [existingPr] : []) };
@@ -84,7 +85,7 @@ test('publish snapshot is server-built, whitelisted, and refuses deploy/release/
 
 test('publish requires confirm=true and a matching specDigest before touching anything', async () => {
   const { root } = makeProject();
-  const { runner, calls } = makeRunner();
+  const { runner } = makeRunner();
   let r = await publishProductSpec(base(root, runner, { confirm: false }));
   assert.equal(r.ok, false); assert.equal(r.error.code, 'confirmation_required');
   r = await publishProductSpec(base(root, runner, { specDigest: 'deadbeef' }));
@@ -97,7 +98,7 @@ test('publish requires confirm=true and a matching specDigest before touching an
 
 test('publish blocks before any git/gh action when the capability attestation is missing', async () => {
   const { root } = makeProject({ attested: false });
-  const { runner, calls } = makeRunner();
+  const { runner } = makeRunner();
   const r = await publishProductSpec(base(root, runner));
   assert.equal(r.ok, false);
   assert.equal(r.error.code, 'capability_attestation_required');
@@ -107,7 +108,7 @@ test('publish blocks before any git/gh action when the capability attestation is
 test('publish pushes docs/<planId> from a temp worktree, opens a PR, and leaves main and the checkout untouched', async () => {
   const { root, origin } = makeProject();
   const mainBefore = git(origin, 'rev-parse', 'main');
-  const { runner, calls } = makeRunner();
+  const { runner } = makeRunner();
   const r = await publishProductSpec(base(root, runner));
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.prUrl, 'https://github.com/owner/repo/pull/7');
@@ -131,7 +132,7 @@ test('publish pushes docs/<planId> from a temp worktree, opens a PR, and leaves 
   // 只执行快照内动作：没有 merge/release/deploy，push 目标只有 docs 分支
   const pushes = calls.filter(c => c.command === 'git' && c.args.includes('push'));
   assert.equal(pushes.length, 1);
-  assert.ok(pushes[0].args.includes('HEAD:refs/heads/docs/demo-plan'));
+  assert.match(pushes[0].args.find(arg => /:refs\/heads\/docs\/demo-plan$/.test(arg)), /^[0-9a-f]{40}:refs\/heads\/docs\/demo-plan$/);
   assert.ok(!pushes.some(p => p.args.some(a => /(^|[:/])main$/.test(a) || a.includes('--force'))));
   const gh = calls.filter(c => c.command === 'gh').map(c => c.args.slice(0, 2).join(' '));
   assert.deepEqual(gh, ['pr list', 'pr create']);
@@ -244,4 +245,26 @@ test('publish refuses design paths that collide with generated PRD outputs befor
     assert.equal(runner.calls.length, 0, reserved);
     assert.equal(existsSync(path.join(root, '.vibe', 'plans', 'demo-plan', 'product-spec.input.json')), false, reserved);
   }
+});
+
+test('publish does not execute worker-configured clean or smudge filters', async () => {
+  const { root } = makeProject();
+  const design = addDesign(root);
+  const spec = { ...SPEC, design };
+  const transcript = `\`\`\`product-spec\n${JSON.stringify(spec)}\n\`\`\`\n`;
+  const designDigest = loadDesignManifest({ projectRoot: root, manifestPath: design.manifestPath }).designDigest;
+  const stamp = `${process.pid}-${Date.now()}`;
+  const marker = path.join(tmpdir(), `design-publish-filter-${stamp}.txt`);
+  const script = path.join(tmpdir(), `design-publish-filter-${stamp}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  mkdirSync(path.join(root, '.git', 'info'), { recursive: true });
+  writeFileSync(path.join(root, '.git', 'info', 'attributes'), '* filter=bad\n');
+  execFileSync('git', ['config', 'filter.bad.clean', script], { cwd: root });
+  execFileSync('git', ['config', 'filter.bad.smudge', script], { cwd: root });
+  try {
+    const { runner } = makeRunner();
+    const result = await publishProductSpec(base(root, runner, { transcript, specDigest: extractProductSpec(transcript).specDigest, designDigest }));
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(existsSync(marker), false, 'design publish 不得执行 Git filter');
+  } finally { rmSync(marker, { force: true }); rmSync(script, { force: true }); }
 });

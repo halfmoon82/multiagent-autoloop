@@ -8,26 +8,33 @@ import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
 import { createSlotRuntime } from '../src/dag-slots.mjs';
 import { createPublisher, PublishError } from '../src/dag-publish.mjs';
 import { designContractDigest } from '../src/design-baseline.mjs';
+import { ensureMirror } from '../src/dag-mirror.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
 async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false } = {}) {
   const { project, remote } = makeRepo();
-  const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-pub-')) });
-  const root = store.createRun({ project, remoteUrl: remote, planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [{ ...node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), contract: { files: designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'], ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline });
-  const rt = createSlotRuntime({ project, runId: root.runId });
+  const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-pub-'));
+  const store = createRunStore({ directory: storeDirectory });
+  const mirror = await ensureMirror({ root: storeDirectory, remoteUrl: remote, baseBranch: 'main' });
+  const root = store.createRun({
+    project, remoteUrl: remote, mirrorPath: mirror.mirrorPath, baseBranch: mirror.baseBranch, baseCommit: mirror.baseCommit,
+    planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev',
+    nodes: [{ ...node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), contract: { files: designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'], ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline,
+  });
+  const rt = createSlotRuntime({ project: mirror.mirrorPath, gitDir: mirror.mirrorPath, runId: root.runId });
   await rt.ensureSlots();
-  const prepared = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
+  const prepared = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'refs/heads/main' });
   store.updateRun(root.runId, { publish: { nodes: { a: { prepareBase: prepared.baseCommit } } } });
   const gh = { prs: new Map(), merged: [], async createPr(a) { const url = `https://gh/pr/${this.prs.size + 1}`; this.prs.set(url, { head: a.branch, sha: null }); return url; },
     async findPr(a) { return [...this.prs].find(([, p]) => p.head === a.branch)?.[0] ?? null; },
     async prHead(url) { return this.prs.get(url).sha; }, async mergePr(url) { this.merged.push(url); return {}; },
     closed: [], async closePr(url, a) { this.closed.push([url, a.comment]); } };
   const tests = []; const runTests = async (cwd) => { tests.push(cwd); return { exitCode: 0, summary: '1 passed' }; };
-  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests, verifyDesign });
+  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests, verifyDesign, baseRef: 'refs/heads/main' });
   const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId, base: prepared.baseCommit };
   const write = (rel, c) => { mkdirSync(path.dirname(path.join(ctx.worktree, rel)), { recursive: true }); writeFileSync(path.join(ctx.worktree, rel), c); };
-  return { project, remote, store, root, rt, gh, pub, ctx, write, tests };
+  return { project, remote, store, root, rt, gh, pub, ctx, write, tests, mirror };
 }
 
 test('commitPr：只提交文件范围内改动，推送分支，创建 PR 并回传 SHA；重复调用幂等', async () => {
@@ -259,7 +266,7 @@ test('commitPr：worker 移动 origin/main 不能绕过冻结 base 的 scope 检
   t.write('secret/extra.txt', 'out of scope\n');
   sh(t.ctx.worktree, 'add', 'secret/extra.txt'); sh(t.ctx.worktree, 'commit', '-qm', 'out of scope');
   const moved = sh(t.ctx.worktree, 'rev-parse', 'HEAD');
-  sh(t.project, 'update-ref', 'refs/remotes/origin/main', moved);
+  sh(t.mirror.mirrorPath, 'update-ref', 'refs/heads/main', moved);
   t.write('src/a.mjs', 'in scope\n');
   sh(t.ctx.worktree, 'add', 'src/a.mjs'); sh(t.ctx.worktree, 'commit', '-qm', 'in scope');
   await assert.rejects(t.pub.commitPr({ ...t.ctx, base: frozenBase }), error => error.code === 'OUT_OF_SCOPE');
