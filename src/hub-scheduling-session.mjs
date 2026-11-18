@@ -25,14 +25,17 @@ export function schedulingEventId(sessionId, turn) {
   return `console:${sessionId}:turn:${turn}`;
 }
 
+// #89: 真实中台 POST /v1/events 只接受 id/type/subject/summary/detail/link。
+// project/text 进 detail（worker 可解析的 JSON 字符串），summary 为首轮文本摘要；
+// 续接语义由中台规则/事项承担，不属于事件字段（删除 resume）。
 export function buildSchedulingEvent({ sessionId, turn, project, text } = {}) {
+  const message = String(text ?? '');
   return {
     id: schedulingEventId(sessionId, turn),
     subject: schedulingSubject(sessionId),
     type: 'scheduling.message',
-    resume: true,
-    project,
-    text,
+    summary: message.slice(0, 80) || `调度会话${project ? ` ${project}` : ''}`,
+    detail: JSON.stringify({ project, text }),
   };
 }
 
