@@ -267,6 +267,6 @@ export async function runVibe(subcommand, { projectRoot, runner = defaultRunner,
     try { data = JSON.parse(String(stdout)); } catch { data = String(stdout); }
     return { ok: true, argv, data };
   } catch (error) {
-    return fail('vibe_cli_failed', `vibe ${subcommand} 执行失败：${error.message}`);
+    return fail('vibe_cli_failed', `vibe ${subcommand} 执行失败：${error.message}`, '确认 vibe CLI 已安装且在 PATH 中；版本或契约不符时以 CLI 的报错为准');
   }
 }

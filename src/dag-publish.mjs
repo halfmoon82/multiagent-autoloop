@@ -11,6 +11,13 @@ export class PublishError extends Error {
 }
 
 const inScope = (file, scopes) => scopes.some(scope => file === scope || file.startsWith(`${scope}/`));
+// 只有这一类路径仍硬拦：凭据、CI 定义、发布/部署脚本、环境变量。业务代码一律只报告。
+const SENSITIVE_PATH = [
+  /^\.github\//, /^\.git\//, /^\.vibe\//, /^\.env($|\.)/,
+  /\.(pem|key|p12|pfx)$/i, /(^|\/)id_(rsa|ed25519)($|\.)/,
+  /^scripts\/(deploy|release)/i, /^infra\//i,
+];
+const sensitiveHits = files => files.filter(file => SENSITIVE_PATH.some(pattern => pattern.test(file)));
 const parseStatus = out => {
   const parts = out.split('\0').filter(Boolean); const files = [];
   for (let i = 0; i < parts.length; i++) {
@@ -89,7 +96,9 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       const readOnlyDesign = new Set((root.designBaseline?.readOnlyPaths || []).map(normalizeProjectPath));
       const protectedDesign = files.filter(file => readOnlyDesign.has(file));
       if (protectedDesign.length) throw new PublishError(`设计基线/参考产物只读：${protectedDesign.join(', ')}`, 'DESIGN_BASELINE_READONLY');
-      // 写范围只汇报、不阻断：越界文件由 PR 审阅与独立 worktree 兜底，不再让节点卡在这里。
+      // 敏感路径（凭据/CI/发布脚本）仍硬拦；其余越界只汇报，由 PR 审阅兜底。
+      const sensitive = sensitiveHits(files);
+      if (sensitive.length) throw new PublishError(`敏感路径改动被拒绝：${sensitive.join(', ')}`, 'SENSITIVE_PATH');
       const outside = files.filter(file => !inScope(file, scopes));
       // 目标分支先指向当前 HEAD 并成为本 worktree HEAD，避免跨分支重试生成 sibling commit。
       const currentHead = String(await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
@@ -135,10 +144,11 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (currentFiles.length) throw new PublishError(`UI 槽位存在未提交改动：${currentFiles.join(', ')}`, 'DESIGN_WORKTREE_DIRTY');
       const evidenceDir = path.join(store.directory, 'design-evidence', rootRunId, nodeId);
       const result = await verifyDesign({ nodeId, worktree, project: rt.project, git: rt.git, commit, designBaseline: root.designBaseline, contract: node.contract.design, evidenceDir });
-      const issue = evidenceIssues(root, node, result?.evidence, commit);
-      const checksPassed = result.evidence.checks.every(check => check.ok);
+      const evidence = result?.evidence ?? null;
+      const issue = evidence ? evidenceIssues(root, node, evidence, commit, { requirePassed: true }) : '设计 verifier 未返回证据';
       const after = (await changed(worktree)).sort().join('\n');
-      return { tests, slotStateChanged: before !== after, nodeId, ok: result.ok === true && checksPassed, designEvidence: result.evidence, ...(issue ? { designEvidenceWarning: issue } : {}) };
+      // 设计证据只报不拦：节点是否继续由测试结果决定，证据问题记入警示。
+      return { tests, slotStateChanged: before !== after, nodeId, ok: tests.exitCode === 0, designEvidence: evidence, ...(issue ? { designEvidenceWarning: issue } : {}) };
     },
 
     async merge({ nodeId, prUrl, commit, evidence }) {

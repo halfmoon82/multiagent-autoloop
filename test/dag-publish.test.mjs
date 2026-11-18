@@ -182,7 +182,14 @@ test('verify：UI 缺 verifier 属设施错误；定向断言失败才返回实�
   const failing = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async input => ({ ok: false, evidence: evidenceFor({ designBaseline: uiDesign(), nodes: [{ contract: { design: input.contract } }] }, input.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] }) }) });
   failing.write('src/a.mjs', 'x\n'); const failingPr = await failing.pub.commitPr(failing.ctx);
   const result = await failing.pub.verify({ ...failing.ctx, commit: failingPr.commit });
-  assert.equal(result.ok, false); assert.equal(result.designEvidence.checks[0].ok, false);
+  assert.equal(result.ok, true, '定向 checks 只记录，节点继续由测试结果决定');
+  assert.equal(result.designEvidence.checks[0].ok, false);
+  assert.match(result.designEvidenceWarning || '', /未全部通过/);
+  const noEvidence = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async () => ({ ok: true }) });
+  noEvidence.write('src/a.mjs', 'x\n'); const ne = await noEvidence.pub.commitPr(noEvidence.ctx);
+  const neResult = await noEvidence.pub.verify({ ...noEvidence.ctx, commit: ne.commit });
+  assert.equal(neResult.ok, true, 'verifier 不返回证据时不抛裸错，只记警示');
+  assert.match(neResult.designEvidenceWarning || '', /未返回证据/);
 });
 
 test('merge：设计证据只作汇报，不阻断合并，merge 本身不重跑验证', async () => {
@@ -317,4 +324,12 @@ test('commitPr pushes to the remote URL frozen in the root run, not worker-modif
   const pr = await t.pub.commitPr(t.ctx);
   assert.equal(sh(t.remote, 'rev-parse', 'feat/a'), pr.commit);
   assert.throws(() => sh(evil, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr：凭据/CI/发布脚本类敏感路径仍然硬拦', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'ok\n');
+  t.write('.github/workflows/ci.yml', 'name: ci\n');
+  await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'SENSITIVE_PATH');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
 });

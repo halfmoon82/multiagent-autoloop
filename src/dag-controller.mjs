@@ -126,10 +126,10 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     const node = root.nodes.find(item => item.id === id);
     if (!node?.contract?.design) return true;
     const evidence = n.designEvidence;
+    // 只要求证据身份与当前 commit/设计基线一致；checks 结果只记录，不阻断。
     return Boolean(evidence && root.designBaseline
       && evidence.commit === n.commit && evidence.designDigest === root.designBaseline.designDigest
-      && evidence.contractDigest === designContractDigest({ designDigest: root.designBaseline.designDigest, contract: node.contract.design })
-      && Array.isArray(evidence.checks) && evidence.checks.length && evidence.checks.every(check => check.ok));
+      && evidence.contractDigest === designContractDigest({ designDigest: root.designBaseline.designDigest, contract: node.contract.design }));
   };
 
   async function onDone(root, st, id, run) {
@@ -139,8 +139,10 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, base: n.prepareBase };
       const pr = await publisher.commitPr(ctx);
       store.registerPr(root.runId, id, pr.prUrl); n.prUrl = pr.prUrl; n.commit = pr.commit;
+      if (pr.outOfScope?.length) n.warnings = { ...(n.warnings || {}), outOfScope: pr.outOfScope };
       const ver = await publisher.verify({ ...ctx, commit: pr.commit });
       n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
+      if (ver.designEvidenceWarning) n.warnings = { ...(n.warnings || {}), designEvidence: ver.designEvidenceWarning };
       if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
       if (!ver.ok) return failure(root, st, id, run, 'verify-failed');
       n.state = 'review'; n.todo = { kind: 'review' }; return;
@@ -152,11 +154,13 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, commit: n.commit };
       const ver = await publisher.verify(ctx);
       n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
+      if (ver.designEvidenceWarning) n.warnings = { ...(n.warnings || {}), designEvidence: ver.designEvidenceWarning };
       if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
       if (!ver.ok) return failure(root, st, id, dev, 'verify-failed');
       n.todo = { kind: 'review' }; return;
     }
     const merged = await publisher.merge({ nodeId: id, prUrl: n.prUrl, commit: n.commit, runId: root.runId, evidence: n.designEvidence });
+    if (merged.designWarning) n.warnings = { ...(n.warnings || {}), designEvidence: merged.designWarning };
     store.markPrMerged(root.runId, n.prUrl, { mergeCommit: merged.mergeCommit });
     await publisher.baseline({ nodeId: id, mergeCommit: merged.mergeCommit });
     n.state = 'accepted'; n.mergeCommit = merged.mergeCommit;
