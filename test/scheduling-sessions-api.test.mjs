@@ -325,3 +325,60 @@ test('#100 GET /api/scheduling-sessions auto-refreshes an active Hub session thr
     assert.equal(listed.hubRunId, 6663);
   } finally { await close(server); manager.dispose(); }
 });
+
+// #102：真实 HTTP 路径上，close 后重启不再复活、不堵新建，且历史折叠区可见。
+test('#102 after close and restart the console does not resurrect a Hub session or block a new one for the same project', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'close-persist-api-'));
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'close-api-projects-'));
+  const repo = path.join(projectRoot, 'demo-repo');
+  mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const rulesFile = path.join(projectRoot, 'rules.json');
+  writeFileSync(rulesFile, JSON.stringify({ sources: {}, agents: {}, rules: [], elsewhere: [] }));
+  const hubClient = {
+    async postEvent() { return { event: 7300, duplicate: false, routed: true, paused: false }; },
+    async readEvent(hubConfig, eventId) { return { event: eventId, routed: true, paused: false, runs: [{ run: 6700, state: 'claimed' }] }; },
+    async cancelRun() { return { ok: true }; },
+  };
+  const makeManager = () => new SchedulingSessionManager({
+    cwd: '/x', adapterPath: '/a.js',
+    spawnFn: () => { throw new Error('Hub scheduling sessions must not spawn a private ACP'); },
+    hubScheduling: new HubSchedulingSessionAdapter({
+      hubConfig: { hubUrl: 'http://127.0.0.1:9', ownerKey: 'k', sourceKey: 's' },
+      hubClient,
+    }),
+    archiveRoot: home,
+  });
+  const serverOptions = { ...config, root: home, rulesFile, projectRoots: [projectRoot] };
+  let closedId;
+
+  const firstManager = makeManager();
+  const firstServer = createConsoleServer(serverOptions, firstManager);
+  const firstUrl = await listen(firstServer);
+  try {
+    const created = await fetch(`${firstUrl}/api/scheduling-sessions`, {
+      method: 'POST', headers: writeHeaders,
+      body: JSON.stringify({ kind: 'scheduling', project: repo, prompt: '将被关闭' }),
+    });
+    assert.equal(created.status, 201);
+    closedId = (await created.json()).id;
+    const closed = await fetch(`${firstUrl}/api/scheduling-sessions/${closedId}/close`, { method: 'POST', headers: writeHeaders, body: '{}' });
+    assert.equal(closed.status, 200, 'close via HTTP must succeed');
+  } finally { await close(firstServer); }
+
+  // 重启：新 manager + 新 server，先 restore。
+  const secondManager = makeManager();
+  await secondManager.restoreFromHub();
+  const secondServer = createConsoleServer(serverOptions, secondManager);
+  const secondUrl = await listen(secondServer);
+  try {
+    const active = await (await fetch(`${secondUrl}/api/scheduling-sessions`)).json();
+    assert.equal(active.length, 0, 'a closed session must not reappear in the active list after restart');
+    const archive = await (await fetch(`${secondUrl}/api/session-archives`)).json();
+    assert.ok(archive.sessions.some(item => item.id === closedId), 'the closed session must be visible in the history area');
+    const recreated = await fetch(`${secondUrl}/api/scheduling-sessions`, {
+      method: 'POST', headers: writeHeaders,
+      body: JSON.stringify({ kind: 'scheduling', project: repo, prompt: '重启后新建' }),
+    });
+    assert.equal(recreated.status, 201, 'a closed session must not block a new one for the same project');
+  } finally { await close(secondServer); secondManager.dispose(); }
+});
