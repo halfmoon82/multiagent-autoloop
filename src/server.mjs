@@ -75,10 +75,11 @@ async function handleApi(config, req, res, url) {
     const data = await loadChains({ root: config.root, rules });
     const usage = await refreshUsage({ config, rules, chains: data.chains });
     for (const chain of data.chains) {
-      // loadChains 有 mtime 缓存：中台不可用时必须剥掉旧值，避免把上一轮残留当成服务端真累计。
-      if (!usage) { delete chain.cumulativeUsage; continue; }
-      const cumulative = usage.byChain.get(chain.sourceFile);
+      // loadChains 有 mtime 缓存：拿不到当前链的台账值就必须剥掉旧值，
+      // 避免把上一轮（或别的签名下）残留当成当前服务端真累计。
+      const cumulative = usage?.byChain.get(chain.sourceFile);
       if (cumulative) chain.cumulativeUsage = cumulative;
+      else delete chain.cumulativeUsage;
     }
     return jsonResponse(res, 200, data);
   }

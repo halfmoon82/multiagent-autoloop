@@ -316,13 +316,21 @@ function countsChips(activity, cardsHere) {
 }
 
 // 整条链累计口径与计费优先级契约一致（服务端台账真累计，缺台账回退今日窗口）：已上报费用 → Token +「费用未上报」→「暂无用量」。
+// 台账未补全到底或存在未上报/长期未完成轮次时，一律追加如实标注。
+function usageNotes(usage) {
+  const parts = [];
+  if (usage.backfillPending) parts.push('历史补全中');
+  if (usage.missingCostRounds > 0) parts.push(`${usage.missingCostRounds} 轮未上报费用`);
+  if (usage.unresolvedRounds > 0) parts.push(`${usage.unresolvedRounds} 轮长期未完成未计入`);
+  return parts.length ? ` · ${parts.join(' · ')}` : '';
+}
 function chainUsageText(usage) {
   const tokens = (usage.tokens || 0).toLocaleString('en-US');
-  // 台账还没翻到底（历史回填中）时如实标注，不把部分覆盖冒充全量。
-  const pending = usage.backfillPending ? ' · 历史补全中' : '';
-  if (typeof usage.cost === 'number') return `链累计 · ${tokens} Token · $${usage.cost.toFixed(2)}${pending}`;
-  if (usage.tokens > 0) return `链累计 · ${tokens} Token · 费用未上报${pending}`;
-  return `链累计 · 暂无用量${pending}`;
+  // 台账还没翻到底（历史回填中）与未上报轮次都要如实标注，不把部分覆盖冒充全量。
+  const notes = usageNotes(usage);
+  if (typeof usage.cost === 'number') return `链累计 · ${tokens} Token · $${usage.cost.toFixed(2)}${notes}`;
+  if (usage.tokens > 0) return `链累计 · ${tokens} Token · 费用未上报${notes}`;
+  return `链累计 · 暂无用量${notes}`;
 }
 
 // 项目级今日/累计费用与 Token：只展示服务端聚合的 Hub 自报值，读取失败如实标注。

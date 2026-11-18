@@ -14,10 +14,15 @@ export function projectUsageText(label, usage) {
   const split = (usage.input > 0 || usage.output > 0) ? `（入 ${fmt(usage.input)} / 出 ${fmt(usage.output)}）` : '';
   const cost = typeof usage.cost === 'number' ? `费用 $${usage.cost.toFixed(2)}` : null;
   const token = usage.tokens > 0 ? `Token ${tokens}${split}` : null;
-  if (cost && token) return `${label} · ${cost} · ${token}`;
-  if (cost) return `${label} · ${cost}`;
-  if (token) return `${label} · ${token} · 费用未上报`;
-  return `${label} · 暂无用量`;
+  const notes = [];
+  if (usage.backfillPending) notes.push('历史补全中');
+  if (usage.missingCostRounds > 0) notes.push(`${usage.missingCostRounds} 轮未上报费用`);
+  if (usage.unresolvedRounds > 0) notes.push(`${usage.unresolvedRounds} 轮长期未完成未计入`);
+  const suffix = notes.length ? ` · ${notes.join(' · ')}` : '';
+  if (cost && token) return `${label} · ${cost} · ${token}${suffix}`;
+  if (cost) return `${label} · ${cost}${suffix}`;
+  if (token) return `${label} · ${token} · 费用未上报${suffix}`;
+  return `${label} · 暂无用量${suffix}`;
 }
 
 export function projectForRun(run, rules = []) {

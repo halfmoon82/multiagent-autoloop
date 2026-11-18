@@ -19,7 +19,7 @@ const sameLocalDay = (iso, now) => {
   return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
 };
 
-const emptyAcc = () => ({ cost: null, input: 0, output: 0, tokenReported: false });
+const emptyAcc = () => ({ cost: null, input: 0, output: 0, tokenReported: false, missingCostRounds: 0, unresolvedRounds: 0, backfillPending: false });
 function addUsage(acc, usage) {
   if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return;
   if (isNum(usage.cost)) acc.cost = (acc.cost ?? 0) + usage.cost;
@@ -35,6 +35,9 @@ const finish = acc => ({
   output: acc.output,
   tokens: acc.input + acc.output,
   reported: acc.cost !== null || acc.tokenReported,
+  missingCostRounds: acc.missingCostRounds,
+  unresolvedRounds: acc.unresolvedRounds,
+  ...(acc.backfillPending ? { backfillPending: true } : {}),
 });
 
 const isUsageMap = value => value && typeof value.get === 'function';
@@ -43,6 +46,10 @@ const addTotals = (acc, totals) => {
   acc.output += totals.output || 0;
   if (isNum(totals.cost)) acc.cost = (acc.cost ?? 0) + totals.cost;
   if ((totals.input || 0) + (totals.output || 0) > 0) acc.tokenReported = true;
+  // 台账口径标记必须一路透传到界面：未补全到底时如实标注，不把部分覆盖冒充全量。
+  acc.missingCostRounds += totals.missingCostRounds || 0;
+  acc.unresolvedRounds += totals.unresolvedRounds || 0;
+  if (totals.backfillPending) acc.backfillPending = true;
   return acc;
 };
 

@@ -17,7 +17,7 @@ const isoDaysAgo = days => new Date(Date.now() - days * DAY).toISOString();
 
 // 假 Hub：?before=<id> 返回 id 更小的最近 PAGE 条，newest first，协议同 /v1/state。
 // 另按上游语义把未终态轮次并入第一页（host/state.ts 的 active 合并）。
-const PAGE = 3;
+let PAGE = 3;
 function makeHub() {
   const store = { runs: [] };
   const handler = (req, res) => {
@@ -26,13 +26,17 @@ function makeHub() {
     const byId = new Map();
     if (before) {
       for (const run of store.runs) if (run.id < Number(before)) byId.set(run.id, run);
-    } else {
-      for (const run of store.runs) byId.set(run.id, run);
-      for (const run of store.runs) if (!run.finishedAt) byId.set(run.id, run); // active 合并
+      const pool = [...byId.values()].sort((a, b) => b.id - a.id);
+      const page = pool.slice(0, PAGE);
+      json(res, { runs: page, hasMore: pool.length > PAGE, nextBefore: pool.length > PAGE ? page[PAGE - 1].id : null });
+      return;
     }
-    const pool = [...byId.values()].sort((a, b) => b.id - a.id);
-    const page = pool.slice(0, PAGE);
-    json(res, { runs: page, hasMore: pool.length > PAGE, nextBefore: pool.length > PAGE ? page[PAGE - 1].id : null });
+    // 上游 host/state.ts：第一页 = 最新 PAGE 条，另外把 queued/claimed/unknown 全量并入。
+    const pool = [...store.runs].sort((a, b) => b.id - a.id);
+    const page = new Map(pool.slice(0, PAGE).map(run => [run.id, run]));
+    for (const run of pool) if (!run.finishedAt) page.set(run.id, run);
+    const merged = [...page.values()].sort((a, b) => b.id - a.id);
+    json(res, { runs: merged, hasMore: pool.length > PAGE, nextBefore: pool.length > PAGE ? pool[PAGE - 1].id : null });
   };
   return { store, handler };
 }
@@ -55,6 +59,8 @@ function writeRuntime(root, chains) {
 }
 
 async function setup(chains = [['v6-serial.json', '/p/v6app'], ['mtexec-serial.json', '/p/mt']]) {
+  // 每个用例显式复位热路径节流，避免用例之间通过环境变量互相污染。
+  process.env.CHAIN_USAGE_TTL_MS = '0';
   const root = mkdtempSync(path.join(tmpdir(), 'chain-usage-'));
   writeRuntime(root, chains);
   const { store, handler } = makeHub();
@@ -179,30 +185,58 @@ test('翻页预算截断：断点持久化，下一轮续翻补全更早历史�
   } finally { delete process.env.CHAIN_USAGE_MAX_PAGES; await close(server); await close(hub.server); }
 });
 
-test('陈旧 pending（旧数组形态）转入不阻塞记账，不再深翻历史，完成后照样入账', async () => {
+test('陈旧 pending 转入不阻塞记账：不再全量深翻，完成后靠定向探针补计一分不丢', async () => {
   const { store, hub, server, chainUsageOf, root } = await setup([['v6-serial.json', '/p/v6app']]);
   try {
-    // 预置台账：4/3/2 已计，run 1 是三天前看到的未完成轮次（旧形态纯 id + 陈旧 updatedAt）。
+    // 预置台账（旧形态：pending 是纯 id 数组 + 陈旧 updatedAt）：10/9/8 已计，run 7 三天前就看到还没完成。
     writeFileSync(path.join(root, 'chain-usage.json'), JSON.stringify({
       version: 2, complete: true, updatedAt: isoDaysAgo(3),
-      seen: [1, 2, 3, 4],
+      seen: [8, 9, 10],
       rules: {
-        'V6串行推进': { counted: [4, 3, 2], pending: [1], input: 3, output: 3, cost: 3, costReported: true, rounds: 3, missingCostRounds: 0 },
+        'V6串行推进': { counted: [10, 9, 8], pending: [7], input: 3, output: 3, cost: 3, costReported: true, rounds: 3, missingCostRounds: 0 },
       },
     }));
-    store.runs = [finished(4, 'V6串行推进', { input: 1, output: 1, cost: 1 }), finished(3, 'V6串行推进', { input: 1, output: 1, cost: 1 }), finished(2, 'V6串行推进', { input: 1, output: 1, cost: 1 }), open(1, 'V6串行推进')];
-    const usage = await chainUsageOf();
-    assert.equal(beforeCalls(hub), 0, '陈旧 pending 不得再触发历史翻页');
-    assert.equal(usage.cost, 3);
-    assert.deepEqual(readLedgerFile(root).rules['V6串行推进'].unsettled, [1], '陈旧轮次转为不阻塞的记账');
-    assert.deepEqual(readLedgerFile(root).rules['V6串行推进'].pending, []);
-    // 它后来真的完成（中台把 active 轮次并入首页）：费用必须补计，一分不丢。
-    store.runs[3] = finished(1, 'V6串行推进', { input: 1, output: 1, cost: 7 });
+    store.runs = [
+      finished(10, 'V6串行推进', { input: 1, output: 1, cost: 1 }),
+      finished(9, 'V6串行推进', { input: 1, output: 1, cost: 1 }),
+      finished(8, 'V6串行推进', { input: 1, output: 1, cost: 1 }),
+      open(7, 'V6串行推进'),
+    ];
+    const first = await chainUsageOf();
+    assert.equal(first.cost, 3, '已计轮次不得被重算');
+    const ledger = readLedgerFile(root);
+    assert.deepEqual(ledger.rules['V6串行推进'].unsettled, [7], '陈旧轮次转入不阻塞的记账册');
+    assert.deepEqual(ledger.rules['V6串行推进'].pending, []);
+    assert.ok(ledger.complete, '不阻塞前沿：台账不必保持未到底状态');
+    const callsAfterFirst = beforeCalls(hub);
+    assert.ok(callsAfterFirst <= 1, `陈旧轮次只允许定向核实，实测 ${callsAfterFirst} 次历史翻页`);
+    // 它三天后才完成：此时 run 7 既不在首页最新 3 条里，也不再是 active 轮次。
+    store.runs[3] = finished(7, 'V6串行推进', { input: 1, output: 1, cost: 7 });
     const after = await chainUsageOf();
-    assert.equal(after.cost, 10, '长期未完成轮次完成后照样入账');
+    assert.equal(after.cost, 10, '长期未完成轮次完成后照样入账，一分不丢');
     assert.equal(after.rounds, 4);
     assert.deepEqual(readLedgerFile(root).rules['V6串行推进'].unsettled, []);
+    assert.ok(beforeCalls(hub) - callsAfterFirst <= 2, '补计只花定向探针的少量请求');
   } finally { await close(server); await close(hub.server); }
+});
+
+test('unsettled 册满时溢出只计数不静默丢账', async () => {
+  const { store, hub, server, chainUsageOf, root } = await setup([['v6-serial.json', '/p/v6app']]);
+  try {
+    process.env.CHAIN_USAGE_UNSETTLED_MAX = '2';
+    const staleIds = [70, 71, 72, 73, 74];
+    writeFileSync(path.join(root, 'chain-usage.json'), JSON.stringify({
+      version: 2, complete: true, updatedAt: isoDaysAgo(3), seen: [...staleIds, 80],
+      rules: { 'V6串行推进': { counted: [80], pending: staleIds, input: 1, output: 1, cost: 1, costReported: true, rounds: 1, missingCostRounds: 0 } },
+    }));
+    store.runs = [finished(80, 'V6串行推进', { input: 1, output: 1, cost: 1 }), ...staleIds.map(id => open(id, 'V6串行推进'))];
+    const usage = await chainUsageOf();
+    const ledger = readLedgerFile(root);
+    assert.equal(ledger.rules['V6串行推进'].unsettled.length, 2, '在册上限内保留');
+    assert.equal(ledger.rules['V6串行推进'].unresolved, 3, '溢出的 3 个转成如实计数');
+    assert.equal(usage.unresolvedRounds, 3);
+    assert.equal(usage.cost, 1, '溢出轮次未完成前不计费，也不冒充已计');
+  } finally { delete process.env.CHAIN_USAGE_UNSETTLED_MAX; await close(server); await close(hub.server); }
 });
 
 test('翻页中途失败：已扫页进度与断点落盘，退避期内零中台请求且按台账重建结果', async () => {
@@ -227,8 +261,10 @@ test('翻页中途失败：已扫页进度与断点落盘，退避期内零中�
     writeFileSync(path.join(root, 'chain-usage.json'), JSON.stringify({
       version: 2, complete: false, backfillCursor: null, updatedAt: isoToday(), seen: [], rules: {},
     }));
-    const first = await ofChain().catch(() => undefined);
-    assert.equal(first, undefined, '本轮刷新失败不附加累计');
+    const firstResponse = await fetch(`${url}/api/serial-progress`);
+    assert.equal(firstResponse.status, 200, '中台抖动不能把项目进度面板打成 502');
+    const firstBody = await firstResponse.json();
+    assert.ok(firstBody.chains.length > 0, '链进度照常返回');
     const ledger = readLedgerFile(root);
     assert.equal(ledger.rules['V6串行推进'].cost, 2, '翻页失败前已扫页的进度必须落盘');
     assert.equal(ledger.backfillCursor, 2, '续翻断点必须落盘');
@@ -238,6 +274,8 @@ test('翻页中途失败：已扫页进度与断点落盘，退避期内零中�
     assert.equal(hub.requests.length, calls, '退避期内不再发起任何中台请求');
     assert.equal(second.cost, 2, '退避期按已落盘台账重建，不丢弃断点进度');
     assert.equal(second.backfillPending, true, '尚未补全到底时保持如实标注');
+    const third = await ofChain();
+    assert.equal(third.cost, second.cost, '故障后的读数走台账，不回到今日窗口冒充');
   } finally { await close(server); await close(hub.server); }
 });
 
@@ -266,4 +304,77 @@ test('台账条目损坏时其 run id 一并出 seen，不做“已覆盖”假�
     assert.equal(usage.cost, 3, '损坏条目丢弃后这些轮次必须重新入账，不能被 seen 假装已计');
     assert.equal(usage.rounds, 3);
   } finally { await close(server); await close(hub.server); }
+});
+
+test('双路由持续轮询不会把台账冻结在首扫那一刻（扫描调度与结果缓存分离）', async () => {
+  const { store, hub, server, url } = await setup([['v6-serial.json', '/p/v6app']]);
+  try {
+    // 用真实热路径参数：TTL 200ms、前端两路由签名不同、按 app.mjs 的顺序持续轮询。
+    // 生产比例：轮询间隔远小于 TTL（前端 2s / 默认 30s），才能暴露"本地重建续期扫描调度"
+    // 造成的永久冻结。
+    process.env.CHAIN_USAGE_TTL_MS = '250';
+    store.runs = [finished(1, 'V6串行推进', { input: 1, output: 1, cost: 3 })];
+    const poll = async () => {
+      const [serial, usageBody] = await Promise.all([
+        fetch(`${url}/api/serial-progress`).then(r => r.json()),
+        fetch(`${url}/api/project-usage`).then(r => r.json()),
+      ]);
+      return { chain: serial.chains[0].cumulativeUsage?.cost, project: usageBody.projects.find(item => item.key === 'v6app')?.cumulative.cost };
+    };
+    assert.equal((await poll()).chain, 3);
+    store.runs.push(finished(2, 'V6开发', { input: 1, output: 1, cost: 100 }));
+    let seen = { chain: 3, project: 3 };
+    for (let round = 0; round < 30; round += 1) {
+      await new Promise(resolve => setTimeout(resolve, 40));   // 间隔 40ms < TTL 250ms
+      const value = await poll();
+      seen = value;
+      if (value.chain === 103) break;
+    }
+    assert.equal(seen.chain, 103, '新增轮次必须进入链累计（台账不得冻结）');
+    assert.equal(seen.project, 103, '项目累计同步推进');
+  } finally { delete process.env.CHAIN_USAGE_TTL_MS; await close(server); await close(hub.server); }
+});
+
+test('已到底的稳态轮询不闪现“历史补全中”，也不反复深翻', async () => {
+  const { store, hub, server, chainUsageOf } = await setup([['v6-serial.json', '/p/v6app']]);
+  try {
+    store.runs = [finished(3, 'V6串行推进', { input: 1, output: 1, cost: 1 }), finished(2, 'V6串行推进', { input: 1, output: 1, cost: 1 }), finished(1, 'V6串行推进', { input: 1, output: 1, cost: 1 }), finished(0, 'V6串行推进', { input: 1, output: 1, cost: 1 })];
+    const first = await chainUsageOf();
+    assert.equal(first.backfillPending, undefined, '首轮翻到底就不该标注补全中');
+    const before = hub.requests.length;
+    const second = await chainUsageOf();
+    assert.equal(second.backfillPending, undefined, '稳态不得闪现已补全标记');
+    assert.equal(second.cost, 4);
+    assert.ok(hub.requests.length - before <= 2, `稳态每轮只打前沿一两页，实测 ${hub.requests.length - before}`);
+  } finally { await close(server); await close(hub.server); }
+});
+
+test('真机规模截断：每一轮都必须比上一轮覆盖更多历史，直至补全到底（活锁回归）', async () => {
+  PAGE = 2;                                  // 12 轮 = 6 页，预算只有 3 页：前沿已覆盖区远大于预算
+  const maxPagesEnv = '3';
+  const { store, hub, server, chainUsageOf, root } = await setup([['v6-serial.json', '/p/v6app']]);
+  try {
+    for (let id = 11; id >= 0; id -= 1) store.runs.push(finished(id, 'V6串行推进', { input: 1, output: 1, cost: 1 }));
+    process.env.CHAIN_USAGE_MAX_PAGES = maxPagesEnv;
+    let previousRounds = -1;
+    let complete = false;
+    const ledgerOf = () => readLedgerFile(root);
+    for (let round = 0; round < 6 && !complete; round += 1) {
+      const usage = await chainUsageOf();
+      assert.ok(usage.rounds > previousRounds || usage.backfillPending === undefined, `第 ${round + 1} 轮没有推进覆盖：${previousRounds} → ${usage.rounds}`);
+      assert.ok(usage.rounds > previousRounds, `第 ${round + 1} 轮必须比上一轮多覆盖（实测 ${previousRounds} → ${usage.rounds}）`);
+      previousRounds = usage.rounds;
+      complete = ledgerOf().complete === true;
+      if (!complete) assert.equal(usage.backfillPending, true, '未补全期间必须一直如实标注');
+    }
+    assert.equal(complete, true, '多轮之后必须补全到底');
+    assert.equal(previousRounds, 12);
+    const final = await chainUsageOf();
+    assert.equal(final.backfillPending, undefined);
+    assert.equal(final.cost, 12);
+  } finally {
+    delete process.env.CHAIN_USAGE_MAX_PAGES;
+    PAGE = 3;
+    await close(server); await close(hub.server);
+  }
 });
