@@ -37,9 +37,7 @@
             "authorize"
           ],
           "states": [
-            "normal",
-            "failed",
-            "blocked"
+            "normal"
           ],
           "interactions": [
             "load-plan",
@@ -102,10 +100,7 @@
             "overview"
           ],
           "states": [
-            "normal",
-            "empty",
-            "loading",
-            "failed"
+            "normal"
           ],
           "interactions": []
         }

@@ -35,6 +35,7 @@
 | `src/chain-closeout.mjs` | 串行链收口巡检（无模型）：完成链独占 cron 规则暂停（中台 pause）、链文件归档（`.done-<日期>` 后缀）与收口审计（`closeouts.jsonl`） | rules.json 编辑、编排状态写入、事件路由 |
 | `src/detour.mjs` | 频限绕行登记（`detours.json`）、冷却核实、rules.json 原子回归与状态锁（`withStateLock`，rules.mjs 表单保存共用） | 探测命令实现、Hub 事件、规则表单校验 |
 | `src/design-baseline.mjs` | 可选设计清单、产物 hash、一次批准记录、不可变 run 快照与 UI 节点合同子集校验 | 浏览器渲染、PRD 自由文本语义判定、执行授权 |
+| `src/design-verify.mjs` | 加载已批准且 hash 覆盖的只读项目 verifier，绑定证据身份并写入服务端证据目录 | PRD 语义、执行授权、任意 shell 命令 |
 | `src/design-publish.mjs` | product-spec 与设计摘要确认后在目标项目 `docs/<planId>` 分支提交 PRD、设计包并创建 PR（授权快照、幂等、临时 worktree） | HTTP 路由、merge、deploy/release、凭据 |
 | `src/server.mjs` | 本机 HTTP API、静态资源、安全校验和路由允许列表 | 调度业务状态存储 |
 | `public/` | 状态展示、表单和交互 | 密钥、直接 Hub 访问、业务文件写入 |

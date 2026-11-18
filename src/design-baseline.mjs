@@ -84,6 +84,10 @@ export function loadDesignManifest({ projectRoot, manifestPath } = {}) {
       if (!artifactPaths.has(file.relativePath)) fail('UNHASHED_DESIGN_REFERENCE', `referencePaths 必须包含在 artifacts 产物 hash 中：${reference}`);
     }
   }
+  if (manifest.verifierPath !== undefined) {
+    const verifier = projectFile(projectRoot, manifest.verifierPath, '设计 verifier');
+    if (!artifactPaths.has(verifier.relativePath)) fail('UNHASHED_DESIGN_VERIFIER', `verifierPath 必须包含在 artifacts 产物 hash 中：${manifest.verifierPath}`);
+  }
   return {
     manifestPath: relativePath,
     designDigest: sha256(canonical(manifest)),

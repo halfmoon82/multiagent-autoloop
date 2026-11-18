@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "designDigest": "f5b8a9a13219bf99fe762ff66ce5234e19c8008b136769f3992d6f60d17990a5",
+  "designDigest": "e5675f66affc0858b0b9a356d4557205b07d469ab9750dfcf52d052a3f0d39b1",
   "confirmedAt": "2026-11-17",
-  "evidence": "docs/design/2026-11-17-parallel-dag/README.md#基线确认"
+  "evidence": "docs/design/2026-11-16-parallel-dag/README.md#基线确认"
 }

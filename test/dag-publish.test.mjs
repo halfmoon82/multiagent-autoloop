@@ -129,10 +129,12 @@ test('requireOptionalGrant：执行层按授权记录拒绝未选高风险动作
 });
 
 test('commitPr：设计清单、批准记录和参考产物始终只读，即使误加入节点 scope', async () => {
-  const designBaseline = { designDigest: 'a'.repeat(64), readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png'] };
+  const designBaseline = { designDigest: 'a'.repeat(64), readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png', 'docs/prd/demo/design-approval.json'] };
   const t = await boot({ designBaseline, designInScope: true });
   t.write('src/a.mjs', 'ok\n');
   t.write('docs/design/demo/design-manifest.json', 'changed\n');
+  t.write('docs/design/demo/reference.png', 'changed\n');
+  t.write('docs/prd/demo/design-approval.json', 'changed\n');
   await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'DESIGN_BASELINE_READONLY');
   assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
 });
@@ -189,6 +191,8 @@ test('merge：UI 证据必须与已审 commit 和根 designDigest 匹配；merge
   await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), error => error.code === 'DESIGN_EVIDENCE_MISSING');
   const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit);
   await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, designDigest: 'c'.repeat(64) } }), error => error.code === 'DESIGN_EVIDENCE_MISMATCH');
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, commit: 'other' } }), error => error.code === 'DESIGN_EVIDENCE_MISMATCH');
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, contractDigest: 'c'.repeat(64) } }), error => error.code === 'DESIGN_EVIDENCE_MISMATCH');
   const out = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence });
   assert.ok(out.mergeCommit); assert.equal(verifyCalls, 0, 'merge 不得重跑浏览器验证');
 });

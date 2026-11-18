@@ -67,6 +67,9 @@ export async function publishProductSpec({
     catch (error) { return fail(error.code || 'invalid_design_baseline', error.message); }
     if (!designDigest) return fail('design_confirmation_required', '声明了设计基线，publish 需要当前 designDigest 与 confirm=true');
     if (design.designDigest !== designDigest) return fail('design_digest_mismatch', 'designDigest 与当前设计产物不一致，请重新确认');
+    const reserved = new Set(['product-spec.json', 'plan.json', 'nodes.json', 'design-approval.json'].map(name => `docs/prd/${planId}/${name}`));
+    const collisions = design.readOnlyPaths.filter(file => reserved.has(file));
+    if (collisions.length) return fail('design_output_conflict', `设计产物不得覆盖 PRD 生成文件：${collisions.join(', ')}`);
   }
 
   // 既有链路：转录原文 → product-spec.input.json → vibe plan --from-prd（产物留在目标项目 .vibe/，不入提交）。

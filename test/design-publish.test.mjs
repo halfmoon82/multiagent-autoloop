@@ -218,3 +218,30 @@ test('publish requires the confirmed designDigest before writes and publishes on
   assert.equal(repeated.ok, true, JSON.stringify(repeated));
   assert.equal(git(origin, 'rev-parse', 'docs/demo-plan'), head, '同设计重复确认不得制造新提交');
 });
+
+test('publish refuses design paths that collide with generated PRD outputs before any write', async () => {
+  for (const reserved of ['product-spec.json', 'plan.json', 'nodes.json', 'design-approval.json']) {
+    const { root } = makeProject(); const design = addDesign(root);
+    const manifestPath = ['product-spec.json', 'plan.json', 'nodes.json'].includes(reserved) ? `docs/prd/demo-plan/${reserved}` : design.manifestPath;
+    const manifest = JSON.parse(readFileSync(path.join(root, design.manifestPath), 'utf8'));
+    if (reserved === 'design-approval.json') {
+      const target = `docs/prd/demo-plan/${reserved}`;
+      mkdirSync(path.dirname(path.join(root, target)), { recursive: true });
+      writeFileSync(path.join(root, target), 'approval-collision');
+      manifest.artifacts[0].path = target;
+      manifest.artifacts[0].sha256 = createHash('sha256').update('approval-collision').digest('hex');
+      manifest.surfaces[0].referencePaths = [target];
+    }
+    mkdirSync(path.dirname(path.join(root, manifestPath)), { recursive: true });
+    writeFileSync(path.join(root, manifestPath), JSON.stringify(manifest));
+    const spec = { ...SPEC, design: { manifestPath } };
+    const transcript = `\`\`\`product-spec\n${JSON.stringify(spec)}\n\`\`\`\n`;
+    const specDigest = extractProductSpec(transcript).specDigest;
+    const designDigest = loadDesignManifest({ projectRoot: root, manifestPath }).designDigest;
+    const runner = makeRunner();
+    const result = await publishProductSpec(base(root, runner.runner, { transcript, specDigest, designDigest }));
+    assert.equal(result.error?.code, 'design_output_conflict', reserved);
+    assert.equal(runner.calls.length, 0, reserved);
+    assert.equal(existsSync(path.join(root, '.vibe', 'plans', 'demo-plan', 'product-spec.input.json')), false, reserved);
+  }
+});

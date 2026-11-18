@@ -86,7 +86,7 @@
 - Test: `test/dag-publish.test.mjs`, `test/dag-controller.test.mjs`, `test/dag-fakes.mjs`
 
 **Interfaces:**
-- `createPublisher` 接受可选 `verifyDesign({ nodeId, worktree, commit, designBaseline, contract })`。
+- `createPublisher` 接受可选 `verifyDesign({ nodeId, worktree, commit, designBaseline, contract, evidenceDir })`；生产 `createDagRuntime` 默认使用 `src/design-verify.mjs` 加载已批准的只读项目 verifier。
 - UI 验证返回 `{ ok, evidence }`；evidence 含 `commit/designDigest/contractDigest/checks/visualDiffs?`。
 - `checks` 至少一项且全部 `ok:true`；`visualDiffs` 不改变硬门结果。
 - controller 将 evidence 存入节点运行状态；review 前发现同 SHA 证据缺失时自动 verify，并重新创建 review attempt。

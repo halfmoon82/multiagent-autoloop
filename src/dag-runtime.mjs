@@ -12,6 +12,7 @@ import { ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
 import { createSlotRuntime, seg } from './dag-slots.mjs';
 import * as wip from './dag-wip.mjs';
 import { hubRequest } from './hub.mjs';
+import { verifyDesign as defaultVerifyDesign } from './design-verify.mjs';
 
 export const MIN_POLL_MS = 5000;
 const HUB_STATES = new Set(['queued', 'claimed', 'unknown', 'done', 'nothing', 'cancelled']);
@@ -80,11 +81,11 @@ export function createBlockedEvidence({ request, config }) {
   };
 }
 
-export async function createDagRuntime({ rootRun, config, store, request = hubRequest, gh, runTests = defaultRunTests, git, now = Date.now, chooseApproach } = {}) {
+export async function createDagRuntime({ rootRun, config, store, request = hubRequest, gh, runTests = defaultRunTests, verifyDesign = defaultVerifyDesign, git, now = Date.now, chooseApproach } = {}) {
   const rt = createSlotRuntime({ project: rootRun.project, runId: rootRun.runId, ...(git ? { git } : {}) });
   await rt.ensureSlots();
   const adapter = gh || createGhAdapter({ cwd: rootRun.project });
-  const publisher = createPublisher({ store, rootRunId: rootRun.runId, rt, gh: adapter, runTests });
+  const publisher = createPublisher({ store, rootRunId: rootRun.runId, rt, gh: adapter, runTests, verifyDesign });
   const hub = createHubAdapter({ config, request, project: rootRun.project });
   return createController({ store, rootRunId: rootRun.runId, hub, rt, wip, publisher, now, chooseApproach, blockedEvidence: createBlockedEvidence({ request, config }) });
 }

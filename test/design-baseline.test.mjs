@@ -97,3 +97,15 @@ test('validates node surface, viewport, state and interaction subsets from the f
   assert.equal(first, designContractDigest({ designDigest: baseline.designDigest, contract: node.contract.design }));
   assert.notEqual(first, designContractDigest({ designDigest: '0'.repeat(64), contract: node.contract.design }));
 });
+
+test('verifierPath is optional but must be an existing hash-covered read-only artifact', () => {
+  const fixture = project();
+  const manifest = { ...fixture.manifest, verifierPath: 'docs/design/demo/verify.mjs' };
+  writeFileSync(path.join(fixture.root, fixture.manifestPath), JSON.stringify(manifest));
+  assert.throws(() => loadDesignManifest(fixture), /verifier|artifacts/);
+  writeFileSync(path.join(fixture.root, 'docs/design/demo/verify.mjs'), 'export async function verify() {}');
+  manifest.artifacts.push({ path: 'docs/design/demo/verify.mjs', sha256: sha256('export async function verify() {}') });
+  writeFileSync(path.join(fixture.root, fixture.manifestPath), JSON.stringify(manifest));
+  const loaded = loadDesignManifest(fixture);
+  assert.ok(loaded.readOnlyPaths.includes('docs/design/demo/verify.mjs'));
+});

@@ -33,6 +33,10 @@
     {
       "path": "docs/design/2026-11-16-parallel-dag/renders/authorize-mobile.png",
       "sha256": "574100425c08985b5118576e08ab6d6b4801bf54d86800a18fc5bdf0119111e7"
+    },
+    {
+      "path": "docs/design/2026-11-16-parallel-dag/verify-production.mjs",
+      "sha256": "0071db57b5f0d118ae11fbe573111344f20a3ba270512ed3f5254e1d139efa2a"
     }
   ],
   "surfaces": [
@@ -81,5 +85,6 @@
         "docs/design/2026-11-16-parallel-dag/renders/authorize-mobile.png"
       ]
     }
-  ]
+  ],
+  "verifierPath": "docs/design/2026-11-16-parallel-dag/verify-production.mjs"
 }

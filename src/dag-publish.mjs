@@ -1,5 +1,6 @@
 // publish（无模型）：commit-pr / verify / merge / baseline。只执行授权快照内动作，幂等；
 // 永远不做 deploy/release/凭据/对外通信。gh 与测试执行器由调用方注入（CI 离线用假实现）。
+import path from 'node:path';
 import { normalizeProjectPath } from './dag.mjs';
 import { canClosePr, canExecuteAction } from './dag-run.mjs';
 import { assertNodeDesignSnapshot, designContractDigest } from './design-baseline.mjs';
@@ -107,7 +108,8 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       }
       // 设施缺失/抛错属于控制器可重试错误，不计 worker 实现失败。
       if (typeof verifyDesign !== 'function') throw new PublishError(`UI 节点 ${nodeId} 缺少设计 verifier`, 'DESIGN_VERIFIER_UNAVAILABLE');
-      const result = await verifyDesign({ nodeId, worktree, commit, designBaseline: root.designBaseline, contract: node.contract.design });
+      const evidenceDir = path.join(store.directory, 'design-evidence', rootRunId, nodeId);
+      const result = await verifyDesign({ nodeId, worktree, commit, designBaseline: root.designBaseline, contract: node.contract.design, evidenceDir });
       const invalid = evidenceError(root, node, result?.evidence, commit);
       if (invalid) throw invalid;
       const checksPassed = result.evidence.checks.every(check => check.ok);
