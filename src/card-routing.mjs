@@ -1,6 +1,6 @@
 // 卡片路由过滤器的生产装配（Spec §9.4/§9.6）：把 router（判定）、store（版本/审计）与 delegate（幂等退回事务）接到 notifier 轮询与控制台 API。
 // 不改判定语义：只有 mode=active 且 route=scheduler 且 autoRoute=true 才调用退回；其余（shadow/unknown/human/无版本）零副作用。
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { routeCardAsync, extractFeatures, DEFAULT_RULES } from './card-router.mjs';
 import { createCardFilterStore, CardFilterError } from './card-filter-store.mjs';
@@ -44,17 +44,46 @@ export function createCardRouting({
   now = () => Date.now(), retryAfterMs = DEFAULT_COOLDOWN_MS, onError = () => {},
 } = {}) {
   store = store || createCardFilterStore(loadSnapshot(persistFile));
-  const persist = () => { try { saveSnapshot(persistFile, store.snapshot()); } catch (error) { onError(error); } };
   // 决策去重：同一卡在同一版本/模式/路由下只记一条，避免每轮轮询刷审计。重启后由已存决策重建。
   const recorded = new Set(store.decisions().map(item => `${item.cardId}|${item.ruleVersion}|${item.mode}|${item.route}`));
+  const rebuildRecorded = () => {
+    recorded.clear();
+    for (const item of store.decisions()) recorded.add(`${item.cardId}|${item.ruleVersion}|${item.mode}|${item.route}`);
+  };
+  // 单一写者（issue #97）：快照文件是跨进程唯一真相（CLI --publish 与本进程都会写）。
+  // 每次读/写前按 mtime+size 重读，把外部进程刚落盘的版本/决策并入内存，
+  // 避免本进程 persist 用旧内存快照覆盖丢版本，也修复「CLI 写 v1 后 activate 报版本不存在」。
+  const snapshotStamp = () => {
+    if (!persistFile) return '';
+    try { const stat = statSync(persistFile); return `${stat.mtimeMs}|${stat.size}`; } catch { return ''; }
+  };
+  let lastStamp = snapshotStamp();
+  const refresh = () => {
+    if (!persistFile) return;
+    const stamp = snapshotStamp();
+    if (stamp === lastStamp) return;
+    lastStamp = stamp;
+    store.reload(loadSnapshot(persistFile));
+    rebuildRecorded();
+  };
+  const persist = () => {
+    if (!persistFile) return;
+    try {
+      saveSnapshot(persistFile, store.snapshot());
+      lastStamp = snapshotStamp();
+    } catch (error) { onError(error); }
+  };
   const failedAt = new Map(); // 退回失败的退避，避免重试风暴
   let running = null;
 
   async function routeOne(card) {
+    refresh();
     const current = store.current();
     const rules = current.version ? current.rules : DEFAULT_RULES;
     const decision = await routeCardAsync(card, { rules, ruleVersion: current.version, mode: current.mode, model });
     const key = `${card.id}|${decision.ruleVersion}|${decision.mode}|${decision.route}`;
+    // 决策落盘前再重读一次，覆盖 routeCardAsync 等待期间外部进程写入的快照（issue #97）。
+    refresh();
     if (!recorded.has(key)) {
       recorded.add(key);
       store.recordDecision({ cardId: card.id, route: decision.route, hardGateHits: decision.hardGateHits, ruleVersion: decision.ruleVersion, mode: decision.mode, confidence: decision.confidence, features: extractFeatures(card) });
@@ -91,6 +120,7 @@ export function createCardRouting({
       return running;
     },
     status() {
+      refresh();
       const current = store.current();
       return {
         mode: current.mode,
@@ -103,6 +133,7 @@ export function createCardRouting({
     // 生产发布入口（issue #93）：评测默认规则集 → 通过才注册版本并原子落盘，不默认 activate。
     // 幂等：同规则同评测已有通过版本时不重复注册；规则变化才新建版本并链 parentVersion。
     async publish({ samples, rules, model: overrideModel } = {}) {
+      refresh();
       const evalArgs = {};
       if (samples !== undefined) evalArgs.samples = samples;
       if (rules !== undefined) evalArgs.rules = rules;
@@ -112,6 +143,8 @@ export function createCardRouting({
       if (!evaluation.passed) {
         return { published: false, created: false, version: null, mode: store.current().mode, evaluation };
       }
+      // evaluate 期间外部进程可能写盘；注册前再重读，保证幂等判断基于最新快照、且不丢外部已落盘版本。
+      refresh();
       const ruleSet = rules !== undefined ? rules : DEFAULT_RULES;
       const versions = store.versions();
       const latest = versions.length ? versions[versions.length - 1] : null;
@@ -125,18 +158,20 @@ export function createCardRouting({
       });
       store.recordValidation(v.version, result);
       if (persistFile) {
-        try { saveSnapshot(persistFile, store.snapshot()); }
+        try { saveSnapshot(persistFile, store.snapshot()); lastStamp = snapshotStamp(); }
         catch (error) { throw new CardFilterError(`快照写入失败：${error.message}`, 'SNAPSHOT_WRITE_FAILED'); }
       }
       return { published: true, created: true, version: v.version, mode: store.current().mode, evaluation };
     },
     // 服务端强制：必须 validation.passed 且 humanGateFalseAuto=0（store.activate 内校验），不由提示词绕过。
     activate(version) {
+      refresh();
       store.activate(version);
       persist();
       return routing.status();
     },
     rollback() {
+      refresh();
       store.rollback();
       persist();
       return routing.status();

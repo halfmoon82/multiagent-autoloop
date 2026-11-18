@@ -69,8 +69,11 @@ async function main() {
     let result;
     try { result = await routing.publish(evalArgs); }
     catch (error) { console.error(`发布失败：${error.message}`); process.exitCode = 1; return; }
-    if (options.json) console.log(JSON.stringify(result, null, 2));
-    else console.log(`发布${result.published ? '成功' : '失败'}｜版本 ${result.version || '无'}｜评测 ${result.evaluation.total} 样本｜人工门禁误自动路由 ${result.evaluation.humanGateFalseAuto}｜${result.created ? '新注册' : result.published ? '已存在（幂等）' : '未注册'}`);
+    // 命令行发布只写快照文件；运行中 server 启动时一次性载入内存，需等它下次按文件重读或重启后才生效。
+    // 生产环境优先用 POST /api/card-router/publish，与 server 同一 store 实例，无此延迟与双写窗口。
+    const notice = '命令行发布只写快照文件；运行中的服务端需重启或等其下次按文件重读后新版本才生效（建议改用服务端发布路由）';
+    if (options.json) console.log(JSON.stringify({ ...result, notice }, null, 2));
+    else console.log(`发布${result.published ? '成功' : '失败'}｜版本 ${result.version || '无'}｜评测 ${result.evaluation.total} 样本｜人工门禁误自动路由 ${result.evaluation.humanGateFalseAuto}｜${result.created ? '新注册' : result.published ? '已存在（幂等）' : '未注册'}\n注意：${notice}`);
     process.exitCode = result.published ? 0 : 1;
     return;
   }

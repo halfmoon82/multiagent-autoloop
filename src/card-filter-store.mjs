@@ -88,6 +88,21 @@ export function createCardFilterStore(snapshot = {}) {
     },
     decisions: () => decisionList.map(item => ({ ...item })),
 
+    // 从磁盘快照就地重载（保持 store 对象 identity 不变，避免外部持有的引用失效）。
+    // 供单一写者在每次写前按文件 mtime 重读：把外部进程（CLI --publish）落盘的版本/决策并入本进程。
+    // 只替换集合内容，不改判定语义；调用方负责只在磁盘确实更新时调用。
+    reload(snapshot = {}) {
+      examples.length = 0;
+      examples.push(...(snapshot.examples || []));
+      decisionList.length = 0;
+      decisionList.push(...(snapshot.decisions || []));
+      versionList.length = 0;
+      versionList.push(...(snapshot.versions || []).map(version => ({ ...version })));
+      activeStack.length = 0;
+      activeStack.push(...(snapshot.activeStack || []));
+      return store;
+    },
+
     // 人工退回/直接回答/重新升级/无纠正/冲突 → 样本；误路由经 reescalated 形成强 human 纠偏样本。
     recordFeedback(decisionId, kind) {
       const rule = FEEDBACK[kind];
