@@ -175,11 +175,11 @@ test('verify：UI 节点只跑定向 checks，visualDiffs 默认不形成硬失�
 
 test('verify：UI 缺 verifier 属设施错误；定向断言失败才返回实现失败', async () => {
   const missing = await boot({ designBaseline: uiDesign(), ui: true });
-  missing.write('src/a.mjs', 'x\n'); await missing.pub.commitPr(missing.ctx);
-  await assert.rejects(missing.pub.verify({ ...missing.ctx, commit: 'sha' }), error => error.code === 'DESIGN_VERIFIER_UNAVAILABLE');
+  missing.write('src/a.mjs', 'x\n'); const missingPr = await missing.pub.commitPr(missing.ctx);
+  await assert.rejects(missing.pub.verify({ ...missing.ctx, commit: missingPr.commit }), error => error.code === 'DESIGN_VERIFIER_UNAVAILABLE');
   const failing = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async input => ({ ok: false, evidence: evidenceFor({ designBaseline: uiDesign(), nodes: [{ contract: { design: input.contract } }] }, input.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] }) }) });
-  failing.write('src/a.mjs', 'x\n'); await failing.pub.commitPr(failing.ctx);
-  const result = await failing.pub.verify({ ...failing.ctx, commit: 'sha' });
+  failing.write('src/a.mjs', 'x\n'); const failingPr = await failing.pub.commitPr(failing.ctx);
+  const result = await failing.pub.verify({ ...failing.ctx, commit: failingPr.commit });
   assert.equal(result.ok, false); assert.equal(result.designEvidence.checks[0].ok, false);
 });
 
@@ -216,4 +216,38 @@ test('verify：设计 verifier 造成的槽位变化同样被记录', async () =
   t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
   const result = await t.pub.verify({ ...t.ctx, commit: pr.commit });
   assert.equal(result.slotStateChanged, true);
+});
+
+test('commitPr：worker 先提交的范围外文件仍拒绝，不推送不建 PR', async () => {
+  const t = await boot();
+  t.write('src/b.mjs', 'not mine\n');
+  sh(t.ctx.worktree, 'add', 'src/b.mjs'); sh(t.ctx.worktree, 'commit', '-qm', 'worker precommit');
+  await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'OUT_OF_SCOPE');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr：worker 先提交的设计只读文件仍拒绝，不推送不建 PR', async () => {
+  const t = await boot({ designBaseline: uiDesign(), ui: true });
+  t.write('docs/design/demo/reference.png', 'changed\n');
+  sh(t.ctx.worktree, 'add', 'docs/design/demo/reference.png'); sh(t.ctx.worktree, 'commit', '-qm', 'worker precommit design');
+  await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'DESIGN_BASELINE_READONLY');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('verify：UI verifier 执行前槽位 HEAD 必须等于待验证 commit', async () => {
+  const designBaseline = uiDesign();
+  const verifyDesign = async input => evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit);
+  const t = await boot({ designBaseline, ui: true, verifyDesign });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
+  t.write('src/a.mjs', 'post-commit\n'); sh(t.ctx.worktree, 'add', 'src/a.mjs'); sh(t.ctx.worktree, 'commit', '-qm', 'post commit');
+  await assert.rejects(t.pub.verify({ ...t.ctx, commit: pr.commit }), error => error.code === 'DESIGN_WORKTREE_HEAD_MISMATCH');
+});
+
+test('verify：UI verifier 执行前槽位必须干净', async () => {
+  const designBaseline = uiDesign();
+  const verifyDesign = async input => evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit);
+  const t = await boot({ designBaseline, ui: true, verifyDesign });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
+  t.write('src/a.mjs', 'dirty after commit\n');
+  await assert.rejects(t.pub.verify({ ...t.ctx, commit: pr.commit }), error => error.code === 'DESIGN_WORKTREE_DIRTY');
 });

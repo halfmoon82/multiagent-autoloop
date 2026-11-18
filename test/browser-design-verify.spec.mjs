@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadNativePlan } from '../src/dag-plan.mjs';
 import { verifyDesign } from '../src/design-verify.mjs';
+import { defaultGit } from '../src/dag-slots.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const loaded = loadNativePlan({ projectRoot, planId: 'console-hub-native-and-card-routing' });
@@ -15,7 +16,7 @@ for (const nodeId of ['execution-grants', 'card-delegation']) {
   const node = loaded.nodes.find(item => item.id === nodeId);
   const evidenceDir = mkdtempSync(path.join(tmpdir(), `design-evidence-${nodeId}-`));
   try {
-    const result = await verifyDesign({ nodeId, worktree: projectRoot, commit, designBaseline: loaded.designBaseline, contract: node.contract.design, evidenceDir });
+    const result = await verifyDesign({ nodeId, worktree: projectRoot, project: projectRoot, git: defaultGit, commit, designBaseline: loaded.designBaseline, contract: node.contract.design, evidenceDir });
     assert.equal(result.ok, true, JSON.stringify(result.evidence));
     assert.ok(result.evidence.checks.length > 0);
     assert.ok(result.evidence.checks.every(check => check.ok));

@@ -33,6 +33,8 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
     return [...(node.contract?.files || []), ...(node.files || [])].map(normalizeProjectPath);
   };
   const changed = async cwd => parseStatus(await rt.git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all']));
+  // worker 可能先 git commit：scope 必须同时覆盖未提交状态和 base..HEAD 已提交差异。
+  const committed = async (cwd, base) => String(await rt.git(cwd, ['diff', '--name-only', '-z', base, 'HEAD']) ?? '').split('\0').filter(Boolean);
   const nodeOf = (root, nodeId) => {
     const node = (root.nodes || []).find(item => item.id === nodeId);
     if (!node) throw new PublishError(`节点 ${nodeId} 不在快照中`, 'UNKNOWN_NODE');
@@ -75,18 +77,20 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
     async commitPr({ nodeId, branch, worktree }) {
       const root = need(['push-branch', 'create-pr'], 'commit-pr');
       const scopes = scopesOf(root, nodeId);
-      const files = await changed(worktree);
+      const uncommittedFiles = await changed(worktree);
+      const base = (await rt.git(worktree, ['rev-parse', '--verify', `${baseRef}^{commit}`]).catch(() => '')).trim();
+      if (!base) throw new PublishError(`基准引用 ${baseRef} 不存在，无法核对本节点提交范围`, 'BASE_REF_MISSING');
+      const files = [...new Set([...uncommittedFiles, ...await committed(worktree, base)])];
       const readOnlyDesign = new Set((root.designBaseline?.readOnlyPaths || []).map(normalizeProjectPath));
       const protectedDesign = files.filter(file => readOnlyDesign.has(file));
       if (protectedDesign.length) throw new PublishError(`设计基线/参考产物只读：${protectedDesign.join(', ')}`, 'DESIGN_BASELINE_READONLY');
       const outside = files.filter(file => !inScope(file, scopes));
       if (outside.length) throw new PublishError(`改动超出节点文件范围：${outside.join(', ')}`, 'OUT_OF_SCOPE');
-      if (files.length) {
-        await rt.git(worktree, ['add', '--', ...files]);
+      if (uncommittedFiles.length) {
+        await rt.git(worktree, ['add', '--', ...uncommittedFiles]);
         await rt.git(worktree, ['-c', 'user.name=dag-controller', '-c', 'user.email=dag-controller@localhost', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', `${nodeId}: ${root.runId}`]);
       }
       const commit = (await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
-      const base = (await rt.git(worktree, ['rev-parse', baseRef]).catch(() => '')).trim();
       if (commit === base) throw new PublishError(`节点 ${nodeId} 没有任何提交可发 PR`, 'NOTHING_TO_PUBLISH');
       await rt.git(worktree, ['push', '-q', 'origin', `HEAD:refs/heads/${branch}`]);
       let prUrl = await gh.findPr({ branch });
@@ -108,8 +112,12 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       }
       // 设施缺失/抛错属于控制器可重试错误，不计 worker 实现失败。
       if (typeof verifyDesign !== 'function') throw new PublishError(`UI 节点 ${nodeId} 缺少设计 verifier`, 'DESIGN_VERIFIER_UNAVAILABLE');
+      const head = (await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
+      if (head !== commit) throw new PublishError(`UI 槽位 HEAD ${head} 与待验证 commit ${commit} 不一致`, 'DESIGN_WORKTREE_HEAD_MISMATCH');
+      const currentFiles = await changed(worktree);
+      if (currentFiles.length) throw new PublishError(`UI 槽位存在未提交改动：${currentFiles.join(', ')}`, 'DESIGN_WORKTREE_DIRTY');
       const evidenceDir = path.join(store.directory, 'design-evidence', rootRunId, nodeId);
-      const result = await verifyDesign({ nodeId, worktree, commit, designBaseline: root.designBaseline, contract: node.contract.design, evidenceDir });
+      const result = await verifyDesign({ nodeId, worktree, project: rt.project, git: rt.git, commit, designBaseline: root.designBaseline, contract: node.contract.design, evidenceDir });
       const invalid = evidenceError(root, node, result?.evidence, commit);
       if (invalid) throw invalid;
       const checksPassed = result.evidence.checks.every(check => check.ok);

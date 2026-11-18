@@ -17,6 +17,11 @@ async function importFrom(worktree, relative) {
 }
 
 export async function verify({ worktree, contract, evidenceDir }) {
+  // 显式支持清单：未声明的维度 fail closed，不得静默按 normal 页面通过。
+  const supportedStates = new Set(['normal']);
+  const supportedInteractions = new Set(['load-plan', 'confirm-scope']);
+  for (const state of contract.states || []) if (!supportedStates.has(state)) throw new Error(`当前生产 verifier 不支持 state：${state}`);
+  for (const interaction of contract.interactions || []) if (!supportedInteractions.has(interaction)) throw new Error(`当前生产 verifier 不支持 interaction：${interaction}`);
   mkdirSync(evidenceDir, { recursive: true });
   const root = mkdtempSync(path.join(tmpdir(), 'design-production-data-'));
   const profile = mkdtempSync(path.join(tmpdir(), 'design-production-profile-'));
@@ -80,7 +85,8 @@ export async function verify({ worktree, contract, evidenceDir }) {
             checks.push({ surfaceId, viewport, kind: 'interaction', id: 'confirm-scope', ok: await page.locator('#authorize-button').isEnabled() });
           }
           if ((contract.interactions || []).includes('load-plan')) {
-            checks.push({ surfaceId, viewport, kind: 'interaction', id: 'load-plan', ok: await page.locator('#authorize-check').isVisible() });
+            const digest = page.locator('[data-plan-digest]');
+            checks.push({ surfaceId, viewport, kind: 'interaction', id: 'load-plan', ok: await digest.isVisible() && Boolean((await digest.innerText()).trim()) });
           }
         }
         const noOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
@@ -91,7 +97,7 @@ export async function verify({ worktree, contract, evidenceDir }) {
       }
     }
     checks.push({ kind: 'console', id: 'no-errors', ok: errors.length === 0, detail: errors.join('; ').slice(0, 500) });
-    return { ok: checks.every(check => check.ok), checks, artifacts, visualDiffs: [] };
+    return { ok: checks.every(check => check.ok), checks, artifacts };
   } finally {
     if (context) await context.close();
     if (server) await close(server);
