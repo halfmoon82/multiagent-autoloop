@@ -37,11 +37,23 @@ function makeProject({ attested = true } = {}) {
   git(root, 'push', '-u', 'origin', 'main');
   mkdirSync(path.join(root, '.vibe', 'plans', 'demo-plan'), { recursive: true });
   writeFileSync(path.join(root, '.vibe', '.keep'), '');
-  const state = { version: 1, capabilities: attested ? {
-    adapter: 'codex', attested_at: new Date().toISOString(), host_major_version: VIBE_MAJOR_VERSION,
-    dispatch: 'visible', attest_command: 'vibe attest',
-  } : undefined };
-  writeFileSync(path.join(root, '.vibe', 'state.json'), JSON.stringify(state));
+  writeFileSync(path.join(root, '.vibe', 'state.json'), JSON.stringify({ workflow_version: 4, execution_mode: 'sdd_first', session_gate: 's0_required', capability_contract_required: true }));
+  if (attested) {
+    mkdirSync(path.join(root, '.vibe', 'provider-actions'), { recursive: true });
+    writeFileSync(path.join(root, '.vibe', 'provider-actions', 'capabilities-codex.json'), JSON.stringify({
+      adapter_id: 'codex',
+      facts: {
+        'codex.agent': true, 'codex.shell': true, 'codex.subprocess': true, 'codex.worktree': true,
+        'codex.visible_task.create': true, 'codex.visible_task.enter': true,
+        'codex.visible_task.resume': true, 'codex.visible_task.wait': true,
+        'codex.in_session_sdd': false,
+      },
+      observed_at: new Date().toISOString(),
+      provenance: 'design-publish fixture',
+      schema_version: 1,
+      session_id: 'design-publish',
+    }));
+  }
   // .vibe 属于规划产物，不进入提交
   writeFileSync(path.join(root, '.git', 'info', 'exclude'), '.vibe/\n');
   // 模拟 vibe plan 产物（假 CLI 只回 JSON，不落盘）

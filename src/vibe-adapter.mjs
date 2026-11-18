@@ -3,7 +3,7 @@
 // 显式 --adapter codex 与 --project-root；清理宿主环境变量；版本预检阻塞式锁定 5.2.7；
 // 能力记录只读校验（服务端绝不执行 attest、绝不写能力记录、绝不编造 ACP initialize 不包含的派发事实）。
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -23,6 +23,8 @@ export const HOST_ENV_DENYLIST = Object.freeze([
   'AGENT_TASK_ID',
 ]);
 export const CAPABILITY_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+// 派发形态词表（供 UI 文案与校验消息引用）。注意：codex 清单没有 background 探针，
+// 本适配器只能从 facts 推导 visible / in_session_sdd，不会推导 background。
 export const DISPATCH_FORMS = Object.freeze(['visible', 'background', 'in_session_sdd']);
 const MAX_STATE_BYTES = 1024 * 1024;
 const VERSION_PATTERN = /(\d+)\.(\d+)\.(\d+)/;
@@ -130,49 +132,97 @@ export function checkInitialization({ projectRoot }) {
   return { ok: true };
 }
 
-function readState(root) {
-  const file = path.join(root, '.vibe', 'state.json');
+// vibe 5.2.7 的 `vibe attest` 只写这一个文件（每适配器一份，见上游 #279）；
+// `.vibe/state.json` 里没有 capabilities 段，读它永远读不到真实记录。
+const CAPABILITY_RECORD_RELATIVE = ['.vibe', 'provider-actions', 'capabilities-codex.json'];
+
+/**
+ * 只读加载 attest 记录；缺失、过大、符号链接（上游同样拒绝）或非法 JSON 一律视为未登记。
+ */
+function readCapabilityRecord(root) {
+  const directory = path.join(root, ...CAPABILITY_RECORD_RELATIVE.slice(0, -1));
+  const file = path.join(root, ...CAPABILITY_RECORD_RELATIVE);
   try {
-    if (statSync(file).size > MAX_STATE_BYTES) throw new Error('state.json 过大');
-    return JSON.parse(readFileSync(file, 'utf8'));
+    if (lstatSync(directory).isSymbolicLink()) return null;
+    const stat = lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_STATE_BYTES) return null;
+    const record = JSON.parse(readFileSync(file, 'utf8'));
+    return record && typeof record === 'object' && !Array.isArray(record) ? record : null;
   } catch (error) {
     return null;
   }
 }
 
+// attest 写入时强制的 9 项探针（codex 清单）；缺任一项就不是一次完整 attest。
+export const CAPABILITY_PROBES = Object.freeze([
+  'codex.agent',
+  'codex.shell',
+  'codex.subprocess',
+  'codex.worktree',
+  'codex.visible_task.create',
+  'codex.visible_task.enter',
+  'codex.visible_task.resume',
+  'codex.visible_task.wait',
+  'codex.in_session_sdd',
+]);
+
+/**
+ * 从真实会话声明的 facts 推出派发形态，语义与上游 detect 一致：
+ * subprocess 为假时上游只给 guide（sdd 也不升级）；visible 需七项全真；
+ * in_session_sdd 需 subprocess 且显式 true；codex 清单没有 background 探针，不推导 background。
+ */
+export function dispatchFromCapabilityFacts(facts) {
+  if (!facts || typeof facts !== 'object' || Array.isArray(facts)) return null;
+  const stated = name => facts[`codex.${name}`] === true;
+  if (!stated('subprocess')) return null;
+  const visible = ['shell', 'worktree', 'visible_task.create', 'visible_task.enter', 'visible_task.resume', 'visible_task.wait'].every(stated);
+  if (visible) return 'visible';
+  if (stated('in_session_sdd')) return 'in_session_sdd';
+  return null;
+}
+
 const ATTEST_REMEDIATION = '在真实 Codex 会话中执行一次 `vibe attest`（adapter=codex）留下能力记录后重新发布；服务端不执行 attest、不写能力记录';
 
 /**
- * 能力记录校验（只读）：必须由真实会话执行 vibe attest 留下——adapter=codex、
- * attest_command 为 vibe attest、attested_at 不超过 72 小时、宿主大版本与已安装 vibe 一致、
- * dispatch 具备 visible/background/in_session_sdd 之一的真实派发形态。
- * 缺失/过期/宿主大版本变化返回 capability_attestation_required；fail closed，绝不编造派发事实。
+ * 能力记录校验（只读）：读取真实会话执行 `vibe attest` 留下的
+ * `.vibe/provider-actions/capabilities-codex.json`——schema_version=1、
+ * adapter_id=codex、provenance 非空、9 项探针齐全且为布尔、observed_at 在
+ * 72 小时内（允许 5 分钟时钟偏差）、facts 能推导出 visible/in_session_sdd
+ * 之一的派发形态。记录里不含 vibe 版本，故本检查不比对版本（版本一致性由
+ * runVibe 的 ensureVibeVersion 阻塞式保证）。缺失/过期/不一致一律
+ * capability_attestation_required；服务端不执行 attest、不写记录、不编造事实。
  */
-export function checkCapabilities({ projectRoot, now = Date.now(), hostMajorVersion = VIBE_MAJOR_VERSION }) {
+const CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+export function checkCapabilities({ projectRoot, now = Date.now() }) {
   const root = resolveProjectRoot(projectRoot);
-  const required = () => fail('capability_attestation_required', `目标项目缺少由真实 Codex 会话 vibe attest 留下的能力记录：${root}`, ATTEST_REMEDIATION);
-  const state = readState(root);
-  if (!state || typeof state !== 'object') return required();
-  const caps = state.capabilities;
-  if (!caps || typeof caps !== 'object') return required();
-  if (caps.adapter !== 'codex') {
-    return fail('capability_attestation_required', `能力记录 adapter=${String(caps.adapter)}，必须为 codex`, ATTEST_REMEDIATION);
+  const required = (message) => fail('capability_attestation_required',
+    message || `目标项目缺少由真实 Codex 会话 vibe attest 留下的能力记录：${root}`, ATTEST_REMEDIATION);
+  const record = readCapabilityRecord(root);
+  if (!record) return required();
+  if (record.schema_version !== 1) {
+    return required(`能力记录 schema_version=${String(record.schema_version)}，当前只认 1`);
   }
-  if (caps.attest_command !== 'vibe attest') {
-    return fail('capability_attestation_required', '能力记录缺少 vibe attest 来源标记，无法证明由真实会话 attest 留下', ATTEST_REMEDIATION);
+  if (record.adapter_id !== 'codex') {
+    return required(`能力记录 adapter=${String(record.adapter_id)}，必须为 codex`);
   }
-  const attestedAt = Date.parse(String(caps.attested_at ?? ''));
+  if (typeof record.provenance !== 'string' || !record.provenance.trim()) {
+    return required('能力记录缺少 vibe attest 来源说明（provenance）');
+  }
+  const attestedAt = Date.parse(String(record.observed_at ?? ''));
   if (!Number.isFinite(attestedAt)) {
-    return fail('capability_attestation_required', '能力记录 attested_at 缺失或无法解析', ATTEST_REMEDIATION);
+    return required('能力记录 observed_at 缺失或无法解析');
   }
-  if (now - attestedAt > CAPABILITY_MAX_AGE_MS || attestedAt > now) {
-    return fail('capability_attestation_required', `能力记录已超过 72 小时有效期（attested_at=${caps.attested_at}）`, ATTEST_REMEDIATION);
+  if (attestedAt > now + CLOCK_SKEW_MS || now - attestedAt > CAPABILITY_MAX_AGE_MS) {
+    return required(`能力记录已超过 72 小时有效期或时间非法（observed_at=${record.observed_at}）`);
   }
-  if (Number(caps.host_major_version) !== Number(hostMajorVersion)) {
-    return fail('capability_attestation_required', `能力记录宿主大版本 ${String(caps.host_major_version)} 与当前宿主 ${hostMajorVersion} 不一致`, ATTEST_REMEDIATION);
+  const facts = record.facts;
+  const missing = CAPABILITY_PROBES.filter(name => typeof facts?.[name] !== 'boolean');
+  if (missing.length) {
+    return required(`能力记录不完整，缺少布尔探针：${missing.join('、')}`);
   }
-  if (!DISPATCH_FORMS.includes(caps.dispatch)) {
-    return fail('capability_attestation_required', `能力记录缺少 visible/background/in_session_sdd 之一的真实派发形态：${String(caps.dispatch)}`, ATTEST_REMEDIATION);
+  if (dispatchFromCapabilityFacts(facts) === null) {
+    return required('能力记录缺少 visible/in_session_sdd 之一的真实派发形态');
   }
   return { ok: true };
 }
