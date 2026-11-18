@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, unlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SchedulingSessionManager, SchedulingSessionError } from '../src/scheduling-session.mjs';
@@ -1059,4 +1059,94 @@ test('#100 reconciliation is throttled to at least the configured interval', asy
   for (let i = 0; i < 10; i += 1) manager.list();
   assert.equal(reads(), 1, 'rapid list() polls inside the throttle window must not re-read Hub');
   await manager.close(manager.list()[0].id);
+});
+
+// ---- #102：close 终态持久化（会话 b3be7ce2 close 后重启复活并堵查重）----
+function readSidecar(home, id) {
+  return JSON.parse(readFileSync(path.join(home, 'console-sessions', `${id}.hub.json`), 'utf8'));
+}
+
+test('#102 close persists a terminal marker into the existing sidecar and a restart does not resurrect or block a new session', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'close-persist-'));
+  const project = 'owner/close';
+  const manager = legacyHubManager(home, legacyHubClient({ runs: [{ run: 6663, state: 'claimed' }] }));
+  const session = await manager.start({ project, prompt: 'close 持久化验证' });
+  const id = session.id;
+  const sidecar = path.join(home, 'console-sessions', `${id}.hub.json`);
+  assert.ok(existsSync(sidecar), 'the active Hub session must have a sidecar');
+  assert.equal(readSidecar(home, id).closed, undefined, 'an active session must not carry a closed marker');
+  const credentials = readSidecar(home, id);
+
+  await manager.close(id);
+  assert.equal(manager.list().length, 0, 'close removes the session from the active list');
+  const closed = readSidecar(home, id);
+  assert.equal(closed.closed, true, 'close must persist the terminal state into the existing sidecar');
+  assert.equal(closed.lastEventId, credentials.lastEventId, 'closing must keep the reconcile credentials in the sidecar');
+  assert.equal(closed.sessionId, credentials.sessionId);
+  assert.equal(closed.subject, credentials.subject);
+  assert.equal(closed.turn, credentials.turn);
+  assert.equal(readdirSync(path.join(home, 'console-sessions')).filter(name => name.endsWith('.hub.json')).length, 1, 'no extra state file may be introduced');
+
+  // 模拟重启：新实例 restore，用一个会记录调用的假 Hub 证明已关会话不再读状态。
+  const revivedClient = legacyHubClient();
+  const revived = legacyHubManager(home, revivedClient);
+  await revived.restoreFromHub();
+  assert.equal(revived.list().length, 0, 'a closed session must not resurrect into the active list');
+  assert.equal(revivedClient.calls.filter(call => call[0] === 'readEvent').length, 0, 'a terminal session must not be reconciled on restart');
+  const archived = await revived.listArchived();
+  assert.ok(archived.some(item => item.id === id), 'the closed session must stay visible in the history area');
+  assert.equal(archived.find(item => item.id === id).endStatus, 'closed', 'history must show it as closed');
+
+  const created = await revived.start({ project, prompt: '新建同项目会话' });
+  assert.equal(created.project, project, 'a closed session must not block a new session for the same project');
+  assert.equal(revived.list().length, 1, 'only the brand-new session is active');
+});
+
+test('#102 a legacy sidecar without a closed field stays open (backward compatible) and still occupies the project slot', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'close-legacy-'));
+  const project = 'owner/legacy-open';
+  const id = 'c1030000-0000-0000-0000-000000000001';
+  // 旧旁车形状：有合法数字 lastEventId，但没有 closed 字段。
+  writeHubShapeArchive(home, id, project, { sessionId: id, subject: `scheduling:${id}`, turn: 2, lastEventId: 7191, runId: null });
+  const client = legacyHubClient({ firstEventId: 7191, runs: [{ run: 6592, state: 'running' }] });
+  const manager = legacyHubManager(home, client);
+  await manager.restoreFromHub();
+  assert.equal(manager.list().length, 1, 'an old sidecar without closed must still restore as active');
+  assert.equal(manager.list()[0].id, id);
+  await assert.rejects(() => manager.start({ project, prompt: '重复项目' }), /已有进行中的调度会话/, 'an old open session must still occupy the dedup slot');
+  await manager.close(id);
+});
+
+test('#102 a failed terminal write is diagnosable and keeps the in-memory state consistent', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'close-write-fail-'));
+  const manager = legacyHubManager(home, legacyHubClient());
+  const session = await manager.start({ project: 'owner/fail', prompt: '终态写失败验证' });
+  const sidecar = path.join(home, 'console-sessions', `${session.id}.hub.json`);
+  unlinkSync(sidecar);
+  mkdirSync(sidecar); // 目标变成目录：renameSync 无法覆盖，终态写入抛错
+  const statusBefore = manager.list()[0].status;
+  await assert.rejects(() => manager.close(session.id), error => error.status === 500 && /终态写入失败|关闭调度会话失败/.test(error.message), 'a terminal write failure must surface a readable diagnosable error');
+  assert.equal(manager.list().length, 1, 'the session must remain in memory when its terminal state could not be persisted');
+  assert.equal(manager.list()[0].status, statusBefore, 'in-memory status must stay consistent with the unpersisted state');
+  assert.equal(readdirSync(path.join(home, 'console-sessions')).filter(name => name.endsWith('.hub.json')).length, 1);
+  rmSync(sidecar, { recursive: true });
+  await manager.close(session.id); // 恢复可写后能正常关闭
+  assert.equal(manager.list().length, 0);
+});
+
+test('#102 a closed Hub session can still be continued from the history area', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'close-continue-'));
+  const project = 'owner/continue';
+  const manager = legacyHubManager(home, legacyHubClient());
+  const session = await manager.start({ project, prompt: '续跑验证' });
+  await manager.close(session.id);
+
+  const revived = legacyHubManager(home, legacyHubClient());
+  await revived.restoreFromHub();
+  assert.equal(revived.list().length, 0, 'the closed session must stay out of the active list');
+  const continued = await revived.continueSession(session.id);
+  assert.equal(continued.continuedFrom, session.id, 'continue from history must still work with a terminal sidecar');
+  assert.notEqual(continued.id, session.id);
+  assert.equal(continued.project, project);
+  await revived.close(continued.id);
 });

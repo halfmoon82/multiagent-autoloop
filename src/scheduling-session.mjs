@@ -90,6 +90,8 @@ const statusLabel = status => ({ initializing: '初始化中', running: '运行�
 // 旧 ACP 存档天然没有旁车；被 #94 误写出的 lastEventId:null 旁车同样不算合法形态。
 // 不按 createdAt 猜时间界——有无合法旁车即可区分。
 const hasHubShape = hub => Number.isSafeInteger(hub?.lastEventId) && hub.lastEventId > 0;
+// #102：终态标记只落在既有 .hub.json 旁车；closed:true 一经落盘即不可回退。
+const isHubTerminal = record => record.status === 'closing' || record.status === 'closed';
 
 function toPublicSession(record) {
   const view = {
@@ -222,6 +224,9 @@ export class SchedulingSessionManager {
       // #96：无合法 Hub 旁车的是 ACP 时代旧存档。它只属于历史区——不恢复成活跃/
       // 待复核视图、不参与 (project,kind) 查重、更不补写旁车。直接跳过即不进入 sessions。
       if (!hasHubShape(hub)) continue;
+      // #102：已 close 的会话旁车带 closed:true——只进历史区，不复活、不参与查重与名额、不对账。
+      // 旧旁车无该字段按未关处理（向后兼容）。
+      if (hub.closed === true) continue;
       const nowIso = this.now().toISOString();
       const record = {
         id: item.id,
@@ -664,6 +669,9 @@ export class SchedulingSessionManager {
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
     if (record.hub) {
       // §6.3 close：停止新事件；Hub run 在 Hub 侧继续，不杀本地进程、也不在此取消 run。
+      // #102：先把终态写进既有旁车——写失败抛可诊断错误且内存完全不变（与磁盘一致），
+      // 绝不出现「内存已关、磁盘仍活跃」导致重启复活。写成功后再落写穿存档并移出活跃表。
+      this.#persistHubState({ ...record, status: 'closed' }, { throwOnError: true });
       record.status = 'closed';
       record.updatedAt = this.now().toISOString();
       this.#persist(record);
@@ -779,22 +787,28 @@ export class SchedulingSessionManager {
 
   // #92 Hub 恢复凭据旁车：通用存档 normalizeRecord 只保留固定字段，数字 event id / turn
   // 必须写穿到 console-sessions 才能在重启后逐个 readStatus 对账（不改 session-archive.mjs）。
-  #persistHubState(record) {
+  // #102：旁车同时承载 close 终态（closed:true）；终态 sticky，且可按需抛错（终态写入失败不得静默）。
+  #persistHubState(record, { throwOnError = false } = {}) {
     if (!this.archive?.root) return;
     // #96：没有合法数字 lastEventId 就不写旁车，杜绝给旧存档伪造 Hub 形态。
     if (!hasHubShape(record.hub)) return;
     const file = path.join(this.archive.root, `${record.id}.hub.json`);
+    let existing = null;
+    try { existing = JSON.parse(readFileSync(file, 'utf8')); } catch { /* 无旁车或不可读：按新写处理 */ }
+    const payload = {
+      sessionId: record.hub.sessionId,
+      subject: record.hub.subject,
+      turn: record.hub.turn,
+      lastEventId: record.hub.lastEventId,
+      runId: record.hub.runId ?? null,
+    };
+    if (existing?.closed === true || isHubTerminal(record)) payload.closed = true;
     try {
       const tmp = `${file}.tmp-${process.pid}`;
-      writeFileSync(tmp, JSON.stringify({
-        sessionId: record.hub.sessionId,
-        subject: record.hub.subject,
-        turn: record.hub.turn,
-        lastEventId: record.hub.lastEventId,
-        runId: record.hub.runId ?? null,
-      }), { mode: 0o600 });
+      writeFileSync(tmp, JSON.stringify(payload), { mode: 0o600 });
       renameSync(tmp, file);
     } catch (error) {
+      if (throwOnError) throw new SchedulingSessionError(`关闭调度会话失败：终态写入失败（${safeMessage(error)}）`, { status: 500 });
       if (!this.archiveWarned) { this.archiveWarned = true; console.error(`[scheduling-session] Hub 恢复凭据写入失败：${safeMessage(error)}`); }
     }
   }
