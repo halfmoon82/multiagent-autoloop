@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -226,4 +227,83 @@ test('API：publish 后 GET 显示 v1 与 validation 摘要，POST activate 返�
     assert.equal((await ok.json()).mode, 'active');
     assert.equal((await (await fetch(`${url}/api/card-router`)).json()).version, 'v1');
   } finally { await close(server); await close(hub.server); }
+});
+
+// ---- 服务端 publish 路由与单一写者（issue #97）----
+test('API：POST publish → POST activate v1 → GET mode=active 全程无需重启；写入需控制台标记', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'card-pub-api97-'));
+  writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ sources: {}, agents: {}, rules: [] }));
+  const file = path.join(root, 'card-router', 'store.json');
+  const routing = pubRouting(file);
+  const hub = await fakeHub((req, res) => json(res, { ok: true }));
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'k', root, cardRouting: routing });
+  const url = await listen(server);
+  const headers = { 'x-console-request': '1', 'content-type': 'application/json' };
+  const post = (p, body, h = headers) => fetch(`${url}${p}`, { method: 'POST', headers: h, body: JSON.stringify(body) });
+  try {
+    // 缺控制台标记 → 403（沿用既有写操作校验门）
+    assert.equal((await post('/api/card-router/publish', { rules: PUB_RULES() }, { 'content-type': 'application/json' })).status, 403);
+    // 服务端 publish：评测通过注册 v1，不默认 activate
+    const pub = await post('/api/card-router/publish', { rules: PUB_RULES() });
+    assert.equal(pub.status, 200);
+    const pubBody = await pub.json();
+    assert.equal(pubBody.version, 'v1');
+    assert.equal(pubBody.mode, 'shadow');
+    // 同进程 activate v1（无需重启）
+    const act = await post('/api/card-router/activate', { version: 'v1' });
+    assert.equal(act.status, 200);
+    assert.equal((await act.json()).mode, 'active');
+    // GET 显示 active
+    const status = await (await fetch(`${url}/api/card-router`)).json();
+    assert.equal(status.mode, 'active');
+    assert.equal(status.version, 'v1');
+  } finally { await close(server); await close(hub.server); }
+});
+
+test('API：publish 评测未通过不注册版本，仍返回 published=false', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'card-pub-api97b-'));
+  writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ sources: {}, agents: {}, rules: [] }));
+  const routing = pubRouting(null);
+  const hub = await fakeHub((req, res) => json(res, { ok: true }));
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'k', root, cardRouting: routing });
+  const url = await listen(server);
+  const headers = { 'x-console-request': '1', 'content-type': 'application/json' };
+  try {
+    const pub = await fetch(`${url}/api/card-router/publish`, { method: 'POST', headers, body: JSON.stringify({ samples: [{ title: '修复测试', expected: 'human' }] }) });
+    assert.equal(pub.status, 200);
+    const body = await pub.json();
+    assert.equal(body.published, false);
+    assert.equal(body.version, null);
+    assert.equal(routing.store.versions().length, 0);
+  } finally { await close(server); await close(hub.server); }
+});
+
+test('跨进程双写：CLI 发布 v1 落盘后，server 记录决策重读快照不丢 v1 且可直接 activate', async () => {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'card-dual97-')), 'card-router', 'store.json');
+  const make = () => createCardRouting({ persistFile: file, postEvent: async () => ({}), resolveCard: async () => {}, onError: () => {} });
+  // 运行中 server：启动时文件不存在，内存无版本
+  const server = make();
+  assert.equal(server.status().versions.length, 0);
+  // CLI 进程：独立实例发布 v1 写盘
+  const cli = make();
+  const pub = await cli.publish({ rules: PUB_RULES() });
+  assert.equal(pub.version, 'v1');
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).versions.length, 1);
+  // server 记录一条决策并持久化（模拟 notifier 轮询）
+  await server.routeOpenCards([eng(1)]);
+  // 任一侧 persist 不得抹去另一侧已落盘的通过版本
+  const disk = JSON.parse(readFileSync(file, 'utf8'));
+  assert.ok(disk.versions.some(v => v.version === 'v1' && v.validation?.passed));
+  assert.equal(server.status().versions.length, 1);
+  assert.equal(server.status().versions[0].version, 'v1');
+  // 修复「activate 报版本不存在」：重读后同进程直接激活
+  assert.equal(server.activate('v1').mode, 'active');
+});
+
+test('CLI --publish 输出注明运行中 server 需重读/重启方生效的影响边界', () => {
+  const script = path.resolve('scripts/card-filter-evaluate.mjs');
+  const home = mkdtempSync(path.join(tmpdir(), 'cfe-notice97-'));
+  const res = spawnSync('node', [script, '--publish', '--home', home], { encoding: 'utf8' });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /重启|重读|生效/);
 });

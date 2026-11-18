@@ -142,9 +142,15 @@ async function handleApi(config, req, res, url) {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
     return jsonResponse(res, 200, await config.dagService.slotRelease(decodeURIComponent(dagMatch[1]), decodeURIComponent(dagMatch[2]), body));
   }
-  if (req.method === 'POST' && (url.pathname === '/api/card-router/activate' || url.pathname === '/api/card-router/rollback')) {
+  if (req.method === 'POST' && ['/api/card-router/activate', '/api/card-router/rollback', '/api/card-router/publish'].includes(url.pathname)) {
     if (!config.cardRouting) throw new RequestError(503, '卡片路由不可用（未配置数据目录）');
     if (url.pathname.endsWith('/rollback')) return jsonResponse(res, 200, config.cardRouting.rollback());
+    // 服务端发布入口（issue #97）：与 activate/rollback 同一 store 实例，评测→注册→persist，
+    // 消除 CLI 与 server 跨进程双写竞态。复用 routing.publish 的评测门禁与幂等语义。
+    if (url.pathname.endsWith('/publish')) {
+      try { return jsonResponse(res, 200, await config.cardRouting.publish(body)); }
+      catch (error) { if (error instanceof CardFilterError) throw new RequestError(error.code === 'SNAPSHOT_WRITE_FAILED' ? 500 : 400, error.message); throw error; }
+    }
     if (typeof body.version !== 'string' || !body.version) throw new RequestError(400, '缺少版本号');
     try { return jsonResponse(res, 200, config.cardRouting.activate(body.version)); }
     catch (error) { if (error instanceof CardFilterError) throw new RequestError(error.code === 'VERSION_MISSING' ? 404 : 400, error.message); throw error; }
