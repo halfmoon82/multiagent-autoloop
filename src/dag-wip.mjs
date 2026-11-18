@@ -12,10 +12,10 @@ async function buildWip(rt, slot, message) {
   if (!(await rt.dirty(slot))) return null;
     const { tree } = await buildWorktreeTree({ git: rt.git, cwd: dir, base: 'HEAD' });
   const head = String(await rt.git(dir, ['rev-parse', 'HEAD'])).trim();
-  const commit = String(await rt.git(dir, ['commit-tree', tree, '-p', head, '-m', message], {
+  const commit = String(await rt.git(dir, ['commit-tree', tree, '-p', head, '-m', message], { env: {
     GIT_AUTHOR_NAME: 'dag-controller', GIT_AUTHOR_EMAIL: 'dag-controller@localhost',
     GIT_COMMITTER_NAME: 'dag-controller', GIT_COMMITTER_EMAIL: 'dag-controller@localhost',
-  })).trim();
+  } })).trim();
   // 核验：HEAD 对比该 tree 的差异必须覆盖全部未跟踪文件。
   const untracked = String(await rt.git(dir, ['ls-files', '--others', '--exclude-standard'])).split('\n').filter(Boolean);
   const inTree = new Set(String(await rt.git(dir, ['ls-tree', '-r', '--name-only', tree])).split('\n').filter(Boolean));

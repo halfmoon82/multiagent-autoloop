@@ -85,7 +85,7 @@ test('publish snapshot is server-built, whitelisted, and refuses deploy/release/
 
 test('publish requires confirm=true and a matching specDigest before touching anything', async () => {
   const { root } = makeProject();
-  const { runner } = makeRunner();
+  const { runner, calls } = makeRunner();
   let r = await publishProductSpec(base(root, runner, { confirm: false }));
   assert.equal(r.ok, false); assert.equal(r.error.code, 'confirmation_required');
   r = await publishProductSpec(base(root, runner, { specDigest: 'deadbeef' }));
@@ -98,7 +98,7 @@ test('publish requires confirm=true and a matching specDigest before touching an
 
 test('publish blocks before any git/gh action when the capability attestation is missing', async () => {
   const { root } = makeProject({ attested: false });
-  const { runner } = makeRunner();
+  const { runner, calls } = makeRunner();
   const r = await publishProductSpec(base(root, runner));
   assert.equal(r.ok, false);
   assert.equal(r.error.code, 'capability_attestation_required');
@@ -108,7 +108,7 @@ test('publish blocks before any git/gh action when the capability attestation is
 test('publish pushes docs/<planId> from a temp worktree, opens a PR, and leaves main and the checkout untouched', async () => {
   const { root, origin } = makeProject();
   const mainBefore = git(origin, 'rev-parse', 'main');
-  const { runner } = makeRunner();
+  const { runner, calls } = makeRunner();
   const r = await publishProductSpec(base(root, runner));
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.prUrl, 'https://github.com/owner/repo/pull/7');

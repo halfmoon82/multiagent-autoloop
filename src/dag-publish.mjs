@@ -99,10 +99,10 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
         // 不执行 git add/commit：用 no-filter hash-object + update-index + commit-tree，
         // 防止 worker 配置 clean filter 或 hooks 在控制器侧执行。
         const { tree } = await buildWorktreeTree({ git: rt.git, cwd: worktree, base: 'HEAD' });
-        commit = String(await rt.git(worktree, ['commit-tree', tree, '-p', 'HEAD', '-m', `${nodeId}: ${root.runId}`], {
+        commit = String(await rt.git(worktree, ['commit-tree', tree, '-p', 'HEAD', '-m', `${nodeId}: ${root.runId}`], { env: {
           GIT_AUTHOR_NAME: 'dag-controller', GIT_AUTHOR_EMAIL: 'dag-controller@localhost',
           GIT_COMMITTER_NAME: 'dag-controller', GIT_COMMITTER_EMAIL: 'dag-controller@localhost',
-        })).trim();
+        } })).trim();
         await rt.git(worktree, ['update-ref', `refs/heads/${branch}`, commit]);
         await rt.git(worktree, ['read-tree', commit]);
       } else commit = String(await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
