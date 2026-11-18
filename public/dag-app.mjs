@@ -73,7 +73,7 @@ export function initDag({ api, notify, showView, getProjects }) {
     s.checked = false; s.created = null; s.planError = ''; s.preflightError = ''; s.optionalGrants = [];
     if (!project || !planId) { s.plan = null; s.planError = '请选择项目并填写计划编号'; renderAuth(); return; }
     s.authProject = project;
-    const [plan, pre] = await Promise.allSettled([api(`/api/dag-plan?project=${encodeURIComponent(project)}&planId=${encodeURIComponent(planId)}`), api(`/api/dag-preflight?project=${encodeURIComponent(project)}`)]);
+    const [plan, pre] = await Promise.allSettled([api(`/api/dag-plan?project=${encodeURIComponent(project)}&planId=${encodeURIComponent(planId)}`), api(`/api/dag-preflight?project=${encodeURIComponent(project)}&planId=${encodeURIComponent(planId)}`)]);
     if (plan.status === 'fulfilled') s.plan = plan.value; else { s.plan = null; s.planError = plan.reason.message; }
     if (pre.status === 'fulfilled') s.preflight = pre.value; else { s.preflight = null; s.preflightError = pre.reason.message; }
     renderAuth();

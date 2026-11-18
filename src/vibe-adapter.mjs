@@ -103,29 +103,48 @@ export async function defaultRunner(argv, { command = 'vibe', env }) {
   return { stdout };
 }
 
-/** 版本预检：读取实际安装的 vibe 版本，必须与夹具契约版本 5.2.7 一致，否则阻塞、不猜测。 */
-export async function ensureVibeVersion({ runner = defaultRunner, command = 'vibe', env } = {}) {
+/** 版本预检：优先 `vibe --version`，其次读已安装包元数据；两条路都不通时降级为警告，不阻塞流水线。 */
+async function probeInstalledVersion({ env }) {
+  try {
+    const { stdout } = await execFileAsync('pipx', ['list', '--json'], { env, maxBuffer: 4 * 1024 * 1024 });
+    const data = JSON.parse(String(stdout));
+    const version = data?.venvs?.['vibe-guide']?.metadata?.main_package?.package_version;
+    return typeof version === 'string' && version.trim() ? version.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function ensureVibeVersion({ runner = defaultRunner, command = 'vibe', env, fallback = probeInstalledVersion } = {}) {
   const cleanEnv = sanitizeHostEnv(env ?? process.env);
-  let stdout;
+  let stdout = '';
   try {
     ({ stdout } = await runner(['--version'], { command, env: cleanEnv }));
   } catch (error) {
-    return fail('version_probe_failed', `无法读取 vibe 版本：${error.message}`, '确认 vibe CLI 已按 5.2.7 安装且在 PATH 中');
+    // 有些 vibe 版本不认 --version（argparse 退出码 2），stdout/stderr 里没有版本号，转到已安装包元数据。
+    stdout = String(error?.stdout ?? '');
   }
   const match = VERSION_PATTERN.exec(String(stdout));
-  if (!match) return fail('version_probe_failed', `vibe --version 输出无法解析：${String(stdout).trim()}`, '确认 vibe CLI 已按 5.2.7 安装');
-  const version = match[0];
-  if (version !== VIBE_VERSION) {
+  let version = match ? match[0] : null;
+  let source = version ? 'cli' : null;
+  if (!version) {
+    try { version = await fallback({ command, env: cleanEnv }); } catch { version = null; }
+    if (version) source = 'installed-package';
+  }
+  if (!version) {
+    return { ok: true, version: null, source: null, warning: `version_probe_unavailable：无法探明 vibe 版本，按契约版本 ${VIBE_VERSION} 继续；子命令行为异常时会如实返回 vibe_cli_failed` };
+  }
+  if (String(version) !== VIBE_VERSION) {
     return fail('version_mismatch', `已安装 vibe ${version} 与契约版本 ${VIBE_VERSION} 不一致，适配器阻塞`, `安装 vibe ${VIBE_VERSION} 后再试，适配器不做契约猜测或降级`);
   }
-  return { ok: true, version };
+  return source === 'installed-package' ? { ok: true, version, source } : { ok: true, version };
 }
 
 /** 初始化预检：.vibe/state.json 缺失返回 initialization_required（只有显式 confirm 才允许 init）。 */
 export function checkInitialization({ projectRoot }) {
   const root = resolveProjectRoot(projectRoot);
   if (!existsSync(path.join(root, '.vibe', 'state.json'))) {
-    return fail('initialization_required', `目标项目缺少 .vibe/state.json：${root}`, '在控制台点击「初始化规划环境」以执行 vibe init --confirm');
+    return fail('initialization_required', `目标项目缺少 .vibe/state.json：${root}`, '在项目根执行 `vibe init --confirm`（控制台目前没有该入口）');
   }
   return { ok: true };
 }
@@ -140,17 +159,67 @@ function readState(root) {
   }
 }
 
-const ATTEST_REMEDIATION = '在真实 Codex 会话中执行一次 `vibe attest`（adapter=codex）留下能力记录后重新发布；服务端不执行 attest、不写能力记录';
+const ATTEST_REMEDIATION = '在真实 Codex 会话执行 `vibe attest --adapter codex --facts <facts.json> --provenance "<观察依据>"` 留下能力记录（项目需先 vibe init --confirm）；控制台只读校验、不代写';
+
+const PROVIDER_RECORD_FILES = Object.freeze(['capabilities-codex.json', 'capabilities.json']);
+
+/** 读 vibe 真正落盘的能力桥记录（每 adapter 一个文件；旧版单文件作为兼容）。损坏或缺失一律当作没有。 */
+function readProviderRecord(root) {
+  for (const name of PROVIDER_RECORD_FILES) {
+    const file = path.join(root, '.vibe', 'provider-actions', name);
+    try {
+      if (!existsSync(file) || statSync(file).size > MAX_STATE_BYTES) continue;
+      const record = JSON.parse(readFileSync(file, 'utf8'));
+      if (record && typeof record === 'object' && !Array.isArray(record)) return record;
+    } catch { /* 损坏或被外部会话重写中：继续看下一个候选 */ }
+  }
+  return null;
+}
+
+/** 从记录的事实推出真实派发形态；事实不足就不升级（与 vibe 的 fail-closed 口径一致）。 */
+function dispatchFormFromFacts(facts = {}) {
+  const yes = key => facts?.[key] === true;
+  const visible = ['codex.agent', 'codex.shell', 'codex.subprocess', 'codex.worktree',
+    'codex.visible_task.create', 'codex.visible_task.enter', 'codex.visible_task.resume', 'codex.visible_task.wait'].every(yes);
+  if (visible) return 'visible';
+  if (yes('codex.in_session_sdd')) return 'in_session_sdd';
+  return null;
+}
+
+function checkProviderRecord(record, { root, now }) {
+  if (record.adapter_id !== 'codex') {
+    return fail('capability_attestation_required', `能力记录 adapter=${String(record.adapter_id)}，必须为 codex：${root}`, ATTEST_REMEDIATION);
+  }
+  if (record.schema_version !== undefined && Number(record.schema_version) !== 1) {
+    return fail('capability_attestation_required', `能力记录 schema_version=${String(record.schema_version)} 无法识别：${root}`, ATTEST_REMEDIATION);
+  }
+  const observedAt = Date.parse(String(record.observed_at ?? ''));
+  if (!Number.isFinite(observedAt)) {
+    return fail('capability_attestation_required', '能力记录 observed_at 缺失或无法解析', ATTEST_REMEDIATION);
+  }
+  if (now - observedAt > CAPABILITY_MAX_AGE_MS || observedAt > now) {
+    return fail('capability_attestation_required', `能力记录已超过 72 小时有效期（observed_at=${record.observed_at}）`, ATTEST_REMEDIATION);
+  }
+  if (!String(record.provenance ?? '').trim()) {
+    return fail('capability_attestation_required', '能力记录缺少 provenance，无法证明由真实会话 attest 留下', ATTEST_REMEDIATION);
+  }
+  if (!dispatchFormFromFacts(record.facts)) {
+    return fail('capability_attestation_required', '能力记录里没有 visible / in_session_sdd 任何真实派发形态', ATTEST_REMEDIATION);
+  }
+  return { ok: true };
+}
 
 /**
- * 能力记录校验（只读）：必须由真实会话执行 vibe attest 留下——adapter=codex、
- * attest_command 为 vibe attest、attested_at 不超过 72 小时、宿主大版本与已安装 vibe 一致、
- * dispatch 具备 visible/background/in_session_sdd 之一的真实派发形态。
- * 缺失/过期/宿主大版本变化返回 capability_attestation_required；fail closed，绝不编造派发事实。
+ * 能力记录校验（只读）：先读 vibe 真正写的 .vibe/provider-actions 记录（adapter=codex、
+ * observed_at 不超过 72 小时、有 provenance、事实能推出 visible / in_session_sdd 派发形态），
+ * 再兼容早期的 state.json.capabilities 形态。缺失/过期返回 capability_attestation_required；
+ * 服务端不执行 attest、不写能力记录、绝不编造派发事实。
  */
 export function checkCapabilities({ projectRoot, now = Date.now(), hostMajorVersion = VIBE_MAJOR_VERSION }) {
   const root = resolveProjectRoot(projectRoot);
   const required = () => fail('capability_attestation_required', `目标项目缺少由真实 Codex 会话 vibe attest 留下的能力记录：${root}`, ATTEST_REMEDIATION);
+  const record = readProviderRecord(root);
+  if (record) return checkProviderRecord(record, { root, now });
   const state = readState(root);
   if (!state || typeof state !== 'object') return required();
   const caps = state.capabilities;

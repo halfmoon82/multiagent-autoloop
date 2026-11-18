@@ -65,9 +65,22 @@ function structuralErrors(nodes) {
   return errors;
 }
 
+/** 传递闭包：某节点的全部上游（含跨层），用于判断两个重叠节点是否已被串行化。 */
+function upstreamOf(byId, id, seen = new Set()) {
+  const node = byId.get(id);
+  for (const dependency of node?.depends_on || []) {
+    if (seen.has(dependency)) continue;
+    seen.add(dependency);
+    upstreamOf(byId, dependency, seen);
+  }
+  return seen;
+}
+
 export function validateDag(nodes) {
   const list = Array.isArray(nodes) ? nodes : [];
   const errors = structuralErrors(list);
+  const byId = new Map(list.map(node => [node.id, node]));
+  const upstream = new Map(list.map(node => [node.id, upstreamOf(byId, node.id)]));
   for (const node of list) {
     const error = contractError(node);
     if (error) errors.push(error);
@@ -79,7 +92,8 @@ export function validateDag(nodes) {
       try { filesA = nodeFiles(a); filesB = nodeFiles(b); } catch { /* 契约错误已在上方报告 */ }
       const overlap = filesA.some(file => filesB.some(other => writeScopeOverlap(file, other)));
       if (!overlap) continue;
-      const serialized = (a.depends_on || []).includes(b.id) || (b.depends_on || []).includes(a.id);
+      // 串行化看传递闭包：A→B→C 时 A 与 C 已被链串起来，不需要再补一条直接 depends_on。
+      const serialized = upstream.get(a.id)?.has(b.id) || upstream.get(b.id)?.has(a.id);
       if (!serialized) errors.push(`节点 ${a.id} 与 ${b.id} 写范围重叠，必须用 depends_on 串行`);
     }
   }

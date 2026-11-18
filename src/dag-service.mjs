@@ -34,6 +34,17 @@ function loadPlan(project, planId) {
   }
 }
 
+// 计划级共享文件（package.json 等）：每个节点都可改。挂在 contract.sharedFiles 而不是 files，
+// 这样节点间的写范围校验仍按各自目录判定；publish 的范围校验单独把 sharedFiles 算进来。
+function withSharedFiles(nodes, shared = []) {
+  const extra = Array.isArray(shared) ? shared.filter(item => typeof item === 'string' && item.trim()) : [];
+  if (!extra.length) return nodes;
+  return nodes.map(node => ({
+    ...node,
+    contract: { ...(node.contract || {}), sharedFiles: [...extra] },
+  }));
+}
+
 // 计划可选高风险动作：优先用计划显式声明的 optionalHighRiskActions，未声明时不开放任何高风险动作（默认关闭）。
 // 每项附产品语言的 title/benefit/cost 与 selectedByDefault=false，供授权确认页逐项呈现。
 function optionalActionOptions(loaded) {
@@ -81,14 +92,24 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
         optionalActions: optionalActionOptions(loaded),
       };
     },
-    // 接入预检：只读，如实返回；能力记录必须由真实 Codex 会话 vibe attest 留下，这里不代写。
-    preflight(project) {
+    // 接入预检：只读，如实返回，且只检查这条计划真正会走的路径。
+    // 原生计划（docs/dag-plans/<planId>.json）不读 .vibe，因此不要求规划环境或 vibe 能力记录；
+    // 只有回退到 vibe 计划时才查初始化与能力记录（能力记录由真实 Codex 会话 vibe attest 留下，服务端不代写）。
+    preflight(project, planId = '') {
       const checks = [];
+      const id = String(planId ?? '').trim();
+      if (id) {
+        try {
+          loadNativePlan({ projectRoot: project, planId: id });
+          checks.push({ id: 'plan-source', label: '计划来源', ok: true, message: `原生计划 docs/dag-plans/${id}.json：走审批与派发，不依赖 vibe 规划环境` });
+          return { project, planId: id, source: 'native', checks };
+        } catch { /* 原生计划不可用：按兼容路径检查 vibe */ }
+      }
       const init = checkInitialization({ projectRoot: project });
       checks.push({ id: 'initialized', label: '规划环境已初始化', ok: init.ok, message: init.ok ? '.vibe/state.json 存在' : init.error.message });
       const caps = checkCapabilities({ projectRoot: project, now: now() });
       checks.push({ id: 'capabilities', label: 'Codex 能力记录', ok: caps.ok, message: caps.ok ? '能力记录有效' : `${caps.error.message}。${caps.error.remediation || ''}` });
-      return { project, checks };
+      return { project, planId: id || null, source: 'vibe', checks };
     },
     async create(body, project) {
       const loaded = loadPlan(project, String(body.planId || ''));
@@ -106,7 +127,7 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       return wrap(() => store.createRun({
         project, planId: loaded.planId, planDigest: body.planDigest, confirmedActionIds: body.confirmedActionIds,
         selectedOptionalActions: body.selectedOptionalActions ?? [], planOptionalActions,
-        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes, designBaseline: loaded.designBaseline || null, remoteUrl: mirror?.remoteUrl ?? remoteUrl, mirrorPath: mirror?.mirrorPath ?? null, baseBranch: mirror?.baseBranch ?? null, baseCommit: mirror?.baseCommit ?? null,
+        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: withSharedFiles(loaded.nodes, loaded.sharedFiles), designBaseline: loaded.designBaseline || null, remoteUrl: mirror?.remoteUrl ?? remoteUrl, mirrorPath: mirror?.mirrorPath ?? null, baseBranch: mirror?.baseBranch ?? null, baseCommit: mirror?.baseCommit ?? null,
       }));
     },
     cancel(id) {

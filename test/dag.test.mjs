@@ -77,3 +77,11 @@ test('validateDag rejects an empty node list instead of passing vacuously', () =
   assert.equal(result.valid, false);
   assert.match(result.errors.join('\n'), /节点/);
 });
+
+test('overlapping scopes are allowed when the dependency chain serializes them transitively', () => {
+  const a = { id: 'a', depends_on: [], contract: { input: 'i', output: 'o', error_behavior: 'e', acceptance_example: 'x', files: ['mobile/'] } };
+  const b = { id: 'b', depends_on: ['a'], contract: { input: 'i', output: 'o', error_behavior: 'e', acceptance_example: 'x', files: ['mobile/'] } };
+  const c = { id: 'c', depends_on: ['b'], contract: { input: 'i', output: 'o', error_behavior: 'e', acceptance_example: 'x', files: ['mobile/', 'package.json'] } };
+  assert.equal(validateDag([a, b, c]).valid, true, 'a→b→c 已串行，a 与 c 的重叠不该再要求直接依赖');
+  assert.match(validateDag([a, { ...c, depends_on: [] }]).errors.join('\n'), /写范围重叠/);
+});
