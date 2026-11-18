@@ -1,5 +1,5 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
-import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, projectUsageText } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, projectUsageText, usageNotes } from './status-sections.mjs';
 import { buildSerialView, progressVisual } from './progress-view.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
@@ -316,12 +316,16 @@ function countsChips(activity, cardsHere) {
   return chips;
 }
 
-// 整条链累计口径与计费优先级契约一致：已上报费用 → Token +「费用未上报」→「暂无用量」。
+// 整条链累计口径与计费优先级契约一致（服务端台账真累计，缺台账回退今日窗口）：已上报费用 → Token +「费用未上报」→「暂无用量」。
+// 台账未补全到底或存在未上报/长期未完成轮次时，一律追加如实标注，不把部分覆盖冒充全量。
+// 导出给环形总进度复用，两处口径必须一致。
 export function chainUsageText(usage) {
   const tokens = (usage.tokens || 0).toLocaleString('en-US');
-  if (typeof usage.cost === 'number') return `链累计 · ${tokens} Token · $${usage.cost.toFixed(2)}`;
-  if (usage.tokens > 0) return `链累计 · ${tokens} Token · 费用未上报`;
-  return '链累计 · 暂无用量';
+  // 台账还没翻到底（历史回填中）与未上报轮次都要如实标注，不把部分覆盖冒充全量。
+  const notes = usageNotes(usage);
+  if (typeof usage.cost === 'number') return `链累计 · ${tokens} Token · $${usage.cost.toFixed(2)}${notes}`;
+  if (usage.tokens > 0) return `链累计 · ${tokens} Token · 费用未上报${notes}`;
+  return `链累计 · 暂无用量${notes}`;
 }
 
 // 项目级今日/累计费用与 Token：只展示服务端聚合的 Hub 自报值，读取失败如实标注。
