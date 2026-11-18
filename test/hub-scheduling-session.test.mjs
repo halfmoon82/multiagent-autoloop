@@ -11,6 +11,7 @@ import {
   schedulingEventId,
   buildSchedulingEvent,
   mapHubStateToStatus,
+  hubStateCompletionText,
   numericEventId,
   readHubRun,
   matterTurn,
@@ -213,6 +214,37 @@ test('Hub run state maps to console session status', () => {
   assert.equal(mapHubStateToStatus(undefined), 'unknown', 'missing state must be reported as 待复核, not idle');
 });
 
+test('#100 nothing/refusal 词表补全：终态绝不映射 running，词表外保持 unknown 可读', () => {
+  // 完成语义：nothing（本轮无事）与 done（有结果）都落到 idle，不再停在 unknown/待复核。
+  assert.equal(mapHubStateToStatus('nothing'), 'idle', 'state=nothing 必须是完成语义 idle，不能停在 unknown/待复核');
+  assert.equal(mapHubStateToStatus('done'), 'idle');
+  assert.equal(mapHubStateToStatus('completed'), 'idle');
+  assert.equal(mapHubStateToStatus('succeeded'), 'idle');
+  // 运行中（词表权威值 claimed + 兼容别名）。
+  assert.equal(mapHubStateToStatus('claimed'), 'running');
+  assert.equal(mapHubStateToStatus('queued'), 'running');
+  // 异常终态 → error；refusal/refused 是执行被拒的 error 词表。
+  assert.equal(mapHubStateToStatus('failed'), 'error');
+  assert.equal(mapHubStateToStatus('refusal'), 'error');
+  assert.equal(mapHubStateToStatus('refused'), 'error');
+  assert.equal(mapHubStateToStatus('cancelled'), 'error');
+  // error_behavior：任何终态都不得映射成 running。
+  for (const terminal of ['done', 'nothing', 'completed', 'succeeded', 'failed', 'refusal', 'refused', 'cancelled']) {
+    assert.notEqual(mapHubStateToStatus(terminal), 'running', `${terminal} 是终态，绝不能映射成 running`);
+  }
+  // 未知值保持 unknown（视图可读为待复核），不得编造成完成或运行中。
+  assert.equal(mapHubStateToStatus('some-new-hub-state'), 'unknown');
+  assert.equal(mapHubStateToStatus(undefined), 'unknown');
+});
+
+test('#100 nothing 与 done 同为 idle 但文案区分「本轮无事」与「有结果」', () => {
+  assert.equal(mapHubStateToStatus('nothing'), mapHubStateToStatus('done'), '两者同为完成语义 idle');
+  assert.equal(hubStateCompletionText('nothing'), '本轮无事');
+  assert.equal(hubStateCompletionText('done'), '已完成');
+  assert.equal(hubStateCompletionText('refusal'), null, '异常终态不返回完成文案');
+  assert.equal(hubStateCompletionText('running'), null, '运行中不返回完成文案');
+});
+
 test('#92 start saves the numeric event id and derives status/runId from GET runs[0]', async () => {
   const client = fakeHubClient();
   const home = archiveHome();
@@ -235,6 +267,16 @@ test('#92 a done run maps to idle and a failed run maps to error at start', asyn
     const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
     const started = await newManager(adapter).start({ project: 'owner/demo', prompt: 'x' });
     assert.equal(started.status, expected);
+  }
+});
+
+test('#100 a nothing run lands as idle at start（回复没事可做的规则会话视图正确落地）', async () => {
+  for (const [state, expectedStatus] of [['nothing', 'idle'], ['done', 'idle'], ['refusal', 'error']]) {
+    const client = fakeHubClient({ state });
+    const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+    const started = await newManager(adapter).start({ project: 'owner/demo', prompt: 'x' });
+    assert.equal(started.status, expectedStatus, `state=${state} 的会话状态应正确落地`);
+    assert.equal(started.statusText, ({ idle: '待命', error: '异常' })[expectedStatus], 'statusText 与终态一致，停在待复核即为回归');
   }
 });
 
