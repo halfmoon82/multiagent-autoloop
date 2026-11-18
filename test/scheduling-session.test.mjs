@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { SchedulingSessionManager, SchedulingSessionError } from '../src/scheduling-session.mjs';
+import { HubSchedulingSessionAdapter, HUB_SCHEDULING_AGENT_LABEL } from '../src/hub-scheduling-session.mjs';
 
 function jsonLine(value) {
   return `${JSON.stringify(value)}\n`;
@@ -834,4 +838,138 @@ test('an adapter crash persists the error end-status so a restart shows 异常�
   const record = await new SessionArchive(home).read(started.id);
   assert.equal(record.endStatus, 'error', 'the crash must reach the archive, not stay active');
   await manager.close(started.id);
+});
+
+// ---- #96：ACP 时代旧存档分类回归（假 Hub 复刻 #92/#94 的真实响应形状）----
+const HUB_CONFIG = { hubUrl: 'http://127.0.0.1:9', ownerKey: 'owner-key', sourceKey: 'source-key' };
+
+function legacyHubClient(overrides = {}) {
+  const calls = [];
+  let nextEventId = overrides.firstEventId ?? 7184;
+  return {
+    calls,
+    async postEvent(config, event) {
+      calls.push(['postEvent', event]);
+      if (overrides.postError) throw overrides.postError;
+      return { event: nextEventId++, duplicate: false, routed: true, paused: false };
+    },
+    async readEvent(config, eventId) {
+      calls.push(['readEvent', eventId]);
+      if (overrides.readError) throw overrides.readError;
+      return { event: eventId, routed: true, paused: false, runs: overrides.runs ?? [{ run: 6586, state: 'running' }] };
+    },
+    async cancelRun(config, runId) { calls.push(['cancelRun', runId]); return { ok: true }; },
+  };
+}
+
+function legacyHubManager(home, client) {
+  return new SchedulingSessionManager({
+    cwd: '/x', adapterPath: '/a.js',
+    spawnFn: () => { throw new Error('scheduling sessions must never spawn a private ACP'); },
+    hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client }),
+    archiveRoot: home,
+  });
+}
+
+// 直接落 ACP 时代 scheduling 存档：agent 为 Codex ACP、没有 .hub.json 旁车。
+function writeLegacyAcpArchive(home, id, project, { agent = 'Codex ACP' } = {}) {
+  const dir = path.join(home, 'console-sessions');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({
+    id, kind: 'scheduling', project, agent,
+    prompt: 'ACP 时代调度',
+    messages: [{ role: 'user', text: '旧存档', at: '2026-11-16T01:00:00Z' }],
+    createdAt: '2026-11-16T01:00:00Z', updatedAt: '2026-11-17T01:00:00Z', closedAt: null, endStatus: 'interrupted',
+  }));
+}
+
+function writeHubShapeArchive(home, id, project, hub) {
+  const dir = path.join(home, 'console-sessions');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({
+    id, kind: 'scheduling', project, agent: HUB_SCHEDULING_AGENT_LABEL,
+    prompt: 'Hub 接线后的调度',
+    messages: [{ role: 'user', text: 'Hub 形态', at: '2026-11-18T06:00:00Z' }],
+    createdAt: '2026-11-18T06:00:00Z', updatedAt: '2026-11-18T06:05:00Z', closedAt: null, endStatus: 'interrupted',
+  }));
+  writeFileSync(path.join(dir, `${id}.hub.json`), JSON.stringify(hub));
+}
+
+test('#96 ACP-era archives stay historical, never get a hub sidecar, and never block a new scheduling session', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'legacy-archive-'));
+  const project = 'owner/legacy';
+  const oldIds = ['b0882d18-0000-0000-0000-000000000001', '59b6a1cf-0000-0000-0000-000000000002', '17c34d27-0000-0000-0000-000000000003'];
+  for (const id of oldIds) writeLegacyAcpArchive(home, id, project);
+
+  const client = legacyHubClient();
+  const manager = legacyHubManager(home, client);
+  await manager.restoreFromHub();
+  assert.equal(manager.list().length, 0, 'ACP-era archives must not surface as active/待复核 sessions');
+  assert.equal(client.calls.length, 0, 'no numeric event id means no speculative Hub read');
+  const sidecars = readdirSync(path.join(home, 'console-sessions')).filter(name => name.endsWith('.hub.json'));
+  assert.equal(sidecars.length, 0, 'recovery must not fabricate Hub sidecars for ACP-era archives');
+  const archived = await manager.listArchived();
+  assert.deepEqual(archived.map(item => item.id).sort(), [...oldIds].sort(), 'legacy archives remain visible in the history area');
+
+  const created = await manager.start({ project, prompt: '新建调度会话' });
+  assert.equal(created.project, project, 'a new scheduling session must be creatable for the same project');
+  assert.equal(manager.list().length, 1, 'only the brand-new session is active');
+
+  const revived = legacyHubManager(home, legacyHubClient());
+  await revived.restoreFromHub();
+  assert.equal(revived.list().length, 1, 'after restart only the hub-shape session is active');
+  assert.equal(revived.list()[0].id, created.id, 'the restarted view is the real Hub session, not a legacy archive');
+});
+
+test('#96 forged sidecar with a non-numeric lastEventId is treated as a legacy archive', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'legacy-forged-'));
+  const id = 'f60295a6-0000-0000-0000-000000000001';
+  const dir = path.join(home, 'console-sessions');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({
+    id, kind: 'scheduling', project: 'owner/legacy', agent: HUB_SCHEDULING_AGENT_LABEL,
+    prompt: '被误判的旧会话', messages: [],
+    createdAt: '2026-11-17T01:00:00Z', updatedAt: '2026-11-17T01:05:00Z', closedAt: null, endStatus: 'interrupted',
+  }));
+  writeFileSync(path.join(dir, `${id}.hub.json`), JSON.stringify({
+    sessionId: id, subject: `scheduling:${id}`, turn: 1, lastEventId: null, runId: null,
+  }));
+
+  const client = legacyHubClient();
+  const manager = legacyHubManager(home, client);
+  await manager.restoreFromHub();
+  assert.equal(manager.list().length, 0, 'a null lastEventId must not be mistaken for a Hub shape');
+  assert.equal(client.calls.length, 0, 'a legacy archive must not trigger a Hub read');
+  assert.equal((await manager.listArchived()).length, 1, 'it stays visible in history');
+  const created = await manager.start({ project: 'owner/legacy', prompt: '新建' });
+  assert.equal(created.project, 'owner/legacy');
+});
+
+test('#96 hub-shape archives still reconcile through GET runs[0] (no #94 regression)', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'hub-shape-'));
+  const id = 'aaaaaaaa-0000-0000-0000-000000000001';
+  writeHubShapeArchive(home, id, 'owner/demo', { sessionId: id, subject: `scheduling:${id}`, turn: 2, lastEventId: 7191, runId: null });
+  const client = legacyHubClient({ firstEventId: 7191, runs: [{ run: 6592, state: 'running' }] });
+  const manager = legacyHubManager(home, client);
+  await manager.restoreFromHub();
+  assert.equal(manager.list().length, 1);
+  assert.equal(manager.list()[0].status, 'running', 'a legal sidecar is reconciled as before');
+  assert.equal(manager.list()[0].hubRunId, 6592);
+  assert.deepEqual(client.calls.filter(call => call[0] === 'readEvent').map(call => call[1]), [7191]);
+});
+
+test('#96 recovery never fabricates a hub sidecar when lastEventId is missing', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'lost-sidecar-'));
+  const id = 'cccccccc-0000-0000-0000-000000000001';
+  writeHubShapeArchive(home, id, 'owner/demo', { sessionId: id, subject: `scheduling:${id}`, turn: 2, lastEventId: 7191, runId: null });
+  const sidecar = path.join(home, 'console-sessions', `${id}.hub.json`);
+  const { unlinkSync } = await import('node:fs');
+  unlinkSync(sidecar); // 模拟 Hub 形态会话的旁车丢失，recovery 不得凭空补写
+  const client = legacyHubClient();
+  const manager = legacyHubManager(home, client);
+  await manager.restoreFromHub();
+  assert.equal(manager.list().length, 0, 'a lost sidecar is no sidecar: the archive is historical');
+  assert.ok(!existsSync(sidecar), 'a missing lastEventId must never be fabricated into a hub sidecar');
+  assert.equal((await manager.listArchived()).length, 1, 'it stays visible in history');
+  assert.equal(client.calls.length, 0);
 });
