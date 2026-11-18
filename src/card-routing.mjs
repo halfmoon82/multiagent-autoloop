@@ -6,8 +6,25 @@ import { routeCardAsync, extractFeatures, DEFAULT_RULES } from './card-router.mj
 import { createCardFilterStore, CardFilterError } from './card-filter-store.mjs';
 import { delegateOpenCard, DEFAULT_COOLDOWN_MS } from './card-delegate.mjs';
 import { hubRequest } from './hub.mjs';
+import { evaluate as defaultEvaluate } from '../scripts/card-filter-evaluate.mjs';
 
 const RECENT_DECISIONS = 20;
+
+// 幂等键：只比较规则语义，不受对象键顺序影响；与 store.createVersion 存的规则顺序一致。
+function rulesSignature(rules = []) {
+  return JSON.stringify((Array.isArray(rules) ? rules : []).map(rule => [
+    rule?.id, rule?.route, Array.isArray(rule?.tags) ? [...rule.tags] : [], rule?.confidence,
+  ]));
+}
+
+function evaluationSummary(result = {}) {
+  return {
+    total: Number(result.total) || 0,
+    humanGateFalseAuto: Number(result.humanGateFalseAuto) || 0,
+    autoRoutedWrong: Number(result.autoRoutedWrong) || 0,
+    passed: result.passed === true,
+  };
+}
 
 function loadSnapshot(file) {
   if (!file) return {};
@@ -23,7 +40,7 @@ function saveSnapshot(file, snapshot) {
 }
 
 export function createCardRouting({
-  persistFile = null, store, postEvent, resolveCard, delegateStore, model,
+  persistFile = null, store, postEvent, resolveCard, delegateStore, model, evaluate = defaultEvaluate,
   now = () => Date.now(), retryAfterMs = DEFAULT_COOLDOWN_MS, onError = () => {},
 } = {}) {
   store = store || createCardFilterStore(loadSnapshot(persistFile));
@@ -82,6 +99,36 @@ export function createCardRouting({
         decisionCount: store.decisions().length,
         recentDecisions: store.decisions().slice(-RECENT_DECISIONS),
       };
+    },
+    // 生产发布入口（issue #93）：评测默认规则集 → 通过才注册版本并原子落盘，不默认 activate。
+    // 幂等：同规则同评测已有通过版本时不重复注册；规则变化才新建版本并链 parentVersion。
+    async publish({ samples, rules, model: overrideModel } = {}) {
+      const evalArgs = {};
+      if (samples !== undefined) evalArgs.samples = samples;
+      if (rules !== undefined) evalArgs.rules = rules;
+      if (overrideModel !== undefined) evalArgs.model = overrideModel;
+      const result = await evaluate(evalArgs);
+      const evaluation = evaluationSummary(result);
+      if (!evaluation.passed) {
+        return { published: false, created: false, version: null, mode: store.current().mode, evaluation };
+      }
+      const ruleSet = rules !== undefined ? rules : DEFAULT_RULES;
+      const versions = store.versions();
+      const latest = versions.length ? versions[versions.length - 1] : null;
+      if (latest && latest.validation?.passed && rulesSignature(latest.rules) === rulesSignature(ruleSet)) {
+        return { published: true, created: false, version: latest.version, mode: store.current().mode, evaluation };
+      }
+      const v = store.createVersion({
+        rules: ruleSet,
+        summary: `评测通过：${evaluation.total} 样本，人工门禁误自动路由 ${evaluation.humanGateFalseAuto}`,
+        parentVersion: latest ? latest.version : null,
+      });
+      store.recordValidation(v.version, result);
+      if (persistFile) {
+        try { saveSnapshot(persistFile, store.snapshot()); }
+        catch (error) { throw new CardFilterError(`快照写入失败：${error.message}`, 'SNAPSHOT_WRITE_FAILED'); }
+      }
+      return { published: true, created: true, version: v.version, mode: store.current().mode, evaluation };
     },
     // 服务端强制：必须 validation.passed 且 humanGateFalseAuto=0（store.activate 内校验），不由提示词绕过。
     activate(version) {

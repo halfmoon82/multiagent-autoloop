@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // 卡片路由过滤器离线评测（确定性规则 + 脱敏样本集）。
 // 用法：node scripts/card-filter-evaluate.mjs [--samples samples.json] [--rules rules.json] [--json]
+//       node scripts/card-filter-evaluate.mjs --publish --home <AGENT_AUTOLOOP_HOME> [--samples ...] [--rules ...] [--json]
 // 通过条件：人工门禁误自动路由为 0，且没有任何错误的自动路由；不通过退出码 1。
 // 模型选型（Ollama 或外部 LLM）属工程决策：统一用本评测比较，默认不接模型，仅确定性规则。
 import { readFileSync } from 'node:fs';
@@ -54,10 +55,33 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const samples = options.samples ? JSON.parse(readFileSync(options.samples, 'utf8')) : DEFAULT_VALIDATION_SET;
   const rules = options.rules ? JSON.parse(readFileSync(options.rules, 'utf8')) : DEFAULT_RULES;
+  if (options.publish) {
+    if (!options.home || options.home === true) {
+      console.error('发布需要 --home <AGENT_AUTOLOOP_HOME>');
+      process.exitCode = 1;
+      return;
+    }
+    const { getCardRouting } = await import('../src/card-routing.mjs');
+    const routing = getCardRouting({ root: String(options.home) });
+    const evalArgs = {};
+    if (options.samples) evalArgs.samples = samples;
+    if (options.rules) evalArgs.rules = rules;
+    let result;
+    try { result = await routing.publish(evalArgs); }
+    catch (error) { console.error(`发布失败：${error.message}`); process.exitCode = 1; return; }
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else console.log(`发布${result.published ? '成功' : '失败'}｜版本 ${result.version || '无'}｜评测 ${result.evaluation.total} 样本｜人工门禁误自动路由 ${result.evaluation.humanGateFalseAuto}｜${result.created ? '新注册' : result.published ? '已存在（幂等）' : '未注册'}`);
+    process.exitCode = result.published ? 0 : 1;
+    return;
+  }
   const result = await evaluate({ samples, rules });
   if (options.json) console.log(JSON.stringify(result, null, 2));
   else console.log(`样本 ${result.total}｜人工门禁误自动路由 ${result.humanGateFalseAuto}｜自动路由正确 ${result.autoRoutedCorrect}｜错误 ${result.autoRoutedWrong}｜${result.passed ? '通过' : '未通过'}`);
   process.exitCode = result.passed ? 0 : 1;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) await main();
+// 不用顶层 await：发布入口会动态 import card-routing，后者反向 import 本模块的 evaluate；
+// 顶层 await 会让本模块停在求值中，形成循环等待（Node 报 unsettled top-level await）。
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch(error => { console.error(error); process.exitCode = 1; });
+}
