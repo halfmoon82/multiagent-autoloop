@@ -72,13 +72,29 @@ export function readHubRun(payload) {
   return { runId: run.run ?? null, state: run.state ?? null };
 }
 
+// #100 权威词表来源（只读核对，不复制实现）：中台 host/state.ts 的 tally/active 查询与
+// 本仓库 src/dag-runtime.mjs 的 HUB_STATES —— queued / claimed / unknown / done / nothing / cancelled
+// 是中台实际写入的 run.state；failed / refusal 为执行异常或被拒终态。其余 running/active/in_progress、
+// completed/succeeded/idle 为兼容别名。终态（done/nothing/failed/refusal/...）绝不映射 running；
+// 词表外的值一律 unknown，视图保持「待复核」可读，不编造完成或运行中。
+const HUB_RUNNING_STATES = ['claimed', 'running', 'queued', 'active', 'in_progress'];
+const HUB_ERROR_STATES = ['failed', 'error', 'cancelled', 'canceled', 'refusal', 'refused'];
+const HUB_IDLE_STATES = ['done', 'completed', 'succeeded', 'idle', 'nothing'];
+
 export function mapHubStateToStatus(state) {
-  // #100：claimed 是真实中台 run.state（运行中未出结果），此前未覆盖导致视图永久待复核。
-  if (['claimed', 'running', 'queued', 'active', 'in_progress'].includes(state)) return 'running';
-  if (['failed', 'error', 'cancelled', 'canceled'].includes(state)) return 'error';
-  // done/completed 是完成语义：控制台展示为 idle（待命），不再等待该 run。
-  if (['done', 'completed', 'succeeded', 'idle'].includes(state)) return 'idle';
+  if (HUB_RUNNING_STATES.includes(state)) return 'running';
+  if (HUB_ERROR_STATES.includes(state)) return 'error';
+  // done（有结果）与 nothing（本轮无事）都是完成语义 → idle，不再等待该 run。
+  if (HUB_IDLE_STATES.includes(state)) return 'idle';
   return 'unknown';
+}
+
+// #100：done 与 nothing 同为 idle，但文案要区分「本轮无事」与「有结果」，
+// 避免把「没事可做」误读成有产出。供需要细化展示的视图/存档取用；非完成态返回 null。
+export function hubStateCompletionText(state) {
+  if (state === 'nothing') return '本轮无事';
+  if (state === 'done' || state === 'completed' || state === 'succeeded') return '已完成';
+  return null;
 }
 
 // 默认 Hub 客户端：所有 HTTP 都经 hub.mjs 的固定路径允许列表，不暴露任意 URL 代理。
