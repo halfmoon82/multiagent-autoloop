@@ -254,6 +254,8 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
   const known = new Set(rules.map(rule => cleaned(rule?.name)).filter(Boolean));
   const seen = new Set(ledger.seen);
   const entries = ledger.rules;
+  let dirty = false;   // 本轮是否有需要落盘的变化（入账、在册增删、断点推进）
+  let wroteSinceChange = false;
   const views = new Map();
   const viewFor = name => {
     let view = views.get(name);
@@ -270,8 +272,12 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
     return view;
   };
   const settle = (view, id) => {
-    if (view.pending.has(id)) { view.entry.pending = view.entry.pending.filter(item => item.id !== id); view.pending.delete(id); }
-    if (view.unsettled.has(id)) { view.entry.unsettled = view.entry.unsettled.filter(item => item !== id); view.unsettled.delete(id); }
+    let cleared = false;
+    if (view.pending.has(id)) { view.entry.pending = view.entry.pending.filter(item => item.id !== id); view.pending.delete(id); cleared = true; }
+    if (view.unsettled.has(id)) { view.entry.unsettled = view.entry.unsettled.filter(item => item !== id); view.unsettled.delete(id); cleared = true; }
+    // 清账本身就是需要落盘的状态变化：不标脏的话同一轮次每轮重复清账、
+    // 24h 后被 sweep 挤进在册名额并永久占位。
+    if (cleared) { dirty = true; wroteSinceChange = false; }
   };
 
   const fetchState = before => hubRequest(config, '/v1/state' + (before == null ? '' : `?before=${before}`));
@@ -279,8 +285,6 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
   const alreadyComplete = ledger.complete === true;
   // resumeCursor：最深（最小 id）的未扫描点，单调变深，绝不被浅处的游标覆盖。
   let resumeCursor = isNum(ledger.backfillCursor) ? ledger.backfillCursor : null;
-  let dirty = false;                       // 本页是否有需要落盘的变化（计数/游标/在册）
-  let wroteSinceChange = false;
   const remember = next => {
     if (!isNum(next)) return;
     const advanced = !isNum(resumeCursor) || next < resumeCursor;

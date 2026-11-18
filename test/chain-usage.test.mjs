@@ -428,3 +428,26 @@ test('如实标注在任何用量分支都要带上，包括既无费用又无 T
   assert.match(projectUsageText('项目累计', reported), /2 轮未上报费用/);
   assert.equal(projectUsageText('项目今日', { cost: 0.5, input: 1, output: 1, tokens: 2, reported: true, missingCostRounds: 0, unresolvedRounds: 0 }), '项目今日 · 费用 $0.50 · Token 2（入 1 / 出 1）', '没有备注时不得拖尾巴');
 });
+
+test('从未开跑的取消轮次清账必须落盘，不得每轮重复 settle 后被挤进在册名额（reviewer P3 回归）', async () => {
+  const { store, hub, server, chainUsageOf, root } = await setup([['v6-serial.json', '/p/v6app']]);
+  try {
+    // 台账在册一个最近看到的未完成轮次 id 4；中台随后把它判为"从未开跑就取消"。
+    writeFileSync(path.join(root, 'chain-usage.json'), JSON.stringify({
+      version: 2, complete: true, backfillCursor: null, updatedAt: isoToday(),
+      seen: [4, 5],
+      rules: {
+        'V6串行推进': { counted: [5], pending: [{ id: 4, since: isoToday() }], input: 1, output: 1, cost: 1, costReported: true, rounds: 1, missingCostRounds: 0 },
+      },
+    }));
+    store.runs = [
+      finished(5, 'V6串行推进', { input: 1, output: 1, cost: 1 }),
+      { ...finished(4, 'V6串行推进', null), claimedAt: null, usage: null },
+    ];
+    const usage = await chainUsageOf();
+    assert.equal(usage.rounds, 1, '从未开跑的轮次不计入轮数');
+    const ledger = readLedgerFile(root);
+    assert.deepEqual(ledger.rules['V6串行推进'].pending, [], '清账必须落盘，不能每轮重复 settle');
+    assert.deepEqual(ledger.rules['V6串行推进'].unsettled, [], '也不得被 sweep 挤进在册名额');
+  } finally { await close(server); await close(hub.server); }
+});
