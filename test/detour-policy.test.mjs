@@ -34,7 +34,7 @@ test('classifyKind recognizes Chinese and English rule names and explicit overri
 test('loadPolicy without a file returns pure defaults', () => {
   const { config } = rootWithPolicy();
   const policy = loadPolicy(config);
-  assert.deepEqual(policy.defaults, { dev: { primary: 'workbuddy', fallback: 'claude' }, review: { primary: 'claude', fallback: 'codex-full' } });
+  assert.deepEqual(policy.defaults, { dev: { primary: 'workbuddy', fallback: 'claude' }, review: { primary: 'claude', fallback: 'codex-full' }, coord: { primary: 'codex-full', fallback: 'claude' } });
   assert.deepEqual(policy.projects, {});
 });
 
@@ -97,4 +97,39 @@ test('resolveFallback only reroutes the primary agent, never a third or fallback
 test('loadPolicy rejects malformed override files loudly', () => {
   const { config } = rootWithPolicy({ projects: { '/p': { dev: { primary: 'x' } } } });
   assert.throws(() => loadPolicy(config), PolicyError);
+});
+
+test('DEFAULT_POLICY adds coord: primary codex-full, fallback claude', () => {
+  assert.deepEqual({ ...DEFAULT_POLICY.coord }, { primary: 'codex-full', fallback: 'claude' });
+});
+
+test('classifyKind recognizes coordinator rules (调度会话/协调/诊断)', () => {
+  assert.equal(classifyKind('调度会话执行'), 'coord');
+  assert.equal(classifyKind('调度自愈协调处理'), 'coord');
+  assert.equal(classifyKind('异常诊断'), 'coord');
+  assert.equal(classifyKind('调度会话执行', 'review'), 'review'); // 显式参数仍优先
+  // 既有类型不受影响
+  assert.equal(classifyKind('执行波开发'), 'dev');
+  assert.equal(classifyKind('V6审阅'), 'review');
+  assert.equal(classifyKind('扫描'), null);
+});
+
+test('resolveFallback routes coord primary codex-full to claude and refuses further hops', () => {
+  const { config } = rootWithPolicy();
+  const policy = loadPolicy(config);
+  assert.equal(resolveFallback('coord', 'codex-full', { policy }), 'claude');
+  assert.equal(resolveFallback('coord', 'claude', { policy }), null); // 已在备选，不再往下绕
+  assert.equal(resolveFallback('coord', 'workbuddy', { policy }), null); // 第三 Agent 不自动拽
+});
+
+test('loadPolicy accepts coord override in defaults and projects', () => {
+  const { config } = rootWithPolicy({
+    defaults: { coord: { primary: 'claude', fallback: 'workbuddy' } },
+    projects: { '/proj/a': { coord: { primary: 'x', fallback: 'y' } } },
+  });
+  const policy = loadPolicy(config);
+  assert.deepEqual(policy.defaults.coord, { primary: 'claude', fallback: 'workbuddy' });
+  assert.deepEqual(effectivePolicy(policy, '/proj/a').coord, { primary: 'x', fallback: 'y' });
+  // 未覆盖 coord 的项目继承 defaults 覆盖后的值
+  assert.deepEqual(effectivePolicy(policy, '/other').coord, { primary: 'claude', fallback: 'workbuddy' });
 });
