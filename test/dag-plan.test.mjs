@@ -158,3 +158,23 @@ test('committed bootstrap binds only its UI-writing nodes to the approved scoped
     assert.equal(byId[id].contract.design, undefined, `${id} 不得被设计设施阻塞`);
   }
 });
+
+test('native plan sharedFiles are allowed for every node and merged into the run snapshot', async () => {
+  const root = nativeProject('native-shared', { plan_id: 'native-shared', nodes: simpleNodes, sharedFiles: ['package.json', 'package-lock.json'] });
+  const loaded = loadNativePlan({ projectRoot: root, planId: 'native-shared' });
+  assert.deepEqual(loaded.sharedFiles, ['package.json', 'package-lock.json']);
+  const planDigest = createPlanDigest({ ...loaded, authorizationSnapshot: null });
+  const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-shared-')) });
+  const service = createDagService({ store });
+  const created = await service.create({ planId: 'native-shared', planDigest, confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true }, root);
+  const alpha = created.nodes.find(node => node.id === 'alpha');
+  assert.deepEqual(alpha.contract.files, ['src/alpha.mjs'], '共享文件不并进节点写范围，避免把并排节点误判为冲突');
+  assert.deepEqual(alpha.contract.sharedFiles, ['package.json', 'package-lock.json']);
+  const beta = created.nodes.find(node => node.id === 'beta');
+  assert.deepEqual(beta.contract.sharedFiles, ['package.json', 'package-lock.json']);
+});
+
+test('native plan sharedFiles must be project-relative paths', () => {
+  const root = nativeProject('native-bad-shared', { plan_id: 'native-bad-shared', nodes: simpleNodes, sharedFiles: ['/etc/passwd'] });
+  assert.throws(() => loadNativePlan({ projectRoot: root, planId: 'native-bad-shared' }), /sharedFiles/);
+});

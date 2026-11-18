@@ -363,3 +363,26 @@ function setupWithOptions(planExtra, evidence = async () => ({})) {
   const payload = over => JSON.stringify({ project, planId: 'plan-one', planDigest, confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, ...over });
   return { server, project, store, root, payload, planDigest };
 }
+
+test('GET /api/dag-preflight 对原生计划不要求 vibe 规划环境', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'dag-api-native-'));
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'dag-api-native-proj-'));
+  const project = path.join(projectRoot, 'demo'); mkdirSync(path.join(project, '.git'), { recursive: true });
+  mkdirSync(path.join(project, 'docs', 'dag-plans'), { recursive: true });
+  writeFileSync(path.join(project, 'docs', 'dag-plans', 'native-one.json'), JSON.stringify([{ id: 'a', depends_on: [], contract: { input: 'i', output: 'o', error_behavior: 'e', acceptance_example: 'a', files: ['src/a.mjs'] } }]));
+  writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ rules: [] }));
+  const store = createRunStore({ directory: path.join(root, 'dag-runs') });
+  const dagService = createDagService({ root, store });
+  const sessions = { async start() { return { id: 's' }; }, dispose() {} };
+  const server = createConsoleServer({ hubUrl: 'http://127.0.0.1:1', ownerKey: 'k', host: '127.0.0.1', root, rulesFile: path.join(root, 'rules.json'), projectRoots: [projectRoot], dagService }, sessions);
+  const url = await listen(server);
+  try {
+    const res = await fetch(`${url}/api/dag-preflight?project=${encodeURIComponent(project)}&planId=native-one`);
+    assert.equal(res.status, 200);
+    const { checks } = await res.json();
+    assert.equal(checks.length, 1);
+    assert.equal(checks[0].ok, true);
+    assert.match(checks[0].message, /原生计划/);
+    assert.equal(checks.some(c => c.id === 'capabilities'), false, '原生计划不查 vibe 能力记录');
+  } finally { await close(server); }
+});

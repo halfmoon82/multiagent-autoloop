@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publishProductSpec, buildPublishSnapshot, PUBLISH_ACTIONS } from '../src/design-publish.mjs';
-import { extractProductSpec, VIBE_MAJOR_VERSION } from '../src/vibe-adapter.mjs';
+import { extractProductSpec } from '../src/vibe-adapter.mjs';
 import { loadDesignManifest } from '../src/design-baseline.mjs';
 import { defaultGit } from '../src/git-safe.mjs';
 import { createHash } from 'node:crypto';
