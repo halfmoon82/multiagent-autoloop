@@ -31,7 +31,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
   const scopesOf = (root, nodeId) => {
     const node = (root.nodes || []).find(item => item.id === nodeId);
     if (!node) throw new PublishError(`节点 ${nodeId} 不在快照中`, 'UNKNOWN_NODE');
-    return [...(node.contract?.files || []), ...(node.files || [])].map(normalizeProjectPath);
+    return [...(node.contract?.files || []), ...(node.contract?.sharedFiles || []), ...(node.files || [])].map(normalizeProjectPath);
   };
   const changed = async cwd => worktreeChanges({ git: rt.git, cwd });
   // worker 可能先 git commit：scope 必须同时覆盖未提交状态和 base..HEAD 已提交差异。

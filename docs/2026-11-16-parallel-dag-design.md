@@ -28,9 +28,9 @@
 - Plan 审批/switch_mode 权限请求一律取消。Plan Mode 负责协作方式，read-only 负责机制性只读；设计会话不得直接写项目或执行 vibe 写命令。
 
 ## 服务端 vibe 规划适配器
-- 固定封装 scan/plan，项目根只能来自已发现 Git 仓；清理 CODEX_THREAD_ID 等宿主环境变量，显式传 --adapter codex 与 --project-root，禁止浏览器任意命令/参数。预检读取实际安装的 vibe 版本，必须与测试夹具版本 5.2.7 一致，否则阻塞适配而非猜测契约。
-- 项目预检：.vibe/state.json 缺失返回 initialization_required；只有用户点击“初始化规划环境”后才执行 vibe init --confirm。
-- **服务端不执行 attest、不写能力记录。** 发布前只读校验目标项目已有 .vibe 能力记录：必须由真实 Codex 会话执行 vibe attest 留下，adapter=codex，记录不超过 72 小时、宿主大版本一致，并具备 visible/background/in_session_sdd 之一的真实派发形态。缺失/过期/宿主大版本变化返回 capability_attestation_required，并给出在真实 Codex 会话执行一次 attest 的修复路径；服务端不得编造 ACP initialize 不包含的 shell/subprocess/worktree/visible_task 等事实。
+- 固定封装 scan/plan，项目根只能来自已发现 Git 仓；清理 CODEX_THREAD_ID 等宿主环境变量，显式传 --adapter codex 与 --project-root，禁止浏览器任意命令/参数。版本预检先跑 `vibe --version`，再回退读 pipx 安装元数据；读到版本且与 5.2.7 不一致才阻塞，两条路都读不到时按契约继续并记录警告（2026-11-18 修订：原实现因该 CLI 不认 `--version` 而永远 `version_probe_failed`）。
+- 项目预检只查这条计划真正会走的路径：原生计划（docs/dag-plans/<planId>.json）直接通过，不要求 `.vibe`、不要求能力记录；只有回退到 vibe 计划时才检查 `.vibe/state.json`（缺失返回 initialization_required，修复方式是在项目根执行 `vibe init --confirm`）。2026-11-18 修订：原实现把 vibe 检查画在所有 DAG 上，并提示一个不存在的「初始化规划环境」按钮。
+- **服务端不执行 attest、不写能力记录。** 只读校验 vibe 真正落盘的能力桥记录（`.vibe/provider-actions/capabilities-codex.json`，旧版 `capabilities.json` 与 `state.json.capabilities` 兼容）：adapter=codex、observed_at 不超过 72 小时、带 provenance，且事实能推出 visible 或 in_session_sdd 派发形态；缺失/过期/无派发形态返回 capability_attestation_required，并给出真实命令 `vibe attest --adapter codex --facts <facts.json> --provenance "<依据>"`。服务端不得编造 ACP initialize 不包含的 shell/subprocess/worktree/visible_task 等事实。2026-11-18 修订：原实现读 `state.json.capabilities`——vibe 5.2.7 从不写该字段，检查必然失败。
 - 创建时服务端 vibe 路由；simple/light 返回评分，complex 建 draft planId 并启动 Plan Mode 会话。
 - 设计会话使用专用 PRD 引导提示词，不复用 buildSchedulingPrompt 的可写/派发 worker 文案；kind=design 不挂载 Hub MCP，并读取用户配置后对每个 mcp_servers.<name> 显式设置 enabled=false；启动后必须核验工具列表无任何 MCP 工具，任何残余 MCP 权限请求一律取消。
 - 设计会话以约定 JSON 块输出 product-spec；服务端从会话转录提取并计算 specDigest，浏览器只能提交 specDigest + confirm，不能直接提交可信 spec 内容。

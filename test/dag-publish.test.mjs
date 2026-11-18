@@ -12,7 +12,7 @@ import { ensureMirror } from '../src/dag-mirror.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
-async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false } = {}) {
+async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, sharedFiles = null } = {}) {
   const { project, remote } = makeRepo();
   const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-pub-'));
   const store = createRunStore({ directory: storeDirectory });
@@ -20,7 +20,7 @@ async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designIn
   const root = store.createRun({
     project, remoteUrl: remote, mirrorPath: mirror.mirrorPath, baseBranch: mirror.baseBranch, baseCommit: mirror.baseCommit,
     planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev',
-    nodes: [{ ...node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), contract: { files: designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'], ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline,
+    nodes: [{ ...node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), contract: { files: designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'], ...(sharedFiles ? { sharedFiles } : {}), ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline,
   });
   const rt = createSlotRuntime({ project: mirror.mirrorPath, gitDir: mirror.mirrorPath, runId: root.runId });
   await rt.ensureSlots();
@@ -312,4 +312,13 @@ test('commitPr pushes to the remote URL frozen in the root run, not worker-modif
   const pr = await t.pub.commitPr(t.ctx);
   assert.equal(sh(t.remote, 'rev-parse', 'feat/a'), pr.commit);
   assert.throws(() => sh(evil, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr：计划级共享文件（package.json）不算越界', async () => {
+  const t = await boot({ sharedFiles: ['package.json', 'package-lock.json'] });
+  t.write('src/a.mjs', 'export const a = 1;\n');
+  t.write('package.json', JSON.stringify({ name: 'demo', version: '1.0.0' }));
+  const result = await t.pub.commitPr(t.ctx);
+  assert.ok(result.commit);
+  assert.equal(sh(t.remote, 'rev-parse', 'feat/a'), result.commit);
 });

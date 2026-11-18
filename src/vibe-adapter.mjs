@@ -105,29 +105,48 @@ export async function defaultRunner(argv, { command = 'vibe', env }) {
   return { stdout };
 }
 
-/** 版本预检：读取实际安装的 vibe 版本，必须与夹具契约版本 5.2.7 一致，否则阻塞、不猜测。 */
-export async function ensureVibeVersion({ runner = defaultRunner, command = 'vibe', env } = {}) {
+/** 版本预检：优先 `vibe --version`，其次读已安装包元数据；两条路都不通时降级为警告，不阻塞流水线。 */
+async function probeInstalledVersion({ env }) {
+  try {
+    const { stdout } = await execFileAsync('pipx', ['list', '--json'], { env, maxBuffer: 4 * 1024 * 1024 });
+    const data = JSON.parse(String(stdout));
+    const version = data?.venvs?.['vibe-guide']?.metadata?.main_package?.package_version;
+    return typeof version === 'string' && version.trim() ? version.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function ensureVibeVersion({ runner = defaultRunner, command = 'vibe', env, fallback = probeInstalledVersion } = {}) {
   const cleanEnv = sanitizeHostEnv(env ?? process.env);
-  let stdout;
+  let stdout = '';
   try {
     ({ stdout } = await runner(['--version'], { command, env: cleanEnv }));
   } catch (error) {
-    return fail('version_probe_failed', `无法读取 vibe 版本：${error.message}`, '确认 vibe CLI 已按 5.2.7 安装且在 PATH 中');
+    // 有些 vibe 版本不认 --version（argparse 退出码 2），stdout/stderr 里没有版本号，转到已安装包元数据。
+    stdout = String(error?.stdout ?? '');
   }
   const match = VERSION_PATTERN.exec(String(stdout));
-  if (!match) return fail('version_probe_failed', `vibe --version 输出无法解析：${String(stdout).trim()}`, '确认 vibe CLI 已按 5.2.7 安装');
-  const version = match[0];
-  if (version !== VIBE_VERSION) {
+  let version = match ? match[0] : null;
+  let source = version ? 'cli' : null;
+  if (!version) {
+    try { version = await fallback({ command, env: cleanEnv }); } catch { version = null; }
+    if (version) source = 'installed-package';
+  }
+  if (!version) {
+    return { ok: true, version: null, source: null, warning: `version_probe_unavailable：无法探明 vibe 版本，按契约版本 ${VIBE_VERSION} 继续；子命令行为异常时会如实返回 vibe_cli_failed` };
+  }
+  if (String(version) !== VIBE_VERSION) {
     return fail('version_mismatch', `已安装 vibe ${version} 与契约版本 ${VIBE_VERSION} 不一致，适配器阻塞`, `安装 vibe ${VIBE_VERSION} 后再试，适配器不做契约猜测或降级`);
   }
-  return { ok: true, version };
+  return source === 'installed-package' ? { ok: true, version, source } : { ok: true, version };
 }
 
 /** 初始化预检：.vibe/state.json 缺失返回 initialization_required（只有显式 confirm 才允许 init）。 */
 export function checkInitialization({ projectRoot }) {
   const root = resolveProjectRoot(projectRoot);
   if (!existsSync(path.join(root, '.vibe', 'state.json'))) {
-    return fail('initialization_required', `目标项目缺少 .vibe/state.json：${root}`, '在控制台点击「初始化规划环境」以执行 vibe init --confirm');
+    return fail('initialization_required', `目标项目缺少 .vibe/state.json：${root}`, '在项目根执行 `vibe init --confirm`（控制台目前没有该入口）');
   }
   return { ok: true };
 }

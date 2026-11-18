@@ -43,6 +43,14 @@ export function loadNativePlan({ projectRoot, planId }) {
   // 原生计划可用 optionalHighRiskActions 声明本计划开放哪些高风险动作（默认关闭）。
   const declared = !Array.isArray(data) && Array.isArray(data.optionalHighRiskActions)
     ? data.optionalHighRiskActions.filter(id => typeof id === 'string') : [];
+  // 计划级共享文件（如 package.json）：任何节点都可改，避免为共享清单反复卡住节点。
+  // 只接受项目内相对路径：绝对路径、.. 逃逸或空串一律拒绝。
+  const sharedRaw = !Array.isArray(data) && data.sharedFiles !== undefined ? data.sharedFiles : [];
+  if (!Array.isArray(sharedRaw)) throw new Error('原生计划 sharedFiles 必须是路径数组');
+  const sharedFiles = sharedRaw.map(item => String(item ?? '').trim());
+  if (sharedFiles.some(item => !item || path.isAbsolute(item) || item.split(/[\\/]/).includes('..'))) {
+    throw new Error('原生计划 sharedFiles 必须是项目内相对路径（不允许绝对路径、.. 或空串）');
+  }
   // 只有显式 UI 合同才加载设计设施；旧数组计划和纯后端计划完全保持原路径。
   const uiNodes = nodes.filter(node => node.contract?.design != null);
   let designBaseline = null;
@@ -52,5 +60,5 @@ export function loadNativePlan({ projectRoot, planId }) {
     const rootSnapshot = { designBaseline };
     for (const node of uiNodes) assertNodeDesignSnapshot(rootSnapshot, node);
   }
-  return { planId, plan, nodes, productSpec: {}, optionalHighRiskActions: declared, designBaseline };
+  return { planId, plan, nodes, productSpec: {}, optionalHighRiskActions: declared, sharedFiles: [...new Set(sharedFiles)], designBaseline };
 }
