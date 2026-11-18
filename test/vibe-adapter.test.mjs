@@ -26,27 +26,43 @@ import {
 const fixtureDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'vibe-5.2.7');
 const fakeBin = path.join(fixtureDir, 'bin', 'vibe');
 
-function makeGitRoot({ withState = false, state = null } = {}) {
+function makeGitRoot({ withState = false, state = null, record = null } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'vibe-adapter-test-'));
   mkdirSync(path.join(root, '.git'), { recursive: true });
-  if (withState || state !== null) {
+  if (withState || state !== null || record !== null) {
     mkdirSync(path.join(root, '.vibe'), { recursive: true });
-    writeFileSync(path.join(root, '.vibe', 'state.json'), JSON.stringify(state ?? validState()));
+    writeFileSync(path.join(root, '.vibe', 'state.json'), JSON.stringify(state ?? { workflow_version: 4, execution_mode: 'sdd_first', session_gate: 's0_required', capability_contract_required: true }));
   }
+  if (record !== null) writeCapabilityRecord(root, record);
   return root;
 }
 
-function validState(overrides = {}) {
+function writeCapabilityRecord(root, record) {
+  mkdirSync(path.join(root, '.vibe', 'provider-actions'), { recursive: true });
+  writeFileSync(path.join(root, '.vibe', 'provider-actions', 'capabilities-codex.json'), JSON.stringify(record));
+}
+
+// vibe 5.2.7 `vibe attest` 实际写出的记录形态（.vibe/provider-actions/capabilities-codex.json）。
+function validRecord(overrides = {}, factOverrides = {}) {
   return {
-    version: 1,
-    capabilities: {
-      adapter: 'codex',
-      attested_at: new Date().toISOString(),
-      host_major_version: VIBE_MAJOR_VERSION,
-      dispatch: 'visible',
-      attest_command: 'vibe attest',
-      ...overrides,
+    adapter_id: 'codex',
+    facts: {
+      'codex.agent': true,
+      'codex.shell': true,
+      'codex.subprocess': true,
+      'codex.worktree': true,
+      'codex.visible_task.create': false,
+      'codex.visible_task.enter': false,
+      'codex.visible_task.resume': false,
+      'codex.visible_task.wait': false,
+      'codex.in_session_sdd': true,
+      ...factOverrides,
     },
+    observed_at: new Date().toISOString(),
+    provenance: 'codex exec 会话实测',
+    schema_version: 1,
+    session_id: 'test-session',
+    ...overrides,
   };
 }
 
@@ -129,61 +145,82 @@ test('checkInitialization reports initialization_required only when .vibe/state.
   assert.deepEqual(checkInitialization({ projectRoot: ready }), { ok: true });
 });
 
-test('checkCapabilities accepts a fresh codex attestation with a real dispatch form', () => {
-  for (const dispatch of ['visible', 'background', 'in_session_sdd']) {
-    const root = makeGitRoot({ state: validState({ attested_at: FRESH_ISO, dispatch }) });
-    assert.deepEqual(checkCapabilities({ projectRoot: root }), { ok: true });
-  }
+test('checkCapabilities reads the record vibe attest actually wrote (provider-actions/capabilities-codex.json)', () => {
+  const sdd = makeGitRoot({ withState: true, record: validRecord() });
+  assert.deepEqual(checkCapabilities({ projectRoot: sdd }), { ok: true });
+
+  const visible = makeGitRoot({ withState: true, record: validRecord({}, {
+    'codex.visible_task.create': true,
+    'codex.visible_task.enter': true,
+    'codex.visible_task.resume': true,
+    'codex.visible_task.wait': true,
+    'codex.in_session_sdd': false,
+  }) });
+  assert.deepEqual(checkCapabilities({ projectRoot: visible }), { ok: true });
 });
 
 test('checkCapabilities rejects missing attestation records with capability_attestation_required', () => {
-  const root = makeGitRoot({ state: { version: 1 } });
+  const root = makeGitRoot({ withState: true });
   const result = checkCapabilities({ projectRoot: root });
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'capability_attestation_required');
   assert.match(result.error.remediation, /vibe attest/);
 });
 
-test('checkCapabilities rejects non-codex adapters, wrong attest provenance and unknown dispatch forms', () => {
-  const wrongAdapter = checkCapabilities({ projectRoot: makeGitRoot({ state: validState({ adapter: 'claude' }) }) });
+test('checkCapabilities ignores the legacy hand-written state.json capability block', () => {
+  // 旧夹具形态（state.json.capabilities）不是 vibe attest 的产物，不得当作能力记录。
+  const root = makeGitRoot({ state: { version: 1, capabilities: { adapter: 'codex', attest_command: 'vibe attest', attested_at: new Date().toISOString(), host_major_version: VIBE_MAJOR_VERSION, dispatch: 'visible' } } });
+  const result = checkCapabilities({ projectRoot: root });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'capability_attestation_required');
+});
+
+test('checkCapabilities rejects non-codex records and records without a real dispatch form', () => {
+  const wrongAdapter = checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ adapter_id: 'claude' }) }) });
   assert.equal(wrongAdapter.error.code, 'capability_attestation_required');
   assert.match(wrongAdapter.error.message, /adapter/);
 
-  const noProvenance = checkCapabilities({ projectRoot: makeGitRoot({ state: validState({ attest_command: 'hand-written' }) }) });
+  const noDispatch = checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({}, { 'codex.in_session_sdd': false }) }) });
+  assert.equal(noDispatch.error.code, 'capability_attestation_required');
+  assert.match(noDispatch.error.message, /visible|background|in_session_sdd/);
+
+  const noProvenance = checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ provenance: '  ' }) }) });
   assert.equal(noProvenance.error.code, 'capability_attestation_required');
   assert.match(noProvenance.error.message, /vibe attest/);
 
-  const badDispatch = checkCapabilities({ projectRoot: makeGitRoot({ state: validState({ dispatch: 'telepathy' }) }) });
-  assert.equal(badDispatch.error.code, 'capability_attestation_required');
-  assert.match(badDispatch.error.message, /visible|background|in_session_sdd/);
+  const nonBoolFact = checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({}, { 'codex.in_session_sdd': 'yes' }) }) });
+  assert.equal(nonBoolFact.error.code, 'capability_attestation_required');
 });
 
 test('checkCapabilities rejects attestations older than 72 hours', () => {
   const stale = new Date(Date.now() - CAPABILITY_MAX_AGE_MS - 60_000).toISOString();
-  const result = checkCapabilities({ projectRoot: makeGitRoot({ state: validState({ attested_at: stale }) }) });
+  const result = checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ observed_at: stale }) }) });
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'capability_attestation_required');
   assert.match(result.error.message, /72/);
   const boundary = new Date(Date.now() - CAPABILITY_MAX_AGE_MS + 60_000).toISOString();
-  assert.deepEqual(checkCapabilities({ projectRoot: makeGitRoot({ state: validState({ attested_at: boundary }) }) }), { ok: true });
+  assert.deepEqual(checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ observed_at: boundary }) }) }), { ok: true });
+  const future = new Date(Date.now() + 10 * 60_000).toISOString();
+  assert.equal(checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ observed_at: future }) }) }).error.code, 'capability_attestation_required');
 });
 
 test('checkCapabilities rejects a host major version drift', () => {
-  const drifted = checkCapabilities({ projectRoot: makeGitRoot({ state: validState({ host_major_version: VIBE_MAJOR_VERSION + 1 }) }) });
+  const drifted = checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ host_version: `${VIBE_MAJOR_VERSION + 1}.0.0` }) }) });
   assert.equal(drifted.ok, false);
   assert.equal(drifted.error.code, 'capability_attestation_required');
   assert.match(drifted.error.message, /大版本/);
-  const result = checkCapabilities({ projectRoot: makeGitRoot({ state: validState() }), hostMajorVersion: VIBE_MAJOR_VERSION + 1 });
+  const result = checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord() }), hostMajorVersion: VIBE_MAJOR_VERSION + 1 });
   assert.equal(result.error.code, 'capability_attestation_required');
 });
 
-test('checkCapabilities fails closed on unreadable or malformed state.json', () => {
-  const root = makeGitRoot();
-  mkdirSync(path.join(root, '.vibe'), { recursive: true });
-  writeFileSync(path.join(root, '.vibe', 'state.json'), '{ not json');
+test('checkCapabilities fails closed on unreadable or malformed capability records', () => {
+  const root = makeGitRoot({ withState: true });
+  mkdirSync(path.join(root, '.vibe', 'provider-actions'), { recursive: true });
+  writeFileSync(path.join(root, '.vibe', 'provider-actions', 'capabilities-codex.json'), '{ not json');
   const result = checkCapabilities({ projectRoot: root });
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'capability_attestation_required');
+  assert.match(result.error.remediation, /vibe attest/);
 });
 
 test('extractProductSpec pulls the product-spec block and computes a deterministic specDigest', () => {

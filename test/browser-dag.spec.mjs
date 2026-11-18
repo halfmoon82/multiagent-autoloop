@@ -12,6 +12,23 @@ import { createRunStore } from '../src/dag-run.mjs';
 import { createPlanDigest } from '../src/vibe-plan.mjs';
 import { fakeHub, json, listen, close } from './helpers.mjs';
 
+// 预检需要的能力记录：vibe 5.2.7 `vibe attest` 真实写出的形态（测试夹具，非控制台代写）。
+function attestRecord() {
+  return {
+    adapter_id: 'codex',
+    facts: {
+      'codex.agent': true, 'codex.shell': true, 'codex.subprocess': true, 'codex.worktree': true,
+      'codex.visible_task.create': false, 'codex.visible_task.enter': false,
+      'codex.visible_task.resume': false, 'codex.visible_task.wait': false,
+      'codex.in_session_sdd': true,
+    },
+    observed_at: new Date().toISOString(),
+    provenance: 'browser spec fixture',
+    schema_version: 1,
+    session_id: 'browser-spec',
+  };
+}
+
 const root = mkdtempSync(path.join(tmpdir(), 'dag-ui-data-'));
 const profile = mkdtempSync(path.join(tmpdir(), 'dag-ui-profile-'));
 const project = path.join(root, 'demo-repo'); mkdirSync(path.join(project, '.git'), { recursive: true });
@@ -29,7 +46,9 @@ writeFileSync(path.join(dir, 'product-spec.input.json'), JSON.stringify({ decisi
 const planDigest = createPlanDigest({ productSpec: { decisions: [] }, plan: { plan_id: 'plan-one', complexity_band: 'complex', decisions: [] }, nodes });
 // 预检需要的 vibe 状态：初始化 + 真实 attest 形态的能力记录（测试夹具，非控制台代写）。
 mkdirSync(path.join(project, '.vibe'), { recursive: true });
-writeFileSync(path.join(project, '.vibe', 'state.json'), JSON.stringify({ capabilities: { adapter: 'codex', attest_command: 'vibe attest', attested_at: new Date().toISOString(), host_major_version: 5, dispatch: 'visible' } }));
+writeFileSync(path.join(project, '.vibe', 'state.json'), JSON.stringify({ workflow_version: 4, execution_mode: 'sdd_first', session_gate: 's0_required', capability_contract_required: true }));
+mkdirSync(path.join(project, '.vibe', 'provider-actions'), { recursive: true });
+writeFileSync(path.join(project, '.vibe', 'provider-actions', 'capabilities-codex.json'), JSON.stringify(attestRecord()));
 writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ rules: [] }));
 
 const store = createRunStore({ directory: path.join(root, 'dag-runs') });
@@ -184,7 +203,9 @@ test('授权确认页呈现可选高风险动作收益/代价，DAG 详情显示
   writeFileSync(path.join(bdir, 'plan.json'), JSON.stringify({ plan_id: 'plan-one', decisions: [], optionalHighRiskActions: ['deploy'] }));
   writeFileSync(path.join(bdir, 'nodes.json'), JSON.stringify(bnodes));
   writeFileSync(path.join(bdir, 'product-spec.input.json'), JSON.stringify({ decisions: [] }));
-  writeFileSync(path.join(bproject, '.vibe', 'state.json'), JSON.stringify({ capabilities: { adapter: 'codex', attest_command: 'vibe attest', attested_at: new Date().toISOString(), host_major_version: 5, dispatch: 'visible' } }));
+  writeFileSync(path.join(bproject, '.vibe', 'state.json'), JSON.stringify({ workflow_version: 4, execution_mode: 'sdd_first', session_gate: 's0_required', capability_contract_required: true }));
+  mkdirSync(path.join(bproject, '.vibe', 'provider-actions'), { recursive: true });
+  writeFileSync(path.join(bproject, '.vibe', 'provider-actions', 'capabilities-codex.json'), JSON.stringify(attestRecord()));
   writeFileSync(path.join(broot, 'rules.json'), JSON.stringify({ rules: [] }));
   const bstore = createRunStore({ directory: path.join(broot, 'dag-runs') });
   const bdagService = createDagService({ root: broot, store: bstore });
