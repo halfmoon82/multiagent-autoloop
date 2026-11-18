@@ -45,7 +45,7 @@
 - subject=<runId>:<nodeId>；遵守 Hub 字符集与 100 字节限制，超长稳定哈希截短。控制器从 Hub 结果反查节点时只使用 run.json 映射，不反向解析 subject。开发与审阅同业务 group 同 subject，保证同节点串行。业务组、controller 组名称预检不得与旧组冲突。
 - 事件 id=<runId>:<nodeId>:<role>:<generation>:<attempt>，同一动作重发去重，新一代返工不丢弃。控制器通过 source API 直接发 hops=0 新事件，记录 eventId/runIds；节点只认当前 generation 对应 runId。
 - 为替代绕过 MAX_HOPS 后的循环保护：maxGeneration=10，maxEvents=max(100,节点数×20)；只计 Hub 实际接受并分配 seq 的事件，重复 id 不计，超限 blocked_unknown 并 gate。
-- depends_on 计算 ready；integration_after 不阻塞。写范围重叠串行；blocked 硬依赖后代暂停，无关节点继续。
+- depends_on 计算 ready；integration_after 不阻塞。写范围重叠按依赖闭包串行——只要一方在另一方的直接或传递依赖里即视为串行（readyNodes 要求依赖 accepted 才放开，accepted 是吸收态），兄弟节点仍须显式 depends_on；blocked 硬依赖后代暂停，无关节点继续。
 - accepted=独立审阅 P0–P2 清零且 PR 已 squash 合入基线。下游 fetch 更新基线后，从合并后的基线创建独立 worktree/分支。
 - 同一任务累计 3 次失败/返工必须先换打法（换模型、换 Agent、拆小任务或新 worker）并记录原因；换打法仍失败才 gate。纯工程问题不直接升级。
 - vibe complex 计划 integration-review 必须存在；业务节点全 accepted 后只读整合审查，通过则 DAG 完成，不部署。

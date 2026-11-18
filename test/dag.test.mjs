@@ -30,6 +30,35 @@ test('write scope overlaps must be serialized by depends_on', () => {
   const b = node('b', { contract: { ...node('b').contract, files: ['src/shared.ts'] } });
   assert.match(validateDag([a, b]).errors.join('\n'), /写范围重叠/);
   assert.equal(validateDag([a, { ...b, depends_on: ['a'] }]).valid, true);
+  assert.equal(validateDag([{ ...b, depends_on: ['a'] }, a]).valid, true, '依赖方向不影响判定');
+});
+
+test('write scope overlaps are serialized by a transitive dependency too', () => {
+  const shared = { contract: { ...node('x').contract, files: ['src/shared.ts'] } };
+  const a = node('a', shared);
+  const mid = node('mid', { depends_on: ['a'] });
+  const far = node('far', { depends_on: ['mid'], ...shared });
+  // a → mid → far：a 与 far 永不同时运行，不需要额外的直接依赖。
+  assert.equal(validateDag([a, mid, far]).valid, true);
+  // 兄弟节点（同一父下并行）仍必须显式串行。
+  const sibling = node('sibling', { depends_on: ['mid'], ...shared });
+  assert.match(validateDag([a, mid, far, sibling]).errors.join('\n'), /写范围重叠/);
+});
+
+test('write scope overlaps are also serialized across a deeper chain and via top-level files', () => {
+  const shared = { contract: { ...node('x').contract, files: ['src/shared.ts'] } };
+  const a = node('a', shared);
+  const m1 = node('m1', { depends_on: ['a'] });
+  const m2 = node('m2', { depends_on: ['m1'] });
+  const far = node('far', { depends_on: ['m2'], ...shared });
+  assert.equal(validateDag([a, m1, m2, far]).valid, true);
+  // files 也可以写在节点顶层（nodeFiles 两者合并）。
+  const topLevel = { ...node('top'), files: ['src/shared.ts'], contract: { ...node('top').contract, files: [] } };
+  assert.equal(validateDag([a, topLevel]).valid, false, '顶层 files 同样参与重叠判定');
+  assert.equal(validateDag([a, { ...topLevel, depends_on: ['a'] }]).valid, true);
+});
+
+test('writeScopeOverlap compares directory prefixes literally', () => {
   assert.equal(writeScopeOverlap('src/a', 'src/a/b.ts'), true);
   assert.equal(writeScopeOverlap('src/a.ts', 'src/ab.ts'), false);
 });
@@ -44,6 +73,16 @@ test('readyNodes treats only merged done dependencies as accepted and ignores in
   assert.equal(readyNodes(nodes).some(n => n.id === 'c'), false);
   nodes[0].status = 'done'; nodes[1].status = 'done';
   assert.equal(readyNodes(nodes).some(n => n.id === 'c'), true);
+});
+
+test('readyNodes never releases a node while an ancestor is still running', () => {
+  const nodes = [node('a'), node('mid', { depends_on: ['a'] }), node('far', { depends_on: ['mid'] })];
+  nodes[0].status = 'done';
+  assert.deepEqual(readyNodes(nodes).map(n => n.id), ['mid'], 'a 已完成，far 仍要等 mid');
+  nodes[1].status = 'in_review';
+  assert.deepEqual(readyNodes(nodes).map(n => n.id), [], 'mid 未 accepted 时 far 不放开');
+  nodes[1].status = 'done';
+  assert.deepEqual(readyNodes(nodes).map(n => n.id), ['far']);
 });
 
 test('blocked dependency closures do not suppress unrelated ready nodes', () => {
