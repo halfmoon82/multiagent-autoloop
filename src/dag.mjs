@@ -67,25 +67,20 @@ function structuralErrors(nodes) {
 
 export function validateDag(nodes) {
   const list = Array.isArray(nodes) ? nodes : [];
-  const byId = new Map(list.map(node => [node.id, node]));
-  const ancestorCache = new Map();
-  // 祖先集合（直接 + 传递依赖）；先占位再递归，环由 structuralErrors 单独报告，不会在这里死循环。
-  const ancestorsOf = node => {
-    if (ancestorCache.has(node.id)) return ancestorCache.get(node.id);
-    const ancestors = new Set();
-    ancestorCache.set(node.id, ancestors);
-    for (const id of node.depends_on || []) {
-      ancestors.add(id);
-      const parent = byId.get(id);
-      if (parent) for (const ancestor of ancestorsOf(parent)) ancestors.add(ancestor);
-    }
-    return ancestors;
-  };
   const errors = structuralErrors(list);
   for (const node of list) {
     const error = contractError(node);
     if (error) errors.push(error);
   }
+  // 串行判定按「能不能同时跑」算：只要一方在另一方的依赖闭包里（直接或经由中间节点），
+  // readyNodes 就要求前者全部直接依赖 done 才放开后者；而 done 只来自 accepted，
+  // 且 accepted 是吸收态（reviveNode 只接受 blocked），所以两者永不同时运行，
+  // 写范围重叠是安全的。只认直接边会把经中间节点已串行化的多层计划误判成冲突。
+  const descendantsOf = new Map();
+  const dependents = id => {
+    if (!descendantsOf.has(id)) descendantsOf.set(id, dependencyClosure(list, [id]));
+    return descendantsOf.get(id);
+  };
   for (let left = 0; left < list.length; left++) {
     for (let right = left + 1; right < list.length; right++) {
       const a = list[left]; const b = list[right];
@@ -93,10 +88,7 @@ export function validateDag(nodes) {
       try { filesA = nodeFiles(a); filesB = nodeFiles(b); } catch { /* 契约错误已在上方报告 */ }
       const overlap = filesA.some(file => filesB.some(other => writeScopeOverlap(file, other)));
       if (!overlap) continue;
-      // 串行判定按「能不能同时跑」算：只要一方在另一方的依赖闭包里（直接或经由中间节点），
-      // readyNodes 就永远等前者 done 才放开后者，写范围重叠是安全的。只认直接边会把
-      // 经由中间节点已经串行化的计划误判成冲突（多层 DAG 的常见形态）。
-      const serialized = ancestorsOf(a).has(b.id) || ancestorsOf(b).has(a.id);
+      const serialized = dependents(a.id).has(b.id) || dependents(b.id).has(a.id);
       if (!serialized) errors.push(`节点 ${a.id} 与 ${b.id} 写范围重叠，必须用 depends_on 串行`);
     }
   }
