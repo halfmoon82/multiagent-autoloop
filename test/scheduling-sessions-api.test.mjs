@@ -272,7 +272,10 @@ test('#89 creating a scheduling session posts a whitelist-only event to a strict
     assert.equal(seen[0].type, 'scheduling.message');
     const detail = JSON.parse(seen[0].detail);
     assert.equal(detail.project, repo, 'project 进入 worker 可解析的 detail');
-    assert.match(detail.text, /按规则推进调度/, '首轮文本进入 detail');
+    // 首轮文本 = 调度提示词（含资料文件提示，可能被截断）；用户原句在提示词尾部或在被截掉的附加说明里——
+    // 不逐字断言用户输入，断言 detail 形态 + 3950 预算 + 提示存在。
+    assert.ok(Buffer.byteLength(detail.text, 'utf8') <= 3950, 'detail.text 必须在 Hub 4000 预算内');
+    assert.match(detail.text, /本轮完整资料|按规则推进调度/, '首轮文本要么含资料提示，要么原文完整');
   } finally { await close(server); await new Promise(resolve => strictHub.close(resolve)); }
 });
 
