@@ -8,6 +8,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { extractProductSpec, checkCapabilities, resolveProjectRoot, runVibe, sanitizeHostEnv } from './vibe-adapter.mjs';
 import { loadVibePlan } from './vibe-plan.mjs';
+import { defaultGit } from './git-safe.mjs';
 import { loadDesignManifest } from './design-baseline.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -39,6 +40,8 @@ export function buildPublishSnapshot({ planId, baseBranch, actions = PUBLISH_ACT
 }
 
 async function defaultRunner(command, args, { cwd, env } = {}) {
+  // Git 一律走 hardened runner；gh/vibe 仍由原 runner 执行。
+  if (command === 'git') return { stdout: await defaultGit(cwd, args, { env }) };
   const { stdout } = await execFileAsync(command, args, { cwd, env, maxBuffer: 4 * 1024 * 1024 });
   return { stdout };
 }

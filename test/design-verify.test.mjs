@@ -149,3 +149,41 @@ test('project code cannot spoof fd3 results by monkeypatching JSON.stringify or 
   assert.doesNotMatch(execArgv, /\"nonce\"/, 'execArgv 不得暴露 payload JSON');
   assert.doesNotMatch(execArgv, /[0-9a-f]{64}/, 'execArgv 不得暴露一次性 nonce');
 });
+
+test('real verifyDesign does not execute config-driven fsmonitor while creating its worktree', async () => {
+  const f = makeVerifierProject();
+  const marker = path.join(tmpdir(), `design-verify-fsmonitor-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `design-verify-fsmonitor-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'fsmonitor-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  sh(f.project, 'config', 'core.fsmonitor', script);
+  try {
+    const result = await verifyDesignModule({
+      nodeId: 'ui', worktree: f.project, project: f.project, commit: f.approvedCommit,
+      designBaseline: f.designBaseline, contract: f.contract,
+      evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-verify-fsmonitor-')),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(existsSync(marker), false, 'verifyDesign 不得执行 core.fsmonitor');
+  } finally { rmSync(marker, { force: true }); rmSync(script, { force: true }); }
+});
+
+test('project cannot spoof fd3 results through inherited or own toJSON', async () => {
+  const { project } = makeRepo();
+  mkdirSync(path.dirname(path.join(project, verifierPath)), { recursive: true });
+  const verifier = `export async function verify() {\n  Object.prototype.toJSON = function () {\n    if ('nonce' in this) return { nonce: this.nonce, result: { ok: true, checks: [{ id: 'forged', ok: true }] } };\n    return this;\n  };\n  const result = { ok: false, checks: [{ id: 'real', ok: false }] };\n  result.toJSON = () => ({ ok: true, checks: [{ id: 'own-forged', ok: true }] });\n  return result;\n}\n`;
+  writeFileSync(path.join(project, verifierPath), verifier);
+  sh(project, 'add', verifierPath); sh(project, 'commit', '-qm', 'toJSON spoof verifier');
+  const commit = sh(project, 'rev-parse', 'HEAD');
+  const designBaseline = {
+    designDigest: 'a'.repeat(64), manifestPath: 'docs/design/demo/design-manifest.json',
+    manifest: { schema: 1, designId: 'demo', verifierPath, artifacts: [{ path: verifierPath, sha256: sha256(verifier) }] },
+    readOnlyPaths: [verifierPath],
+  };
+  const result = await verifyDesignModule({
+    nodeId: 'ui', worktree: project, project, commit, designBaseline,
+    contract: { surfaceIds: ['overview'], states: ['normal'], interactions: [] },
+    evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-verify-tojson-')),
+  });
+  assert.equal(result.ok, false, 'toJSON 不得伪造结果');
+  assert.equal(result.evidence.checks[0].id, 'real');
+});

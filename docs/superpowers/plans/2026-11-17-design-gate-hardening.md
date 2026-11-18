@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node.js 24、ES modules、node:test、现有 DAG run/store/controller/publisher。
 
-**Spec:** `docs/2026-11-16-parallel-dag-design.md`；精简审阅结论 `/Users/macmini/.answer-me-with-html/pages/设计稿硬门独立审阅结论-20261117-220110.html`。
+**Spec:** `docs/2026-11-16-parallel-dag-design.md`；精简审阅结论见当前 PR 审阅记录。
 
 ## Global Constraints
 

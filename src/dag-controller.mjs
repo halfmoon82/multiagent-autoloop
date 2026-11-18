@@ -82,7 +82,11 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
   async function start(root, st, id, run, slot, { prepare }) {
     assertNodeDesignSnapshot(root, root.nodes.find(node => node.id === id));
     const n = st.nodes[id]; n.slot = slot;
-    if (prepare) n.prepareBase = (await rt.prepare({ slot, nodeId: id, branch: n.branch, base: baseRef })).baseCommit;
+    if (prepare) {
+      n.prepareBase = (await rt.prepare({ slot, nodeId: id, branch: n.branch, base: baseRef })).baseCommit;
+      // 在 claim/派发前先把冻结 base 写入服务端 root run，崩溃恢复不依赖 slot 状态。
+      persist(root, st);
+    }
     const claimed = store.claim(run.runId, { slot });
     await send(root, id, claimed, n);
   }
@@ -170,7 +174,12 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         if (run.status === 'queued') {
           const prepared = await rt.prepare({ slot: n.slot, nodeId: id, branch: n.branch, base: n.prepareBase || baseRef });
           n.prepareBase = prepared.baseCommit; // queued 补发也冻结实际 SHA，不再传符号 ref 给 commitPr
+          persist(root, st);
           return send(root, id, store.claim(run.runId, { slot: n.slot }), n);
+        }
+        if (!n.prepareBase) {
+          n.lastError = 'claimed run 缺少服务端冻结 prepare base，拒绝补发';
+          return;
         }
         return send(root, id, run, n);
       }
@@ -221,6 +230,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     n.prepareBase = role === 'dev' ? null : n.commit;
     const prepared = await rt.prepare({ slot, nodeId: id, branch: prepBranch, base: n.prepareBase || baseRef });
     if (role === 'dev') n.prepareBase = prepared.baseCommit;
+    persist(root, st);
     await send(root, id, store.claim(run.runId, { slot }), n);
     return true;
   }

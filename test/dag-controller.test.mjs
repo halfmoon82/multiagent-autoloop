@@ -237,3 +237,23 @@ test('崩溃收养路径把 prepare 返回的实际 base commit 传给 commitPr'
   s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick();
   assert.equal(commitBase, 'frozen-abc', '崩溃收养不得把 origin/main 传给 scope 检查');
 });
+
+test('prepare base is persisted to the server-side root run before Hub dispatch', async () => {
+  const ui = mkNode('a');
+  const s = setup([ui]);
+  const realPrepare = s.rt.prepare.bind(s.rt);
+  s.rt.prepare = async input => ({ ...(await realPrepare(input)), baseCommit: 'f'.repeat(40) });
+  await s.ctl.tick();
+  assert.ok(s.hub.last('a'));
+  const root = s.store.getRun(s.root.runId);
+  assert.equal(root.publish.nodes.a.prepareBase, 'f'.repeat(40));
+});
+
+test('claimed crash window without a server-frozen base does not redispatch', async () => {
+  const s = setup([mkNode('a')]);
+  const run = s.store.createNodeRun(s.root.runId, { nodeId: 'a', role: 'dev' });
+  s.store.claim(run.runId, { slot: 1 });
+  await s.ctl.tick();
+  assert.equal(s.hub.last('a'), undefined);
+  assert.match(s.ctl.snapshot().nodes.a.lastError, /冻结 prepare base/);
+});

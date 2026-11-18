@@ -52,12 +52,13 @@ test('适配器其余方法契约：findPr/createPr/prHead/mergePr', async () =>
 });
 
 test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', async () => {
-  const { project } = makeRepo();
+  const { project, remote } = makeRepo();
   const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-gh-pub-')) });
-  const root = store.createRun({ project, planId: 'p', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [{ id: 'a', depends_on: [], contract: { files: ['src/a.mjs'] } }] });
+  const root = store.createRun({ project, remoteUrl: remote, planId: 'p', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [{ id: 'a', depends_on: [], contract: { files: ['src/a.mjs'] } }] });
   const rt = createSlotRuntime({ project, runId: root.runId });
   await rt.ensureSlots();
   const { baseCommit } = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
+  store.updateRun(root.runId, { publish: { nodes: { a: { prepareBase: baseCommit } } } });
   const closed = []; let prNo = 0;
   const runner = async (cmd, args) => {
     if (args[1] === 'list') return { stdout: '[]' };

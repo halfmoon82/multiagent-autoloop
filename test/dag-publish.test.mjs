@@ -1,7 +1,7 @@
 // publish：commit-pr / verify / merge 在真实 git（本地 bare 远端）+ 假 gh 上的行为。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
@@ -14,17 +14,18 @@ const node = (id, files) => ({ id, depends_on: [], contract: { files } });
 async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false } = {}) {
   const { project, remote } = makeRepo();
   const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-pub-')) });
-  const root = store.createRun({ project, planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [{ ...node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), contract: { files: designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'], ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline });
+  const root = store.createRun({ project, remoteUrl: remote, planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [{ ...node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), contract: { files: designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'], ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline });
   const rt = createSlotRuntime({ project, runId: root.runId });
   await rt.ensureSlots();
-  await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
+  const prepared = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
+  store.updateRun(root.runId, { publish: { nodes: { a: { prepareBase: prepared.baseCommit } } } });
   const gh = { prs: new Map(), merged: [], async createPr(a) { const url = `https://gh/pr/${this.prs.size + 1}`; this.prs.set(url, { head: a.branch, sha: null }); return url; },
     async findPr(a) { return [...this.prs].find(([, p]) => p.head === a.branch)?.[0] ?? null; },
     async prHead(url) { return this.prs.get(url).sha; }, async mergePr(url) { this.merged.push(url); return {}; },
     closed: [], async closePr(url, a) { this.closed.push([url, a.comment]); } };
   const tests = []; const runTests = async (cwd) => { tests.push(cwd); return { exitCode: 0, summary: '1 passed' }; };
   const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests, verifyDesign });
-  const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId, base: sh(project, 'rev-parse', 'main') };
+  const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId, base: prepared.baseCommit };
   const write = (rel, c) => { mkdirSync(path.dirname(path.join(ctx.worktree, rel)), { recursive: true }); writeFileSync(path.join(ctx.worktree, rel), c); };
   return { project, remote, store, root, rt, gh, pub, ctx, write, tests };
 }
@@ -270,4 +271,38 @@ test('commitPr rejects symbolic base refs such as origin/main', async () => {
   t.write('src/a.mjs', 'x\n');
   await assert.rejects(t.pub.commitPr({ ...t.ctx, base: 'origin/main' }), error => error.code === 'BASE_NOT_COMMIT');
   assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr does not execute Git clean filters configured by worker', async () => {
+  const t = await boot();
+  const marker = path.join(tmpdir(), `commit-filter-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `commit-filter-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'filter-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  mkdirSync(path.join(t.project, '.git', 'info'), { recursive: true });
+  writeFileSync(path.join(t.project, '.git', 'info', 'attributes'), 'src/a.mjs filter=bad\n');
+  sh(t.project, 'config', 'filter.bad.clean', script);
+  try {
+    t.write('src/a.mjs', 'export const a = 1;\n');
+    await t.pub.commitPr(t.ctx);
+    assert.equal(existsSync(marker), false, 'commitPr 不得执行 clean filter');
+  } finally { rmSync(marker, { force: true }); rmSync(script, { force: true }); }
+});
+
+test('commitPr requires the base frozen in the server-side root run', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'x\n');
+  const other = sh(t.project, 'commit-tree', sh(t.project, 'rev-parse', 'main^{tree}'), '-m', 'other');
+  await assert.rejects(t.pub.commitPr({ ...t.ctx, base: other }), error => error.code === 'BASE_MISMATCH');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr pushes to the remote URL frozen in the root run, not worker-modified origin', async () => {
+  const t = await boot();
+  const evil = `${t.remote}-evil`;
+  sh(path.dirname(t.remote), 'init', '-q', '--bare', evil);
+  sh(t.project, 'remote', 'set-url', 'origin', evil);
+  t.write('src/a.mjs', 'export const a = 1;\n');
+  const pr = await t.pub.commitPr(t.ctx);
+  assert.equal(sh(t.remote, 'rev-parse', 'feat/a'), pr.commit);
+  assert.throws(() => sh(evil, 'rev-parse', 'feat/a'));
 });

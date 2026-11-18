@@ -105,7 +105,7 @@ async function handleApi(config, req, res, url) {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
     const known = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).find(item => item.path === path.resolve(String(body.project || '')));
     if (!known) throw new RequestError(400, '项目不在已发现的 Git 仓库列表中，请从下拉选择');
-    return jsonResponse(res, 201, config.dagService.create(body, known.path));
+    return jsonResponse(res, 201, await config.dagService.create(body, known.path));
   }
   if (req.method === 'POST' && (dagMatch = url.pathname.match(/^\/api\/dag-runs\/([^/]+)\/cancel$/))) {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');

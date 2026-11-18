@@ -4,6 +4,7 @@ import path from 'node:path';
 import { normalizeProjectPath } from './dag.mjs';
 import { canClosePr, canExecuteAction } from './dag-run.mjs';
 import { assertNodeDesignSnapshot, designContractDigest } from './design-baseline.mjs';
+import { buildWorktreeTree } from './git-safe.mjs';
 
 export class PublishError extends Error {
   constructor(message, code = 'PUBLISH_ERROR') { super(message); this.name = 'PublishError'; this.code = code; }
@@ -80,6 +81,8 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       const uncommittedFiles = await changed(worktree);
       if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(String(base ?? ''))) throw new PublishError(`prepare base 必须是冻结 commit SHA，不能是符号 ref：${String(base ?? '')}`, 'BASE_NOT_COMMIT');
       const baseCommit = (await rt.git(worktree, ['rev-parse', '--verify', `${base}^{commit}`]).catch(() => '')).trim();
+      const frozenRootBase = root.publish?.nodes?.[nodeId]?.prepareBase;
+      if (frozenRootBase !== base) throw new PublishError(`prepare base 与服务端根 run 冻结值不一致：${base} / ${frozenRootBase}`, 'BASE_MISMATCH');
       if (!baseCommit) throw new PublishError(`冻结基准 commit ${base} 不存在，无法核对本节点提交范围`, 'BASE_REF_MISSING');
       const files = [...new Set([...uncommittedFiles, ...await committed(worktree, baseCommit)])];
       const readOnlyDesign = new Set((root.designBaseline?.readOnlyPaths || []).map(normalizeProjectPath));
@@ -87,13 +90,21 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (protectedDesign.length) throw new PublishError(`设计基线/参考产物只读：${protectedDesign.join(', ')}`, 'DESIGN_BASELINE_READONLY');
       const outside = files.filter(file => !inScope(file, scopes));
       if (outside.length) throw new PublishError(`改动超出节点文件范围：${outside.join(', ')}`, 'OUT_OF_SCOPE');
+      let commit;
       if (uncommittedFiles.length) {
-        await rt.git(worktree, ['add', '--', ...uncommittedFiles]);
-        await rt.git(worktree, ['-c', 'user.name=dag-controller', '-c', 'user.email=dag-controller@localhost', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', `${nodeId}: ${root.runId}`]);
-      }
-      const commit = (await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
+        // 不执行 git add/commit：用 no-filter hash-object + update-index + commit-tree，
+        // 防止 worker 配置 clean filter 或 hooks 在控制器侧执行。
+        const { tree } = await buildWorktreeTree({ git: rt.git, cwd: worktree, base: 'HEAD' });
+        commit = String(await rt.git(worktree, ['commit-tree', tree, '-p', 'HEAD', '-m', `${nodeId}: ${root.runId}`], {
+          GIT_AUTHOR_NAME: 'dag-controller', GIT_AUTHOR_EMAIL: 'dag-controller@localhost',
+          GIT_COMMITTER_NAME: 'dag-controller', GIT_COMMITTER_EMAIL: 'dag-controller@localhost',
+        })).trim();
+        await rt.git(worktree, ['update-ref', `refs/heads/${branch}`, commit]);
+        await rt.git(worktree, ['read-tree', commit]);
+      } else commit = String(await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
       if (commit === baseCommit) throw new PublishError(`节点 ${nodeId} 没有任何提交可发 PR`, 'NOTHING_TO_PUBLISH');
-      await rt.git(worktree, ['push', '-q', 'origin', `HEAD:refs/heads/${branch}`]);
+      if (!root.remoteUrl) throw new PublishError('根 run 未冻结可信 remote URL，拒绝 push', 'REMOTE_NOT_FROZEN');
+      await rt.git(worktree, ['push', '-q', root.remoteUrl, `${commit}:refs/heads/${branch}`]);
       let prUrl = await gh.findPr({ branch });
       if (!prUrl) prUrl = await gh.createPr({ branch, title: `${nodeId} (${root.runId})` });
       store.registerPr(root.runId, nodeId, prUrl);

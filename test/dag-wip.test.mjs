@@ -3,6 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync } from 'node:fs';
 import { createSlotRuntime } from '../src/dag-slots.mjs';
 import { saveWip, releaseSlotWorktree, wipRef } from '../src/dag-wip.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
@@ -55,4 +57,34 @@ test('releaseSlotWorktree 在 WIP 保存失败时不清理工作区（fail close
   const broken = { ...rt, git: async (cwd, args, o) => { if (args[0] === 'update-ref') throw new Error('boom'); return rt.git(cwd, args, o); } };
   await assert.rejects(releaseSlotWorktree(broken, { slot: 1, nodeId: 'a', attempt: 1 }), /boom|失败/);
   assert.equal(readFileSync(path.join(dir, 'new-file.txt'), 'utf8'), 'brand new\n');
+});
+
+test('saveWip does not execute Git clean filters configured by worker', async () => {
+  const { rt, dir } = await boot();
+  const marker = path.join(tmpdir(), `wip-filter-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `wip-filter-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'filter-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  mkdirSync(path.join(rt.project, '.git', 'info'), { recursive: true });
+  writeFileSync(path.join(rt.project, '.git', 'info', 'attributes'), '*.txt filter=bad\n');
+  sh(rt.project, 'config', 'filter.bad.clean', script);
+  try {
+    const ref = await saveWip(rt, { slot: 1, nodeId: 'a', attempt: 1 });
+    assert.ok(ref);
+    assert.equal(existsSync(marker), false, 'WIP 不得执行 clean filter');
+  } finally { rmSync(marker, { force: true }); rmSync(script, { force: true }); }
+});
+
+test('slot restore does not execute Git smudge filters', async () => {
+  const { rt, dir } = await boot();
+  const marker = path.join(tmpdir(), `restore-smudge-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `restore-smudge-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'smudge-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  mkdirSync(path.join(rt.project, '.git', 'info'), { recursive: true });
+  writeFileSync(path.join(rt.project, '.git', 'info', 'attributes'), '*.md filter=bad\n');
+  sh(rt.project, 'config', 'filter.bad.smudge', script);
+  try {
+    writeFileSync(path.join(dir, 'README.md'), 'changed\n');
+    await releaseSlotWorktree(rt, { slot: 1, nodeId: 'a', attempt: 1 });
+    assert.equal(existsSync(marker), false, 'restore 不得执行 smudge filter');
+  } finally { rmSync(marker, { force: true }); rmSync(script, { force: true }); }
 });

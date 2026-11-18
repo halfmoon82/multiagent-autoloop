@@ -99,3 +99,29 @@ test('defaultGit disables external diff and textconv during diff', async () => {
     rmSync(marker, { force: true }); rmSync(script, { force: true });
   }
 });
+
+test('prepare rejects slot state whose frozen base was tampered', async () => {
+  const { project, rt } = await boot();
+  const first = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
+  const stateFile = path.join(project, '.git', 'dag-run1-slots.json');
+  const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+  const other = sh(project, 'commit-tree', sh(project, 'rev-parse', 'main^{tree}'), '-m', 'other');
+  state['1'].baseCommit = other;
+  writeFileSync(stateFile, JSON.stringify(state));
+  await assert.rejects(() => rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' }), /base|状态|不一致/);
+  assert.equal(first.baseCommit, sh(project, 'rev-parse', 'main'));
+});
+
+test('prepare and ensureSlots do not execute Git smudge filters', async () => {
+  const { project, rt } = await boot();
+  const marker = path.join(tmpdir(), `slot-smudge-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `slot-smudge-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'smudge-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  mkdirSync(path.join(project, '.git', 'info'), { recursive: true });
+  writeFileSync(path.join(project, '.git', 'info', 'attributes'), '*.md filter=bad\n');
+  sh(project, 'config', 'filter.bad.smudge', script);
+  try {
+    await rt.prepare({ slot: 2, nodeId: 'b', branch: 'feat/b', base: 'main' });
+    assert.equal(existsSync(marker), false, 'prepare 不得执行 smudge filter');
+  } finally { rmSync(marker, { force: true }); rmSync(script, { force: true }); }
+});

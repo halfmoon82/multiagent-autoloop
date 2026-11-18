@@ -1,15 +1,14 @@
 // 默认定向设计验证适配器：从精确 commit 建临时只读 worktree，
 // 校验 verifier sha256 后在净化子进程执行；结果走专用 fd + nonce，不信任 stdout。
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { designContractDigest } from './design-baseline.mjs';
+import { createGitRunner } from './git-safe.mjs';
 
-const execFileAsync = promisify(execFile);
 const CHILD_TIMEOUT_MS = 5 * 60 * 1000;
 const LOG_LIMIT_BYTES = 1024 * 1024;
 const RESULT_LIMIT_BYTES = 4 * 1024 * 1024;
@@ -44,23 +43,29 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
     PATH: process.env.PATH || '/usr/bin:/bin', HOME: childHome, TMPDIR: tmpdir(),
     NODE_OPTIONS: '', GIT_TERMINAL_PROMPT: '0',
   };
-  // Git 操作不继承控制器环境，并显式禁用仓库 hooks，防止 worker 修改 post-checkout 等钩子。
-  const safeGit = (cwd, args) => execFileAsync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
-    cwd, env: childEnv, timeout: 60 * 1000, maxBuffer: 16 * 1024 * 1024,
-  });
+  // 统一 hardened Git：禁 hooks/fsmonitor/untrackedCache，且不继承控制器环境。
+  const safeGit = createGitRunner({ env: childEnv });
 
-  let result = null;
+  let result = null; let execDir = null;
   try {
     await safeGit(project, ['worktree', 'add', '--detach', source, commit]);
     const root = realpathSync(source);
     const file = realpathSync(path.resolve(root, verifierPath));
     if (file !== root && !file.startsWith(`${root}${path.sep}`)) throw new Error('设计 verifier 逃逸精确 commit worktree');
-    const actual = createHash('sha256').update(readFileSync(file)).digest('hex');
+    const sourceBytes = readFileSync(file);
+    const actual = createHash('sha256').update(sourceBytes).digest('hex');
     if (actual !== expected) throw new Error(`设计 verifier sha256 摘要不符：${verifierPath}`);
+    // 执行字节与 hash 字节一致：先读入，再写入 worker 不可写的临时执行目录。
+    const execDir = mkdtempSync(path.join(tmpdir(), 'design-verify-exec-'));
+    cpSync(source, execDir, { recursive: true });
+    const execFile = path.join(execDir, verifierPath);
+    writeFileSync(execFile, sourceBytes, { mode: 0o600 });
+    const projectNodeModules = path.join(realpathSync(project), 'node_modules');
+    if (existsSync(projectNodeModules)) symlinkSync(projectNodeModules, path.join(execDir, 'node_modules'));
 
     const nonce = randomBytes(32).toString('hex');
     const verifierPayload = { nodeId, worktree: source, contract, designBaseline, evidenceDir, commit };
-    const payload = { ...verifierPayload, verifierUrl: pathToFileURL(file).href, nonce };
+    const payload = { ...verifierPayload, verifierUrl: pathToFileURL(execFile).href, nonce };
     // payload 只经 stdin 进入子进程；nonce 不进入 execArgv/env，也不传给项目 verifier。
     const script = `
       const readStdin = () => new Promise((resolve, reject) => {
@@ -72,17 +77,41 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
       });
       const input = await readStdin();
       const parse = JSON.parse;
-      const stringify = JSON.stringify;
+      const primitiveStringify = JSON.stringify;
+      const objectKeys = Object.keys;
+      const isArray = Array.isArray;
       const fs = await import('node:fs');
       const writeResult = fs.writeSync;
       const payload = parse(input);
       const verifierPayload = { nodeId: payload.nodeId, worktree: payload.worktree, contract: payload.contract, designBaseline: payload.designBaseline, evidenceDir: payload.evidenceDir, commit: payload.commit };
+      // 安全序列化：不调用 toJSON，不遍历继承属性，不使用可被项目替换的数组方法。
+      const safeStringify = value => {
+        if (value === null) return 'null';
+        const type = typeof value;
+        if (type === 'boolean' || type === 'number') return primitiveStringify(value);
+        if (type === 'string') return primitiveStringify(value);
+        if (isArray(value)) {
+          let out = '[';
+          for (let i = 0; i < value.length; i++) out += (i ? ',' : '') + safeStringify(value[i]);
+          return out + ']';
+        }
+        if (type === 'object') {
+          let out = '{'; let first = true;
+          for (const key of objectKeys(value)) {
+            if (key === 'toJSON' || key === '__proto__') continue;
+            out += (first ? '' : ',') + primitiveStringify(key) + ':' + safeStringify(value[key]);
+            first = false;
+          }
+          return out + '}';
+        }
+        return 'null';
+      };
       try {
         const module = await import(payload.verifierUrl);
         const result = await module.verify(verifierPayload);
-        writeResult(3, stringify({ nonce: payload.nonce, result }) + '\\n');
+        writeResult(3, safeStringify({ nonce: payload.nonce, result }) + '\\n');
       } catch (error) {
-        writeResult(3, stringify({ nonce: payload.nonce, result: { __error: String(error?.message || error) } }) + '\\n');
+        writeResult(3, safeStringify({ nonce: payload.nonce, result: { __error: String(error?.message || error) } }) + '\\n');
         process.exitCode = 1;
       }
     `;
@@ -105,14 +134,15 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
     }).finally(() => clearTimeout(timer));
     if (timedOut) throw new Error(`设计 verifier 子进程超时（${CHILD_TIMEOUT_MS}ms）`);
     if (stdout.over || stderr.over || resultChannel.over) throw new Error('设计 verifier 输出超过上限，fail closed');
-    if (exitCode !== 0) throw new Error(`设计 verifier 子进程退出码 ${exitCode}：${stderr.text().slice(-500) || stdout.text().slice(-500)}`);
     const rawResult = resultChannel.text().trim();
     if (!rawResult) throw new Error(`设计 verifier 未返回结果：${stderr.text().slice(-500) || stdout.text().slice(-500)}`);
     const message = JSON.parse(rawResult);
     if (message?.nonce !== nonce) throw new Error('设计 verifier 结果 nonce 不匹配，拒绝不可信结果通道');
     result = message.result;
+    if (createHash('sha256').update(readFileSync(execFile)).digest('hex') !== expected) throw new Error('设计 verifier 执行字节与批准 hash 不一致');
     if (result.__error) throw new Error(`设计 verifier 执行失败：${result.__error}`);
-    if (!result || typeof result.ok !== 'boolean' || !Array.isArray(result.checks)) throw new Error('设计 verifier 返回形态无效：需要 ok 与 checks');
+    if (exitCode !== 0) throw new Error(`设计 verifier 子进程退出码 ${exitCode}：${stderr.text().slice(-500) || stdout.text().slice(-500)}`);
+    if (!result || typeof result.ok !== 'boolean' || !Array.isArray(result.checks) || result.checks.some(check => !check || typeof check.ok !== 'boolean')) throw new Error('设计 verifier 返回形态无效：需要 ok 与 checks');
   } finally {
     try { await safeGit(project, ['worktree', 'remove', '--force', source]); } catch { /* rmSync 兜底 */ }
     rmSync(source, { recursive: true, force: true });

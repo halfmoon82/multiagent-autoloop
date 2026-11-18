@@ -106,7 +106,7 @@ test('native plan object form carries declared optional high-risk actions and ke
 
 // ---- 可选设计基线：只有 UI 合同触发加载，旧计划不受影响 ----
 
-test('native UI plan binds the approved design baseline into planDigest', () => {
+test('native UI plan binds the approved design baseline into planDigest', async () => {
   const root = nativeProject('native-ui', []);
   mkdirSync(path.join(root, 'docs', 'design', 'demo'), { recursive: true });
   writeFileSync(path.join(root, 'docs', 'design', 'demo', 'reference.png'), 'reference');
@@ -128,7 +128,7 @@ test('native UI plan binds the approved design baseline into planDigest', () => 
   assert.notEqual(planDigest, createPlanDigest({ productSpec: {}, plan: loaded.plan, nodes, authorizationSnapshot: null }));
   const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-design-service-')) });
   const service = createDagService({ store });
-  const created = service.create({ planId: 'native-ui', planDigest, confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true }, root);
+  const created = await service.create({ planId: 'native-ui', planDigest, confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true }, root);
   assert.equal(created.nodeId, ROOT_NODE);
   assert.deepEqual(created.designBaseline, loaded.designBaseline);
 });

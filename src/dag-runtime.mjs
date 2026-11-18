@@ -89,7 +89,7 @@ export function createBlockedEvidence({ request, config }) {
 }
 
 export async function createDagRuntime({ rootRun, config, store, request = hubRequest, gh, runTests = defaultRunTests, verifyDesign = defaultVerifyDesign, git, now = Date.now, chooseApproach } = {}) {
-  const rt = createSlotRuntime({ project: rootRun.project, runId: rootRun.runId, ...(git ? { git } : {}) });
+  const rt = createSlotRuntime({ project: rootRun.project, runId: rootRun.runId, remoteUrl: rootRun.remoteUrl || null, ...(git ? { git } : {}) });
   await rt.ensureSlots();
   const adapter = gh || createGhAdapter({ cwd: rootRun.project });
   const publisher = createPublisher({ store, rootRunId: rootRun.runId, rt, gh: adapter, runTests, verifyDesign });

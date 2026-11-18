@@ -8,6 +8,7 @@ import { parallelShape } from './dag.mjs';
 import { loadNativePlan } from './dag-plan.mjs';
 import { checkCapabilities, checkInitialization } from './vibe-adapter.mjs';
 import { createPlanDigest, loadVibePlan } from './vibe-plan.mjs';
+import { defaultGit } from './git-safe.mjs';
 
 export class DagServiceError extends Error {
   constructor(message, status = 400) { super(message); this.name = 'DagServiceError'; this.status = status; }
@@ -88,15 +89,19 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       checks.push({ id: 'capabilities', label: 'Codex 能力记录', ok: caps.ok, message: caps.ok ? '能力记录有效' : `${caps.error.message}。${caps.error.remediation || ''}` });
       return { project, checks };
     },
-    create(body, project) {
+    async create(body, project) {
       const loaded = loadPlan(project, String(body.planId || ''));
       if (createPlanDigest({ ...loaded, authorizationSnapshot: null }) !== body.planDigest) throw new DagServiceError('planDigest 与服务端计划不一致，计划已变化需重新确认');
       // 计划未声明的高风险动作即便勾选也不写入：planOptionalActions 作为授权白名单交给 store 校验。
       const planOptionalActions = optionalActionOptions(loaded).map(a => a.id);
+      // run 创建时冻结 origin URL；之后 worker 改 remote.origin.url/insteadOf 不影响 push 目标。
+      let remoteUrl = null;
+      try { remoteUrl = String(await defaultGit(project, ['remote', 'get-url', 'origin'])).trim() || null; }
+      catch { remoteUrl = null; }
       return wrap(() => store.createRun({
         project, planId: loaded.planId, planDigest: body.planDigest, confirmedActionIds: body.confirmedActionIds,
         selectedOptionalActions: body.selectedOptionalActions ?? [], planOptionalActions,
-        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes, designBaseline: loaded.designBaseline || null,
+        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes, designBaseline: loaded.designBaseline || null, remoteUrl,
       }));
     },
     cancel(id) {

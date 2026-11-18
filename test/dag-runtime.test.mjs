@@ -100,7 +100,7 @@ test('startDagControllers：另一进程持锁时不接管；装配失败只记�
 });
 
 test('createDagRuntime：真实 publisher 装配接收 verifyDesign 与服务端证据目录', async () => {
-  const { project } = makeRepo();
+  const { project, remote } = makeRepo();
   const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-runtime-design-')) });
   const designBaseline = {
     designDigest: 'a'.repeat(64), manifestPath: 'docs/design/demo/design-manifest.json',
@@ -108,7 +108,7 @@ test('createDagRuntime：真实 publisher 装配接收 verifyDesign 与服务端
     readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png'],
   };
   const ui = mkNode('a'); ui.contract.design = { surfaceIds: ['overview'] };
-  const root = store.createRun({ project, planId: 'p1', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [ui], designBaseline });
+  const root = store.createRun({ project, remoteUrl: remote, planId: 'p1', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [ui], designBaseline });
   const gh = { async findPr() { return null; }, async createPr() { return 'https://gh/pr/1'; }, async closePr() {} };
   const request = async (config, p, opts = {}) => {
     if (p === '/v1/events' && opts.method === 'POST') return { event: 42 };
