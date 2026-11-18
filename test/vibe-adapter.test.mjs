@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  VIBE_VERSION,
   VIBE_MAJOR_VERSION,
   HOST_ENV_DENYLIST,
   CAPABILITY_MAX_AGE_MS,

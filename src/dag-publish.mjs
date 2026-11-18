@@ -12,12 +12,23 @@ export class PublishError extends Error {
 
 const inScope = (file, scopes) => scopes.some(scope => file === scope || file.startsWith(`${scope}/`));
 // 只有这一类路径仍硬拦：凭据、CI 定义、发布/部署脚本、环境变量。业务代码一律只报告。
-const SENSITIVE_PATH = [
-  /^\.github\//, /^\.git\//, /^\.vibe\//, /^\.env($|\.)/,
-  /\.(pem|key|p12|pfx)$/i, /(^|\/)id_(rsa|ed25519)($|\.)/,
-  /^scripts\/(deploy|release)/i, /^infra\//i,
+// 凭据类：任何情况下都硬拦，即使计划里显式声明也不放行。
+const CREDENTIAL_PATH = [
+  /^\.env($|\.)/, /\.(pem|key|p12|pfx|jks|keystore|crt)$/i, /(^|\/)id_(rsa|ed25519)($|\.)/,
+  /^\.npmrc$/, /^\.netrc$/, /^\.yarnrc\.yml$/, /\.tfstate(\.backup)?$/,
+  /^\.docker\//, /^k8s\/.*(secret|credential)/i,
 ];
-const sensitiveHits = files => files.filter(file => SENSITIVE_PATH.some(pattern => pattern.test(file)));
+// 高危但显式写进节点范围的可以放行（授权页能看到这一点）。
+const GUARDED_PATH = [
+  /^\.github\//, /^\.git\//, /^\.vibe\//, /^\.husky\//,
+  /^scripts\/(deploy|release|publish)(\.|$)/i,
+];
+const hitAny = (path, patterns) => patterns.some(pattern => pattern.test(path));
+const scopeGuard = (files, scopes) => {
+  const credentials = files.filter(file => hitAny(file, CREDENTIAL_PATH) && !/\.env\.(example|sample|template)$/.test(file));
+  const guarded = files.filter(file => hitAny(file, GUARDED_PATH) && !inScope(file, scopes));
+  return [...new Set([...credentials, ...guarded])];
+};
 const parseStatus = out => {
   const parts = out.split('\0').filter(Boolean); const files = [];
   for (let i = 0; i < parts.length; i++) {
@@ -97,7 +108,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       const protectedDesign = files.filter(file => readOnlyDesign.has(file));
       if (protectedDesign.length) throw new PublishError(`设计基线/参考产物只读：${protectedDesign.join(', ')}`, 'DESIGN_BASELINE_READONLY');
       // 敏感路径（凭据/CI/发布脚本）仍硬拦；其余越界只汇报，由 PR 审阅兜底。
-      const sensitive = sensitiveHits(files);
+      const sensitive = scopeGuard(files, scopes);
       if (sensitive.length) throw new PublishError(`敏感路径改动被拒绝：${sensitive.join(', ')}`, 'SENSITIVE_PATH');
       const outside = files.filter(file => !inScope(file, scopes));
       // 目标分支先指向当前 HEAD 并成为本 worktree HEAD，避免跨分支重试生成 sibling commit。

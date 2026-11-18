@@ -10,7 +10,6 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-export const VIBE_VERSION = '5.2.7';
 export const VIBE_MAJOR_VERSION = 5;
 // 宿主会话环境变量清理清单：禁止从控制台宿主进程泄漏给被调 vibe CLI。
 export const HOST_ENV_DENYLIST = Object.freeze([
@@ -27,7 +26,6 @@ export const CAPABILITY_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 // 本适配器只能从 facts 推导 visible / in_session_sdd，不会推导 background。
 export const DISPATCH_FORMS = Object.freeze(['visible', 'background', 'in_session_sdd']);
 const MAX_STATE_BYTES = 1024 * 1024;
-const VERSION_PATTERN = /(\d+)\.(\d+)\.(\d+)/;
 
 export class VibeAdapterError extends Error {
   constructor(code, message, remediation = null) {
