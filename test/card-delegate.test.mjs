@@ -186,3 +186,29 @@ test('退回事件被 Hub 拒绝时 API 返回错误，原卡仍开放不结案'
     assert.deepEqual(resolves, []);
   } finally { await close(server); await close(hub.server); }
 });
+
+test('persistent store reloads delegated records across instances (待代理决策列表重启不丢)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'delegate-store-'));
+  const file = path.join(dir, 'card-delegates.json');
+  const first = createCardDelegateStore({ file });
+  first.set('console:card:7:delegate:r1', { cardId: 7, originId: 7, revision: 1, at: '2026-11-18T10:00:00Z', status: 'delegated' });
+  const second = createCardDelegateStore({ file });
+  assert.equal(second.listPending().length, 1);
+  assert.equal(second.listPending()[0].cardId, 7);
+});
+
+test('GET /api/delegated-cards lists pending delegations', async () => {
+  const store = createCardDelegateStore();
+  store.set('console:card:9:delegate:r1', { cardId: 9, originId: 9, revision: 1, at: '2026-11-18T10:00:00Z', status: 'delegated' });
+  store.set('x', { cardId: 8, originId: 8, revision: 1, at: 'x', status: 'failed' });
+  const root = mkdtempSync(path.join(tmpdir(), 'delegated-api-'));
+  const server = createConsoleServer({ hubUrl: 'http://127.0.0.1:9', ownerKey: 'o', root, cardDelegateStore: store });
+  const url = await listen(server);
+  try {
+    const res = await fetch(`${url}/api/delegated-cards`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.cards.length, 1);
+    assert.equal(body.cards[0].cardId, 9);
+  } finally { server.close(); }
+});

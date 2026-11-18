@@ -15,7 +15,7 @@ import { aggregateProjectUsage } from './project-usage.mjs';
 import { refreshUsage } from './chain-usage.mjs';
 import { readCloseouts } from './chain-closeout.mjs';
 import { createDagService, DagServiceError } from './dag-service.mjs';
-import { CardDelegateError, delegateOpenCard } from './card-delegate.mjs';
+import { CardDelegateError, createCardDelegateStore, delegateOpenCard } from './card-delegate.mjs';
 import { getCardRouting, CardFilterError } from './card-routing.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -75,6 +75,10 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/artifacts$/))) return jsonResponse(res, 200, { files: await config.schedulingSessions.listSessionArtifacts(decodeURIComponent(sessionMatch[1])) });
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/file$/))) return jsonResponse(res, 200, await config.schedulingSessions.readSessionArtifact(decodeURIComponent(sessionMatch[1]), String(url.searchParams.get('path') || '')));
   if (req.method === 'GET' && url.pathname === '/api/detours') return jsonResponse(res, 200, { detours: readDetours(config).map(publicDetour).filter(Boolean) });
+  if (req.method === 'GET' && url.pathname === '/api/delegated-cards') {
+    const list = config.cardDelegateStore?.listPending?.() || [];
+    return jsonResponse(res, 200, { cards: list.map(record => ({ cardId: record.cardId, originId: record.originId, revision: record.revision, at: record.at, status: record.status })) });
+  }
   if (req.method === 'GET' && url.pathname === '/api/serial-progress') {
     const rules = readRuleOptions(config).rules || [];
     const data = await loadChains({ root: config.root, rules });
@@ -201,7 +205,9 @@ export function createConsoleServer(config, schedulingSessions) {
     schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }) });
   }
   const dagService = config.dagService || (config.root ? createDagService({ root: config.root, storeDirectory: path.join(config.root, 'dag-runs') }) : null);
-  config = { ...config, schedulingSessions, dagService, cardRouting: config.cardRouting || getCardRouting(config) };
+  // 退回记录落盘：重启后「待代理决策」列表不丢；无运行目录退回内存 store（退回行为不变）。
+  const cardDelegateStore = config.cardDelegateStore || createCardDelegateStore({ file: config.root ? path.join(config.root, 'card-delegates.json') : null });
+  config = { ...config, schedulingSessions, dagService, cardDelegateStore, cardRouting: config.cardRouting || getCardRouting(config) };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const host = req.headers.host?.split(':')[0]?.toLowerCase();

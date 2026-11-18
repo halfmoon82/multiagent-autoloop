@@ -2,6 +2,8 @@
 // 顺序：先落 Hub 调度事件，Hub 接受后才结案原卡；事件失败则原卡保持开放。
 // 幂等键用确定性的事件 ID（Hub 对重复事件 ID 不重复执行），进程内记录承担冷却与循环检测。
 import { validateCardQuality } from './card-quality.mjs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 export const DELEGATE_REASON = '已退回调度处理';
 export const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000;
@@ -24,12 +26,29 @@ export function delegateSubject(originId) {
   return `scheduling:card-delegate:${originId}`;
 }
 
-export function createCardDelegateStore() {
+export function createCardDelegateStore({ file = null } = {}) {
   const records = new Map();
+  const load = () => {
+    if (!file || !existsSync(file)) return;
+    try {
+      for (const item of JSON.parse(readFileSync(file, 'utf8'))?.records || []) {
+        if (item && typeof item.key === 'string') records.set(item.key, item);
+      }
+    } catch { /* 台账损坏时按空表处理，不阻断退回通道 */ }
+  };
+  const flush = () => {
+    if (!file) return;
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify({ records: [...records.values()] }, null, 2), { mode: 0o600 });
+    renameSync(tmp, file);
+  };
+  load();
   return {
     get(key) { return records.get(key) || null; },
-    set(key, value) { const record = { ...value, key }; records.set(key, record); return record; },
+    set(key, value) { const record = { ...value, key }; records.set(key, record); flush(); return record; },
     listByOrigin(originId) { return [...records.values()].filter(record => record.originId === originId); },
+    listPending() { return [...records.values()].filter(record => record.status === 'delegated' || record.status === 'event_accepted'); },
   };
 }
 const defaultStore = createCardDelegateStore();

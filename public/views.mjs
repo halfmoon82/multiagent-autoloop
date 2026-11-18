@@ -459,17 +459,33 @@ function detourItems(detours, rules) {
     });
 }
 
-export function renderAttention(snapshot, rules = [], agentNames = {}, detours = []) {
-  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules, agentNames);
-  return renderRunSection([...detourItems(detours, rules), ...sections.needsAttention], '没有等待调度处理的事。');
+// 待代理决策条目：用户点「退回调度处理」的卡片结案后进这里，直到调度给出下一轮结果。
+// 只读展示服务端 card-delegates 台账；与绕行条目同规则最多 5 条。
+function delegatedCardItems(delegated = [], rules = []) {
+  return (delegated || [])
+    .slice()
+    .sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
+    .slice(0, 5)
+    .map((record) => ({
+      id: `delegate-${record.cardId}-r${record.revision ?? 1}`,
+      rule: '待代理决策',
+      status: '已退回调度，等待代理结论',
+      agent: '调度会话', model: '—',
+      text: `卡片 #${record.cardId}（第 ${record.revision ?? 1} 次退回）已于 ${String(record.at || '').slice(0, 19).replace('T', ' ')} 退回调度处理`,
+    }));
 }
-export function renderWorkSections(snapshot, rules = [], agentNames = {}, detours = []) {
+
+export function renderAttention(snapshot, rules = [], agentNames = {}, detours = [], delegated = []) {
+  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules, agentNames);
+  return renderRunSection([...delegatedCardItems(delegated, rules), ...detourItems(detours, rules), ...sections.needsAttention], '没有等待调度处理的事。');
+}
+export function renderWorkSections(snapshot, rules = [], agentNames = {}, detours = [], delegated = []) {
   const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules, agentNames);
   const retrying = [...detourItems(detours, rules), ...sections.retrying];
   return {
     running: renderRunSection(sections.running, '没有正在运行的任务。'),
     retrying: renderRunSection(retrying, '没有等待重试的任务。'),
     doneToday: renderRunSection(sections.doneToday, '今天还没有完成任务。'),
-    attention: renderAttention(snapshot, rules, agentNames, detours),
+    attention: renderAttention(snapshot, rules, agentNames, detours, delegated),
   };
 }
