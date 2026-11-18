@@ -12,7 +12,7 @@ import { SessionArchive } from './session-archive.mjs';
 import { listArtifacts, readArtifact } from './artifacts.mjs';
 import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
-import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_LABEL, schedulingSubject, schedulingEventId, mapHubStateToStatus, numericEventId, readHubRun } from './hub-scheduling-session.mjs';
+import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_LABEL, HUB_RECONCILE_INTERVAL_MS, schedulingSubject, schedulingEventId, mapHubStateToStatus, numericEventId, readHubRun } from './hub-scheduling-session.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -131,7 +131,7 @@ function summarizeUpdate(update) {
 }
 
 export class SchedulingSessionManager {
-  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null, hubScheduling } = {}) {
+  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null, hubScheduling, hubReconcileMs = HUB_RECONCILE_INTERVAL_MS } = {}) {
     this.cwd = path.resolve(cwd);
     this.writableDir = writableDir ? path.resolve(writableDir) : null;
     // §6：kind=scheduling 走 Hub 事项/run/resume，绝不派生私有 ACP；normal/design 始终走 ACP。
@@ -142,6 +142,8 @@ export class SchedulingSessionManager {
     this.hubScheduling = hubScheduling === false ? null
       : hubScheduling && typeof hubScheduling.postTurn === 'function' ? hubScheduling
         : realAcpDefaults ? new HubSchedulingSessionAdapter() : null;
+    // #100：前端轮询 list() 时活跃 Hub 会话的最小对账间隔（默认 ≥5s）。
+    this.hubReconcileMs = hubReconcileMs;
     this.adapterPath = adapterPath;
     this.spawnFn = spawnFn;
     this.maxSessions = maxSessions;
@@ -161,7 +163,32 @@ export class SchedulingSessionManager {
   }
 
   list() {
-    return [...this.sessions.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(toPublicSession);
+    const sessions = [...this.sessions.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // #100：前端轮询时顺带对活跃 Hub 会话做节流对账。只更新记录状态，不改 list 的同步返回形状。
+    this.#reconcileActiveHubSessions(sessions);
+    return sessions.map(toPublicSession);
+  }
+
+  // #100：与前端轮询对齐的节流对账。每次 list() 扫描活跃 Hub 会话，仅在超过 hubReconcileMs
+  // 时发起一次异步 readStatus；失败单会话就地降级为 unknown+可读原因，不影响整表、不冒到调用方。
+  // 终态（done/failed 映射的 idle/error）不再轮询，保证节流不会把最终态刷回待复核。
+  #reconcileActiveHubSessions(sessions) {
+    if (!this.hubScheduling?.readStatus) return;
+    const nowMs = Date.now();
+    for (const record of sessions) {
+      const hub = record.hub;
+      if (!hub?.lastEventId) continue;
+      if (!['unknown', 'running'].includes(record.status)) continue;
+      if (Number.isFinite(hub.lastReconcileAt) && nowMs - hub.lastReconcileAt < this.hubReconcileMs) continue;
+      hub.lastReconcileAt = nowMs;
+      void this.#reconcileHubRun(record, hub.lastEventId).catch(error => {
+        if (this.sessions.get(record.id) !== record) return;
+        record.status = 'unknown';
+        record.error = `Hub 状态待复核：${safeMessage(error)}`;
+        record.updatedAt = this.now().toISOString();
+        this.#persist(record);
+      });
+    }
   }
 
   async #ensureBootMarked() {
@@ -782,6 +809,8 @@ export class SchedulingSessionManager {
   // throwOnError=true 用于恢复路径（失败要可见）；其余路径如实标 unknown/待复核并保留输入。
   async #reconcileHubRun(record, eventId, { throwOnError = false } = {}) {
     if (!eventId || !this.hubScheduling?.readStatus) return null;
+    // #100：记下本次对账时刻，供 list() 的节流判断；失败路径同样计时，避免抖动时反复打 Hub。
+    if (record.hub) record.hub.lastReconcileAt = Date.now();
     let payload;
     try {
       payload = await this.hubScheduling.readStatus({ eventId });

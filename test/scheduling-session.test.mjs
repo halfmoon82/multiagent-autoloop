@@ -973,3 +973,90 @@ test('#96 recovery never fabricates a hub sidecar when lastEventId is missing', 
   assert.equal((await manager.listArchived()).length, 1, 'it stays visible in history');
   assert.equal(client.calls.length, 0);
 });
+
+// ---- #100：Hub 会话状态周期刷新与 claimed 映射（会话 b3be7ce2 / 事件 7267 / run 6663）----
+// 假 Hub 像真实中台一样按 claimed → done 推进 state，验证视图随轮询自动跟上。
+function sequenceHubClient(states, { failNext = false } = {}) {
+  const calls = [];
+  let index = 0;
+  let flaky = failNext;
+  return {
+    calls,
+    setStates(next) { states = next; index = 0; },
+    failOnce() { flaky = true; },
+    async postEvent(config, event) {
+      calls.push(['postEvent', event]);
+      return { event: 7267, duplicate: false, routed: true, paused: false };
+    },
+    async readEvent(config, eventId) {
+      calls.push(['readEvent', eventId]);
+      if (flaky) { flaky = false; throw new Error('Hub 暂时不可用'); }
+      const state = states[Math.min(index, states.length - 1)];
+      index += 1;
+      return { event: eventId, routed: true, paused: false, runs: [{ run: 6663, state }] };
+    },
+    async cancelRun(config, runId) { calls.push(['cancelRun', runId]); return { ok: true }; },
+  };
+}
+
+function refreshingManager(client, { reconcileMs = 20 } = {}) {
+  return new SchedulingSessionManager({
+    cwd: '/x', adapterPath: '/a.js',
+    spawnFn: () => { throw new Error('Hub scheduling sessions must not spawn a private ACP'); },
+    hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client }),
+    hubReconcileMs: reconcileMs,
+  });
+}
+
+test('#100 claimed maps to running and periodic reconciliation catches done without losing the final state', async () => {
+  const client = sequenceHubClient(['claimed', 'done']);
+  const manager = refreshingManager(client);
+  const session = await manager.start({ project: 'owner/demo', prompt: '周期刷新验证' });
+  assert.equal(session.status, 'running', '中台真实 state=claimed 必须映射为运行中，而不是待复核');
+  assert.equal(manager.list()[0].status, 'running');
+
+  // 中台转 done 后，下一次前端轮询触发节流对账，视图自动跟上 idle。
+  await waitFor(() => manager.list()[0].status === 'idle', 1000);
+  assert.equal(manager.list()[0].status, 'idle');
+
+  // 终态不被后续对账翻回：Hub 抖动/失败都不得把已完成的视图刷成待复核。
+  const readsBefore = client.calls.filter(call => call[0] === 'readEvent').length;
+  client.setStates(['claimed']);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(client.calls.filter(call => call[0] === 'readEvent').length, readsBefore, 'terminal session must stop being polled so its final state is kept');
+  assert.equal(manager.list()[0].status, 'idle', 'final state must never be lost by later reconciliation');
+  await manager.close(session.id);
+});
+
+test('#100 a failed reconciliation degrades only that session to unknown with a readable reason, and can recover', async () => {
+  const client = sequenceHubClient(['claimed']);
+  const manager = refreshingManager(client);
+  const session = await manager.start({ project: 'owner/demo', prompt: '降级验证' });
+  assert.equal(session.status, 'running');
+
+  client.failOnce();
+  await waitFor(() => {
+    const listed = manager.list()[0];
+    return listed.status === 'unknown' && /Hub 状态待复核/.test(listed.error || '');
+  }, 1000);
+  assert.equal(manager.list()[0].status, 'unknown');
+  assert.match(manager.list()[0].error, /Hub 状态待复核/);
+  assert.equal(manager.list().length, 1, 'a failed reconciliation must not drop the session from the list');
+
+  // 后续对账成功即恢复，且最终态仍能跟上。
+  client.setStates(['done']);
+  await waitFor(() => manager.list()[0].status === 'idle', 1000);
+  assert.equal(manager.list()[0].error, null, 'a successful reconciliation clears the transient reason');
+  await manager.close(session.id);
+});
+
+test('#100 reconciliation is throttled to at least the configured interval', async () => {
+  const client = sequenceHubClient(['claimed']);
+  const manager = refreshingManager(client, { reconcileMs: 5000 });
+  await manager.start({ project: 'owner/demo', prompt: '节流验证' });
+  const reads = () => client.calls.filter(call => call[0] === 'readEvent').length;
+  assert.equal(reads(), 1, 'start already reconciles once');
+  for (let i = 0; i < 10; i += 1) manager.list();
+  assert.equal(reads(), 1, 'rapid list() polls inside the throttle window must not re-read Hub');
+  await manager.close(manager.list()[0].id);
+});
