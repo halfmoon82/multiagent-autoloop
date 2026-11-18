@@ -58,6 +58,9 @@ export function buildDagNodes(detail) {
     let summary = node.contract?.output ? `产出契约：${node.contract.output}` : '暂无任务摘要';
     if (saved.blockedReason) summary = `阻塞：${saved.blockedReason}`;
     else if (saved.gateReason) summary = `等待人工决策：${saved.gateReason}`;
+    const warnings = saved.warnings || null;
+    const warningText = warnings ? Object.entries(warnings).map(([kind, value]) => `${kind === 'outOfScope' ? '越界' : '设计证据'}：${Array.isArray(value) ? value.join(', ') : value}`).join('；') : '';
+    if (warningText) summary = `${summary}｜警示：${warningText}`;
     return {
       id: node.id, title: node.title || node.id, state, status: nodeStatus(state),
       wave: review ? lastBusiness + 1 : depth.get(node.id) || 1, dependsOn: node.depends_on || [],
@@ -65,7 +68,7 @@ export function buildDagNodes(detail) {
       contract: node.contract || {}, summary,
       agent: latest ? (latest.agent || '未上报') : '待派发',
       model: latest ? (saved.model || latest.model || '未上报') : '模型待选择',
-      prUrl: prs.at(-1)?.prUrl || '', usage: sumUsage(mine),
+      prUrl: prs.at(-1)?.prUrl || '', usage: sumUsage(mine), warnings, lastError: saved.lastError || '',
     };
   });
 }

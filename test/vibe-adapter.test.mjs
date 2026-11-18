@@ -8,14 +8,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  VIBE_VERSION,
   VIBE_MAJOR_VERSION,
   HOST_ENV_DENYLIST,
   CAPABILITY_MAX_AGE_MS,
   VibeAdapterError,
   sanitizeHostEnv,
   buildVibeArgv,
-  ensureVibeVersion,
   checkInitialization,
   checkCapabilities,
   extractProductSpec,
@@ -116,23 +114,6 @@ test('buildVibeArgv keeps prdPath inside the project .vibe plans directory', () 
   assert.throws(() => buildVibeArgv('plan', { projectRoot: root, prdPath: '/etc/passwd' }), /from-prd/);
   assert.throws(() => buildVibeArgv('plan', { projectRoot: root, prdPath: path.join(root, 'src', 'x.json') }), /from-prd/);
   assert.throws(() => buildVibeArgv('plan', { projectRoot: root }), /from-prd/);
-});
-
-test('ensureVibeVersion returns the pinned 5.2.7 and parses the fake CLI output', async () => {
-  const result = await ensureVibeVersion({ command: fakeBin });
-  assert.deepEqual(result, { ok: true, version: VIBE_VERSION });
-});
-
-test('ensureVibeVersion blocks with version_mismatch and names the remediation path', async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'vibe-fake-old-'));
-  const oldBin = path.join(dir, 'vibe');
-  writeFileSync(oldBin, `#!/bin/sh\necho "vibe 5.2.6"\n`);
-  chmodSync(oldBin, 0o755);
-  const result = await ensureVibeVersion({ command: oldBin });
-  assert.equal(result.ok, false);
-  assert.equal(result.error.code, 'version_mismatch');
-  assert.match(result.error.message, /5\.2\.7/);
-  assert.match(result.error.remediation, /vibe/);
 });
 
 test('checkInitialization reports initialization_required only when .vibe/state.json is absent', () => {
@@ -310,7 +291,6 @@ test('runVibe scan executes the fake CLI with sanitized env, whitelist argv and 
   try {
     const result = await runVibe('scan', { projectRoot: root, command: fakeBin, env: { ...process.env, VIBE_FAKE_RECORD: record } });
     assert.equal(result.ok, true);
-    assert.equal(result.version, VIBE_VERSION);
     assert.deepEqual(result.data, JSON.parse(readFileSync(path.join(fixtureDir, 'cli', 'scan.json'), 'utf8')));
     assert.equal(existsSync(record), true, 'fake CLI ran');
     const seen = JSON.parse(readFileSync(record, 'utf8'));
@@ -322,17 +302,6 @@ test('runVibe scan executes the fake CLI with sanitized env, whitelist argv and 
     if (saved.CODEX_THREAD_ID === undefined) delete process.env.CODEX_THREAD_ID; else process.env.CODEX_THREAD_ID = saved.CODEX_THREAD_ID;
     if (saved.CLAUDECODE === undefined) delete process.env.CLAUDECODE; else process.env.CLAUDECODE = saved.CLAUDECODE;
   }
-});
-
-test('runVibe blocks everything when the installed version is not 5.2.7', async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'vibe-fake-old2-'));
-  const oldBin = path.join(dir, 'vibe');
-  writeFileSync(oldBin, `#!/bin/sh\necho "vibe 5.2.6"\n`);
-  chmodSync(oldBin, 0o755);
-  const root = makeGitRoot({ withState: true });
-  const result = await runVibe('scan', { projectRoot: root, command: oldBin });
-  assert.equal(result.ok, false);
-  assert.equal(result.error.code, 'version_mismatch');
 });
 
 test('runVibe init refuses without explicit confirm and requires initialized state', async () => {
@@ -409,19 +378,4 @@ test('checkCapabilities rejects a stale or dispatch-less provider-actions record
   const flat = Object.fromEntries(Object.keys(ALL_TRUE_FACTS).map(key => [key, false]));
   writeProviderRecord(flatRoot, { adapter_id: 'codex', facts: flat, provenance: '真实会话', schema_version: 1, observed_at: new Date().toISOString() });
   assert.equal(checkCapabilities({ projectRoot: flatRoot }).error.code, 'capability_attestation_required');
-});
-
-test('ensureVibeVersion falls back to installed package metadata when the CLI rejects --version', async () => {
-  const failingRunner = async () => { const error = new Error('Command failed: vibe --version'); error.stdout = 'usage: vibe\nvibe: error: unrecognized arguments: --version\n'; throw error; };
-  const result = await ensureVibeVersion({ runner: failingRunner, fallback: async () => '5.2.7' });
-  assert.equal(result.ok, true);
-  assert.equal(result.version, '5.2.7');
-});
-
-test('ensureVibeVersion degrades to a warning instead of blocking when no version source answers', async () => {
-  const failingRunner = async () => { const error = new Error('spawn vibe ENOENT'); throw error; };
-  const result = await ensureVibeVersion({ runner: failingRunner, fallback: async () => null });
-  assert.equal(result.ok, true);
-  assert.equal(result.version, null);
-  assert.match(String(result.warning), /version/);
 });

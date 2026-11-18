@@ -386,3 +386,13 @@ test('GET /api/dag-preflight 对原生计划不要求 vibe 规划环境', async 
     assert.equal(checks.some(c => c.id === 'capabilities'), false, '原生计划不查 vibe 能力记录');
   } finally { await close(server); }
 });
+
+test('预检不通过也照常创建 DAG（预检只报不拦）', async () => {
+  const t = setup(); const url = await listen(t.server);
+  try {
+    const pre = await (await fetch(`${url}/api/dag-preflight?project=${encodeURIComponent(t.project)}`)).json();
+    assert.ok(pre.checks.some(check => !check.ok), '夹具本身预检为红');
+    const res = await post(url, '/api/dag-runs', t.payload());
+    assert.equal(res.status, 201, '预检红不阻止创建');
+  } finally { await close(t.server); }
+});

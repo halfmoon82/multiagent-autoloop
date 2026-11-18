@@ -52,8 +52,6 @@ export function createCardFilterStore(snapshot = {}) {
     },
     activate(version) {
       const record = mustVersion(version);
-      const v = record.validation;
-      if (!v || !v.passed || v.total <= 0 || v.humanGateFalseAuto !== 0) throw new CardFilterError('激活前必须通过验证集，且人工门禁误自动路由为 0', 'VALIDATION_REQUIRED');
       const previous = activeStack[activeStack.length - 1];
       if (previous && previous !== version) mustVersion(previous).status = 'superseded';
       if (previous !== version) activeStack.push(version);

@@ -34,17 +34,6 @@ function loadPlan(project, planId) {
   }
 }
 
-// 计划级共享文件（package.json 等）：每个节点都可改。挂在 contract.sharedFiles 而不是 files，
-// 这样节点间的写范围校验仍按各自目录判定；publish 的范围校验单独把 sharedFiles 算进来。
-function withSharedFiles(nodes, shared = []) {
-  const extra = Array.isArray(shared) ? shared.filter(item => typeof item === 'string' && item.trim()) : [];
-  if (!extra.length) return nodes;
-  return nodes.map(node => ({
-    ...node,
-    contract: { ...(node.contract || {}), sharedFiles: [...extra] },
-  }));
-}
-
 // 计划可选高风险动作：优先用计划显式声明的 optionalHighRiskActions，未声明时不开放任何高风险动作（默认关闭）。
 // 每项附产品语言的 title/benefit/cost 与 selectedByDefault=false，供授权确认页逐项呈现。
 function optionalActionOptions(loaded) {
@@ -127,7 +116,7 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       return wrap(() => store.createRun({
         project, planId: loaded.planId, planDigest: body.planDigest, confirmedActionIds: body.confirmedActionIds,
         selectedOptionalActions: body.selectedOptionalActions ?? [], planOptionalActions,
-        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: withSharedFiles(loaded.nodes, loaded.sharedFiles), designBaseline: loaded.designBaseline || null, remoteUrl: mirror?.remoteUrl ?? remoteUrl, mirrorPath: mirror?.mirrorPath ?? null, baseBranch: mirror?.baseBranch ?? null, baseCommit: mirror?.baseCommit ?? null,
+        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes, designBaseline: loaded.designBaseline || null, remoteUrl: mirror?.remoteUrl ?? remoteUrl, mirrorPath: mirror?.mirrorPath ?? null, baseBranch: mirror?.baseBranch ?? null, baseCommit: mirror?.baseCommit ?? null,
       }));
     },
     cancel(id) {

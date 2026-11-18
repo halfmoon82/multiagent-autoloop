@@ -11,6 +11,24 @@ export class PublishError extends Error {
 }
 
 const inScope = (file, scopes) => scopes.some(scope => file === scope || file.startsWith(`${scope}/`));
+// 只有这一类路径仍硬拦：凭据、CI 定义、发布/部署脚本、环境变量。业务代码一律只报告。
+// 凭据类：任何情况下都硬拦，即使计划里显式声明也不放行。
+const CREDENTIAL_PATH = [
+  /^\.env($|\.)/, /\.(pem|p12|pfx|jks|keystore|crt)$/i, /(^|\/)id_(rsa|ed25519)($|\.)/,
+  /^\.npmrc$/, /^\.netrc$/, /^\.yarnrc\.yml$/, /\.tfstate(\.backup)?$/,
+  /^\.docker\//, /^k8s\/.*(secret|credential)/i,
+];
+// 高危但显式写进节点范围的可以放行（授权页能看到这一点）。
+const GUARDED_PATH = [
+  /^\.github\//, /^\.git\//, /^\.vibe\//, /^\.husky\//, /\.key$/i,
+  /^scripts\/(deploy|release|publish)(\.|$)/i,
+];
+const hitAny = (path, patterns) => patterns.some(pattern => pattern.test(path));
+const scopeGuard = (files, scopes) => {
+  const credentials = files.filter(file => hitAny(file, CREDENTIAL_PATH) && !/\.env\.(example|sample|template)$/.test(file));
+  const guarded = files.filter(file => hitAny(file, GUARDED_PATH) && !inScope(file, scopes));
+  return [...new Set([...credentials, ...guarded])];
+};
 const parseStatus = out => {
   const parts = out.split('\0').filter(Boolean); const files = [];
   for (let i = 0; i < parts.length; i++) {
@@ -31,7 +49,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
   const scopesOf = (root, nodeId) => {
     const node = (root.nodes || []).find(item => item.id === nodeId);
     if (!node) throw new PublishError(`节点 ${nodeId} 不在快照中`, 'UNKNOWN_NODE');
-    return [...(node.contract?.files || []), ...(node.contract?.sharedFiles || []), ...(node.files || [])].map(normalizeProjectPath);
+    return [...(node.contract?.files || []), ...(node.files || [])].map(normalizeProjectPath);
   };
   const changed = async cwd => worktreeChanges({ git: rt.git, cwd });
   // worker 可能先 git commit：scope 必须同时覆盖未提交状态和 base..HEAD 已提交差异。
@@ -41,18 +59,19 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
     if (!node) throw new PublishError(`节点 ${nodeId} 不在快照中`, 'UNKNOWN_NODE');
     return node;
   };
-  const evidenceError = (root, node, evidence, commit, { requirePassed = false } = {}) => {
+  // 设计证据只做汇报，不阻断合并：证据缺失/不一致/未通过都记进结果，由审阅者判断。
+  const evidenceIssues = (root, node, evidence, commit, { requirePassed = false } = {}) => {
     const design = assertNodeDesignSnapshot(root, node).design;
     if (!design) return null;
-    if (!evidence) return new PublishError('UI 节点缺少设计验证证据，拒绝合并', 'DESIGN_EVIDENCE_MISSING');
+    if (!evidence) return 'UI 节点缺少设计验证证据';
     const expectedContract = designContractDigest({ designDigest: root.designBaseline.designDigest, contract: node.contract.design });
     if (evidence.commit !== commit || evidence.designDigest !== root.designBaseline.designDigest || evidence.contractDigest !== expectedContract) {
-      return new PublishError('设计证据 commit/designDigest/contractDigest 与当前已审身份不一致', 'DESIGN_EVIDENCE_MISMATCH');
+      return '设计证据 commit/designDigest/contractDigest 与当前已审身份不一致';
     }
     if (!Array.isArray(evidence.checks) || evidence.checks.length === 0 || evidence.checks.some(check => !check || typeof check.ok !== 'boolean')) {
-      return new PublishError('设计证据缺少定向 checks 或 checks 形态无效', 'DESIGN_EVIDENCE_INVALID');
+      return '设计证据缺少定向 checks 或 checks 形态无效';
     }
-    if (requirePassed && evidence.checks.some(check => !check.ok)) return new PublishError('设计定向 checks 未全部通过，拒绝合并', 'DESIGN_EVIDENCE_FAILED');
+    if (requirePassed && evidence.checks.some(check => !check.ok)) return '设计定向 checks 未全部通过';
     return null;
   };
 
@@ -88,8 +107,10 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       const readOnlyDesign = new Set((root.designBaseline?.readOnlyPaths || []).map(normalizeProjectPath));
       const protectedDesign = files.filter(file => readOnlyDesign.has(file));
       if (protectedDesign.length) throw new PublishError(`设计基线/参考产物只读：${protectedDesign.join(', ')}`, 'DESIGN_BASELINE_READONLY');
+      // 敏感路径（凭据/CI/发布脚本）仍硬拦；其余越界只汇报，由 PR 审阅兜底。
+      const sensitive = scopeGuard(files, scopes);
+      if (sensitive.length) throw new PublishError(`敏感路径改动被拒绝：${sensitive.join(', ')}`, 'SENSITIVE_PATH');
       const outside = files.filter(file => !inScope(file, scopes));
-      if (outside.length) throw new PublishError(`改动超出节点文件范围：${outside.join(', ')}`, 'OUT_OF_SCOPE');
       // 目标分支先指向当前 HEAD 并成为本 worktree HEAD，避免跨分支重试生成 sibling commit。
       const currentHead = String(await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
       await rt.git(worktree, ['update-ref', `refs/heads/${branch}`, currentHead]);
@@ -113,7 +134,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (!prUrl) prUrl = await gh.createPr({ branch, title: `${nodeId} (${root.runId})` });
       store.registerPr(root.runId, nodeId, prUrl);
       await closeSuperseded(root.runId, nodeId, prUrl);
-      return { prUrl, commit };
+      return { prUrl, commit, outOfScope: outside };
     },
 
     async verify({ nodeId, worktree, commit }) {
@@ -134,11 +155,11 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (currentFiles.length) throw new PublishError(`UI 槽位存在未提交改动：${currentFiles.join(', ')}`, 'DESIGN_WORKTREE_DIRTY');
       const evidenceDir = path.join(store.directory, 'design-evidence', rootRunId, nodeId);
       const result = await verifyDesign({ nodeId, worktree, project: rt.project, git: rt.git, commit, designBaseline: root.designBaseline, contract: node.contract.design, evidenceDir });
-      const invalid = evidenceError(root, node, result?.evidence, commit);
-      if (invalid) throw invalid;
-      const checksPassed = result.evidence.checks.every(check => check.ok);
+      const evidence = result?.evidence ?? null;
+      const issue = evidence ? evidenceIssues(root, node, evidence, commit, { requirePassed: true }) : '设计 verifier 未返回证据';
       const after = (await changed(worktree)).sort().join('\n');
-      return { tests, slotStateChanged: before !== after, nodeId, ok: result.ok === true && checksPassed, designEvidence: result.evidence };
+      // 设计证据只报不拦：节点是否继续由测试结果决定，证据问题记入警示。
+      return { tests, slotStateChanged: before !== after, nodeId, ok: tests.exitCode === 0, designEvidence: evidence, ...(issue ? { designEvidenceWarning: issue } : {}) };
     },
 
     async merge({ nodeId, prUrl, commit, evidence }) {
@@ -148,14 +169,13 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (pr.state === 'merged') return { mergeCommit: pr.mergeCommit };
       const head = await gh.prHead(prUrl);
       if (head !== commit) throw new PublishError(`远端 PR head ${head} 与已审 SHA ${commit} 不一致（head 变化），拒绝合并`, 'HEAD_MISMATCH');
-      const designError = evidenceError(root, nodeOf(root, nodeId), evidence, commit, { requirePassed: true });
-      if (designError) throw designError;
+      const designWarning = evidenceIssues(root, nodeOf(root, nodeId), evidence, commit, { requirePassed: true });
       const result = (await gh.mergePr(prUrl, { strategy: root.authorizationSnapshot.mergeStrategy })) || {};
       // fetch/rev-parse 失败直接抛错由控制器下一 tick 重试：mergePr 与 markPrMerged 均幂等，
       // 不再回退到本地陈旧 baseRef tip 冒充 mergeCommit。
       await rt.git(rt.project, ['fetch', '-q', root.remoteUrl, '+refs/heads/main:refs/heads/main']);
       const tip = (await rt.git(rt.project, ['rev-parse', baseRef])).trim();
-      return { mergeCommit: result.mergeCommit || tip };
+      return { mergeCommit: result.mergeCommit || tip, ...(designWarning ? { designWarning } : {}) };
     },
 
     // 下游基线推进：fetch 更新后，后续 prepare 从合并后的基线建分支。

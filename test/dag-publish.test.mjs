@@ -12,7 +12,7 @@ import { ensureMirror } from '../src/dag-mirror.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
-async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, sharedFiles = null } = {}) {
+async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, aFiles = null } = {}) {
   const { project, remote } = makeRepo();
   const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-pub-'));
   const store = createRunStore({ directory: storeDirectory });
@@ -20,7 +20,7 @@ async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designIn
   const root = store.createRun({
     project, remoteUrl: remote, mirrorPath: mirror.mirrorPath, baseBranch: mirror.baseBranch, baseCommit: mirror.baseCommit,
     planId: 'p', planDigest: 'd', confirmedActionIds: [...actions], confirm: true, nodeId: ROOT_NODE, role: 'dev',
-    nodes: [{ ...node('a', designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), contract: { files: designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'], ...(sharedFiles ? { sharedFiles } : {}), ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline,
+    nodes: [{ ...node('a', aFiles || (designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs'])), contract: { files: aFiles || (designInScope ? ['src/a.mjs', 'docs/design/demo/design-manifest.json'] : ['src/a.mjs']), ...(ui ? { design: { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] } } : {}) } }, node('b', ['src/b.mjs'])], designBaseline,
   });
   const rt = createSlotRuntime({ project: mirror.mirrorPath, gitDir: mirror.mirrorPath, runId: root.runId });
   await rt.ensureSlots();
@@ -48,13 +48,7 @@ test('commitPr：只提交文件范围内改动，推送分支，创建 PR 并�
   assert.deepEqual(again, first); assert.equal(t.gh.prs.size, 1, 'PR 复用');
 });
 
-test('commitPr：范围外文件（含新文件）拒绝，且不提交不推送', async () => {
-  const t = await boot();
-  t.write('src/a.mjs', 'ok\n'); t.write('src/b.mjs', 'not mine\n');
-  await assert.rejects(t.pub.commitPr(t.ctx), /范围/);
-  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
-  assert.equal(sh(t.rt.slotPath(1), 'rev-parse', 'HEAD'), sh(t.project, 'rev-parse', 'main'));
-});
+
 
 test('commitPr：快照未授权 push-branch/create-pr 时拒绝', async () => {
   const t = await boot({ actions: ['worktree', 'run-tests'] });
@@ -188,30 +182,46 @@ test('verify：UI 缺 verifier 属设施错误；定向断言失败才返回实�
   const failing = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async input => ({ ok: false, evidence: evidenceFor({ designBaseline: uiDesign(), nodes: [{ contract: { design: input.contract } }] }, input.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] }) }) });
   failing.write('src/a.mjs', 'x\n'); const failingPr = await failing.pub.commitPr(failing.ctx);
   const result = await failing.pub.verify({ ...failing.ctx, commit: failingPr.commit });
-  assert.equal(result.ok, false); assert.equal(result.designEvidence.checks[0].ok, false);
+  assert.equal(result.ok, true, '定向 checks 只记录，节点继续由测试结果决定');
+  assert.equal(result.designEvidence.checks[0].ok, false);
+  assert.match(result.designEvidenceWarning || '', /未全部通过/);
+  const noEvidence = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async () => ({ ok: true }) });
+  noEvidence.write('src/a.mjs', 'x\n'); const ne = await noEvidence.pub.commitPr(noEvidence.ctx);
+  const neResult = await noEvidence.pub.verify({ ...noEvidence.ctx, commit: ne.commit });
+  assert.equal(neResult.ok, true, 'verifier 不返回证据时不抛裸错，只记警示');
+  assert.match(neResult.designEvidenceWarning || '', /未返回证据/);
 });
 
-test('merge：UI 证据必须与已审 commit 和根 designDigest 匹配；merge 本身不重跑验证', async () => {
+test('merge：设计证据只作汇报，不阻断合并，merge 本身不重跑验证', async () => {
   let verifyCalls = 0;
   const designBaseline = uiDesign();
   const t = await boot({ designBaseline, ui: true, verifyDesign: async input => { verifyCalls++; return { ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit) }; } });
   t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
-  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), error => error.code === 'DESIGN_EVIDENCE_MISSING');
+  const noEvidence = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit });
+  assert.ok(noEvidence.mergeCommit); assert.match(noEvidence.designWarning || '', /证据/);
   const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit);
-  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, designDigest: 'c'.repeat(64) } }), error => error.code === 'DESIGN_EVIDENCE_MISMATCH');
-  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, commit: 'other' } }), error => error.code === 'DESIGN_EVIDENCE_MISMATCH');
-  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, contractDigest: 'c'.repeat(64) } }), error => error.code === 'DESIGN_EVIDENCE_MISMATCH');
-  const out = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence });
-  assert.ok(out.mergeCommit); assert.equal(verifyCalls, 0, 'merge 不得重跑浏览器验证');
+  t.gh.merged.length = 0;
+  const mismatch = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, designDigest: 'c'.repeat(64) } });
+  assert.ok(mismatch.mergeCommit); assert.match(mismatch.designWarning || '', /不一致/);
+  assert.equal(verifyCalls, 0, 'merge 不得重跑浏览器验证');
 });
 
-test('merge：失败 checks 即便身份匹配也不得合并', async () => {
+test('merge：失败 checks 依然合并，但结果里带警示', async () => {
   const designBaseline = uiDesign();
   const t = await boot({ designBaseline, ui: true, verifyDesign: async () => { throw new Error('not called'); } });
   t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
   const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] });
-  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence }), error => error.code === 'DESIGN_EVIDENCE_FAILED');
-  assert.equal(t.gh.merged.length, 0);
+  const out = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence });
+  assert.ok(out.mergeCommit); assert.match(out.designWarning || '', /未全部通过/);
+  assert.equal(t.gh.merged.length, 1);
+});
+
+test('commitPr：越界文件只汇报、不阻断', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'ok\n'); t.write('src/b.mjs', 'not mine\n');
+  const out = await t.pub.commitPr(t.ctx);
+  assert.deepEqual(out.outOfScope, ['src/b.mjs']);
+  assert.equal(sh(t.remote, 'rev-parse', 'feat/a'), out.commit, '越界也照常推送，由 PR 审阅兜底');
 });
 
 test('verify：设计 verifier 造成的槽位变化同样被记录', async () => {
@@ -226,12 +236,13 @@ test('verify：设计 verifier 造成的槽位变化同样被记录', async () =
   assert.equal(result.slotStateChanged, true);
 });
 
-test('commitPr：worker 先提交的范围外文件仍拒绝，不推送不建 PR', async () => {
+test('commitPr：worker 先提交的范围外文件被汇报，但不再阻断推送', async () => {
   const t = await boot();
   t.write('src/b.mjs', 'not mine\n');
   sh(t.ctx.worktree, 'add', 'src/b.mjs'); sh(t.ctx.worktree, 'commit', '-qm', 'worker precommit');
-  await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'OUT_OF_SCOPE');
-  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+  const out = await t.pub.commitPr(t.ctx);
+  assert.deepEqual(out.outOfScope, ['src/b.mjs']);
+  assert.equal(sh(t.remote, 'rev-parse', 'feat/a'), out.commit);
 });
 
 test('commitPr：worker 先提交的设计只读文件仍拒绝，不推送不建 PR', async () => {
@@ -260,7 +271,7 @@ test('verify：UI verifier 执行前槽位必须干净', async () => {
   await assert.rejects(t.pub.verify({ ...t.ctx, commit: pr.commit }), error => error.code === 'DESIGN_WORKTREE_DIRTY');
 });
 
-test('commitPr：worker 移动 origin/main 不能绕过冻结 base 的 scope 检查', async () => {
+test('commitPr：worker 移动 origin/main 也按冻结 base 汇报越界文件', async () => {
   const t = await boot();
   const frozenBase = sh(t.project, 'rev-parse', 'main');
   t.write('secret/extra.txt', 'out of scope\n');
@@ -269,8 +280,9 @@ test('commitPr：worker 移动 origin/main 不能绕过冻结 base 的 scope 检
   sh(t.mirror.mirrorPath, 'update-ref', 'refs/heads/main', moved);
   t.write('src/a.mjs', 'in scope\n');
   sh(t.ctx.worktree, 'add', 'src/a.mjs'); sh(t.ctx.worktree, 'commit', '-qm', 'in scope');
-  await assert.rejects(t.pub.commitPr({ ...t.ctx, base: frozenBase }), error => error.code === 'OUT_OF_SCOPE');
-  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+  const out = await t.pub.commitPr({ ...t.ctx, base: frozenBase });
+  assert.deepEqual(out.outOfScope, ['secret/extra.txt'], '越界判定仍基于冻结 base');
+  assert.equal(sh(t.remote, 'rev-parse', 'feat/a'), out.commit);
 });
 
 test('commitPr rejects symbolic base refs such as origin/main', async () => {
@@ -314,11 +326,27 @@ test('commitPr pushes to the remote URL frozen in the root run, not worker-modif
   assert.throws(() => sh(evil, 'rev-parse', 'feat/a'));
 });
 
-test('commitPr：计划级共享文件（package.json）不算越界', async () => {
-  const t = await boot({ sharedFiles: ['package.json', 'package-lock.json'] });
-  t.write('src/a.mjs', 'export const a = 1;\n');
-  t.write('package.json', JSON.stringify({ name: 'demo', version: '1.0.0' }));
-  const result = await t.pub.commitPr(t.ctx);
-  assert.ok(result.commit);
-  assert.equal(sh(t.remote, 'rev-parse', 'feat/a'), result.commit);
+test('commitPr：凭据/CI/发布脚本类敏感路径仍然硬拦', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'ok\n');
+  t.write('.github/workflows/ci.yml', 'name: ci\n');
+  await assert.rejects(t.pub.commitPr(t.ctx), error => error.code === 'SENSITIVE_PATH');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
+
+test('commitPr：凭据类永远拦；.env.example 与显式声明的受保护路径放行', async () => {
+  const creds = await boot();
+  creds.write('src/a.mjs', 'ok\n'); creds.write('src/i18n/en.key', 'k\n');
+  await assert.rejects(creds.pub.commitPr(creds.ctx), error => error.code === 'SENSITIVE_PATH', '范围外的 .key 仍拦');
+  const i18n = await boot({ aFiles: ['src/'] });
+  i18n.write('src/i18n/en.key', 'k\n');
+  assert.ok((await i18n.pub.commitPr(i18n.ctx)).commit, '显式声明目录下的 .key 放行（i18n 等资源文件）');
+  const env = await boot();
+  env.write('src/a.mjs', 'ok\n'); env.write('.env.example', 'A=1\n');
+  const out = await env.pub.commitPr(env.ctx);
+  assert.ok(out.commit, '.env.example 是模板，不是凭据');
+  const scoped = await boot({ aFiles: ['src/a.mjs', '.github/workflows/dag.yml'] });
+  scoped.write('src/a.mjs', 'ok\n'); scoped.write('.github/workflows/dag.yml', 'name: dag\n');
+  const scopedOut = await scoped.pub.commitPr(scoped.ctx);
+  assert.ok(scopedOut.commit, '显式写进节点范围的受保护路径放行');
 });

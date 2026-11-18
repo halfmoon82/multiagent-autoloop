@@ -45,7 +45,7 @@ export function initDag({ api, notify, showView, getProjects }) {
     const feedbackKey = s.submitting ? 'submitting' : s.planError ? `plan:${s.planError}` : s.preflightError ? `pre:${s.preflightError}` : '';
     const force = s.submitting === true || (feedbackKey !== '' && feedbackKey !== s.lastAuthFeedback);
     s.lastAuthFeedback = feedbackKey;
-    const bodyNodes = [renderAuthorize(s.plan, { checked: s.checked, submitting: s.submitting, error: s.planError, created: s.created, blocked: s.preflight && !s.preflight.checks.every(c => c.ok) ? '接入预检未全部通过，暂不能创建 DAG。' : '' })];
+    const bodyNodes = [renderAuthorize(s.plan, { checked: s.checked, submitting: s.submitting, error: s.planError, created: s.created })];
     if (s.plan) bodyNodes.push(renderOptionalGrants(s.plan, { selected: s.optionalGrants }));
     stableReplace('authorize-preflight', [renderPreflight(s.preflight, { error: s.preflightError })], { force });
     stableReplace('authorize-body', bodyNodes, { force });

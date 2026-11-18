@@ -30,12 +30,12 @@ export function renderPreflight(data, { loading = false, error = '' } = {}) {
   }
   root.append(panel);
   const side = el('aside', 'preflight-sidebar'); const note = el('section', 'panel side-card');
-  note.append(el('div', 'panel-heading', ''), el('p', 'side-copy', '控制台只读检查，不代写能力记录。原生计划（docs/dag-plans）走审批与派发，不依赖 vibe；只有回退到 vibe 计划时才需要规划环境与能力记录——缺失时在真实 Codex 会话执行 vibe attest --adapter codex --facts <facts.json> --provenance "<观察依据>" 后重新检查。'));
+  note.append(el('div', 'panel-heading', ''), el('p', 'side-copy', '这些检查只作参考，不阻止创建与派发；真正的硬约束是授权范围（部署、发布、生产写入、凭据、对外通信永不放行）。'));
   note.firstChild.append(el('h3', '', '说明'));
   side.append(note); root.append(side); return root;
 }
 
-export function renderAuthorize(plan, { checked = false, submitting = false, error = '', created = null, blocked = '' } = {}) {
+export function renderAuthorize(plan, { checked = false, submitting = false, error = '', created = null } = {}) {
   const root = el('div', 'authorize-layout');
   if (!plan) { root.append(el('div', 'empty', error ? `读取计划失败：${error}` : '输入项目与计划编号并点击“读取计划”，逐项核对后才能创建 DAG。')); return root; }
   const main = el('section', 'panel authorization-main');
@@ -71,9 +71,8 @@ export function renderAuthorize(plan, { checked = false, submitting = false, err
   const side = el('aside', 'authorize-sidebar'); const card = el('section', 'panel confirm-card');
   const ch = el('div', 'panel-heading'); ch.append(el('h3', '', '确认前请阅读')); card.append(ch);
   card.append(el('p', '', '确认后，ready 节点会立即进入 Hub 事件链。每个节点仍需独立审阅，合并不代表部署。'));
-  if (blocked) card.append(el('p', 'warn-text', blocked));
   const confirmLabel = el('label', 'confirm-check'); const check = el('input'); check.type = 'checkbox'; check.id = 'authorize-check'; check.checked = checked; confirmLabel.append(check, el('span', '', '我已阅读 PRD、Spec、DAG 和上述执行范围。'));
-  const go = el('button', 'button primary full', submitting ? '正在创建…' : '确认并进入事件链'); go.type = 'button'; go.id = 'authorize-button'; go.dataset.dagAuthorize = '1'; go.disabled = !checked || submitting || !!blocked || !!created;
+  const go = el('button', 'button primary full', submitting ? '正在创建…' : '确认并进入事件链'); go.type = 'button'; go.id = 'authorize-button'; go.dataset.dagAuthorize = '1'; go.disabled = !checked || submitting || !!created;
   card.append(confirmLabel, go);
   if (error) card.append(el('p', 'warn-text', error));
   if (created) card.append(el('p', 'side-copy', `已创建 DAG ${created.runId}，授权快照已由服务端写入。`));
