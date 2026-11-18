@@ -200,7 +200,7 @@ export function dispatchFromCapabilityFacts(facts) {
   return null;
 }
 
-const ATTEST_REMEDIATION = '在真实 Codex 会话中执行一次 `vibe attest`（adapter=codex）留下能力记录后重新发布；服务端不执行 attest、不写能力记录';
+const ATTEST_REMEDIATION = '在真实 Codex 会话执行 `vibe attest --adapter codex --facts <facts.json> --provenance "<观察依据>"` 留下能力记录（项目需先 vibe init --confirm）；服务端只读校验、不代写';
 
 /**
  * 能力记录校验（只读）：读取真实会话执行 `vibe attest` 留下的
