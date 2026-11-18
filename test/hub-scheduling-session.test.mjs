@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -393,16 +393,18 @@ test('#92 a failed readStatus marks 待复核 and surfaces the error instead of 
   assert.match(views[0].error, /hub down/);
 });
 
-test('#92 a missing Hub archive sidecar is not an error and never fabricates a status', async () => {
+test('#92 a missing Hub archive sidecar is not an error and is a legacy archive, not an active 待复核 session (#96)', async () => {
   const home = archiveHome();
   writeArchivedHubSession(home, { text: '旧会话，无 Hub 凭据' }); // 只写通用存档，不写 .hub.json
   const client = fakeHubClient();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = newManager(adapter, { archiveRoot: home });
   await manager.restoreFromHub(); // 不抛
-  assert.equal(manager.list().length, 1);
-  assert.equal(manager.list()[0].status, 'unknown');
-  assert.equal(manager.list()[0].error, null);
+  // #96：无合法 hub sidecar 的 ACP 时代旧存档只进历史区，不恢复成活跃/待复核视图。
+  assert.equal(manager.list().length, 0);
+  assert.equal((await manager.listArchived()).length, 1, 'the legacy archive stays visible in history');
+  const sidecars = readdirSync(path.join(home, 'console-sessions')).filter(name => name.endsWith('.hub.json'));
+  assert.equal(sidecars.length, 0, 'no hub sidecar may be fabricated for a legacy archive');
   assert.equal(client.calls.length, 0, 'no event id means no speculative GET');
 });
 

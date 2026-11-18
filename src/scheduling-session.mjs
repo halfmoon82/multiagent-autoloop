@@ -86,6 +86,11 @@ export class SchedulingSessionError extends Error {
 const safeMessage = error => String(error?.message || error || '未知错误').replace(/[\r\n]+/g, ' ');
 const statusLabel = status => ({ initializing: '初始化中', running: '运行中', idle: '待命', error: '异常', unknown: '待复核', closing: '关闭中', closed: '已关闭' })[status] || status;
 
+// #96：只有带正整数 lastEventId 的 console-sessions/<id>.hub.json 旁车才算 Hub 形态。
+// 旧 ACP 存档天然没有旁车；被 #94 误写出的 lastEventId:null 旁车同样不算合法形态。
+// 不按 createdAt 猜时间界——有无合法旁车即可区分。
+const hasHubShape = hub => Number.isSafeInteger(hub?.lastEventId) && hub.lastEventId > 0;
+
 function toPublicSession(record) {
   const view = {
     id: record.id,
@@ -187,6 +192,9 @@ export class SchedulingSessionManager {
     for (const item of archived) {
       if (item.kind !== 'scheduling' || this.sessions.has(item.id)) continue;
       const hub = this.#readHubState(item.id);
+      // #96：无合法 Hub 旁车的是 ACP 时代旧存档。它只属于历史区——不恢复成活跃/
+      // 待复核视图、不参与 (project,kind) 查重、更不补写旁车。直接跳过即不进入 sessions。
+      if (!hasHubShape(hub)) continue;
       const nowIso = this.now().toISOString();
       const record = {
         id: item.id,
@@ -212,10 +220,10 @@ export class SchedulingSessionManager {
         closed: false,
         hub: {
           sessionId: item.id,
-          subject: hub?.subject || schedulingSubject(item.id),
-          turn: Number.isInteger(hub?.turn) && hub.turn > 0 ? hub.turn : 1,
-          lastEventId: Number.isSafeInteger(hub?.lastEventId) && hub.lastEventId > 0 ? hub.lastEventId : null,
-          runId: hub?.runId ?? null,
+          subject: hub.subject || schedulingSubject(item.id),
+          turn: Number.isInteger(hub.turn) && hub.turn > 0 ? hub.turn : 1,
+          lastEventId: hub.lastEventId,
+          runId: hub.runId ?? null,
           lastState: null,
         },
       };
@@ -746,6 +754,8 @@ export class SchedulingSessionManager {
   // 必须写穿到 console-sessions 才能在重启后逐个 readStatus 对账（不改 session-archive.mjs）。
   #persistHubState(record) {
     if (!this.archive?.root) return;
+    // #96：没有合法数字 lastEventId 就不写旁车，杜绝给旧存档伪造 Hub 形态。
+    if (!hasHubShape(record.hub)) return;
     const file = path.join(this.archive.root, `${record.id}.hub.json`);
     try {
       const tmp = `${file}.tmp-${process.pid}`;
