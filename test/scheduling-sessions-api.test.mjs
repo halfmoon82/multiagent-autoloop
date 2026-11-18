@@ -4,7 +4,8 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConsoleServer } from '../src/server.mjs';
-import { SchedulingSessionError } from '../src/scheduling-session.mjs';
+import { SchedulingSessionManager, SchedulingSessionError } from '../src/scheduling-session.mjs';
+import { HubSchedulingSessionAdapter } from '../src/hub-scheduling-session.mjs';
 import { listen, close } from './helpers.mjs';
 
 const config = { hubUrl: 'http://127.0.0.1:1', ownerKey: 'server-secret', host: '127.0.0.1' };
@@ -273,4 +274,54 @@ test('#89 creating a scheduling session posts a whitelist-only event to a strict
     assert.equal(detail.project, repo, 'project 进入 worker 可解析的 detail');
     assert.match(detail.text, /按规则推进调度/, '首轮文本进入 detail');
   } finally { await close(server); await new Promise(resolve => strictHub.close(resolve)); }
+});
+
+// #100：真实 HTTP 轮询路径上，活跃 Hub 会话状态随中台 run.state 自动刷新。
+test('#100 GET /api/scheduling-sessions auto-refreshes an active Hub session through polling', async () => {
+  const states = ['claimed', 'done'];
+  let index = 0;
+  const hubClient = {
+    async postEvent() { return { event: 7267, duplicate: false, routed: true, paused: false }; },
+    async readEvent(hubConfig, eventId) {
+      const state = states[Math.min(index, states.length - 1)];
+      index += 1;
+      return { event: eventId, routed: true, paused: false, runs: [{ run: 6663, state }] };
+    },
+    async cancelRun() { return { ok: true }; },
+  };
+  const manager = new SchedulingSessionManager({
+    cwd: '/x', adapterPath: '/a.js',
+    spawnFn: () => { throw new Error('Hub scheduling sessions must not spawn a private ACP'); },
+    hubScheduling: new HubSchedulingSessionAdapter({
+      hubConfig: { hubUrl: 'http://127.0.0.1:9', ownerKey: 'k', sourceKey: 's' },
+      hubClient,
+    }),
+    hubReconcileMs: 20,
+  });
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'refresh-api-'));
+  const repo = path.join(projectRoot, 'demo-repo');
+  mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const rulesFile = path.join(projectRoot, 'rules.json');
+  writeFileSync(rulesFile, JSON.stringify({ sources: {}, agents: {}, rules: [], elsewhere: [] }));
+  const server = createConsoleServer({ ...config, root: projectRoot, rulesFile, projectRoots: [projectRoot] }, manager);
+  const base = await listen(server);
+  try {
+    const created = await fetch(`${base}/api/scheduling-sessions`, {
+      method: 'POST', headers: writeHeaders,
+      body: JSON.stringify({ kind: 'scheduling', project: repo, prompt: '按规则推进调度' }),
+    });
+    assert.equal(created.status, 201);
+    assert.equal((await created.json()).status, 'running', 'claimed 映射为运行中，而不是待复核');
+
+    // 中台转 done 后，仅靠前端周期性 GET 轮询，视图自动跟上 idle。
+    const deadline = Date.now() + 1000;
+    let listed;
+    do {
+      listed = (await (await fetch(`${base}/api/scheduling-sessions`)).json())[0];
+      if (listed.status === 'idle') break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    } while (Date.now() < deadline);
+    assert.equal(listed.status, 'idle', 'polling must pick up the terminal state automatically');
+    assert.equal(listed.hubRunId, 6663);
+  } finally { await close(server); manager.dispose(); }
 });

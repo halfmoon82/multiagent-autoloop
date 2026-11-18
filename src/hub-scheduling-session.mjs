@@ -6,6 +6,9 @@ import { hubRequest, postSchedulingEvent, readSchedulingEvent } from './hub.mjs'
 
 export const HUB_SCHEDULING_AGENT_LABEL = 'Hub 事项';
 
+// #100：活跃 Hub 会话在 list（前端轮询）时的最小对账间隔；避免每次轮询都打 Hub。
+export const HUB_RECONCILE_INTERVAL_MS = 5000;
+
 export class HubSchedulingError extends Error {
   constructor(message, { status = 502 } = {}) {
     super(message);
@@ -70,8 +73,10 @@ export function readHubRun(payload) {
 }
 
 export function mapHubStateToStatus(state) {
-  if (['running', 'queued', 'active', 'in_progress'].includes(state)) return 'running';
+  // #100：claimed 是真实中台 run.state（运行中未出结果），此前未覆盖导致视图永久待复核。
+  if (['claimed', 'running', 'queued', 'active', 'in_progress'].includes(state)) return 'running';
   if (['failed', 'error', 'cancelled', 'canceled'].includes(state)) return 'error';
+  // done/completed 是完成语义：控制台展示为 idle（待命），不再等待该 run。
   if (['done', 'completed', 'succeeded', 'idle'].includes(state)) return 'idle';
   return 'unknown';
 }
