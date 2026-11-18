@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { appendFileSync } from 'node:fs';
@@ -12,7 +12,7 @@ import { SessionArchive } from './session-archive.mjs';
 import { listArtifacts, readArtifact } from './artifacts.mjs';
 import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
-import { HubSchedulingSessionAdapter, HUB_SCHEDULING_AGENT_LABEL, schedulingSubject, schedulingEventId, mapHubStateToStatus, matterTurn } from './hub-scheduling-session.mjs';
+import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_LABEL, schedulingSubject, schedulingEventId, mapHubStateToStatus, numericEventId, readHubRun } from './hub-scheduling-session.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -84,7 +84,7 @@ export class SchedulingSessionError extends Error {
 }
 
 const safeMessage = error => String(error?.message || error || '未知错误').replace(/[\r\n]+/g, ' ');
-const statusLabel = status => ({ initializing: '初始化中', running: '运行中', idle: '待命', error: '异常', closing: '关闭中', closed: '已关闭' })[status] || status;
+const statusLabel = status => ({ initializing: '初始化中', running: '运行中', idle: '待命', error: '异常', unknown: '待复核', closing: '关闭中', closed: '已关闭' })[status] || status;
 
 function toPublicSession(record) {
   const view = {
@@ -176,51 +176,63 @@ export class SchedulingSessionManager {
     } catch { return []; }
   }
 
-  // §6.3 控制台重启：按 Hub 事项状态恢复视图，不恢复私有进程、不另登记执行状态。
+  // #92 控制台重启：从 console-sessions 存档恢复调度会话视图，逐个用存档里的数字
+  // lastEventId 调 GET /v1/events 对账；不恢复私有进程、不读不存在的 /v1/matters。
+  // Hub 失败要可见（抛错给启动脚本记录），无存档/无凭据不算错误但状态如实标待复核。
   async restoreFromHub() {
-    if (!this.hubScheduling?.listMatters) return;
-    const matters = await this.hubScheduling.listMatters();
-    for (const matter of matters) {
-      const subject = String(matter.subject || '');
-      if (!subject.startsWith('scheduling:')) continue;
-      const sessionId = String(matter.sessionId || subject.slice('scheduling:'.length));
-      if (this.sessions.has(sessionId)) continue;
+    if (!this.hubScheduling?.readStatus || !this.archive) return;
+    await this.#ensureBootMarked();
+    const { sessions: archived } = await this.archive.loadAllDetailed();
+    const failures = [];
+    for (const item of archived) {
+      if (item.kind !== 'scheduling' || this.sessions.has(item.id)) continue;
+      const hub = this.#readHubState(item.id);
       const nowIso = this.now().toISOString();
-      // 轮次从事项已有事件恢复，避免续发时生成与已投递事件重复的 id 被 Hub 幂等丢弃。
-      const turn = matterTurn(sessionId, matter);
       const record = {
-        id: sessionId,
+        id: item.id,
         kind: 'scheduling',
-        sessionId,
+        sessionId: item.id,
         agent: HUB_SCHEDULING_AGENT_LABEL,
-        cwd: this.#projectCwd(String(matter.project || '')),
-        status: mapHubStateToStatus(matter.state),
-        project: String(matter.project || '未识别'),
+        cwd: this.#projectCwd(item.project),
+        status: 'unknown',
+        project: item.project || '未识别',
         writableDir: null,
-        continuedFrom: null,
-        prompt: String(matter.text || ''),
+        continuedFrom: item.continuedFrom || null,
+        prompt: item.prompt || '',
         queue: [],
         interruptRequested: false,
-        stopReason: null,
+        stopReason: item.endStatus === 'interrupted' ? 'interrupted' : null,
         error: null,
-        messages: matter.text ? [{ role: 'user', text: String(matter.text), at: matter.startedAt || nowIso }] : [],
+        messages: Array.isArray(item.messages) ? item.messages.map(message => ({ ...message })) : [],
         liveText: '',
-        createdAt: matter.startedAt || nowIso,
+        createdAt: item.createdAt || nowIso,
         updatedAt: nowIso,
         child: null,
         connection: null,
         closed: false,
         hub: {
-          sessionId,
-          subject,
-          turn,
-          lastEventId: schedulingEventId(sessionId, turn),
-          runId: matter.runId || null,
-          lastState: matter.state || null,
+          sessionId: item.id,
+          subject: hub?.subject || schedulingSubject(item.id),
+          turn: Number.isInteger(hub?.turn) && hub.turn > 0 ? hub.turn : 1,
+          lastEventId: Number.isSafeInteger(hub?.lastEventId) && hub.lastEventId > 0 ? hub.lastEventId : null,
+          runId: hub?.runId ?? null,
+          lastState: null,
         },
       };
+      // 先把视图放进列表，再对账；这样 Hub 失败时会话仍在列表、状态为待复核。
       this.sessions.set(record.id, record);
+      if (record.hub.lastEventId) {
+        try {
+          await this.#reconcileHubRun(record, record.hub.lastEventId, { throwOnError: true });
+        } catch (error) {
+          record.error = `Hub 状态待复核：${safeMessage(error)}`;
+          record.status = 'unknown';
+          failures.push(`${item.id}：${safeMessage(error)}`);
+        }
+      }
+      this.#persist(record);
     }
+    if (failures.length) throw new HubSchedulingError(`部分调度会话状态待复核：${failures.join('；')}`);
   }
 
   // 用存档转录新建会话续跑（ACP 无法跨进程重连，只能新建）。
@@ -363,6 +375,7 @@ export class SchedulingSessionManager {
   }
 
   // §6.3 start：生成 subject、投递首个事件，返回 Hub 支持的会话视图；失败保留输入且不派生进程。
+  // #92 POST 只提供数字 event id；status/runId 一律经 GET /v1/events/<id> 的 runs[0] 派生。
   async #startHubSession({ projectId, text, continuedFrom }) {
     const id = randomUUID();
     const turn = 1;
@@ -372,6 +385,7 @@ export class SchedulingSessionManager {
     } catch (error) {
       throw new SchedulingSessionError(`开启调度会话失败：${safeMessage(error)}`, { status: error.status || 502 });
     }
+    const eventId = numericEventId(result);
     const nowIso = this.now().toISOString();
     const subject = schedulingSubject(id);
     const record = {
@@ -380,7 +394,7 @@ export class SchedulingSessionManager {
       sessionId: id,
       agent: HUB_SCHEDULING_AGENT_LABEL,
       cwd: this.#projectCwd(projectId),
-      status: mapHubStateToStatus(result?.state),
+      status: 'unknown',
       project: projectId,
       writableDir: null,
       continuedFrom,
@@ -400,12 +414,13 @@ export class SchedulingSessionManager {
         sessionId: id,
         subject,
         turn,
-        lastEventId: result?.id || schedulingEventId(id, turn),
-        runId: result?.runId || null,
-        lastState: result?.state ?? null,
+        lastEventId: eventId,
+        runId: null,
+        lastState: null,
       },
     };
     this.sessions.set(record.id, record);
+    await this.#reconcileHubRun(record, eventId);
     this.#pushMessage(record, 'user', text);
     return toPublicSession(record);
   }
@@ -416,7 +431,11 @@ export class SchedulingSessionManager {
       record.interruptRequested = true;
       try {
         let runId = record.hub.runId;
-        if (!runId) runId = (await this.hubScheduling.readStatus?.({ eventId: record.hub.lastEventId }))?.runId || null;
+        if (!runId) {
+          if (!record.hub.lastEventId) throw new Error('没有可用的事件 id，无法确认已打断');
+          const payload = await this.hubScheduling.readStatus({ eventId: record.hub.lastEventId });
+          runId = readHubRun(payload)?.runId || null;
+        }
         if (!runId) throw new Error('取不到正在运行的 run 标识，无法确认已打断');
         record.hub.runId = runId;
         await this.hubScheduling.cancelRun(runId);
@@ -441,10 +460,8 @@ export class SchedulingSessionManager {
       throw new SchedulingSessionError(`发送失败：${safeMessage(error)}（内容已保留，请重试）`, { status: error.status || 502 });
     }
     record.hub.turn = turn;
-    record.hub.lastEventId = result?.id || schedulingEventId(record.hub.sessionId, turn);
-    if (result?.runId) record.hub.runId = result.runId;
-    record.hub.lastState = result?.state ?? null;
-    record.status = mapHubStateToStatus(result?.state);
+    record.hub.lastEventId = numericEventId(result);
+    record.status = 'unknown';
     record.stopReason = null;
     this.#pushMessage(record, 'user', message);
     // 队列项各成一条 Hub 事件；投递失败则留回队首，不丢消息。
@@ -455,15 +472,14 @@ export class SchedulingSessionManager {
         const queuedResult = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn: queuedTurn, project: record.project, text: next.text });
         record.queue.shift();
         record.hub.turn = queuedTurn;
-        record.hub.lastEventId = queuedResult?.id || schedulingEventId(record.hub.sessionId, queuedTurn);
-        if (queuedResult?.runId) record.hub.runId = queuedResult.runId;
-        record.hub.lastState = queuedResult?.state ?? null;
+        record.hub.lastEventId = numericEventId(queuedResult);
         this.#pushMessage(record, 'user', next.text);
       } catch (error) {
         record.error = safeMessage(error);
         break;
       }
     }
+    await this.#reconcileHubRun(record, record.hub.lastEventId);
     return toPublicSession(record);
   }
 
@@ -723,6 +739,64 @@ export class SchedulingSessionManager {
     }).catch(() => {
       if (!this.archiveWarned) { this.archiveWarned = true; console.error('[scheduling-session] 会话存档写入失败，已降级为内存会话'); }
     });
+    if (record.hub) this.#persistHubState(record);
+  }
+
+  // #92 Hub 恢复凭据旁车：通用存档 normalizeRecord 只保留固定字段，数字 event id / turn
+  // 必须写穿到 console-sessions 才能在重启后逐个 readStatus 对账（不改 session-archive.mjs）。
+  #persistHubState(record) {
+    if (!this.archive?.root) return;
+    const file = path.join(this.archive.root, `${record.id}.hub.json`);
+    try {
+      const tmp = `${file}.tmp-${process.pid}`;
+      writeFileSync(tmp, JSON.stringify({
+        sessionId: record.hub.sessionId,
+        subject: record.hub.subject,
+        turn: record.hub.turn,
+        lastEventId: record.hub.lastEventId,
+        runId: record.hub.runId ?? null,
+      }), { mode: 0o600 });
+      renameSync(tmp, file);
+    } catch (error) {
+      if (!this.archiveWarned) { this.archiveWarned = true; console.error(`[scheduling-session] Hub 恢复凭据写入失败：${safeMessage(error)}`); }
+    }
+  }
+
+  #readHubState(id) {
+    if (!this.archive?.root) return null;
+    try { return JSON.parse(readFileSync(path.join(this.archive.root, `${id}.hub.json`), 'utf8')); }
+    catch { return null; }
+  }
+
+  // #92 经 GET /v1/events/<数字 id> 的 runs[0] 对账 status/runId。
+  // throwOnError=true 用于恢复路径（失败要可见）；其余路径如实标 unknown/待复核并保留输入。
+  async #reconcileHubRun(record, eventId, { throwOnError = false } = {}) {
+    if (!eventId || !this.hubScheduling?.readStatus) return null;
+    let payload;
+    try {
+      payload = await this.hubScheduling.readStatus({ eventId });
+    } catch (error) {
+      if (throwOnError) throw error;
+      record.status = 'unknown';
+      record.error = `Hub 状态待复核：${safeMessage(error)}`;
+      record.updatedAt = this.now().toISOString();
+      this.#persist(record);
+      return null;
+    }
+    const run = readHubRun(payload);
+    if (!run) {
+      record.status = 'unknown';
+      record.updatedAt = this.now().toISOString();
+      this.#persist(record);
+      return null;
+    }
+    if (run.runId) record.hub.runId = run.runId;
+    record.hub.lastState = run.state ?? null;
+    record.status = mapHubStateToStatus(run.state);
+    if (typeof record.error === 'string' && record.error.startsWith('Hub 状态待复核')) record.error = null;
+    record.updatedAt = this.now().toISOString();
+    this.#persist(record);
+    return run;
   }
 
   #runTurn(record, text, extraBlocks = []) {
