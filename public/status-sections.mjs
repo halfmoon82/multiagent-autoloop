@@ -32,12 +32,34 @@ export function projectForCard(card, rules = []) {
   const rule = rules.find(item => item.name === card.rule);
   return String(rule?.cwd || '').trim() || '未识别';
 }
+// 触发事件：run.events 来自 Hub 的 run_events（每条 run 附带其 triggered 事件）。
+// 优先取带 summary/subject 的那条（dag.node.dev / chain.pr.review / run.manual），
+// 跳过只有空 schedule.tick 的条目；都不带则退回首条，保证"事件无摘要时可判断"。
+export function triggeringEvent(run) {
+  const events = Array.isArray(run?.events) ? run.events : [];
+  return events.find(event => event && (String(event.summary || '').trim() || String(event.subject || '').trim())) || events[0] || {};
+}
+
+// #75 主人强制需求：在途轮次必须有任务摘要 + 任务编号。
+// run 文本（error/summary）优先；为空时用触发事件 summary；事件也无摘要则如实显示规则名，不编造。
+// 任务编号 = 触发事件 subject（稳定任务编号）；subject 为空时用可见的轮次 #id，不虚构成别的任务。
+export function runTaskInfo(run) {
+  const event = triggeringEvent(run);
+  const runText = String(run?.error || '').trim() || String(run?.summary || '').trim();
+  const eventSummary = String(event.summary || '').trim();
+  const subject = String(event.subject || '').trim();
+  return {
+    taskSummary: runText || eventSummary || String(run?.rule || '').trim() || '暂无概要',
+    taskNumber: subject || String(run?.id ?? ''),
+  };
+}
+
 export function runLine(run, models = {}, rules = [], agentNames = {}) {
-  const text = run.error || run.summary || '暂无概要';
+  const task = runTaskInfo(run);
   const project = projectForRun(run, rules);
   const agentId = String(run.agent || '').trim();
   const agent = agentId ? (agentNames[agentId] || agentId) : '';
-  return { id: run.id, rule: run.rule, project, projectName: projectName(project), state: run.state, status: run.state === 'queued' && run.attempts > 0 ? '等待重试' : statusLabel(run.state), text, attempts: run.attempts || 0, agent, model: models[run.agent] || '未配置', billing: billingText(run) };
+  return { id: run.id, rule: run.rule, project, projectName: projectName(project), state: run.state, status: run.state === 'queued' && run.attempts > 0 ? '等待重试' : statusLabel(run.state), text: task.taskSummary, taskSummary: task.taskSummary, taskNumber: task.taskNumber, attempts: run.attempts || 0, agent, model: models[run.agent] || '未配置', billing: billingText(run) };
 }
 const sameLocalDay = (iso, now = new Date()) => {
   if (!iso) return false;

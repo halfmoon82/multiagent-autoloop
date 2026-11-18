@@ -21,7 +21,8 @@ const snapshot = {
     { name: 'beta 巡检', paused: null, totals: { running: 0, queued: 2, retrying: 0, unknown: 0, done: 1, nothing: 0, doneToday: 1 }, usage: { input: 10, output: 5 } },
     { name: 'demo 巡检', paused: null, totals: { running: 0, queued: 0, retrying: 0, unknown: 0, done: 3, nothing: 0, doneToday: 1, usage: { input: 1234, output: 432, cost: 0.21 } } },
   ],
-  runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '' }, { id: 4, rule: 'beta 巡检', agent: 'fake', state: 'queued', attempts: 2, project: '/elsewhere/beta', createdAt: '2026-11-14T01:00:00Z', summary: 'beta 项目等待重试' }, { id: 5, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: new Date().toISOString(), usage: { input: 60, output: 40, cost: 0.07 }, summary: '今日完成一次巡检' }], timers: [],
+  runs: [{ id: 3, rule: '恢复测试', agent: 'fake', state: 'claimed', attempts: 0, createdAt: '2026-11-11T03:00:00Z', summary: '',
+    events: [{ source: 'local', type: 'run.manual', subject: 'recovery-75', summary: 'owner 手动触发恢复核验' }] }, { id: 4, rule: 'beta 巡检', agent: 'fake', state: 'queued', attempts: 2, project: '/elsewhere/beta', createdAt: '2026-11-14T01:00:00Z', summary: 'beta 项目等待重试' }, { id: 5, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: new Date().toISOString(), usage: { input: 60, output: 40, cost: 0.07 }, summary: '今日完成一次巡检' }], timers: [],
 };
 const rawRules = { sources: { local: { name: '本机' } }, agents: { fake: { name: '无模型 Agent', use: 'command', access: 'read' } }, rules: [{ name: '恢复测试', when: { source: 'local', types: ['recovery.*'] }, to: 'fake', cwd: root, prompt: '只验证控制台', resume: false }, { name: 'beta 巡检', when: { source: 'local', types: ['beta.*'] }, to: 'fake', cwd: '/elsewhere/beta', prompt: 'beta 项目巡检', resume: false }, { name: 'demo 巡检', when: { cron: '0 9 * * *' }, to: 'fake', cwd: demoRepo, prompt: 'demo 项目巡检', resume: false }], elsewhere: [] };
 const schedulingSessions = {
@@ -159,7 +160,12 @@ let context;
 try {
   context = await chromium.launchPersistentContext(profile, { channel: 'chrome', headless: true, viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage(); const errors = [];
-  page.on('response', response => { if (response.status() >= 400) console.log('HTTP DIAGNOSTIC:', response.status(), response.url()); }); page.on('pageerror', error => errors.push(error.message)); page.on('console', message => { if (message.type() === 'error') errors.push(`${message.text()} at ${JSON.stringify(message.location())}`); });
+  page.on('response', response => { if (response.status() >= 400) console.log('HTTP DIAGNOSTIC:', response.status(), response.url()); }); page.on('pageerror', error => errors.push(error.message)); page.on('console', message => {
+    if (message.type() !== 'error') return;
+    // 沙箱 iframe 里的 XSS 载荷被 Chrome 拦下时会打这条 console —— 这正是防护生效的证据，不是脚本错误。
+    if (message.text().includes("Blocked script execution in 'about:srcdoc'")) return;
+    errors.push(`${message.text()} at ${JSON.stringify(message.location())}`);
+  });
   let acceptDialogs = true;
   page.on('dialog', dialog => acceptDialogs ? dialog.accept() : dialog.dismiss());
   await page.goto(url); await page.getByRole('heading', { name: '今天的自动化' }).waitFor();
@@ -193,6 +199,10 @@ try {
   assert.match(await page.locator('#summary').innerText(), /今日完成/); assert.match(await page.locator('#summary').innerText(), /1,234/);
   assert.ok((await page.locator('#running-list').innerText()).includes(`项目 · ${path.basename(root)}`), 'overview task summary must show its short project name');
   assert.ok((await page.locator('#running-list').innerText()).includes('执行 · 无模型 Agent'), 'overview items must show which agent executes them');
+  // #75：run 无 text 的在途轮次必须显示触发事件的任务摘要 + 稳定任务编号
+  assert.ok((await page.locator('#running-list').innerText()).includes('任务摘要'), 'in-flight round must label the task summary');
+  assert.ok((await page.locator('#running-list').innerText()).includes('owner 手动触发恢复核验'), 'run without text falls back to triggering event summary');
+  assert.ok((await page.locator('#running-list').innerText()).includes('recovery-75'), 'run without text falls back to triggering event subject as task number');
   assert.ok(!(await page.locator('#attention-list').innerText()).includes('是否继续测试'), 'open decision cards must not sit in the scheduling-handled queue');
   const attentionBefore = await page.locator('#attention-list').innerText();
   assert.ok(attentionBefore.includes('wb-hy4-browser') || attentionBefore.includes('没有等待调度处理的事'), 'scheduling queue only lists scheduling-handleable items (detours count as scheduling-handled)');
@@ -373,7 +383,7 @@ try {
   assert.equal(await page.locator('#project-filter').inputValue(), 'demo-repo', 'starting a session must switch the project filter to the new session so the card stays visible');
   assert.equal(await page.locator('#clear-project-filter').getAttribute('hidden'), null, 'a clear-filter button must be shown while a filter is active');
   await page.getByRole('button', { name: '总览', exact: true }).click();
-  // 项目任务进度：写入假串行状态文件，验证节点条、整体百分比与节点浮层
+  // 项目任务进度：写入假串行状态文件，验证统一「环形总进度 + 四栏节点卡片 + 同构详情」
   writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify({
     project: demoRepo,
     plan: ['n1', 'n2', 'n3'],
@@ -391,36 +401,49 @@ try {
   const progressText = await progressRow.innerText();
   assert.ok(progressText.includes('50%'), 'chain percent must be (done + current part) / total');
   assert.ok(progressText.includes('当前：节点二 · 联调 50%'), 'current line uses the node title');
-  assert.equal(await progressRow.locator('.node-seg').count(), 3, 'one segment per node');
-  assert.ok(progressText.includes('当前：节点二 · 联调 50%'), 'current node line must show part and percent');
+  assert.ok(progressText.includes('串行链'), 'serial chain uses the same badge language as DAG');
+  assert.ok(progressText.includes('同一色相 · 深浅 = 状态'), 'serial ring uses the unified segment language');
+  // 环形总进度：每节点一段；串行环用同一色相，阻塞用琥珀色
+  assert.equal(await progressRow.locator('.dag-donut').getAttribute('data-segments'), '3', 'one ring segment per node');
+  assert.equal(await progressRow.locator('.serial-donut').count(), 1, 'serial ring is the same component as DAG');
+  // 四栏节点卡片：任务摘要 / 执行 Agent / 模型 / 费用 Token
+  assert.equal(await progressRow.locator('.progress-node').count(), 3, 'one four-column node card per node');
+  for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node card must carry ${label}`);
+  assert.ok(progressText.includes('正在实现第二块功能'), 'node card shows the real task summary');
+  assert.ok(progressText.includes('未上报'), 'serial agent/model/cost without data must be marked unreported, never fabricated');
   assert.ok(progressText.includes('待您处理') && progressText.includes('今日完成'), 'counts chips must stay');
-  assert.ok(progressText.includes('链累计'), 'chain row must show cumulative chain usage');
-  assert.ok(progressText.includes('1,666 Token'), 'chain usage sums input+output tokens of the whole chain');
-  assert.ok(progressText.includes('$0.21'), 'chain usage must show reported cost');
+  assert.ok(progressText.includes('链累计') && progressText.includes('1,666 Token') && progressText.includes('$0.21'), 'chain usage stays truthful');
   assert.ok(progressText.includes('项目今日 · 费用 $0.07 · Token 100（入 60 / 出 40）'), 'project today usage must come from runs finished today');
   assert.ok(progressText.includes('项目累计 · 费用 $0.21 · Token 1,666（入 1,234 / 出 432）'), 'project cumulative usage must come from rule lines');
-  const segTwo = progressRow.locator('.node-seg').filter({ hasText: '二' });
-  await segTwo.click();
-  const pop = progressRow.locator('.node-pop');
-  assert.ok(await pop.isVisible(), 'node click must open the summary popover');
-  assert.ok((await pop.innerText()).includes('正在实现第二块功能'), 'popover must show the node summary');
-  assert.ok((await pop.innerText()).includes('联调 · 节点内 50%'), 'popover must show status and inner percent');
-  const popBox = await pop.boundingBox();
-  const panelBox = await page.locator('#progress-list').boundingBox();
-  assert.ok(popBox.y >= panelBox.y - 1 && popBox.y + popBox.height <= panelBox.y + panelBox.height + 1, 'the popover card must stay inside the panel bounds');
-  await page.waitForTimeout(2600);
-  assert.ok(await pop.isVisible(), 'an open node popover must survive background refreshes');
-  assert.ok((await pop.innerText()).includes('正在实现第二块功能'), 'refreshed popover keeps the same node content');
-  // 无摘要节点（如 pending）点开后必须有兜底文案，不能是空弹层
-  const segThree = progressRow.locator('.node-seg').filter({ hasText: '三' });
-  await segThree.click();
-  assert.ok((await pop.innerText()).includes('暂无进展摘要'), 'pending node without worker summary must show a fallback line instead of an empty popover');
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Escape');
-  assert.ok(!(await pop.isVisible()), 'Escape must close the popover');
-  await segTwo.press('Enter'); // 直接对 locator 聚焦并按键，避免后台刷新在 focus 与 press 之间替换节点
-  assert.ok(await pop.isVisible(), 'Enter on a focused node segment must open the popover');
-  await page.keyboard.press('Escape');
+  assert.equal(await progressRow.locator('.node-pop').count(), 0, 'node-only popover is retired');
+  // 串行节点点击 → 与 DAG 同构的运行详情视图（不再是只有浮层）
+  await progressRow.locator('.progress-node[data-serial-node="n2"]').click();
+  await page.locator('#view-dag').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#dag-detail .dag-detail').count(), 1);
+  assert.equal(await page.locator('#dag-detail .dag-node[data-serial-node]').count(), 3, 'detail uses the same node-card component');
+  assert.equal(await page.locator('#dag-detail .run-metrics').count(), 1, 'detail has the same metrics structure as DAG detail');
+  const detail = page.locator('#dag-detail #dag-node-detail');
+  assert.equal(await detail.locator('h3').innerText(), '节点二');
+  assert.ok((await detail.innerText()).includes('正在实现第二块功能'), 'detail shows the task summary');
+  assert.ok((await detail.innerText()).includes('联调') && (await detail.innerText()).includes('节点内进度'), 'detail shows part and inner progress');
+  assert.ok((await detail.innerText()).includes('费用 / Token'), 'detail shows cost/token column');
+  // 无摘要节点（pending）详情必须有兜底文案，不能是空面板
+  await page.getByRole('button', { name: '总览', exact: true }).click();
+  await page.locator('#progress-list .progress-node[data-serial-node="n3"]').click();
+  await page.locator('#dag-node-detail').waitFor();
+  assert.ok((await page.locator('#dag-node-detail').innerText()).includes('暂无任务摘要'), 'pending node without summary must show a truthful fallback');
+  await page.getByRole('button', { name: '总览', exact: true }).click();
+  // 失败态：读取失败时保留最后成功数据并提示重试，不把未知当完成
+  await page.route('**/api/serial-progress', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'boom' }) }));
+  await page.locator('#refresh').click();
+  await page.waitForTimeout(300);
+  assert.ok((await page.locator('#progress-state').innerText()).includes('加载失败'), 'progress panel must show an error state');
+  assert.ok((await page.locator('#progress-state').innerText()).includes('保留最后成功数据'), 'error state must promise last-good data retained');
+  assert.ok(await page.locator('#progress-list .serial-chain-row').count() >= 1, 'a failed refresh must not wipe the last successful chain');
+  await page.unroute('**/api/serial-progress');
+  await page.locator('#refresh').click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('#progress-state').isHidden(), true, 'recovered refresh must clear the error state');
   await page.locator('#project-filter').selectOption('demo-repo');
   await page.waitForTimeout(300);
   assert.equal(await page.locator('#progress-list .list-row').count(), 1, 'project filter keeps only the matching chain row');

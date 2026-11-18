@@ -25,6 +25,37 @@ test('run lines include model and billing status', () => {
   assert.equal(unpaid.model, 'hy4free'); assert.equal(unpaid.billing, '110 Token · 费用未上报');
 });
 
+test('in-flight rounds show the triggering event summary and stable subject when the run has no text', () => {
+  // 主人强制需求（#75）：run 无 text 时条目只剩规则名，必须回退到触发事件的 summary/subject。
+  const withEvent = runLine({ id: 5567, rule: '环形视图统一', state: 'claimed', summary: '', error: '',
+    events: [{ source: 'local', type: 'run.manual', subject: 'ring-unify-75', summary: 'owner 手动运行' }] });
+  assert.equal(withEvent.taskSummary, 'owner 手动运行');
+  assert.equal(withEvent.taskNumber, 'ring-unify-75');
+
+  const mixedEvents = runLine({ id: 5563, rule: '费用聚合开发', state: 'claimed', summary: '', error: '',
+    events: [
+      { source: 'schedule', type: 'schedule.tick', subject: '', summary: '' },
+      { source: 'chain', type: 'dag.node.dev', subject: 'node-cost-agg', summary: '费用聚合节点开发' },
+    ] });
+  assert.equal(mixedEvents.taskSummary, '费用聚合节点开发', 'pick the meaningful triggering event, not an empty schedule tick');
+  assert.equal(mixedEvents.taskNumber, 'node-cost-agg');
+
+  const noSummary = runLine({ id: 5565, rule: '调度异常扫描', state: 'queued', attempts: 2, summary: '', error: '',
+    events: [{ source: 'schedule', type: 'schedule.tick', subject: '', summary: '' }] });
+  assert.equal(noSummary.taskSummary, '调度异常扫描', 'no run text and no event summary must show the rule name truthfully');
+  assert.equal(noSummary.taskNumber, '5565', 'without a stable subject the visible round id is used as the number');
+
+  const realText = runLine({ id: 4, rule: '开发', state: 'claimed', summary: '正在改',
+    events: [{ subject: 'x', summary: '事件摘要' }] });
+  assert.equal(realText.taskSummary, '正在改', 'run text wins over event summary');
+  assert.equal(realText.taskNumber, 'x');
+
+  const sectioned = splitRunSections({ runs: [{ id: 5567, rule: '环形视图统一', state: 'claimed', summary: '',
+    events: [{ subject: 'ring-unify-75', summary: 'owner 手动运行' }] }] }, {}, new Date());
+  assert.equal(sectioned.running[0].taskSummary, 'owner 手动运行');
+  assert.equal(sectioned.running[0].taskNumber, 'ring-unify-75');
+});
+
 test('task lines identify their project from run data or the matching rule workdir', () => {
   const rules = [{ name: '开发', cwd: '/workspace/demo' }, { name: '部署', cwd: '/workspace/deploy' }];
   assert.equal(projectForRun({ project: '显式项目' }, rules), '显式项目');
