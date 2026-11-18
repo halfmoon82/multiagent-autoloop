@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   HubSchedulingSessionAdapter,
   HubSchedulingError,
@@ -8,6 +11,8 @@ import {
   schedulingEventId,
   buildSchedulingEvent,
   mapHubStateToStatus,
+  numericEventId,
+  readHubRun,
   matterTurn,
 } from '../src/hub-scheduling-session.mjs';
 import { SchedulingSessionManager } from '../src/scheduling-session.mjs';
@@ -16,9 +21,24 @@ import { postSchedulingEvent, readSchedulingEvent } from '../src/hub.mjs';
 const HUB_CONFIG = { hubUrl: 'http://127.0.0.1:9', ownerKey: 'owner-key', sourceKey: 'source-key' };
 // 真实中台 POST /v1/events 只接受这些字段；假 Hub 同样拒绝未知字段，防止再次漏网（#89）。
 const EVENT_WHITELIST = new Set(['id', 'type', 'subject', 'summary', 'detail', 'link']);
+const ARCHIVED_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
 
+// #92: 假 Hub 必须复刻真实响应形状，杜绝再次形状漏网：
+// POST /v1/events -> {event,duplicate,routed,paused}（event 是数字 Hub 事件 id）
+// GET  /v1/events/<数字 id> -> {event,routed,paused,runs:[{run,rule,state,...}]}
 function fakeHubClient(overrides = {}) {
   const calls = [];
+  let nextEventId = overrides.firstEventId ?? 7184;
+  const buildRun = () => ({
+    run: overrides.runId ?? 6586,
+    rule: '调度会话执行',
+    state: overrides.state ?? 'running',
+    attempts: 1,
+    error: null,
+    finishedAt: overrides.finishedAt ?? null,
+    summary: 'run 摘要',
+    events: [nextEventId - 1],
+  });
   return {
     calls,
     async postEvent(config, event) {
@@ -30,17 +50,18 @@ function fakeHubClient(overrides = {}) {
       }
       calls.push(['postEvent', event]);
       if (overrides.postError) throw overrides.postError;
-      return { id: event.id, subject: event.subject, runId: overrides.runId || `run-${event.subject}`, state: overrides.state || 'running' };
+      return { event: nextEventId++, duplicate: false, routed: true, paused: false };
     },
     async readEvent(config, eventId) {
       calls.push(['readEvent', eventId]);
+      // 真实中台只认数字事件 id；用旧的 console:<uuid>:turn:<n> 字符串必 404。
+      if (!Number.isInteger(eventId)) {
+        const error = new Error('event not found');
+        error.status = 404;
+        throw error;
+      }
       if (overrides.readError) throw overrides.readError;
-      return { id: eventId, runId: overrides.runId || 'run-1', state: overrides.state || 'completed' };
-    },
-    async listMatters(config) {
-      calls.push(['listMatters']);
-      if (overrides.listError) throw overrides.listError;
-      return overrides.matters || [];
+      return { event: eventId, routed: true, paused: false, runs: overrides.runs ?? [buildRun()] };
     },
     async cancelRun(config, runId) {
       calls.push(['cancelRun', runId]);
@@ -54,6 +75,35 @@ function flagSpawn(label = 'spawn') {
   const state = { count: 0 };
   state.fn = () => { state.count += 1; throw new Error(`${label} must not happen`); };
   return state;
+}
+
+function newManager(adapter, extra = {}) {
+  return new SchedulingSessionManager({
+    cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: adapter, ...extra,
+  });
+}
+
+function archiveHome() {
+  return mkdtempSync(path.join(tmpdir(), 'hub-shape-'));
+}
+
+// 直接落一份 console-sessions 存档与它的 Hub 恢复凭据旁车，模拟重启前已经创建的会话。
+function writeArchivedHubSession(home, { id = ARCHIVED_ID, project = 'owner/demo', text = '重启前', hub } = {}) {
+  const dir = path.join(home, 'console-sessions');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({
+    id,
+    kind: 'scheduling',
+    project,
+    agent: HUB_SCHEDULING_AGENT_LABEL,
+    prompt: text,
+    messages: [{ role: 'user', text, at: '2026-11-18T06:00:00Z' }],
+    createdAt: '2026-11-18T06:00:00Z',
+    updatedAt: '2026-11-18T06:00:00Z',
+    closedAt: null,
+    endStatus: 'interrupted',
+  }));
+  if (hub) writeFileSync(path.join(dir, `${id}.hub.json`), JSON.stringify(hub));
 }
 
 test('§6.2 subject and event id contract', () => {
@@ -91,30 +141,42 @@ test('#89 fake Hub rejects unknown event fields like the real Hub does', async (
   assert.equal(client.calls.length, 0, 'a rejected event must never be recorded as posted');
 });
 
-test('hub.mjs write/read adapters call POST /v1/events and read by event id', async () => {
+test('#92 POST/GET adapters use the real Hub shapes and source-key auth', async () => {
   const original = globalThis.fetch;
   const seen = [];
   globalThis.fetch = async (url, opts) => {
     seen.push([String(url), opts]);
-    return { ok: true, status: 200, text: async () => JSON.stringify({ runId: 'r1', state: 'queued' }) };
+    if (opts.method === 'POST') return { ok: true, status: 200, text: async () => JSON.stringify({ event: 7184, duplicate: false, routed: true, paused: false }) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ event: 7184, routed: true, paused: false, runs: [{ run: 6586, state: 'running' }] }) };
   };
   try {
     const event = { id: 'e1', subject: 'scheduling:s', type: 'scheduling.message', summary: 'x', detail: JSON.stringify({ project: 'owner/demo', text: 'x' }) };
-    const result = await postSchedulingEvent(HUB_CONFIG, event);
-    assert.equal(result.runId, 'r1');
+    const posted = await postSchedulingEvent(HUB_CONFIG, event);
+    assert.equal(posted.event, 7184);
+    assert.equal(posted.id, undefined, 'the real POST response has no id field');
     assert.match(seen[0][0], /\/v1\/events$/);
     assert.equal(seen[0][1].method, 'POST');
-    const posted = JSON.parse(seen[0][1].body);
-    assert.equal(posted.id, 'e1');
-    assert.deepEqual(Object.keys(posted).sort(), ['detail', 'id', 'subject', 'summary', 'type']);
-    await readSchedulingEvent(HUB_CONFIG, 'e1');
-    assert.match(seen[1][0], /\/v1\/events\/e1$/);
+    assert.equal(seen[0][1].headers.authorization, 'Bearer source-key');
+    assert.deepEqual(Object.keys(JSON.parse(seen[0][1].body)).sort(), ['detail', 'id', 'subject', 'summary', 'type']);
+    const read = await readSchedulingEvent(HUB_CONFIG, 7184);
+    assert.equal(read.runs[0].run, 6586);
+    assert.match(seen[1][0], /\/v1\/events\/7184$/);
+    assert.equal(seen[1][1].headers.authorization, 'Bearer source-key');
   } finally {
     globalThis.fetch = original;
   }
 });
 
-test('adapter posts every turn to the same matter with whitelist-only events and monotonically increasing ids', async () => {
+test('#92 numericEventId / readHubRun tolerate the real shapes and reject the old ones', () => {
+  assert.equal(numericEventId({ event: 7184, duplicate: false, routed: true, paused: false }), 7184);
+  assert.equal(numericEventId({ id: 'console:s:turn:1', runId: 'run-1', state: 'running' }), null, 'the old response shape must not be mistaken for a numeric id');
+  assert.equal(numericEventId(null), null);
+  assert.deepEqual(readHubRun({ event: 7184, runs: [{ run: 6586, rule: 'r', state: 'done', attempts: 1, error: null, finishedAt: 'x', summary: '', events: [] }] }), { runId: 6586, state: 'done' });
+  assert.equal(readHubRun({ event: 7184, runs: [] }), null);
+  assert.equal(readHubRun({ id: 'e1', runId: 'run-1', state: 'running' }), null);
+});
+
+test('adapter posts every turn to the same subject with whitelist-only events and monotonically increasing ids', async () => {
   const client = fakeHubClient();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   await adapter.postTurn({ sessionId: 's-1', turn: 1, project: 'owner/demo', text: '第一轮' });
@@ -143,9 +205,47 @@ test('duplicate event ids do not produce a second execution', async () => {
 test('Hub run state maps to console session status', () => {
   assert.equal(mapHubStateToStatus('running'), 'running');
   assert.equal(mapHubStateToStatus('queued'), 'running');
+  assert.equal(mapHubStateToStatus('in_progress'), 'running');
+  assert.equal(mapHubStateToStatus('done'), 'idle');
   assert.equal(mapHubStateToStatus('completed'), 'idle');
   assert.equal(mapHubStateToStatus('failed'), 'error');
-  assert.equal(mapHubStateToStatus(undefined), 'idle');
+  assert.equal(mapHubStateToStatus('cancelled'), 'error');
+  assert.equal(mapHubStateToStatus(undefined), 'unknown', 'missing state must be reported as 待复核, not idle');
+});
+
+test('#92 start saves the numeric event id and derives status/runId from GET runs[0]', async () => {
+  const client = fakeHubClient();
+  const home = archiveHome();
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = newManager(adapter, { archiveRoot: home });
+  const started = await manager.start({ project: 'owner/demo', prompt: '首轮调度' });
+  assert.equal(started.status, 'running');
+  assert.equal(started.hubRunId, 6586);
+  const reads = client.calls.filter(call => call[0] === 'readEvent');
+  assert.deepEqual(reads.map(call => call[1]), [7184], 'readStatus must use the numeric Hub event id, not console:<uuid>:turn:1');
+  const hubState = JSON.parse(readFileSync(path.join(home, 'console-sessions', `${started.id}.hub.json`), 'utf8'));
+  assert.equal(hubState.lastEventId, 7184);
+  assert.equal(hubState.runId, 6586);
+  assert.equal(hubState.turn, 1);
+});
+
+test('#92 a done run maps to idle and a failed run maps to error at start', async () => {
+  for (const [state, expected] of [['done', 'idle'], ['failed', 'error']]) {
+    const client = fakeHubClient({ state });
+    const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+    const started = await newManager(adapter).start({ project: 'owner/demo', prompt: 'x' });
+    assert.equal(started.status, expected);
+  }
+});
+
+test('#92 a missing/failed GET keeps start usable but marks it 待复核, never running or idle', async () => {
+  const client = fakeHubClient({ readError: new Error('hub down') });
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = newManager(adapter);
+  const started = await manager.start({ project: 'owner/demo', prompt: '保留我' });
+  assert.equal(started.status, 'unknown');
+  assert.match(started.error, /hub down/);
+  assert.equal(manager.list().length, 1, 'a failed status read must not make the session disappear');
 });
 
 test('scheduling start uses the Hub adapter and never spawns a private ACP process', async () => {
@@ -181,6 +281,18 @@ test('subsequent messages join the same Hub matter with a new turn', async () =>
   assert.equal(spawned.count, 0);
 });
 
+test('#92 a follow-up send refreshes status through GET, not the POST response', async () => {
+  const client = fakeHubClient();
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = newManager(adapter);
+  const started = await manager.start({ project: 'owner/demo', prompt: '首轮' });
+  const before = client.calls.filter(call => call[0] === 'readEvent').length;
+  const sent = await manager.send(started.id, '继续');
+  assert.equal(sent.status, 'running');
+  assert.equal(sent.hubRunId, 6586);
+  assert.ok(client.calls.filter(call => call[0] === 'readEvent').length > before, 'send must reconcile via GET');
+});
+
 test('Hub unavailable preserves input and never falls back to ACP', async () => {
   const spawned = flagSpawn();
   const client = fakeHubClient({ postError: new Error('ECONNREFUSED') });
@@ -209,7 +321,7 @@ test('unwired rule (Hub 404) returns a readable error, not an ACP fallback', asy
 test('interrupt maps to canceling the active Hub run without posting a new event', async () => {
   const client = fakeHubClient();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
-  const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: adapter });
+  const manager = newManager(adapter);
   const started = await manager.start({ project: 'owner/demo', prompt: '首轮' });
   const before = client.calls.filter(call => call[0] === 'postEvent').length;
   await manager.send(started.id, '', { interrupt: true });
@@ -220,7 +332,7 @@ test('interrupt maps to canceling the active Hub run without posting a new event
 test('close stops new events and does not kill any local ACP process', async () => {
   const client = fakeHubClient();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
-  const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: adapter });
+  const manager = newManager(adapter);
   const started = await manager.start({ project: 'owner/demo', prompt: '首轮' });
   const closed = await manager.close(started.id);
   assert.equal(closed.status, 'closed');
@@ -231,21 +343,67 @@ test('close stops new events and does not kill any local ACP process', async () 
   assert.ok(!client.calls.some(call => call[0] === 'cancelRun'), 'closing the console view does not kill the Hub run');
 });
 
-test('restart recovery rebuilds Hub scheduling views without spawning ACP', async () => {
-  const matters = [{
-    subject: 'scheduling:survived', sessionId: 'survived', project: 'owner/demo',
-    state: 'running', text: '控制台重启前的调度', startedAt: '2026-11-17T10:00:00Z',
-  }];
-  const client = fakeHubClient({ matters });
+test('#92 restart recovery rebuilds scheduling views from console-sessions + GET runs[0]', async () => {
+  const home = archiveHome();
+  writeArchivedHubSession(home, {
+    text: '控制台重启前的调度',
+    hub: { sessionId: ARCHIVED_ID, subject: `scheduling:${ARCHIVED_ID}`, turn: 2, lastEventId: 7191, runId: null },
+  });
+  const client = fakeHubClient({ firstEventId: 7191, state: 'running', runId: 6592 });
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
-  const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: adapter });
+  const manager = newManager(adapter, { archiveRoot: home });
   await manager.restoreFromHub();
   const views = manager.list();
   assert.equal(views.length, 1);
   assert.equal(views[0].status, 'running');
+  assert.equal(views[0].hubRunId, 6592, 'runId is derived from GET runs[0].run');
   assert.equal(views[0].project, 'owner/demo');
   assert.equal(views[0].agent, HUB_SCHEDULING_AGENT_LABEL);
-  assert.equal(views[0].hubSubject, 'scheduling:survived');
+  assert.equal(views[0].hubSubject, `scheduling:${ARCHIVED_ID}`);
+  assert.deepEqual(client.calls.filter(call => call[0] === 'readEvent').map(call => call[1]), [7191]);
+  assert.ok(!client.calls.some(call => call[0] === 'listMatters'), 'recovery must never call /v1/matters');
+});
+
+test('#92 recovery continues at the archived turn, not a duplicate id', async () => {
+  const home = archiveHome();
+  writeArchivedHubSession(home, {
+    hub: { sessionId: ARCHIVED_ID, subject: `scheduling:${ARCHIVED_ID}`, turn: 3, lastEventId: 7184, runId: 6586 },
+  });
+  const client = fakeHubClient();
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = newManager(adapter, { archiveRoot: home });
+  await manager.restoreFromHub();
+  await manager.send(ARCHIVED_ID, '恢复后继续');
+  const posted = client.calls.filter(call => call[0] === 'postEvent').map(call => call[1].id);
+  assert.deepEqual(posted, [`console:${ARCHIVED_ID}:turn:4`]);
+});
+
+test('#92 a failed readStatus marks 待复核 and surfaces the error instead of faking running/idle', async () => {
+  const home = archiveHome();
+  writeArchivedHubSession(home, {
+    hub: { sessionId: ARCHIVED_ID, subject: `scheduling:${ARCHIVED_ID}`, turn: 2, lastEventId: 7191, runId: null },
+  });
+  const client = fakeHubClient({ readError: new Error('hub down') });
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = newManager(adapter, { archiveRoot: home });
+  await assert.rejects(manager.restoreFromHub(), /hub down/);
+  const views = manager.list();
+  assert.equal(views.length, 1, 'the archived session must still be listed');
+  assert.equal(views[0].status, 'unknown');
+  assert.match(views[0].error, /hub down/);
+});
+
+test('#92 a missing Hub archive sidecar is not an error and never fabricates a status', async () => {
+  const home = archiveHome();
+  writeArchivedHubSession(home, { text: '旧会话，无 Hub 凭据' }); // 只写通用存档，不写 .hub.json
+  const client = fakeHubClient();
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = newManager(adapter, { archiveRoot: home });
+  await manager.restoreFromHub(); // 不抛
+  assert.equal(manager.list().length, 1);
+  assert.equal(manager.list()[0].status, 'unknown');
+  assert.equal(manager.list()[0].error, null);
+  assert.equal(client.calls.length, 0, 'no event id means no speculative GET');
 });
 
 test('normal and design sessions keep the existing ACP spawn path', async () => {
@@ -284,71 +442,63 @@ test('normal and design sessions keep the existing ACP spawn path', async () => 
 });
 
 // ---- PR #74 返工回归 ----
-test('F2 restore of a multi-turn matter continues at the next turn, not a duplicate id', async () => {
-  const matters = [{ subject: 'scheduling:multi', sessionId: 'multi', project: 'owner/demo', state: 'idle', text: '第一句', lastEventId: 'console:multi:turn:3', runId: 'run-3' }];
-  const client = fakeHubClient({ matters });
-  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
-  const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: adapter });
-  await manager.restoreFromHub();
-  await manager.send('multi', '恢复后继续');
-  const posted = client.calls.filter(call => call[0] === 'postEvent').map(call => call[1].id);
-  assert.deepEqual(posted, ['console:multi:turn:4']);
-});
-
-test('F2 matterTurn reads the max turn from events list and falls back to 1', () => {
+test('F2 matterTurn still reads the max turn from legacy matter shapes', () => {
   assert.equal(matterTurn('s', {}), 1);
   assert.equal(matterTurn('s', { events: [{ id: 'console:s:turn:2' }, 'console:s:turn:5', { id: 'other' }] }), 5);
   assert.equal(matterTurn('s', { lastEventId: 'console:other:turn:9' }), 1);
 });
 
-test('F3 restoreFromHub surfaces Hub failure instead of an empty list', async () => {
-  const client = fakeHubClient({ listError: new Error('hub down') });
-  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
-  await assert.rejects(adapter.listMatters(), error => error instanceof HubSchedulingError && /hub down/.test(error.message));
-  const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: adapter });
-  await assert.rejects(manager.restoreFromHub(), /hub down/);
-  const empty = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: fakeHubClient({ matters: [] }) });
-  assert.deepEqual(await empty.listMatters(), []);
-});
-
-test('F4 interrupt without a runId looks it up, and errors without marking idle when unknown', async () => {
-  const matters = [{ subject: 'scheduling:norun', sessionId: 'norun', project: 'owner/demo', state: 'running', text: 'x' }];
-  const found = fakeHubClient({ matters, runId: 'run-found', state: 'running' });
-  const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: found }) });
+test('F4 interrupt without a runId looks it up through GET runs, and errors without marking idle when unknown', async () => {
+  const home = archiveHome();
+  const found = fakeHubClient({ state: 'running', runId: 6592 });
+  const manager = newManager(new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: found }), { archiveRoot: home });
+  writeArchivedHubSession(home, {
+    id: ARCHIVED_ID,
+    hub: { sessionId: ARCHIVED_ID, subject: `scheduling:${ARCHIVED_ID}`, turn: 2, lastEventId: 7191, runId: null },
+  });
   await manager.restoreFromHub();
-  await manager.send('norun', '', { interrupt: true });
-  assert.ok(found.calls.some(call => call[0] === 'cancelRun' && call[1] === 'run-found'));
+  await manager.send(ARCHIVED_ID, '', { interrupt: true });
+  assert.ok(found.calls.some(call => call[0] === 'cancelRun' && call[1] === 6592));
 
-  const missing = fakeHubClient({ matters, readError: new Error('nope') });
-  const manager2 = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: missing }) });
-  await manager2.restoreFromHub();
-  await assert.rejects(manager2.send('norun', '', { interrupt: true }), /run/);
-  assert.equal(manager2.list()[0].status, 'running');
+  const home2 = archiveHome();
+  writeArchivedHubSession(home2, {
+    id: ARCHIVED_ID,
+    hub: { sessionId: ARCHIVED_ID, subject: `scheduling:${ARCHIVED_ID}`, turn: 2, lastEventId: 7191, runId: null },
+  });
+  const missing = fakeHubClient({ readError: new Error('nope') });
+  const manager2 = newManager(new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: missing }), { archiveRoot: home2 });
+  await assert.rejects(manager2.restoreFromHub(), /nope/);
+  await assert.rejects(manager2.send(ARCHIVED_ID, '', { interrupt: true }), /run|状态/);
+  assert.equal(manager2.list()[0].status, 'unknown', 'a failed run lookup must not mark the session running');
   assert.ok(!missing.calls.some(call => call[0] === 'cancelRun'));
 });
 
-test('F1 real createConsoleServer assembly restores sessions from the Hub on start', async () => {
+test('F1 real createConsoleServer assembly restores scheduling views without /v1/matters', async () => {
   const { createServer } = await import('node:http');
-  const { mkdtempSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const path = await import('node:path');
   const { createConsoleServer } = await import('../src/server.mjs');
   const { listen, close } = await import('./helpers.mjs');
+  const seen = [];
   const hub = createServer((req, res) => {
+    seen.push(req.url);
     res.setHeader('content-type', 'application/json');
-    if (req.url.startsWith('/v1/matters')) return res.end(JSON.stringify({ matters: [{ subject: 'scheduling:real', sessionId: 'real', project: 'owner/demo', state: 'running', text: '重启前', lastEventId: 'console:real:turn:2' }] }));
+    if (req.url.startsWith('/v1/events/')) return res.end(JSON.stringify({ event: 7191, routed: true, paused: false, runs: [{ run: 6592, rule: '调度会话执行', state: 'running', attempts: 1, error: null, finishedAt: null, summary: '', events: [7191] }] }));
     res.statusCode = 404; res.end('{}');
   });
   await new Promise(resolve => hub.listen(0, '127.0.0.1', resolve));
-  const root = mkdtempSync(path.join(tmpdir(), 'restore-root-'));
-  const server = createConsoleServer({ hubUrl: `http://127.0.0.1:${hub.address().port}`, ownerKey: 'k', host: '127.0.0.1', root, rulesFile: path.join(root, 'rules.json') });
+  const root = archiveHome();
+  writeArchivedHubSession(root, {
+    hub: { sessionId: ARCHIVED_ID, subject: `scheduling:${ARCHIVED_ID}`, turn: 2, lastEventId: 7191, runId: null },
+  });
+  const server = createConsoleServer({ hubUrl: `http://127.0.0.1:${hub.address().port}`, ownerKey: 'k', sourceKey: 'sk', host: '127.0.0.1', root, rulesFile: path.join(root, 'rules.json') });
   try {
     const url = await listen(server);
     await server.restoreSchedulingSessions();
     const response = await fetch(`${url}/api/scheduling-sessions`, { headers: { host: '127.0.0.1' } });
     const sessions = await response.json();
     assert.equal(sessions.length, 1);
-    assert.equal(sessions[0].hubSubject, 'scheduling:real');
+    assert.equal(sessions[0].hubSubject, `scheduling:${ARCHIVED_ID}`);
+    assert.equal(sessions[0].status, 'running');
+    assert.ok(!seen.some(url => url.startsWith('/v1/matters')), 'no /v1/matters request may ever reach the Hub');
   } finally { await close(server); await new Promise(resolve => hub.close(resolve)); }
 });
 
@@ -359,7 +509,7 @@ async function fakeAuthHub(handler) {
   const hub = createServer((req, res) => {
     seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
     res.setHeader('content-type', 'application/json');
-    handler?.(req, res) || res.end(JSON.stringify({ id: 'e1', state: 'running' }));
+    handler?.(req, res) || res.end(JSON.stringify({ event: 7184, duplicate: false, routed: true, paused: false }));
   });
   await new Promise(resolve => hub.listen(0, '127.0.0.1', resolve));
   return { seen, hubUrl: `http://127.0.0.1:${hub.address().port}`, close: () => new Promise(resolve => hub.close(resolve)) };
@@ -371,8 +521,8 @@ test('#85 events POST/GET authenticate with the source key; owner calls keep the
   try {
     const config = { hubUrl: hub.hubUrl, ownerKey: 'owner-key', sourceKey: 'source-key' };
     await postSchedulingEvent(config, { id: 'e1', subject: 'scheduling:s', type: 'scheduling.message' });
-    await readSchedulingEvent(config, 'e1');
-    await hubRequest(config, '/v1/matters?kind=scheduling');
+    await readSchedulingEvent(config, 7184);
+    await hubRequest(config, '/v1/state');
     assert.deepEqual(hub.seen.map(r => r.authorization), ['Bearer source-key', 'Bearer source-key', 'Bearer owner-key']);
   } finally { await hub.close(); }
 });
@@ -382,7 +532,7 @@ test('#85 missing sourceKey fails closed with a readable error and never falls b
   try {
     const config = { hubUrl: hub.hubUrl, ownerKey: 'owner-key' };
     await assert.rejects(() => postSchedulingEvent(config, { id: 'e1' }), /source\.key/);
-    await assert.rejects(() => readSchedulingEvent(config, 'e1'), /source\.key/);
+    await assert.rejects(() => readSchedulingEvent(config, 7184), /source\.key/);
     assert.equal(hub.seen.length, 0, 'no request may reach the Hub without a source key');
   } finally { await hub.close(); }
 });
@@ -403,19 +553,17 @@ test('#85 both keys are redacted from Hub responses and errors', async () => {
   try {
     const config = { hubUrl: hub.hubUrl, ownerKey: 'owner-key', sourceKey: 'source-key' };
     await assert.rejects(() => postSchedulingEvent(config, { id: 'e1' }), error => !/source-key|owner-key/.test(error.message) && /已隐藏/.test(error.message));
-    const read = await readSchedulingEvent(config, 'e1');
+    const read = await readSchedulingEvent(config, 7184);
     assert.doesNotMatch(JSON.stringify(read), /source-key|owner-key/);
   } finally { await hub.close(); }
 });
 
 test('#85 loadConsoleConfig exposes sourceKey from the source object and tolerates its absence', async () => {
-  const { mkdtempSync, writeFileSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const path = await import('node:path');
+  const { writeFileSync: w } = await import('node:fs');
   const { loadConsoleConfig } = await import('../src/config.mjs');
   const make = extra => {
     const root = mkdtempSync(path.join(tmpdir(), 'src-key-'));
-    writeFileSync(path.join(root, 'config.json'), JSON.stringify({ url: 'http://127.0.0.1:3350', owner: 'o', ...extra }));
+    w(path.join(root, 'config.json'), JSON.stringify({ url: 'http://127.0.0.1:3350', owner: 'o', ...extra }));
     return loadConsoleConfig(root);
   };
   assert.equal(make({ source: { name: 'console', key: 'sk' } }).sourceKey, 'sk');
