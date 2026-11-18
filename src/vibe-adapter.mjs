@@ -1,6 +1,6 @@
 // 服务端 vibe 规划适配器：对 vibe CLI 的受控适配层（纯模块，不接 HTTP 路由）。
 // 固定封装 scan/plan/init --confirm 白名单子命令，argv 全部在模块内部构造；
-// 显式 --adapter codex 与 --project-root；清理宿主环境变量；不做版本预检（版本不符由 CLI 自己报错）；
+// 显式 --adapter codex 与 --project-root；清理宿主环境变量；版本预检阻塞式锁定 5.2.7；
 // 能力记录只读校验（服务端绝不执行 attest、绝不写能力记录、绝不编造 ACP initialize 不包含的派发事实）。
 import { execFile } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
@@ -265,6 +265,6 @@ export async function runVibe(subcommand, { projectRoot, runner = defaultRunner,
     try { data = JSON.parse(String(stdout)); } catch { data = String(stdout); }
     return { ok: true, argv, data };
   } catch (error) {
-    return fail('vibe_cli_failed', `vibe ${subcommand} 执行失败：${error.message}`, '确认 vibe CLI 已安装且在 PATH 中；版本或契约不符时以 CLI 的报错为准');
+    return fail('vibe_cli_failed', `vibe ${subcommand} 执行失败：${error.message}`);
   }
 }
