@@ -30,7 +30,7 @@ export function renderPreflight(data, { loading = false, error = '' } = {}) {
   }
   root.append(panel);
   const side = el('aside', 'preflight-sidebar'); const note = el('section', 'panel side-card');
-  note.append(el('div', 'panel-heading', ''), el('p', 'side-copy', '控制台只读检查，不代写能力记录。原生计划（docs/dag-plans）走审批与派发，不依赖 vibe；只有回退到 vibe 计划时才需要规划环境与能力记录——缺失时在真实 Codex 会话执行 vibe attest --adapter codex --facts <facts.json> --provenance "<观察依据>" 后重新检查。'));
+  note.append(el('div', 'panel-heading', ''), el('p', 'side-copy', '这些检查只作参考，不阻止创建与派发；真正的硬约束是授权范围（部署、发布、生产写入、凭据、对外通信永不放行）。'));
   note.firstChild.append(el('h3', '', '说明'));
   side.append(note); root.append(side); return root;
 }

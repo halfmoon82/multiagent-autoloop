@@ -12,16 +12,14 @@ test('样本只存脱敏特征，拒绝原文与秘密字段', () => {
   assert.throws(() => s.addExample({ features: { tags: [] }, label: 'bogus', source: 'x' }), CardFilterError);
 });
 
-test('版本生命周期：新版本默认 shadow，激活需验证通过且人工门禁误路由为 0', () => {
+test('版本生命周期：新版本默认 shadow，激活不再被评测结果阻断（只记录）', () => {
   const s = createCardFilterStore();
   const v1 = s.createVersion({ rules: [], summary: '初版' });
   assert.equal(v1.status, 'shadow');
-  assert.throws(() => s.activate(v1.version), /验证/);
-  s.recordValidation(v1.version, { total: 10, humanGateFalseAuto: 1, passed: false });
-  assert.throws(() => s.activate(v1.version), /验证/);
-  s.recordValidation(v1.version, passing);
   assert.equal(s.activate(v1.version).status, 'active');
   assert.equal(s.current().mode, 'active');
+  s.recordValidation(v1.version, passing);
+  assert.equal(s.getVersion(v1.version).validation.passed, true);
 });
 
 test('回滚到上一版本或全 shadow，不动决策记录', () => {

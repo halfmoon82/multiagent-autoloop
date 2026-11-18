@@ -85,18 +85,14 @@ test('重启后从持久化文件恢复版本与模式', async () => {
   assert.equal(b.status().version, 'v1');
 });
 
-test('activate 未通过评测或有人工门禁误路由时被拒；rollback 回到 shadow', async () => {
+test('activate 不再要求评测通过；rollback 回到 shadow', async () => {
   const { routing } = setup({ activate: false });
   const v1 = routing.store.createVersion({ rules: [] });
-  assert.throws(() => routing.activate(v1.version), { code: 'VALIDATION_REQUIRED' });
-  routing.store.recordValidation(v1.version, { total: 17, humanGateFalseAuto: 1, passed: true });
-  assert.throws(() => routing.activate(v1.version), { code: 'VALIDATION_REQUIRED' });
-  routing.store.recordValidation(v1.version, { total: 17, humanGateFalseAuto: 0, passed: true });
   assert.equal(routing.activate(v1.version).mode, 'active');
   assert.equal(routing.rollback().mode, 'shadow');
 });
 
-test('API：GET 状态、activate 校验失败 400、成功后 rollback；写入需控制台标记', async () => {
+test('API：GET 状态、activate/rollback；写入需控制台标记', async () => {
   const hub = await fakeHub((req, res) => json(res, { ok: true }));
   const root = mkdtempSync(path.join(tmpdir(), 'card-routing-api-'));
   writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ sources: {}, agents: {}, rules: [] }));
@@ -112,12 +108,14 @@ test('API：GET 状态、activate 校验失败 400、成功后 rollback；写入
     const status = await (await fetch(`${url}/api/card-router`)).json();
     assert.equal(status.mode, 'shadow');
     assert.equal((await fetch(`${url}/api/card-router/activate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"version":"v2"}' })).status, 403);
-    assert.equal((await post('/api/card-router/activate', { version: bad.version })).status, 400);
+    assert.equal((await post('/api/card-router/activate', { version: bad.version })).status, 200, '未评测的版本也能激活（评测只记录）');
     assert.equal((await post('/api/card-router/activate', { version: 'v99' })).status, 404);
     assert.equal((await post('/api/card-router/activate', {})).status, 400);
     const ok = await post('/api/card-router/activate', { version: good.version });
     assert.equal(ok.status, 200);
     assert.equal((await ok.json()).mode, 'active');
+    const back = await (await post('/api/card-router/rollback', {})).json();
+    assert.equal(back.mode, 'active'); assert.equal(back.version, bad.version, '回滚到上一生效版本');
     assert.equal((await (await post('/api/card-router/rollback', {})).json()).mode, 'shadow');
   } finally { await close(server); await close(hub.server); }
 });
@@ -187,7 +185,7 @@ test('publish：快照写入失败抛可读错误，不静默吞掉', async () =
   );
 });
 
-test('publish 落盘后重启可见：GET 状态含 validation 摘要，activate 成功且不放松门禁', async () => {
+test('publish 落盘后重启可见：GET 状态含 validation 摘要，activate 不再被评测阻断', async () => {
   const file = path.join(mkdtempSync(path.join(tmpdir(), 'card-pub-')), 'card-router', 'store.json');
   await pubRouting(file).publish({ rules: PUB_RULES() });
   const b = pubRouting(file);
@@ -201,9 +199,9 @@ test('publish 落盘后重启可见：GET 状态含 validation 摘要，activate
   assert.equal(b.activate('v1').mode, 'active');
   assert.equal(b.status().version, 'v1');
   assert.equal(b.status().mode, 'active');
-  // activate 既有校验未放松：无 validation 的新版本仍被拒
+  // 评测只记录，不阻断激活
   const v2 = b.store.createVersion({ rules: [] });
-  assert.throws(() => b.activate(v2.version), { code: 'VALIDATION_REQUIRED' });
+  assert.equal(b.activate(v2.version).mode, 'active');
 });
 
 test('API：publish 后 GET 显示 v1 与 validation 摘要，POST activate 返回 mode=active', async () => {

@@ -1,6 +1,6 @@
 // 服务端 vibe 规划适配器：对 vibe CLI 的受控适配层（纯模块，不接 HTTP 路由）。
 // 固定封装 scan/plan/init --confirm 白名单子命令，argv 全部在模块内部构造；
-// 显式 --adapter codex 与 --project-root；清理宿主环境变量；版本预检阻塞式锁定 5.2.7；
+// 显式 --adapter codex 与 --project-root；清理宿主环境变量；不做版本预检（版本不符由 CLI 自己报错）；
 // 能力记录只读校验（服务端绝不执行 attest、绝不写能力记录、绝不编造 ACP initialize 不包含的派发事实）。
 import { execFile } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
@@ -103,43 +103,6 @@ export function buildVibeArgv(subcommand, { projectRoot, prdPath = null, confirm
 export async function defaultRunner(argv, { command = 'vibe', env }) {
   const { stdout } = await execFileAsync(command, argv, { env, maxBuffer: 4 * 1024 * 1024 });
   return { stdout };
-}
-
-/** 版本预检：优先 `vibe --version`，其次读已安装包元数据；两条路都不通时降级为警告，不阻塞流水线。 */
-async function probeInstalledVersion({ env }) {
-  try {
-    const { stdout } = await execFileAsync('pipx', ['list', '--json'], { env, maxBuffer: 4 * 1024 * 1024 });
-    const data = JSON.parse(String(stdout));
-    const version = data?.venvs?.['vibe-guide']?.metadata?.main_package?.package_version;
-    return typeof version === 'string' && version.trim() ? version.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function ensureVibeVersion({ runner = defaultRunner, command = 'vibe', env, fallback = probeInstalledVersion } = {}) {
-  const cleanEnv = sanitizeHostEnv(env ?? process.env);
-  let stdout = '';
-  try {
-    ({ stdout } = await runner(['--version'], { command, env: cleanEnv }));
-  } catch (error) {
-    // 有些 vibe 版本不认 --version（argparse 退出码 2），stdout/stderr 里没有版本号，转到已安装包元数据。
-    stdout = String(error?.stdout ?? '');
-  }
-  const match = VERSION_PATTERN.exec(String(stdout));
-  let version = match ? match[0] : null;
-  let source = version ? 'cli' : null;
-  if (!version) {
-    try { version = await fallback({ command, env: cleanEnv }); } catch { version = null; }
-    if (version) source = 'installed-package';
-  }
-  if (!version) {
-    return { ok: true, version: null, source: null, warning: `version_probe_unavailable：无法探明 vibe 版本，按契约版本 ${VIBE_VERSION} 继续；子命令行为异常时会如实返回 vibe_cli_failed` };
-  }
-  if (String(version) !== VIBE_VERSION) {
-    return fail('version_mismatch', `已安装 vibe ${version} 与契约版本 ${VIBE_VERSION} 不一致，适配器阻塞`, `安装 vibe ${VIBE_VERSION} 后再试，适配器不做契约猜测或降级`);
-  }
-  return source === 'installed-package' ? { ok: true, version, source } : { ok: true, version };
 }
 
 /** 初始化预检：.vibe/state.json 缺失返回 initialization_required（只有显式 confirm 才允许 init）。 */
@@ -292,8 +255,6 @@ export async function runVibe(subcommand, { projectRoot, runner = defaultRunner,
     if (error instanceof VibeAdapterError) return fail(error.code === 'invalid_arguments' ? 'invalid_arguments' : error.code, error.message);
     throw error;
   }
-  const version = await ensureVibeVersion({ runner, command, env });
-  if (!version.ok) return version;
   // init 本身就是初始化动作，跳过 initialization 预检；scan/plan 必须先初始化。
   if (subcommand !== 'init') {
     const init = checkInitialization({ projectRoot });
@@ -304,7 +265,7 @@ export async function runVibe(subcommand, { projectRoot, runner = defaultRunner,
     const { stdout } = await runner(argv, { command, env: cleanEnv });
     let data = null;
     try { data = JSON.parse(String(stdout)); } catch { data = String(stdout); }
-    return { ok: true, version: version.version, argv, data };
+    return { ok: true, argv, data };
   } catch (error) {
     return fail('vibe_cli_failed', `vibe ${subcommand} 执行失败：${error.message}`);
   }

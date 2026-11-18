@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, copyFileSync, readFileSy
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { extractProductSpec, checkCapabilities, resolveProjectRoot, runVibe, sanitizeHostEnv } from './vibe-adapter.mjs';
+import { extractProductSpec, resolveProjectRoot, runVibe, sanitizeHostEnv } from './vibe-adapter.mjs';
 import { loadVibePlan } from './vibe-plan.mjs';
 import { buildWorktreeTree, defaultGit, removeWorktree, restoreWorktree } from './git-safe.mjs';
 import { loadDesignManifest } from './design-baseline.mjs';
@@ -61,8 +61,6 @@ export async function publishProductSpec({
   try { extracted = extractProductSpec(transcript); } catch (error) { return fail(error.code || 'invalid_arguments', error.message); }
   if (!extracted.ok) return extracted;
   if (extracted.specDigest !== specDigest) return fail('spec_digest_mismatch', 'specDigest 与会话转录中的 product-spec 不一致，请重新确认');
-  const capability = checkCapabilities({ projectRoot: root });
-  if (!capability.ok) return capability;
   let design = null;
   let designSnapshot = null;
   const designRef = extracted.productSpec.design;
