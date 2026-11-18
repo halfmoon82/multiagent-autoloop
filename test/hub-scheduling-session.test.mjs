@@ -14,12 +14,20 @@ import { SchedulingSessionManager } from '../src/scheduling-session.mjs';
 import { postSchedulingEvent, readSchedulingEvent } from '../src/hub.mjs';
 
 const HUB_CONFIG = { hubUrl: 'http://127.0.0.1:9', ownerKey: 'owner-key', sourceKey: 'source-key' };
+// 真实中台 POST /v1/events 只接受这些字段；假 Hub 同样拒绝未知字段，防止再次漏网（#89）。
+const EVENT_WHITELIST = new Set(['id', 'type', 'subject', 'summary', 'detail', 'link']);
 
 function fakeHubClient(overrides = {}) {
   const calls = [];
   return {
     calls,
     async postEvent(config, event) {
+      const unknown = Object.keys(event).filter(key => !EVENT_WHITELIST.has(key));
+      if (unknown.length) {
+        const error = new Error(`不认识的字段：${unknown.join(', ')}`);
+        error.status = 400;
+        throw error;
+      }
       calls.push(['postEvent', event]);
       if (overrides.postError) throw overrides.postError;
       return { id: event.id, subject: event.subject, runId: overrides.runId || `run-${event.subject}`, state: overrides.state || 'running' };
@@ -56,9 +64,31 @@ test('§6.2 subject and event id contract', () => {
   assert.equal(event.id, 'console:abc-123:turn:1');
   assert.equal(event.subject, 'scheduling:abc-123');
   assert.equal(event.type, 'scheduling.message');
-  assert.equal(event.resume, true);
-  assert.equal(event.project, 'owner/demo');
-  assert.equal(event.text, '开始');
+  // #89: project/text 进 detail（worker 可解析的 JSON 字符串），summary 为首轮文本摘要，无 resume。
+  assert.deepEqual(JSON.parse(event.detail), { project: 'owner/demo', text: '开始' });
+  assert.match(event.summary, /开始/);
+  assert.equal(event.resume, undefined);
+  assert.equal(event.project, undefined);
+  assert.equal(event.text, undefined);
+});
+
+test('#89 buildSchedulingEvent sends only the Hub event whitelist fields', () => {
+  const event = buildSchedulingEvent({ sessionId: 'abc-123', turn: 3, project: 'owner/demo', text: '继续这件事' });
+  assert.deepEqual(Object.keys(event).sort(), ['detail', 'id', 'subject', 'summary', 'type']);
+  for (const key of Object.keys(event)) assert.ok(EVENT_WHITELIST.has(key), `${key} is not a Hub event field`);
+  assert.equal(event.id, 'console:abc-123:turn:3');
+  assert.equal(event.subject, 'scheduling:abc-123');
+  assert.ok(event.summary.length <= 80, 'summary is a short first-turn text digest');
+  assert.deepEqual(JSON.parse(event.detail), { project: 'owner/demo', text: '继续这件事' });
+});
+
+test('#89 fake Hub rejects unknown event fields like the real Hub does', async () => {
+  const client = fakeHubClient();
+  await assert.rejects(
+    () => client.postEvent(HUB_CONFIG, { id: 'e1', subject: 'scheduling:s', type: 'scheduling.message', resume: true }),
+    error => error.status === 400 && /resume/.test(error.message),
+  );
+  assert.equal(client.calls.length, 0, 'a rejected event must never be recorded as posted');
 });
 
 test('hub.mjs write/read adapters call POST /v1/events and read by event id', async () => {
@@ -69,11 +99,14 @@ test('hub.mjs write/read adapters call POST /v1/events and read by event id', as
     return { ok: true, status: 200, text: async () => JSON.stringify({ runId: 'r1', state: 'queued' }) };
   };
   try {
-    const result = await postSchedulingEvent(HUB_CONFIG, { id: 'e1', subject: 'scheduling:s', type: 'scheduling.message', resume: true, text: 'x' });
+    const event = { id: 'e1', subject: 'scheduling:s', type: 'scheduling.message', summary: 'x', detail: JSON.stringify({ project: 'owner/demo', text: 'x' }) };
+    const result = await postSchedulingEvent(HUB_CONFIG, event);
     assert.equal(result.runId, 'r1');
     assert.match(seen[0][0], /\/v1\/events$/);
     assert.equal(seen[0][1].method, 'POST');
-    assert.equal(JSON.parse(seen[0][1].body).id, 'e1');
+    const posted = JSON.parse(seen[0][1].body);
+    assert.equal(posted.id, 'e1');
+    assert.deepEqual(Object.keys(posted).sort(), ['detail', 'id', 'subject', 'summary', 'type']);
     await readSchedulingEvent(HUB_CONFIG, 'e1');
     assert.match(seen[1][0], /\/v1\/events\/e1$/);
   } finally {
@@ -81,7 +114,7 @@ test('hub.mjs write/read adapters call POST /v1/events and read by event id', as
   }
 });
 
-test('adapter posts every turn to the same matter with resume and monotonically increasing ids', async () => {
+test('adapter posts every turn to the same matter with whitelist-only events and monotonically increasing ids', async () => {
   const client = fakeHubClient();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   await adapter.postTurn({ sessionId: 's-1', turn: 1, project: 'owner/demo', text: '第一轮' });
@@ -92,8 +125,10 @@ test('adapter posts every turn to the same matter with resume and monotonically 
   assert.equal(posted[1].subject, 'scheduling:s-1');
   assert.equal(posted[0].id, 'console:s-1:turn:1');
   assert.equal(posted[1].id, 'console:s-1:turn:2');
-  assert.equal(posted[0].resume, true);
-  assert.equal(posted[1].resume, true);
+  assert.deepEqual(Object.keys(posted[0]).sort(), ['detail', 'id', 'subject', 'summary', 'type']);
+  assert.deepEqual(Object.keys(posted[1]).sort(), ['detail', 'id', 'subject', 'summary', 'type']);
+  assert.deepEqual(JSON.parse(posted[0].detail), { project: 'owner/demo', text: '第一轮' });
+  assert.deepEqual(JSON.parse(posted[1].detail), { project: 'owner/demo', text: '第二轮' });
 });
 
 test('duplicate event ids do not produce a second execution', async () => {
@@ -128,7 +163,7 @@ test('scheduling start uses the Hub adapter and never spawns a private ACP proce
   assert.equal(manager.list().length, 1);
   const posted = client.calls.filter(call => call[0] === 'postEvent');
   assert.equal(posted.length, 1);
-  assert.match(posted[0][1].text, /首轮调度/);
+  assert.match(JSON.parse(posted[0][1].detail).text, /首轮调度/);
 });
 
 test('subsequent messages join the same Hub matter with a new turn', async () => {
@@ -142,7 +177,7 @@ test('subsequent messages join the same Hub matter with a new turn', async () =>
   assert.equal(posted.length, 2);
   assert.equal(posted[0].subject, posted[1].subject);
   assert.equal(posted[1].id, schedulingEventId(posted[1].subject.slice('scheduling:'.length), 2));
-  assert.match(posted[1].text, /第二轮/);
+  assert.match(JSON.parse(posted[1].detail).text, /第二轮/);
   assert.equal(spawned.count, 0);
 });
 

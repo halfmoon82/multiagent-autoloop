@@ -225,3 +225,52 @@ test('session archives list and continue route through the manager with validati
     assert.deepEqual(calls.at(-1), ['continue', archiveId]);
   } finally { await close(server); }
 });
+
+// #89：真实 HTTP 路径创建 scheduling 会话时，事件只含中台白名单字段；假 Hub 像真实中台一样拒绝未知字段。
+test('#89 creating a scheduling session posts a whitelist-only event to a strict Hub and returns 201', async () => {
+  const { createServer } = await import('node:http');
+  const EVENT_FIELDS = ['id', 'type', 'subject', 'summary', 'detail', 'link'];
+  const seen = [];
+  const strictHub = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      if (req.method === 'POST' && req.url === '/v1/events') {
+        const event = JSON.parse(raw || '{}');
+        seen.push(event);
+        const unknown = Object.keys(event).filter(key => !EVENT_FIELDS.includes(key));
+        if (unknown.length) { res.statusCode = 400; return res.end(JSON.stringify({ error: `不认识的字段：${unknown.join(', ')}` })); }
+        return res.end(JSON.stringify({ id: event.id, runId: 'run-strict', state: 'running' }));
+      }
+      res.statusCode = 404; res.end('{}');
+    });
+  });
+  await new Promise(resolve => strictHub.listen(0, '127.0.0.1', resolve));
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'strict-hub-projects-'));
+  const repo = path.join(projectRoot, 'demo-repo');
+  mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const rulesFile = path.join(projectRoot, 'rules.json');
+  writeFileSync(rulesFile, JSON.stringify({ sources: {}, agents: {}, rules: [], elsewhere: [] }));
+  const server = createConsoleServer({
+    hubUrl: `http://127.0.0.1:${strictHub.address().port}`, sourceKey: 'source-key', ownerKey: 'owner-key',
+    host: '127.0.0.1', root: projectRoot, rulesFile, projectRoots: [projectRoot],
+  });
+  const url = await listen(server);
+  try {
+    const response = await fetch(`${url}/api/scheduling-sessions`, {
+      method: 'POST', headers: writeHeaders,
+      body: JSON.stringify({ kind: 'scheduling', project: repo, prompt: '按规则推进调度' }),
+    });
+    assert.equal(response.status, 201, 'strict Hub accepts a whitelist-only scheduling event');
+    const body = await response.json();
+    assert.equal(seen.length, 1);
+    assert.deepEqual(Object.keys(seen[0]).sort(), ['detail', 'id', 'subject', 'summary', 'type']);
+    assert.equal(seen[0].subject, `scheduling:${body.sessionId}`, 'subject 规则不变');
+    assert.equal(seen[0].id, `console:${body.sessionId}:turn:1`, 'event.id 幂等键不变');
+    assert.equal(seen[0].type, 'scheduling.message');
+    const detail = JSON.parse(seen[0].detail);
+    assert.equal(detail.project, repo, 'project 进入 worker 可解析的 detail');
+    assert.match(detail.text, /按规则推进调度/, '首轮文本进入 detail');
+  } finally { await close(server); await new Promise(resolve => strictHub.close(resolve)); }
+});
