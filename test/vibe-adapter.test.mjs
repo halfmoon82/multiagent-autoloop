@@ -3,7 +3,7 @@
 // 全部 CLI 调用走 test/fixtures/vibe-5.2.7/bin/vibe 假可执行文件（录制 v5.2.7 真实 JSON 形态），CI 不装 Python、不调真实 CLI。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, cpSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, cpSync, chmodSync, symlinkSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -204,13 +204,46 @@ test('checkCapabilities rejects attestations older than 72 hours', () => {
   assert.equal(checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ observed_at: future }) }) }).error.code, 'capability_attestation_required');
 });
 
-test('checkCapabilities rejects a host major version drift', () => {
-  const drifted = checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ host_version: `${VIBE_MAJOR_VERSION + 1}.0.0` }) }) });
-  assert.equal(drifted.ok, false);
-  assert.equal(drifted.error.code, 'capability_attestation_required');
-  assert.match(drifted.error.message, /大版本/);
-  const result = checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord() }), hostMajorVersion: VIBE_MAJOR_VERSION + 1 });
+test('checkCapabilities ignores host_version: the record carries the host agent version, not the vibe version', () => {
+  // 上游 host_version 来自宿主 agent（如 0.44.0），不是 vibe 版本；记录里也没有 vibe 版本可比。
+  for (const hostVersion of ['0.44.0', '0.146.0', '6.0.0']) {
+    const root = makeGitRoot({ withState: true, record: validRecord({ host_version: hostVersion }) });
+    assert.deepEqual(checkCapabilities({ projectRoot: root }), { ok: true }, `host_version=${hostVersion} 不应被当成 vibe 版本比对`);
+  }
+});
+
+test('checkCapabilities allows a small clock skew but rejects a clearly future timestamp', () => {
+  const skew = new Date(Date.now() + 60_000).toISOString();
+  assert.deepEqual(checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ observed_at: skew }) }) }), { ok: true });
+  const future = new Date(Date.now() + 30 * 60_000).toISOString();
+  assert.equal(checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ observed_at: future }) }) }).error.code, 'capability_attestation_required');
+});
+
+test('checkCapabilities requires subprocess before in_session_sdd, matching upstream detection', () => {
+  const noSubprocess = makeGitRoot({ withState: true, record: validRecord({}, { 'codex.subprocess': false }) });
+  const result = checkCapabilities({ projectRoot: noSubprocess });
+  assert.equal(result.ok, false);
   assert.equal(result.error.code, 'capability_attestation_required');
+});
+
+test('checkCapabilities rejects incomplete records, unknown schema versions and symlinked records', () => {
+  const incomplete = makeGitRoot({ withState: true, record: validRecord() });
+  const file = path.join(incomplete, '.vibe', 'provider-actions', 'capabilities-codex.json');
+  const record = JSON.parse(readFileSync(file, 'utf8'));
+  delete record.facts['codex.agent'];
+  writeFileSync(file, JSON.stringify(record));
+  assert.equal(checkCapabilities({ projectRoot: incomplete }).error.code, 'capability_attestation_required');
+
+  const wrongSchema = checkCapabilities({ projectRoot: makeGitRoot({ withState: true, record: validRecord({ schema_version: 2 }) }) });
+  assert.equal(wrongSchema.error.code, 'capability_attestation_required');
+  assert.match(wrongSchema.error.message, /schema_version/);
+
+  const linked = makeGitRoot({ withState: true, record: validRecord() });
+  const linkedFile = path.join(linked, '.vibe', 'provider-actions', 'capabilities-codex.json');
+  const moved = path.join(linked, '.vibe', 'provider-actions', 'moved.json');
+  renameSync(linkedFile, moved);
+  symlinkSync(moved, linkedFile);
+  assert.equal(checkCapabilities({ projectRoot: linked }).error.code, 'capability_attestation_required');
 });
 
 test('checkCapabilities fails closed on unreadable or malformed capability records', () => {
