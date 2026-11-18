@@ -15,8 +15,8 @@
 - 只有包含 `contract.design.surfaceIds` 的 UI 节点才加载 `design-manifest.json` 与批准记录；纯后端节点和旧数组计划无需新增字段，也不读取设计设施。设计批准只绑定 `designDigest`，不绑定 PRD 全文；只有设计语义或产物变化才重新确认。
 - `designDigest` 纳入现有 `planDigest`，根 run 保存一份不可变快照，节点 run/attempt 原样继承。活跃 run 不读取当前工作目录的新稿；新稿只用于新 run，用户显式修改活跃计划范围时才修订并重新确认。
 - 发布时做一次设计确认，执行时做一次定向设计验证。preview/create/dispatch/review/merge 只做廉价一致性检查；merge 不重跑浏览器。controller 在槽位分配、prepare、claim 前按节点校验快照，单节点失败不影响其他 ready 节点。
-- `createDagRuntime` 默认从精确 commit 建临时只读 worktree，校验已批准 `design-manifest.verifierPath` 的 sha256 后，在净化子进程执行无模型 verifier；只验证该节点声明的 surface/viewport/state/interaction，并把证据写入服务端 `dag-runs/design-evidence/`。`checks` 是硬断言；PNG 与 `visualDiffs` 默认仅为审阅证据。runner/证据设施故障自动重试，不计 worker 实现失败。
-- 证据绑定 `commit/designDigest/contractDigest`。同 SHA 证据丢失时自动补验并重新独立 review；只有实际设计语义改变才以 `DESIGN_CHANGE_REQUIRED` 升级。worker 不得修改基线、参考图、批准记录或验证阈值。
+- `createDagRuntime` 默认从精确 commit 建临时只读 worktree，校验已批准 `design-manifest.verifierPath` 的 sha256 后，在净化子进程执行无模型 verifier；只验证该节点声明的 surface/viewport/state/interaction，并把证据写入服务端 `dag-runs/design-evidence/`。结果走专用 fd 与一次性 nonce，stdout/stderr 仅作有上限日志，不可伪造结果。`checks` 是硬断言；PNG 与 `visualDiffs` 默认仅为审阅证据。runner/证据设施故障自动重试，不计 worker 实现失败。
+- 证据绑定 `commit/designDigest/contractDigest`。同 SHA 证据丢失时自动补验并重新独立 review；只有实际设计语义改变才以 `DESIGN_CHANGE_REQUIRED` 升级。worker 不得修改基线、参考图、批准记录或验证阈值。控制器侧 Git 显式禁用 hooks 且不继承控制器环境；`npm test` 使用净化环境。`prepare` 冻结实际 base commit SHA，`commitPr` 的已提交/未提交 scope 均相对该 SHA 核对，不信任 worker 可移动的 `origin/main`。
 - 共享 surface 的跨节点回归只复用现有 integration-review，且只阻塞 DAG 最终完成与对应返工节点；不新增 Hub 协议或第二套状态机。
 
 ## 原生 Codex Plan Mode + 只读沙箱

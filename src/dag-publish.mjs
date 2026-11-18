@@ -74,13 +74,14 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (!decision.ok) throw new PublishError(`${why}：未选高风险动作 "${action}"（${decision.reason}），执行层拒绝`, 'HIGH_RISK_NOT_GRANTED');
       return decision;
     },
-    async commitPr({ nodeId, branch, worktree }) {
+    async commitPr({ nodeId, branch, worktree, base }) {
       const root = need(['push-branch', 'create-pr'], 'commit-pr');
       const scopes = scopesOf(root, nodeId);
       const uncommittedFiles = await changed(worktree);
-      const base = (await rt.git(worktree, ['rev-parse', '--verify', `${baseRef}^{commit}`]).catch(() => '')).trim();
-      if (!base) throw new PublishError(`基准引用 ${baseRef} 不存在，无法核对本节点提交范围`, 'BASE_REF_MISSING');
-      const files = [...new Set([...uncommittedFiles, ...await committed(worktree, base)])];
+      if (!String(base ?? '').trim()) throw new PublishError('缺少冻结 prepare base commit，无法核对本节点提交范围', 'BASE_COMMIT_REQUIRED');
+      const baseCommit = (await rt.git(worktree, ['rev-parse', '--verify', `${base}^{commit}`]).catch(() => '')).trim();
+      if (!baseCommit) throw new PublishError(`冻结基准 commit ${base} 不存在，无法核对本节点提交范围`, 'BASE_REF_MISSING');
+      const files = [...new Set([...uncommittedFiles, ...await committed(worktree, baseCommit)])];
       const readOnlyDesign = new Set((root.designBaseline?.readOnlyPaths || []).map(normalizeProjectPath));
       const protectedDesign = files.filter(file => readOnlyDesign.has(file));
       if (protectedDesign.length) throw new PublishError(`设计基线/参考产物只读：${protectedDesign.join(', ')}`, 'DESIGN_BASELINE_READONLY');
@@ -91,7 +92,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
         await rt.git(worktree, ['-c', 'user.name=dag-controller', '-c', 'user.email=dag-controller@localhost', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', `${nodeId}: ${root.runId}`]);
       }
       const commit = (await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
-      if (commit === base) throw new PublishError(`节点 ${nodeId} 没有任何提交可发 PR`, 'NOTHING_TO_PUBLISH');
+      if (commit === baseCommit) throw new PublishError(`节点 ${nodeId} 没有任何提交可发 PR`, 'NOTHING_TO_PUBLISH');
       await rt.git(worktree, ['push', '-q', 'origin', `HEAD:refs/heads/${branch}`]);
       let prUrl = await gh.findPr({ branch });
       if (!prUrl) prUrl = await gh.createPr({ branch, title: `${nodeId} (${root.runId})` });

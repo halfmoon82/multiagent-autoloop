@@ -3,6 +3,7 @@
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { MAX_SLOTS } from './dag-run.mjs';
 
 export class SlotError extends Error {
@@ -10,7 +11,12 @@ export class SlotError extends Error {
 }
 
 export const defaultGit = (cwd, args, { env } = {}) => new Promise((resolve, reject) => {
-  execFile('git', args, { cwd, timeout: 60000, env: { ...process.env, ...env }, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+  // 控制器侧 Git 不继承完整环境；显式禁用 hooks，防 worker 修改共享 .git/hooks 后在控制器执行。
+  const sanitized = {
+    PATH: process.env.PATH || '/usr/bin:/bin', HOME: process.env.HOME || tmpdir(), TMPDIR: process.env.TMPDIR || tmpdir(),
+    LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, GIT_TERMINAL_PROMPT: '0', NODE_OPTIONS: '', ...env,
+  };
+  execFile('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, timeout: 60000, env: sanitized, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
     if (error) reject(new SlotError(`git ${args[0]} 失败：${(stderr || error.message).trim()}`, 'GIT_FAILED'));
     else resolve(stdout);
   });
@@ -60,14 +66,15 @@ export function createSlotRuntime({ project, runId, git = defaultGit } = {}) {
       const dir = slotPath(slot);
       if (!existsSync(dir)) throw new SlotError(`槽位 ${slot} 尚未建立`, 'NO_SLOT');
       const state = loadState();
-      if (state[slot]?.nodeId === nodeId) return { slot, nodeId, branch, reused: true };
+      if (state[slot]?.nodeId === nodeId) return { slot, nodeId, branch, reused: true, baseCommit: state[slot].baseCommit };
       if (await dirty(slot)) throw new SlotError(`槽位 ${slot} 有未保存改动（脏），换节点前必须先保存 WIP 再释放`, 'SLOT_DIRTY');
       await git(dir, ['fetch', 'origin']).catch(() => {}); // 离线测试允许无远端
-      try { await git(dir, ['rev-parse', '--verify', `${base}^{commit}`]); }
+      let baseCommit;
+      try { baseCommit = String(await git(dir, ['rev-parse', '--verify', `${base}^{commit}`])).trim(); }
       catch { throw new SlotError(`基线 ${base} 不存在，拒绝 prepare`, 'BASELINE_MISSING'); }
       await git(dir, ['checkout', '-q', '-B', branch, base]);
-      state[slot] = { nodeId, branch, base }; saveState(state);
-      return { slot, nodeId, branch, reused: false };
+      state[slot] = { nodeId, branch, base, baseCommit }; saveState(state);
+      return { slot, nodeId, branch, reused: false, baseCommit };
     },
   };
 }

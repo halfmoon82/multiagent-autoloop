@@ -24,7 +24,7 @@ async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designIn
     closed: [], async closePr(url, a) { this.closed.push([url, a.comment]); } };
   const tests = []; const runTests = async (cwd) => { tests.push(cwd); return { exitCode: 0, summary: '1 passed' }; };
   const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests, verifyDesign });
-  const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId };
+  const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId, base: sh(project, 'rev-parse', 'main') };
   const write = (rel, c) => { mkdirSync(path.dirname(path.join(ctx.worktree, rel)), { recursive: true }); writeFileSync(path.join(ctx.worktree, rel), c); };
   return { project, remote, store, root, rt, gh, pub, ctx, write, tests };
 }
@@ -250,4 +250,17 @@ test('verify：UI verifier 执行前槽位必须干净', async () => {
   t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
   t.write('src/a.mjs', 'dirty after commit\n');
   await assert.rejects(t.pub.verify({ ...t.ctx, commit: pr.commit }), error => error.code === 'DESIGN_WORKTREE_DIRTY');
+});
+
+test('commitPr：worker 移动 origin/main 不能绕过冻结 base 的 scope 检查', async () => {
+  const t = await boot();
+  const frozenBase = sh(t.project, 'rev-parse', 'main');
+  t.write('secret/extra.txt', 'out of scope\n');
+  sh(t.ctx.worktree, 'add', 'secret/extra.txt'); sh(t.ctx.worktree, 'commit', '-qm', 'out of scope');
+  const moved = sh(t.ctx.worktree, 'rev-parse', 'HEAD');
+  sh(t.project, 'update-ref', 'refs/remotes/origin/main', moved);
+  t.write('src/a.mjs', 'in scope\n');
+  sh(t.ctx.worktree, 'add', 'src/a.mjs'); sh(t.ctx.worktree, 'commit', '-qm', 'in scope');
+  await assert.rejects(t.pub.commitPr({ ...t.ctx, base: frozenBase }), error => error.code === 'OUT_OF_SCOPE');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
 });

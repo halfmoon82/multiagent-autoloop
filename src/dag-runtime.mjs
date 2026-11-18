@@ -4,6 +4,8 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createController, HUB_TERMINAL } from './dag-controller.mjs';
 import { createGhAdapter } from './dag-gh.mjs';
 import { acquireControllerLock } from './dag-lock.mjs';
@@ -65,8 +67,13 @@ export function createHubAdapter({ config, request = hubRequest, project } = {})
   };
 }
 
-const defaultRunTests = cwd => new Promise(resolve => {
-  execFile('npm', ['test'], { cwd, timeout: 20 * 60 * 1000, maxBuffer: 32 * 1024 * 1024 }, (error, stdout) => {
+export const defaultRunTests = cwd => new Promise(resolve => {
+  const home = mkdtempSync(path.join(tmpdir(), 'dag-test-home-'));
+  execFile('npm', ['test'], {
+    cwd, timeout: 20 * 60 * 1000, maxBuffer: 32 * 1024 * 1024,
+    env: { PATH: process.env.PATH || '/usr/bin:/bin', HOME: home, TMPDIR: tmpdir(), NODE_OPTIONS: '' },
+  }, (error, stdout) => {
+    rmSync(home, { recursive: true, force: true });
     resolve({ exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0, tail: String(stdout).slice(-2000) });
   });
 });

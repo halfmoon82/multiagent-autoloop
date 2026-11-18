@@ -82,7 +82,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
   async function start(root, st, id, run, slot, { prepare }) {
     assertNodeDesignSnapshot(root, root.nodes.find(node => node.id === id));
     const n = st.nodes[id]; n.slot = slot;
-    if (prepare) await rt.prepare({ slot, nodeId: id, branch: n.branch, base: baseRef });
+    if (prepare) n.prepareBase = (await rt.prepare({ slot, nodeId: id, branch: n.branch, base: baseRef })).baseCommit;
     const claimed = store.claim(run.runId, { slot });
     await send(root, id, claimed, n);
   }
@@ -132,7 +132,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     const n = st.nodes[id];
     if (!SUCCESS.has(run.outcome)) return failure(root, st, id, run.role === 'dev' ? run : latest(root, id, 'dev'), `outcome:${run.outcome}`);
     if (run.role === 'dev') {
-      const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId };
+      const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, base: n.prepareBase };
       const pr = await publisher.commitPr(ctx);
       store.registerPr(root.runId, id, pr.prUrl); n.prUrl = pr.prUrl; n.commit = pr.commit;
       const ver = await publisher.verify({ ...ctx, commit: pr.commit });
@@ -217,8 +217,9 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     }
     n.todo = null; n.state = role; n.blockedRole = null; n.blockedReason = null; n.slot = slot;
     // 记录 prepare 基准：queued 补发时重跑 prepare 必须沿用同一基准（review 用原 commit）。
-    n.prepareBase = role === 'dev' ? baseRef : n.commit;
-    await rt.prepare({ slot, nodeId: id, branch: prepBranch, base: n.prepareBase });
+    n.prepareBase = role === 'dev' ? null : n.commit;
+    const prepared = await rt.prepare({ slot, nodeId: id, branch: prepBranch, base: n.prepareBase || baseRef });
+    if (role === 'dev') n.prepareBase = prepared.baseCommit;
     await send(root, id, store.claim(run.runId, { slot }), n);
     return true;
   }

@@ -1,9 +1,10 @@
 // 固定槽位运行时：槽位=worktree、沙箱拒绝越界写、同节点保留改动、WIP 精确保留与新文件找回。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createSlotRuntime, SlotError } from '../src/dag-slots.mjs';
+import { createSlotRuntime, defaultGit, SlotError } from '../src/dag-slots.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 
 const boot = async () => {
@@ -47,4 +48,23 @@ test('prepare：节点分支从基线创建；同节点重试保留未提交改�
 test('prepare 基线核对：基线 ref 不存在时拒绝', async () => {
   const { rt } = await boot();
   await assert.rejects(rt.prepare({ slot: 2, nodeId: 'a', branch: 'feat/a', base: 'origin/nope' }), /基线/);
+});
+
+test('defaultGit disables repository hooks and does not inherit controller-only environment', async () => {
+  const { project } = makeRepo();
+  const hook = path.join(project, '.git', 'hooks', 'post-checkout');
+  const marker = path.join(tmpdir(), `default-git-hook-${process.pid}.txt`);
+  mkdirSync(path.dirname(hook), { recursive: true });
+  writeFileSync(hook, `#!/bin/sh\nprintf 'hook-ran-with-env:%s\\n' "$AGENT_AUTOLOOP_HOME" > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  const target = path.join(project, '.worktrees', 'default-git-hook-test');
+  const previous = process.env.AGENT_AUTOLOOP_HOME;
+  process.env.AGENT_AUTOLOOP_HOME = 'controller-secret';
+  try {
+    await defaultGit(project, ['worktree', 'add', '--detach', target, 'HEAD']);
+    assert.equal(existsSync(marker), false, 'defaultGit 不得执行仓库 hooks');
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_AUTOLOOP_HOME; else process.env.AGENT_AUTOLOOP_HOME = previous;
+    await defaultGit(project, ['worktree', 'remove', '--force', target]).catch(() => {});
+    rmSync(marker, { force: true });
+  }
 });

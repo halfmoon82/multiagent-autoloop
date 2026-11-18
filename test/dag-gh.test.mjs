@@ -57,7 +57,7 @@ test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', a
   const root = store.createRun({ project, planId: 'p', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes: [{ id: 'a', depends_on: [], contract: { files: ['src/a.mjs'] } }] });
   const rt = createSlotRuntime({ project, runId: root.runId });
   await rt.ensureSlots();
-  await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
+  const { baseCommit } = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'main' });
   const closed = []; let prNo = 0;
   const runner = async (cmd, args) => {
     if (args[1] === 'list') return { stdout: '[]' };
@@ -66,7 +66,7 @@ test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', a
     return { stdout: '' };
   };
   const pub = createPublisher({ store, rootRunId: root.runId, rt, gh: createGhAdapter({ runner }), runTests: async () => ({ exitCode: 0 }) });
-  const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId };
+  const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId, base: baseCommit };
   const write = c => { mkdirSync(path.join(ctx.worktree, 'src'), { recursive: true }); writeFileSync(path.join(ctx.worktree, 'src/a.mjs'), c); };
   write('export const a = 1;\n');
   await pub.commitPr(ctx);

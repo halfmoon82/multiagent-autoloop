@@ -1,11 +1,11 @@
 // #54 生产装配：Hub 适配（经 /v1/events，不起 ACP）、启动恢复、有界轮询、blocked 证据。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ALLOWED_ACTIONS, ROOT_NODE, createRunStore } from '../src/dag-run.mjs';
-import { createBlockedEvidence, createHubAdapter, createDagRuntime, dagEventType, startDagControllers, MIN_POLL_MS } from '../src/dag-runtime.mjs';
+import { createBlockedEvidence, createHubAdapter, createDagRuntime, dagEventType, defaultRunTests, startDagControllers, MIN_POLL_MS } from '../src/dag-runtime.mjs';
 import { designContractDigest } from '../src/design-baseline.mjs';
 import { makeRepo } from './helpers-git.mjs';
 import { mkNode } from './dag-fakes.mjs';
@@ -133,4 +133,21 @@ test('createDagRuntime：真实 publisher 装配接收 verifyDesign 与服务端
   assert.equal(received.nodeId, 'a');
   assert.match(received.evidenceDir, /design-evidence/);
   assert.equal(ctl.snapshot().nodes.a.state, 'review');
+});
+
+test('defaultRunTests uses a sanitized environment without controller-only variables', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'dag-run-tests-env-'));
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+    private: true, type: 'module',
+    scripts: { test: 'node -e "if (process.env.AGENT_AUTOLOOP_HOME !== undefined) process.exit(1)"' },
+  }));
+  const previous = process.env.AGENT_AUTOLOOP_HOME;
+  process.env.AGENT_AUTOLOOP_HOME = 'controller-secret';
+  try {
+    const result = await defaultRunTests(root);
+    assert.equal(result.exitCode, 0);
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_AUTOLOOP_HOME; else process.env.AGENT_AUTOLOOP_HOME = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
