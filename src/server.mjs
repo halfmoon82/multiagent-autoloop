@@ -16,6 +16,7 @@ import { refreshUsage } from './chain-usage.mjs';
 import { readCloseouts } from './chain-closeout.mjs';
 import { createDagService, DagServiceError } from './dag-service.mjs';
 import { CardDelegateError, delegateOpenCard } from './card-delegate.mjs';
+import { getCardRouting, CardFilterError } from './card-routing.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(MODULE_DIR, '..', 'public');
@@ -25,7 +26,7 @@ const FILES = new Map([
   ['/dom-stable.mjs', ['dom-stable.mjs', 'text/javascript; charset=utf-8']],
   ['/status-sections.mjs', ['status-sections.mjs', 'text/javascript; charset=utf-8']],
   ['/views.mjs', ['views.mjs', 'text/javascript; charset=utf-8']], ['/rule-form.mjs', ['rule-form.mjs', 'text/javascript; charset=utf-8']],
-  ['/dag-model.mjs', ['dag-model.mjs', 'text/javascript; charset=utf-8']], ['/dag-views.mjs', ['dag-views.mjs', 'text/javascript; charset=utf-8']], ['/dag-authorize.mjs', ['dag-authorize.mjs', 'text/javascript; charset=utf-8']], ['/dag-app.mjs', ['dag-app.mjs', 'text/javascript; charset=utf-8']], ['/dag.css', ['dag.css', 'text/css; charset=utf-8']],
+  ['/dag-model.mjs', ['dag-model.mjs', 'text/javascript; charset=utf-8']], ['/dag-views.mjs', ['dag-views.mjs', 'text/javascript; charset=utf-8']], ['/dag-authorize.mjs', ['dag-authorize.mjs', 'text/javascript; charset=utf-8']], ['/dag-app.mjs', ['dag-app.mjs', 'text/javascript; charset=utf-8']], ['/progress-view.mjs', ['progress-view.mjs', 'text/javascript; charset=utf-8']], ['/dag.css', ['dag.css', 'text/css; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
 ]);
 export function securityHeaders() {
@@ -54,6 +55,10 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
   if (req.method === 'GET' && url.pathname === '/api/session-archives') return jsonResponse(res, 200, { sessions: await config.schedulingSessions.listArchived() });
   if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
+  if (req.method === 'GET' && url.pathname === '/api/card-router') {
+    if (!config.cardRouting) throw new RequestError(503, '卡片路由不可用（未配置数据目录）');
+    return jsonResponse(res, 200, config.cardRouting.status());
+  }
   let dagMatch;
   if (req.method === 'GET' && url.pathname === '/api/dag-runs') return jsonResponse(res, 200, { runs: config.dagService ? config.dagService.list() : [] });
   if (req.method === 'GET' && (url.pathname === '/api/dag-plan' || url.pathname === '/api/dag-preflight')) {
@@ -137,6 +142,13 @@ async function handleApi(config, req, res, url) {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
     return jsonResponse(res, 200, await config.dagService.slotRelease(decodeURIComponent(dagMatch[1]), decodeURIComponent(dagMatch[2]), body));
   }
+  if (req.method === 'POST' && (url.pathname === '/api/card-router/activate' || url.pathname === '/api/card-router/rollback')) {
+    if (!config.cardRouting) throw new RequestError(503, '卡片路由不可用（未配置数据目录）');
+    if (url.pathname.endsWith('/rollback')) return jsonResponse(res, 200, config.cardRouting.rollback());
+    if (typeof body.version !== 'string' || !body.version) throw new RequestError(400, '缺少版本号');
+    try { return jsonResponse(res, 200, config.cardRouting.activate(body.version)); }
+    catch (error) { if (error instanceof CardFilterError) throw new RequestError(error.code === 'VERSION_MISSING' ? 404 : 400, error.message); throw error; }
+  }
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   let match;
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/clear$/))) return jsonResponse(res, 200, await config.schedulingSessions.clearQueued(decodeURIComponent(match[1])));
@@ -183,7 +195,7 @@ export function createConsoleServer(config, schedulingSessions) {
     schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }) });
   }
   const dagService = config.dagService || (config.root ? createDagService({ root: config.root, storeDirectory: path.join(config.root, 'dag-runs') }) : null);
-  config = { ...config, schedulingSessions, dagService };
+  config = { ...config, schedulingSessions, dagService, cardRouting: config.cardRouting || getCardRouting(config) };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const host = req.headers.host?.split(':')[0]?.toLowerCase();

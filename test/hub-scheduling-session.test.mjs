@@ -13,7 +13,7 @@ import {
 import { SchedulingSessionManager } from '../src/scheduling-session.mjs';
 import { postSchedulingEvent, readSchedulingEvent } from '../src/hub.mjs';
 
-const HUB_CONFIG = { hubUrl: 'http://127.0.0.1:9', ownerKey: 'owner-key' };
+const HUB_CONFIG = { hubUrl: 'http://127.0.0.1:9', ownerKey: 'owner-key', sourceKey: 'source-key' };
 
 function fakeHubClient(overrides = {}) {
   const calls = [];
@@ -315,4 +315,76 @@ test('F1 real createConsoleServer assembly restores sessions from the Hub on sta
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].hubSubject, 'scheduling:real');
   } finally { await close(server); await new Promise(resolve => hub.close(resolve)); }
+});
+
+// #85：POST/GET /v1/events 必须用 source 密钥认证；其余 owner 调用不变；双密钥都要脱敏。
+async function fakeAuthHub(handler) {
+  const { createServer } = await import('node:http');
+  const seen = [];
+  const hub = createServer((req, res) => {
+    seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
+    res.setHeader('content-type', 'application/json');
+    handler?.(req, res) || res.end(JSON.stringify({ id: 'e1', state: 'running' }));
+  });
+  await new Promise(resolve => hub.listen(0, '127.0.0.1', resolve));
+  return { seen, hubUrl: `http://127.0.0.1:${hub.address().port}`, close: () => new Promise(resolve => hub.close(resolve)) };
+}
+
+test('#85 events POST/GET authenticate with the source key; owner calls keep the owner key', async () => {
+  const { hubRequest } = await import('../src/hub.mjs');
+  const hub = await fakeAuthHub();
+  try {
+    const config = { hubUrl: hub.hubUrl, ownerKey: 'owner-key', sourceKey: 'source-key' };
+    await postSchedulingEvent(config, { id: 'e1', subject: 'scheduling:s', type: 'scheduling.message' });
+    await readSchedulingEvent(config, 'e1');
+    await hubRequest(config, '/v1/matters?kind=scheduling');
+    assert.deepEqual(hub.seen.map(r => r.authorization), ['Bearer source-key', 'Bearer source-key', 'Bearer owner-key']);
+  } finally { await hub.close(); }
+});
+
+test('#85 missing sourceKey fails closed with a readable error and never falls back to the owner key', async () => {
+  const hub = await fakeAuthHub();
+  try {
+    const config = { hubUrl: hub.hubUrl, ownerKey: 'owner-key' };
+    await assert.rejects(() => postSchedulingEvent(config, { id: 'e1' }), /source\.key/);
+    await assert.rejects(() => readSchedulingEvent(config, 'e1'), /source\.key/);
+    assert.equal(hub.seen.length, 0, 'no request may reach the Hub without a source key');
+  } finally { await hub.close(); }
+});
+
+test('#85 adapter keeps input and spawns nothing when the source key is missing', async () => {
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: { hubUrl: 'http://127.0.0.1:9', ownerKey: 'owner-key' } });
+  await assert.rejects(
+    () => adapter.postTurn({ sessionId: 's-1', turn: 1, project: 'owner/demo', text: '保留我' }),
+    error => error instanceof HubSchedulingError && /source\.key/.test(error.message) && /输入已保留/.test(error.message) && /未派生本地进程/.test(error.message),
+  );
+});
+
+test('#85 both keys are redacted from Hub responses and errors', async () => {
+  const hub = await fakeAuthHub((req, res) => {
+    if (req.method === 'POST') { res.statusCode = 400; return res.end(JSON.stringify({ error: 'bad source-key and owner-key' })); }
+    return res.end(JSON.stringify({ echo: ['owner-key', { k: 'x source-key y' }] }));
+  });
+  try {
+    const config = { hubUrl: hub.hubUrl, ownerKey: 'owner-key', sourceKey: 'source-key' };
+    await assert.rejects(() => postSchedulingEvent(config, { id: 'e1' }), error => !/source-key|owner-key/.test(error.message) && /已隐藏/.test(error.message));
+    const read = await readSchedulingEvent(config, 'e1');
+    assert.doesNotMatch(JSON.stringify(read), /source-key|owner-key/);
+  } finally { await hub.close(); }
+});
+
+test('#85 loadConsoleConfig exposes sourceKey from the source object and tolerates its absence', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const { loadConsoleConfig } = await import('../src/config.mjs');
+  const make = extra => {
+    const root = mkdtempSync(path.join(tmpdir(), 'src-key-'));
+    writeFileSync(path.join(root, 'config.json'), JSON.stringify({ url: 'http://127.0.0.1:3350', owner: 'o', ...extra }));
+    return loadConsoleConfig(root);
+  };
+  assert.equal(make({ source: { name: 'console', key: 'sk' } }).sourceKey, 'sk');
+  assert.equal(make({}).sourceKey, null);
+  assert.equal(make({ source: { name: 'console' } }).sourceKey, null);
+  assert.equal(make({ source: 'sk' }).sourceKey, null, 'a bare string is not the documented shape');
 });

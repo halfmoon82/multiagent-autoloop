@@ -14,6 +14,8 @@ export function loadConsoleConfig(root = process.env.AGENT_AUTOLOOP_HOME) {
     root,
     hubUrl: hubUrl.toString().replace(/\/$/, ''),
     ownerKey: config.owner,
+    // 事件 API 用 source 密钥认证；缺失时保持 null，由调用处 fail closed，绝不回退 owner 密钥。
+    sourceKey: typeof config.source?.key === 'string' && config.source.key ? config.source.key : null,
     rulesFile: path.join(root, 'rules.json'),
     cliPath: path.join(root, 'app', 'bin', 'agent-autoloop.ts'),
     host: '127.0.0.1',

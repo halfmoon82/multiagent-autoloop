@@ -1,11 +1,12 @@
 // DAG 页面控制器：拉取 /api/dag-runs、渲染总览分组/详情/历史，授权确认与取消/释放槽位。
 import { renderDagOverview, renderDagDetail, renderDagHistory, isDagActive, renderOptionalGrants } from './dag-views.mjs';
+import { renderSerialDetail } from './progress-view.mjs';
 import { renderAuthorize, renderPreflight } from './dag-authorize.mjs';
 import { stableReplace } from './dom-stable.mjs';
 
 export function initDag({ api, notify, showView, getProjects }) {
   const $ = id => document.getElementById(id);
-  const s = { details: [], loaded: false, failed: '', loading: false, selectedRun: '', selectedNode: '', slotNote: {}, historyOpen: false, plan: null, planError: '', preflight: null, preflightError: '', checked: false, submitting: false, created: null, authProject: '', optionalGrants: [] };
+  const s = { details: [], loaded: false, failed: '', loading: false, selectedRun: '', selectedNode: '', slotNote: {}, historyOpen: false, plan: null, planError: '', preflight: null, preflightError: '', checked: false, submitting: false, created: null, authProject: '', optionalGrants: [], serialDetail: null };
   const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) });
 
   function banner() {
@@ -17,14 +18,26 @@ export function initDag({ api, notify, showView, getProjects }) {
   }
   function renderAll() {
     const active = s.details.filter(d => isDagActive(d.run));
-    // 全部走稳定替换：DAG 详情里有大量可复制的契约/摘要文本，轮询重建同样会打散选区
+    // 全部走稳定替换：详情里有大量可复制的契约/摘要文本，轮询重建同样会打散选区
     stableReplace('dag-overview-list', [...renderDagOverview(s.details)]);
-    const current = s.details.find(d => d.run.runId === s.selectedRun) || active[0] || s.details[0];
-    if (current) s.selectedRun = current.run.runId;
-    stableReplace('dag-detail', current ? [renderDagDetail(current, { selectedNode: s.selectedNode, slotNote: s.slotNote })] : []);
+    if (s.serialDetail) {
+      // 串行链节点点击 → 与 DAG 同构的运行详情视图（不再是只有浮层）
+      stableReplace('dag-detail', [renderSerialDetail(s.serialDetail.chain, { selectedNode: s.selectedNode, usageText: s.serialDetail.usageText || '' })]);
+    } else {
+      const current = s.details.find(d => d.run.runId === s.selectedRun) || active[0] || s.details[0];
+      if (current) s.selectedRun = current.run.runId;
+      stableReplace('dag-detail', current ? [renderDagDetail(current, { selectedNode: s.selectedNode, slotNote: s.slotNote })] : []);
+    }
     const history = renderDagHistory(s.details); history.querySelector('#dag-history-list').hidden = !s.historyOpen;
     stableReplace('dag-history', [history]);
     banner();
+  }
+  // 总览的串行节点点击目标：由控制台传入已按真实 Hub 计费口径算好的 usageText。
+  function openSerialDetail(chain, nodeId = '', usageText = '') {
+    s.serialDetail = { chain, usageText };
+    s.selectedNode = nodeId;
+    renderAll();
+    showView('dag');
   }
   function renderAuth() {
     // 提交中/新错误是授权路径的关键反馈：即使正在拖选契约文本也要强制落盘，不能冻住；
@@ -78,8 +91,12 @@ export function initDag({ api, notify, showView, getProjects }) {
     const t = event.target; const find = sel => t.closest?.(sel);
     try {
       let hit;
-      if ((hit = find('[data-dag-node]'))) { s.selectedRun = hit.dataset.dagRun || s.selectedRun; s.selectedNode = hit.dataset.dagNode; renderAll(); if (hit.closest('#view-overview')) showView('dag'); return; }
-      if ((hit = find('[data-dag-open]'))) { s.selectedRun = hit.dataset.dagOpen; s.selectedNode = ''; renderAll(); showView('dag'); return; }
+      if ((hit = find('[data-serial-node]'))) {
+        if (!hit.closest('#view-dag')) return; // 总览里的串行节点由控制台打开详情，这里只处理详情内的选中切换
+        s.selectedNode = hit.dataset.serialNode; renderAll(); return;
+      }
+      if ((hit = find('[data-dag-node]'))) { s.serialDetail = null; s.selectedRun = hit.dataset.dagRun || s.selectedRun; s.selectedNode = hit.dataset.dagNode; renderAll(); if (hit.closest('#view-overview')) showView('dag'); return; }
+      if ((hit = find('[data-dag-open]'))) { s.serialDetail = null; s.selectedRun = hit.dataset.dagOpen; s.selectedNode = ''; renderAll(); showView('dag'); return; }
       if (find('[data-dag-history-toggle]')) { s.historyOpen = !s.historyOpen; renderAll(); return; }
       if ((hit = find('[data-dag-cancel]'))) {
         if (!confirm('取消 DAG 运行？将先等待节点 run 终态，再由控制器按证据释放槽位。')) return;
@@ -105,5 +122,5 @@ export function initDag({ api, notify, showView, getProjects }) {
     }
   });
   renderAuth(); renderAll();
-  return { refreshDag };
+  return { refreshDag, openSerialDetail };
 }
