@@ -89,10 +89,13 @@ export function readLedger(root) {
   const updatedAt = typeof data.updatedAt === 'string' ? data.updatedAt : null;
   const seen = new Set(idList(data.seen));
   const rules = {};
+  let droppedEntry = false;
   for (const [name, entry] of Object.entries(data.rules || {})) {
     if (!validEntry(entry)) {
-      // 整条判废：其 id 必须一并出 seen，否则这些轮次既不被计数，
-      // 又会被前沿判定当成"已覆盖"而永久漏计。
+      // 整条判废：其 id 尽量出 seen，并强制把台账降级为"未到底"。
+      // 只剔 id 不降级是不够的：坏数据里剔不动的深 id 依旧会被前沿判定当成已覆盖，
+      // 结果静默漏计还宣称已到底。降级后会走历史回填，缺口自己补回来。
+      droppedEntry = true;
       for (const id of idList(entry?.counted)) seen.delete(id);
       for (const item of (Array.isArray(entry?.pending) ? entry.pending : [])) seen.delete(isNum(item) ? item : Number(item?.id));
       continue;
@@ -110,7 +113,7 @@ export function readLedger(root) {
     ...blank,
     seen: [...seen].sort((a, b) => a - b),
     rules,
-    complete: data.version === LEDGER_VERSION ? data.complete === true : false,
+    complete: droppedEntry ? false : (data.version === LEDGER_VERSION ? data.complete === true : false),
     backfillCursor: isNum(data.backfillCursor) ? data.backfillCursor : null,
     updatedAt,
   };
@@ -233,6 +236,7 @@ export function refreshUsage({ config, rules = [], chains = [], ttlMs = numEnv('
 async function scanOnce({ config, rules, chains, signature, ttlMs }) {
   const ledger = readLedger(config.root);
   const now = Date.now();
+  let pruned = false;
   const unsettledMax = numEnv('CHAIN_USAGE_UNSETTLED_MAX', UNSETTLED_MAX);
   for (const entry of Object.values(ledger.rules)) {
     // 超时未完成轮次不再阻塞前沿：转入不阻塞的 unsettled；溢出只累计计数，不静默丢账。
@@ -244,7 +248,8 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
       else if (entry.unsettled.length < unsettledMax) entry.unsettled.push(item.id);
       else entry.unresolved += 1;
     }
-    entry.pending = fresh;
+    if (fresh.length !== entry.pending.length) { pruned = true; entry.pending = fresh; }
+    else entry.pending = fresh;
   }
   const known = new Set(rules.map(rule => cleaned(rule?.name)).filter(Boolean));
   const seen = new Set(ledger.seen);
@@ -274,12 +279,21 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
   const alreadyComplete = ledger.complete === true;
   // resumeCursor：最深（最小 id）的未扫描点，单调变深，绝不被浅处的游标覆盖。
   let resumeCursor = isNum(ledger.backfillCursor) ? ledger.backfillCursor : null;
-  const remember = next => { if (isNum(next)) resumeCursor = isNum(resumeCursor) ? Math.min(resumeCursor, next) : next; };
+  let dirty = false;                       // 本页是否有需要落盘的变化（计数/游标/在册）
+  let wroteSinceChange = false;
+  const remember = next => {
+    if (!isNum(next)) return;
+    const advanced = !isNum(resumeCursor) || next < resumeCursor;
+    resumeCursor = isNum(resumeCursor) ? Math.min(resumeCursor, next) : next;
+    if (advanced) { dirty = true; wroteSinceChange = false; }   // 断点推进本身也要落盘
+  };
   const flush = () => {
+    if (!dirty || wroteSinceChange) return;   // 稳态零写入：没有新入账就不重抄整本台账
     ledger.seen = [...seen].sort((a, b) => a - b);
     ledger.complete = false;
     ledger.backfillCursor = resumeCursor;
     persistLedger(config.root, ledger);
+    wroteSinceChange = true;
   };
 
   const processPage = state => {
@@ -293,8 +307,11 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
     for (const run of unique.values()) {
       const id = Number(run.id);
       pageMin = Math.min(pageMin, id);
-      if (!seen.has(id) && run.finishedAt) { seen.add(id); unseenFinished = true; }
-      else if (!seen.has(id)) seen.add(id);
+      if (!seen.has(id)) {
+        seen.add(id);
+        dirty = true; wroteSinceChange = false;
+        if (run.finishedAt) unseenFinished = true;
+      }
       const name = cleaned(run.rule);
       if (!known.has(name)) continue;
       const view = viewFor(name);
@@ -303,6 +320,7 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
         if (!view.pending.has(id) && !view.unsettled.has(id)) {
           view.entry.pending.push({ id, since: new Date().toISOString() });
           view.pending.add(id);
+          dirty = true; wroteSinceChange = false;
         }
         continue;
       }
@@ -315,6 +333,7 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
       view.counted.add(id);
       view.entry.counted.push(id);
       view.entry.rounds += 1;
+      dirty = true; wroteSinceChange = false;
       const usage = run.usage && typeof run.usage === 'object' ? run.usage : null;
       if (usage) {
         if (isNum(usage.input)) view.entry.input += usage.input;
@@ -328,7 +347,9 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
     return { unseenFinished, pageMin };
   };
 
-  const maxPages = numEnv('CHAIN_USAGE_MAX_PAGES', MAX_PAGES_PER_REFRESH);
+  // 预算至少要给历史回填与探针留一页，否则配置成 1 时阶段一吃掉唯一一页、永不到底。
+  const maxPages = Math.max(numEnv('CHAIN_USAGE_MAX_PAGES', MAX_PAGES_PER_REFRESH), 2);
+  if (pruned) dirty = true;
   let pages = 0;
   let reachedBottom = false;
   let frontierStopped = false;
@@ -353,7 +374,7 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
     for (const id of view.entry.unsettled) if (!view.counted.has(id)) probes.push(id);
     for (const item of view.entry.pending) if (!view.counted.has(item.id)) probes.push(item.id);
   }
-  probes.sort((a, b) => b - a);
+  probes.sort((a, b) => a - b);   // 升序：先核实最深（最容易掉出首页窗口）的在册轮次
   const probeMax = numEnv('CHAIN_USAGE_PROBE_MAX', UNSETTLED_PROBE_MAX);
   for (const id of probes.slice(0, probeMax)) {
     if (pages >= maxPages) break;   // 预算用满：该 id 留在 unsettled，下轮继续，不丢账
@@ -380,12 +401,14 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
     }
   }
 
+  const stateChanged = ledger.complete !== (reachedBottom || (alreadyComplete && frontierStopped))
+    || (isNum(ledger.backfillCursor) ? ledger.backfillCursor : null) !== (reachedBottom || (alreadyComplete && frontierStopped) ? null : resumeCursor);
   ledger.seen = [...seen].sort((a, b) => a - b);
   // 稳态（已到底 + 前沿正常停止）保持到底；只有真的到底或本来就是到底态才不降级。
   ledger.complete = reachedBottom || (alreadyComplete && frontierStopped);
   ledger.backfillCursor = ledger.complete ? null : resumeCursor;
   const result = buildResult({ rules, chains, entries, backfillPending: !ledger.complete });
-  try {
+  if (dirty || stateChanged) try {
     await withStateLockAsync(config, async () => { persistLedger(config.root, ledger); });
   } catch (error) {
     if (!(error instanceof DetourError)) throw error;

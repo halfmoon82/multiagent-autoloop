@@ -1,5 +1,5 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
-import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, projectUsageText } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, projectUsageText, usageNotes } from './status-sections.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
@@ -317,13 +317,6 @@ function countsChips(activity, cardsHere) {
 
 // 整条链累计口径与计费优先级契约一致（服务端台账真累计，缺台账回退今日窗口）：已上报费用 → Token +「费用未上报」→「暂无用量」。
 // 台账未补全到底或存在未上报/长期未完成轮次时，一律追加如实标注。
-function usageNotes(usage) {
-  const parts = [];
-  if (usage.backfillPending) parts.push('历史补全中');
-  if (usage.missingCostRounds > 0) parts.push(`${usage.missingCostRounds} 轮未上报费用`);
-  if (usage.unresolvedRounds > 0) parts.push(`${usage.unresolvedRounds} 轮长期未完成未计入`);
-  return parts.length ? ` · ${parts.join(' · ')}` : '';
-}
 function chainUsageText(usage) {
   const tokens = (usage.tokens || 0).toLocaleString('en-US');
   // 台账还没翻到底（历史回填中）与未上报轮次都要如实标注，不把部分覆盖冒充全量。

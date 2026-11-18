@@ -3,7 +3,7 @@
 // 幂等不重复计费，翻页预算截断必须有持久化断点续翻（不得静默封顶）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConsoleServer } from '../src/server.mjs';
@@ -377,4 +377,54 @@ test('真机规模截断：每一轮都必须比上一轮覆盖更多历史，�
     PAGE = 3;
     await close(server); await close(hub.server);
   }
+});
+
+test('坏数据 + 文件里写着已到底：必须降级并重扫补回缺口，不得静默漏计（P2-2 回归）', async () => {
+  const { store, hub, server, chainUsageOf, root } = await setup([['v6-serial.json', '/p/v6app']]);
+  try {
+    PAGE = 20;   // 200 轮 = 10 页，一次预算内能全扫
+    const all = [];
+    for (let id = 199; id >= 0; id -= 1) all.push(finished(id, 'V6串行推进', { input: 1, output: 1, cost: 1 }));
+    store.runs = all;
+    // 台账声称已到底，但 counted 是坏数据（无法解析），seen 覆盖全部 200 个 id。
+    writeFileSync(path.join(root, 'chain-usage.json'), JSON.stringify({
+      version: 2, complete: true, updatedAt: isoToday(),
+      seen: all.map(run => run.id),
+      rules: { 'V6串行推进': { counted: '坏数据', pending: [], input: 0, output: 0, cost: 0, costReported: false, rounds: 0, missingCostRounds: 0 } },
+    }));
+    const usage = await chainUsageOf();
+    assert.equal(usage.rounds, 200, '坏 entry 触发回填后必须把 200 轮全部补回');
+    assert.equal(usage.cost, 200);
+    assert.equal(usage.backfillPending, undefined, '补回到底后不再标注补全中');
+    assert.equal(readLedgerFile(root).complete, true);
+  } finally { PAGE = 3; await close(server); await close(hub.server); }
+});
+
+test('稳态零写入：本轮没有新入账就不重抄台账（写放大回归）', async () => {
+  const { store, hub, server, chainUsageOf, root } = await setup([['v6-serial.json', '/p/v6app']]);
+  try {
+    store.runs = [finished(2, 'V6串行推进', { input: 1, output: 1, cost: 1 }), finished(1, 'V6串行推进', { input: 1, output: 1, cost: 1 })];
+    assert.equal((await chainUsageOf()).cost, 2);
+    const mtimeBefore = statSync(path.join(root, 'chain-usage.json')).mtimeMs;
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal((await chainUsageOf()).cost, 2, '读数仍然正确');
+    const mtimeAfter = statSync(path.join(root, 'chain-usage.json')).mtimeMs;
+    assert.equal(mtimeAfter, mtimeBefore, '无变化的稳态扫描不得重写台账文件');
+    store.runs.push(finished(3, 'V6开发', { input: 1, output: 1, cost: 5 }));
+    assert.equal((await chainUsageOf()).cost, 7, '有新入账时必须落盘');
+    assert.ok(statSync(path.join(root, 'chain-usage.json')).mtimeMs > mtimeAfter);
+  } finally { await close(server); await close(hub.server); }
+});
+
+test('如实标注在任何用量分支都要带上，包括既无费用又无 Token 的分支（P3-1 回归）', async () => {
+  const { projectUsageText } = await import('../public/status-sections.mjs');
+  const bare = { cost: null, input: 0, output: 0, tokens: 0, reported: false, missingCostRounds: 3, unresolvedRounds: 1, backfillPending: true };
+  const text = projectUsageText('项目累计', bare);
+  assert.match(text, /暂无用量/);
+  assert.match(text, /历史补全中/, '未上报分支也要交代补全状态');
+  assert.match(text, /3 轮未上报费用/);
+  assert.match(text, /1 轮长期未完成未计入/);
+  const reported = { cost: 1.5, input: 10, output: 5, tokens: 15, reported: true, missingCostRounds: 2, unresolvedRounds: 0, backfillPending: false };
+  assert.match(projectUsageText('项目累计', reported), /2 轮未上报费用/);
+  assert.equal(projectUsageText('项目今日', { cost: 0.5, input: 1, output: 1, tokens: 2, reported: true, missingCostRounds: 0, unresolvedRounds: 0 }), '项目今日 · 费用 $0.50 · Token 2（入 1 / 出 1）', '没有备注时不得拖尾巴');
 });

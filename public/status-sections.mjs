@@ -8,21 +8,18 @@ export function billingText(run) {
 // 项目级今日/累计用量的展示口径：已上报费用 → Token + 费用未上报 → 暂无用量。
 // 只展示 Hub 自报值，缺失如实标注，不折算、不按模型名估算。
 export function projectUsageText(label, usage) {
-  if (!usage || !usage.reported) return `${label} · 暂无用量`;
+  // 如实标注必须在任何分支都跟着走：既无费用又无 Token 时也要交代"补全中/未上报/长期未完成"。
+  const notes = usageNotes(usage);
+  if (!usage || !usage.reported) return `${label} · 暂无用量${notes}`;
   const fmt = value => Number(value || 0).toLocaleString('en-US');
   const tokens = fmt(usage.tokens);
   const split = (usage.input > 0 || usage.output > 0) ? `（入 ${fmt(usage.input)} / 出 ${fmt(usage.output)}）` : '';
   const cost = typeof usage.cost === 'number' ? `费用 $${usage.cost.toFixed(2)}` : null;
   const token = usage.tokens > 0 ? `Token ${tokens}${split}` : null;
-  const notes = [];
-  if (usage.backfillPending) notes.push('历史补全中');
-  if (usage.missingCostRounds > 0) notes.push(`${usage.missingCostRounds} 轮未上报费用`);
-  if (usage.unresolvedRounds > 0) notes.push(`${usage.unresolvedRounds} 轮长期未完成未计入`);
-  const suffix = notes.length ? ` · ${notes.join(' · ')}` : '';
-  if (cost && token) return `${label} · ${cost} · ${token}${suffix}`;
-  if (cost) return `${label} · ${cost}${suffix}`;
-  if (token) return `${label} · ${token} · 费用未上报${suffix}`;
-  return `${label} · 暂无用量${suffix}`;
+  if (cost && token) return `${label} · ${cost} · ${token}${notes}`;
+  if (cost) return `${label} · ${cost}${notes}`;
+  if (token) return `${label} · ${token} · 费用未上报${notes}`;
+  return `${label} · 暂无用量${notes}`;
 }
 
 export function projectForRun(run, rules = []) {
@@ -117,6 +114,15 @@ export function scopedSpending(snapshot, rules = [], filter = '') {
 export function timersForProject(timers = [], rules = [], filter = '') {
   if (!filter) return timers;
   return timers.filter(timer => matchesProject(ruleProject(rules, timer.rule), filter));
+}
+
+// 台账如实标注：未补全到底、未上报费用、长期未完成未计入，任何用量文案都要带上。
+export function usageNotes(usage) {
+  const parts = [];
+  if (usage?.backfillPending) parts.push('历史补全中');
+  if (usage?.missingCostRounds > 0) parts.push(`${usage.missingCostRounds} 轮未上报费用`);
+  if (usage?.unresolvedRounds > 0) parts.push(`${usage.unresolvedRounds} 轮长期未完成未计入`);
+  return parts.length ? ` · ${parts.join(' · ')}` : '';
 }
 
 // 一个项目（按 basename 匹配其规则）的当日活动聚合，供项目任务进度面板计数行使用。
