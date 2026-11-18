@@ -168,7 +168,8 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         // 派发中断补发：claimed 已备好槽位只补 send；queued 说明 prepare/send 抛错前
         // 状态机已落盘但 Hub 从未接单，必须重跑 prepare 再 claim+send，否则节点静默卡住。
         if (run.status === 'queued') {
-          await rt.prepare({ slot: n.slot, nodeId: id, branch: n.branch, base: n.prepareBase || baseRef });
+          const prepared = await rt.prepare({ slot: n.slot, nodeId: id, branch: n.branch, base: n.prepareBase || baseRef });
+          n.prepareBase = prepared.baseCommit; // queued 补发也冻结实际 SHA，不再传符号 ref 给 commitPr
           return send(root, id, store.claim(run.runId, { slot: n.slot }), n);
         }
         return send(root, id, run, n);
@@ -284,7 +285,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         const existing = latest(root, node.id, 'dev');
         if (existing) {
           const adopted = existing.slot ?? freeSlot(root, st, node.id); if (adopted == null) break;
-          n.state = 'dev'; n.slot = adopted; n.prepareBase = baseRef;
+          n.state = 'dev'; n.slot = adopted; n.prepareBase = null;
           await advanceNode(root, st, node.id); continue;
         }
         const slot = freeSlot(root, st, node.id); if (slot == null) break;

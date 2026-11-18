@@ -222,3 +222,18 @@ test('设计 runner 设施抛错不计 worker 失败，下一 tick 同 attempt �
   assert.ok(s.hub.last('ui', 'review'));
   assert.equal(s.runOf('ui', 'dev').attempt, 1);
 });
+
+test('崩溃收养路径把 prepare 返回的实际 base commit 传给 commitPr', async () => {
+  const s = setup([mkNode('a')]);
+  s.store.createNodeRun(s.root.runId, { nodeId: 'a', role: 'dev' });
+  const realPrepare = s.rt.prepare.bind(s.rt);
+  s.rt.prepare = async input => ({ ...(await realPrepare(input)), baseCommit: 'frozen-abc' });
+  let commitBase = null;
+  s.publisher.commitPr = async input => {
+    commitBase = input.base;
+    return { prUrl: `https://x/pr/${input.nodeId}`, commit: `sha-${input.nodeId}` };
+  };
+  await s.ctl.tick();
+  s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  assert.equal(commitBase, 'frozen-abc', '崩溃收养不得把 origin/main 传给 scope 检查');
+});

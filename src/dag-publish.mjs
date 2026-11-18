@@ -34,7 +34,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
   };
   const changed = async cwd => parseStatus(await rt.git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all']));
   // worker 可能先 git commit：scope 必须同时覆盖未提交状态和 base..HEAD 已提交差异。
-  const committed = async (cwd, base) => String(await rt.git(cwd, ['diff', '--name-only', '-z', base, 'HEAD']) ?? '').split('\0').filter(Boolean);
+  const committed = async (cwd, base) => String(await rt.git(cwd, ['diff', '--no-ext-diff', '--no-textconv', '--name-only', '-z', base, 'HEAD']) ?? '').split('\0').filter(Boolean);
   const nodeOf = (root, nodeId) => {
     const node = (root.nodes || []).find(item => item.id === nodeId);
     if (!node) throw new PublishError(`节点 ${nodeId} 不在快照中`, 'UNKNOWN_NODE');
@@ -78,7 +78,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       const root = need(['push-branch', 'create-pr'], 'commit-pr');
       const scopes = scopesOf(root, nodeId);
       const uncommittedFiles = await changed(worktree);
-      if (!String(base ?? '').trim()) throw new PublishError('缺少冻结 prepare base commit，无法核对本节点提交范围', 'BASE_COMMIT_REQUIRED');
+      if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(String(base ?? ''))) throw new PublishError(`prepare base 必须是冻结 commit SHA，不能是符号 ref：${String(base ?? '')}`, 'BASE_NOT_COMMIT');
       const baseCommit = (await rt.git(worktree, ['rev-parse', '--verify', `${base}^{commit}`]).catch(() => '')).trim();
       if (!baseCommit) throw new PublishError(`冻结基准 commit ${base} 不存在，无法核对本节点提交范围`, 'BASE_REF_MISSING');
       const files = [...new Set([...uncommittedFiles, ...await committed(worktree, baseCommit)])];

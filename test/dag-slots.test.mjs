@@ -68,3 +68,34 @@ test('defaultGit disables repository hooks and does not inherit controller-only 
     rmSync(marker, { force: true });
   }
 });
+
+test('defaultGit disables config-driven fsmonitor during status', async () => {
+  const { project } = makeRepo();
+  const marker = path.join(tmpdir(), `default-git-fsmonitor-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `default-git-fsmonitor-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'fsmonitor-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  sh(project, 'config', 'core.fsmonitor', script);
+  try {
+    await defaultGit(project, ['status', '--porcelain']);
+    assert.equal(existsSync(marker), false, 'core.fsmonitor 不得在控制器侧执行');
+  } finally {
+    rmSync(marker, { force: true }); rmSync(script, { force: true });
+  }
+});
+
+test('defaultGit disables external diff and textconv during diff', async () => {
+  const { project } = makeRepo();
+  const marker = path.join(tmpdir(), `default-git-diff-${process.pid}.txt`);
+  const script = path.join(tmpdir(), `default-git-diff-${process.pid}.sh`);
+  writeFileSync(script, `#!/bin/sh\nprintf 'diff-ran\\n' > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  mkdirSync(path.join(project, 'src'), { recursive: true });
+  writeFileSync(path.join(project, 'src/a.mjs'), 'x\n');
+  sh(project, 'add', 'src/a.mjs'); sh(project, 'commit', '-qm', 'diff fixture');
+  sh(project, 'config', 'diff.external', script);
+  try {
+    await defaultGit(project, ['diff', '--name-only', 'HEAD^', 'HEAD']);
+    assert.equal(existsSync(marker), false, 'external diff 不得在控制器侧执行');
+  } finally {
+    rmSync(marker, { force: true }); rmSync(script, { force: true });
+  }
+});

@@ -61,23 +61,36 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
     const nonce = randomBytes(32).toString('hex');
     const verifierPayload = { nodeId, worktree: source, contract, designBaseline, evidenceDir, commit };
     const payload = { ...verifierPayload, verifierUrl: pathToFileURL(file).href, nonce };
+    // payload 只经 stdin 进入子进程；nonce 不进入 execArgv/env，也不传给项目 verifier。
     const script = `
-      const payload = ${JSON.stringify(payload)};
-      const verifierPayload = { nodeId: payload.nodeId, worktree: payload.worktree, contract: payload.contract, designBaseline: payload.designBaseline, evidenceDir: payload.evidenceDir, commit: payload.commit };
+      const readStdin = () => new Promise((resolve, reject) => {
+        let text = '';
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', chunk => { text += chunk; });
+        process.stdin.on('end', () => resolve(text));
+        process.stdin.on('error', reject);
+      });
+      const input = await readStdin();
+      const parse = JSON.parse;
+      const stringify = JSON.stringify;
       const fs = await import('node:fs');
       const writeResult = fs.writeSync;
+      const payload = parse(input);
+      const verifierPayload = { nodeId: payload.nodeId, worktree: payload.worktree, contract: payload.contract, designBaseline: payload.designBaseline, evidenceDir: payload.evidenceDir, commit: payload.commit };
       try {
         const module = await import(payload.verifierUrl);
         const result = await module.verify(verifierPayload);
-        writeResult(3, JSON.stringify({ nonce: payload.nonce, result }) + '\\n');
+        writeResult(3, stringify({ nonce: payload.nonce, result }) + '\\n');
       } catch (error) {
-        writeResult(3, JSON.stringify({ nonce: payload.nonce, result: { __error: String(error?.message || error) } }) + '\\n');
+        writeResult(3, stringify({ nonce: payload.nonce, result: { __error: String(error?.message || error) } }) + '\\n');
         process.exitCode = 1;
       }
     `;
     const child = spawn(process.execPath, ['--input-type=module', '--eval', script], {
-      cwd: source, env: childEnv, stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+      cwd: source, env: childEnv, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
     });
+    child.stdin.on('error', () => {}); // 子进程提前退出时避免 EPIPE 掩盖真实错误
+    child.stdin.end(JSON.stringify(payload));
     const stdout = new LimitedBuffer(LOG_LIMIT_BYTES, 'stdout');
     const stderr = new LimitedBuffer(LOG_LIMIT_BYTES, 'stderr');
     const resultChannel = new LimitedBuffer(RESULT_LIMIT_BYTES, 'result');

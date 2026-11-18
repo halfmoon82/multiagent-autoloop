@@ -16,7 +16,8 @@ export const defaultGit = (cwd, args, { env } = {}) => new Promise((resolve, rej
     PATH: process.env.PATH || '/usr/bin:/bin', HOME: process.env.HOME || tmpdir(), TMPDIR: process.env.TMPDIR || tmpdir(),
     LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, GIT_TERMINAL_PROMPT: '0', NODE_OPTIONS: '', ...env,
   };
-  execFile('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, timeout: 60000, env: sanitized, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+  const gitArgs = args[0] === 'diff' ? ['diff', '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args;
+  execFile('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...gitArgs], { cwd, timeout: 60000, env: sanitized, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
     if (error) reject(new SlotError(`git ${args[0]} 失败：${(stderr || error.message).trim()}`, 'GIT_FAILED'));
     else resolve(stdout);
   });

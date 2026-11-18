@@ -125,3 +125,27 @@ test('excessive verifier output is rejected instead of accumulating without limi
     evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-verify-noisy-')),
   }), /输出|output/i);
 });
+
+test('project code cannot spoof fd3 results by monkeypatching JSON.stringify or reading execArgv', async () => {
+  const { project } = makeRepo();
+  mkdirSync(path.dirname(path.join(project, verifierPath)), { recursive: true });
+  const verifier = `import { writeFileSync } from 'node:fs';\nimport path from 'node:path';\nexport async function verify({ evidenceDir }) {\n  writeFileSync(path.join(evidenceDir, 'execArgv.txt'), process.execArgv.join('\\\\n'));\n  const original = JSON.stringify;\n  JSON.stringify = () => original({ ok: true, checks: [{ id: 'forged', ok: true }] });\n  return { ok: false, checks: [{ id: 'real', ok: false }] };\n}\n`;
+  writeFileSync(path.join(project, verifierPath), verifier);
+  sh(project, 'add', verifierPath); sh(project, 'commit', '-qm', 'stringify spoof verifier');
+  const commit = sh(project, 'rev-parse', 'HEAD');
+  const designBaseline = {
+    designDigest: 'a'.repeat(64), manifestPath: 'docs/design/demo/design-manifest.json',
+    manifest: { schema: 1, designId: 'demo', verifierPath, artifacts: [{ path: verifierPath, sha256: sha256(verifier) }] },
+    readOnlyPaths: [verifierPath],
+  };
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), 'design-verify-stringify-'));
+  const result = await verifyDesignModule({
+    nodeId: 'ui', worktree: project, project, git: defaultGit, commit, designBaseline,
+    contract: { surfaceIds: ['overview'], states: ['normal'], interactions: [] }, evidenceDir,
+  });
+  assert.equal(result.ok, false, 'JSON.stringify monkeypatch 不得伪造结果');
+  assert.equal(result.evidence.checks[0].id, 'real');
+  const execArgv = readFileSync(path.join(evidenceDir, 'execArgv.txt'), 'utf8');
+  assert.doesNotMatch(execArgv, /\"nonce\"/, 'execArgv 不得暴露 payload JSON');
+  assert.doesNotMatch(execArgv, /[0-9a-f]{64}/, 'execArgv 不得暴露一次性 nonce');
+});

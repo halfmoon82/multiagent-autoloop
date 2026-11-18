@@ -264,3 +264,10 @@ test('commitPr：worker 移动 origin/main 不能绕过冻结 base 的 scope 检
   await assert.rejects(t.pub.commitPr({ ...t.ctx, base: frozenBase }), error => error.code === 'OUT_OF_SCOPE');
   assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
 });
+
+test('commitPr rejects symbolic base refs such as origin/main', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'x\n');
+  await assert.rejects(t.pub.commitPr({ ...t.ctx, base: 'origin/main' }), error => error.code === 'BASE_NOT_COMMIT');
+  assert.throws(() => sh(t.remote, 'rev-parse', 'feat/a'));
+});
