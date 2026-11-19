@@ -416,3 +416,15 @@ test('commitPr：readToken 失败抛可读 PublishError 且不含 token，不推
   empty.write('src/a.mjs', 'x\n');
   await assert.rejects(empty.pub.commitPr(empty.ctx), error => error.code === 'PUBLISH_TOKEN_UNAVAILABLE');
 });
+
+test('fetchHead：把远端分支 tip 取回控制器 mirror 并返回精确 SHA', async () => {
+  const b = await boot();
+  sh(b.project, 'checkout', '-q', '-b', 'feat/rebased');
+  writeFileSync(path.join(b.project, 'new.txt'), 'x\n');
+  sh(b.project, 'add', '-A'); sh(b.project, 'commit', '-qm', 'rebased');
+  sh(b.project, 'push', '-q', 'origin', 'feat/rebased');
+  const head = sh(b.project, 'rev-parse', 'HEAD');
+  assert.equal(await b.pub.fetchHead({ nodeId: 'a', branch: 'feat/rebased' }), head);
+  assert.equal(sh(b.mirror.mirrorPath, 'rev-parse', 'refs/dag-head/a'), head, '取回到控制器自有 ref');
+  await assert.rejects(b.pub.fetchHead({ nodeId: 'a', branch: '--upload-pack=evil' }), /分支名/);
+});

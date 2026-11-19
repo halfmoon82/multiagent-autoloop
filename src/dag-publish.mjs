@@ -173,6 +173,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
     // 变基/强推后的 PR head 往往只存在于远端（worker 在自己仓库提交后强推），
     // 控制器 mirror 没有这些对象。按分支取回到控制器自有 ref，再以精确 SHA 作为审阅基准。
     async fetchHead({ nodeId, branch }) {
+      const root = store.getRun(rootRunId);
       const name = String(branch || '').trim();
       if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name)) throw new PublishError(`分支名无效（只允许 [A-Za-z0-9][A-Za-z0-9._/-]*）：${name}`, 'BAD_BRANCH');
       if (!root.remoteUrl) throw new PublishError('根 run 未冻结可信 remote URL，拒绝 fetch', 'REMOTE_NOT_FROZEN');
