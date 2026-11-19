@@ -1,6 +1,10 @@
 // publish（无模型）：commit-pr / verify / merge / baseline。只执行授权快照内动作，幂等；
 // 永远不做 deploy/release/凭据/对外通信。gh 与测试执行器由调用方注入（CI 离线用假实现）。
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 import { normalizeProjectPath } from './dag.mjs';
 import { canClosePr, canExecuteAction } from './dag-run.mjs';
 import { assertNodeDesignSnapshot, designContractDigest } from './design-baseline.mjs';
@@ -10,6 +14,18 @@ import { dagReviewHolder } from './review-claim.mjs';
 export class PublishError extends Error {
   constructor(message, code = 'PUBLISH_ERROR') { super(message); this.name = 'PublishError'; this.code = code; }
 }
+
+const execFileAsync = promisify(execFile);
+const TOKEN_UNAVAILABLE = '无法读取发布凭据（gh 登录 token）：push 已取消';
+// 默认凭据源：gh CLI 已登录态。只取 token 字符串，任何失败/输出都不带进错误信息，避免泄露。
+export const defaultGhToken = async () => {
+  let stdout;
+  try { ({ stdout } = await execFileAsync('gh', ['auth', 'token'], { timeout: 15000, maxBuffer: 64 * 1024 })); }
+  catch { throw new PublishError(TOKEN_UNAVAILABLE, 'PUBLISH_TOKEN_UNAVAILABLE'); }
+  const token = String(stdout ?? '').trim();
+  if (!token) throw new PublishError(TOKEN_UNAVAILABLE, 'PUBLISH_TOKEN_UNAVAILABLE');
+  return token;
+};
 
 const inScope = (file, scopes) => scopes.some(scope => file === scope || file.startsWith(`${scope}/`));
 // 只有这一类路径仍硬拦：凭据、CI 定义、发布/部署脚本、环境变量。业务代码一律只报告。
@@ -39,7 +55,7 @@ const parseStatus = out => {
   return files;
 };
 
-export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesign, baseRef = 'origin/main' } = {}) {
+export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesign, baseRef = 'origin/main', readToken = defaultGhToken } = {}) {
   const need = (actions, why) => {
     const root = store.getRun(rootRunId); // 读取时已校验快照 digest，被篡改直接抛错
     const allowed = root.authorizationSnapshot.allowedActions;
@@ -116,11 +132,13 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       const currentHead = String(await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
       await rt.git(worktree, ['update-ref', `refs/heads/${branch}`, currentHead]);
       await rt.git(worktree, ['symbolic-ref', 'HEAD', `refs/heads/${branch}`]);
-      let commit;
+      let commit, warnings = [];
       if (uncommittedFiles.length) {
         // 不执行 git add/commit：用 no-filter hash-object + update-index + commit-tree，
         // 防止 worker 配置 clean filter 或 hooks 在控制器侧执行。
-        const { tree } = await buildWorktreeTree({ git: rt.git, cwd: worktree, base: 'HEAD' });
+        const built = await buildWorktreeTree({ git: rt.git, cwd: worktree, base: 'HEAD' });
+        const { tree } = built;
+        warnings = built.warnings || [];
         commit = String(await rt.git(worktree, ['commit-tree', tree, '-p', 'HEAD', '-m', `${nodeId}: ${root.runId}`], { env: {
           GIT_AUTHOR_NAME: 'dag-controller', GIT_AUTHOR_EMAIL: 'dag-controller@localhost',
           GIT_COMMITTER_NAME: 'dag-controller', GIT_COMMITTER_EMAIL: 'dag-controller@localhost',
@@ -130,12 +148,26 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       } else commit = String(await rt.git(worktree, ['rev-parse', 'HEAD'])).trim();
       if (commit === baseCommit) throw new PublishError(`节点 ${nodeId} 没有任何提交可发 PR`, 'NOTHING_TO_PUBLISH');
       if (!root.remoteUrl) throw new PublishError('根 run 未冻结可信 remote URL，拒绝 push', 'REMOTE_NOT_FROZEN');
-      await rt.git(worktree, ['push', '-q', root.remoteUrl, `${commit}:refs/heads/${branch}`]);
+      // push 凭据只经内存 token + 0700 临时 askpass 脚本传给 git：
+      // token 不写仓库/worktree/git config，也不进任何错误文本或日志。
+      let token;
+      try { token = await readToken(); }
+      catch { throw new PublishError(TOKEN_UNAVAILABLE, 'PUBLISH_TOKEN_UNAVAILABLE'); }
+      if (!token || typeof token !== 'string') throw new PublishError(TOKEN_UNAVAILABLE, 'PUBLISH_TOKEN_UNAVAILABLE');
+      const authDir = mkdtempSync(path.join(tmpdir(), 'dag-push-auth-'));
+      const askpass = path.join(authDir, 'askpass.sh');
+      try {
+        chmodSync(authDir, 0o700);
+        const escaped = token.replace(/'/g, "'\\''");
+        writeFileSync(askpass, `#!/bin/sh\nprintf '%s' '${escaped}'\n`, { mode: 0o700 });
+        chmodSync(askpass, 0o700);
+        await rt.git(worktree, ['push', '-q', root.remoteUrl, `${commit}:refs/heads/${branch}`], { env: { GIT_ASKPASS: askpass } });
+      } finally { rmSync(authDir, { recursive: true, force: true }); }
       let prUrl = await gh.findPr({ branch });
       if (!prUrl) prUrl = await gh.createPr({ branch, title: `${nodeId} (${root.runId})` });
       store.registerPr(root.runId, nodeId, prUrl);
       await closeSuperseded(root.runId, nodeId, prUrl);
-      return { prUrl, commit, outOfScope: outside };
+      return { prUrl, commit, outOfScope: outside, ...(warnings.length ? { warnings } : {}) };
     },
 
     async verify({ nodeId, worktree, commit }) {

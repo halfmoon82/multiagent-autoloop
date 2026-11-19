@@ -1,7 +1,7 @@
 // publish：commit-pr / verify / merge 在真实 git（本地 bare 远端）+ 假 gh 上的行为。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
@@ -13,7 +13,7 @@ import { makeRepo, sh } from './helpers-git.mjs';
 import { dagReviewHolder } from '../src/review-claim.mjs';
 
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
-async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, aFiles = null } = {}) {
+async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, aFiles = null, readToken = async () => 'test-gh-token' } = {}) {
   const { project, remote } = makeRepo();
   const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-pub-'));
   const store = createRunStore({ directory: storeDirectory });
@@ -32,7 +32,7 @@ async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designIn
     async prHead(url) { return this.prs.get(url).sha; }, async mergePr(url) { this.merged.push(url); return {}; },
     closed: [], async closePr(url, a) { this.closed.push([url, a.comment]); } };
   const tests = []; const runTests = async (cwd) => { tests.push(cwd); return { exitCode: 0, summary: '1 passed' }; };
-  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests, verifyDesign, baseRef: 'refs/heads/main' });
+  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests, verifyDesign, baseRef: 'refs/heads/main', readToken });
   const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId, base: prepared.baseCommit };
   const write = (rel, c) => { mkdirSync(path.dirname(path.join(ctx.worktree, rel)), { recursive: true }); writeFileSync(path.join(ctx.worktree, rel), c); };
   return { project, remote, store, root, rt, gh, pub, ctx, write, tests, mirror };
@@ -373,4 +373,46 @@ test('merge：占位已释放（无有效占位）时照常合并', async () => 
   t.gh.claimHolder = async () => null;
   await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit });
   assert.deepEqual(t.gh.merged, [pr.prUrl]);
+});
+
+// ---- push 凭据：临时 askpass 脚本（GIT_ASKPASS）+ token 不落盘不进日志 ----
+test('commitPr：push 带 GIT_ASKPASS，调用期间脚本存在且含 token，结束后脚本与临时目录删除', async () => {
+  const token = 'ghp_askpasstest123';
+  const t = await boot({ readToken: async () => token });
+  t.write('src/a.mjs', 'export const a = 1;\n');
+  let scriptPath = null, modeDuring = null;
+  const realGit = t.rt.git;
+  t.rt.git = async (cwd, args, opts) => {
+    if (args[0] === 'push') {
+      scriptPath = opts?.env?.GIT_ASKPASS;
+      assert.ok(scriptPath, 'push 必须带 GIT_ASKPASS');
+      assert.equal(existsSync(scriptPath), true, '调用期间脚本存在');
+      assert.match(readFileSync(scriptPath, 'utf8'), new RegExp(token), '脚本内容包含 token');
+      modeDuring = lstatSync(scriptPath).mode & 0o777;
+      assert.equal(lstatSync(path.dirname(scriptPath)).mode & 0o777, 0o700, '临时目录 0700');
+      assert.equal(JSON.stringify({ cwd, args, opts }).includes(token), false, 'token 不得出现在 git 调用参数/环境值里');
+    }
+    return realGit(cwd, args, opts);
+  };
+  const out = await t.pub.commitPr(t.ctx);
+  assert.ok(out.commit);
+  assert.equal(modeDuring, 0o700, '脚本 0700');
+  assert.equal(existsSync(scriptPath), false, '结束后脚本已删除');
+  assert.equal(existsSync(path.dirname(scriptPath)), false, '结束后临时目录已删除');
+});
+
+test('commitPr：readToken 失败抛可读 PublishError 且不含 token，不推送不建 PR', async () => {
+  const leak = 'ghp_DO_NOT_LEAK_xyz';
+  const failing = await boot({ readToken: async () => { throw new Error(`gh auth failed for ${leak}`); } });
+  failing.write('src/a.mjs', 'x\n');
+  await assert.rejects(failing.pub.commitPr(failing.ctx), error => {
+    assert.equal(error.name, 'PublishError');
+    assert.equal(error.code, 'PUBLISH_TOKEN_UNAVAILABLE');
+    assert.equal(String(error.message).includes(leak), false, '错误信息不得含 token');
+    return true;
+  });
+  assert.throws(() => sh(failing.remote, 'rev-parse', 'feat/a'), '未推送');
+  const empty = await boot({ readToken: async () => '' });
+  empty.write('src/a.mjs', 'x\n');
+  await assert.rejects(empty.pub.commitPr(empty.ctx), error => error.code === 'PUBLISH_TOKEN_UNAVAILABLE');
 });
