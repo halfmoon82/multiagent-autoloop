@@ -1,7 +1,7 @@
 import { openRuleForm } from './rule-form.mjs';
 import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSessionItems, renderSessionCard, renderArchivedSessions, renderArchivedEntries, renderProjectProgress, chainUsageText } from './views.mjs';
 import { projectName } from './format.mjs';
-import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject, chainUsage } from './status-sections.mjs';
+import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject, chainUsage, chainCurrentExecutor } from './status-sections.mjs';
 import { el } from './views.mjs';
 import { initDag } from './dag-app.mjs';
 import { stableReplace, hasLiveInteraction } from './dom-stable.mjs';
@@ -168,14 +168,14 @@ function render() {
   const spending = scopedSpending(view.snapshot, view.rules, filter);
   const summarySnapshot = scoped ? { ...view.snapshot, totals: scoped, spending: { today: spending } } : state.snapshot;
   replace('summary', renderSummary(summarySnapshot));
-  replace('progress-list', renderProjectProgress({ chains: (state.serial?.chains || []).filter(chain => matchesProject(chain.project, filter)), sessions: view.sessions, rules: view.rules, snapshot: view.snapshot, loadError: !!state.serialFailed, projectUsage: state.projectUsage || [], usageLoadError: !!state.projectUsageFailed }));
+  replace('progress-list', renderProjectProgress({ chains: (state.serial?.chains || []).filter(chain => matchesProject(chain.project, filter)), sessions: view.sessions, rules: view.rules, snapshot: view.snapshot, loadError: !!state.serialFailed, projectUsage: state.projectUsage || [], usageLoadError: !!state.projectUsageFailed, agentNames: agentNameMap() }));
   const progressState = $('progress-state');
   const progressStateText = state.serialFailed ? '加载失败：节点进度读取失败，已保留最后成功数据，请点击顶部“刷新”重试。'
     : !state.serial ? '加载中：正在读取节点进度…' : '';
   progressState.textContent = progressStateText;
   progressState.hidden = !progressStateText;
   progressState.className = `state-banner ${state.serialFailed ? 'error' : 'loading'}`;
-  const work = renderWorkSections(view.snapshot, view.rules, Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)), state.detours || [], state.delegatedCards || []);
+  const work = renderWorkSections(view.snapshot, view.rules, agentNameMap(), state.detours || [], state.delegatedCards || []);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
   replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); renderSessionsChrome(view.sessions); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
   syncProjectFilter();
@@ -242,6 +242,8 @@ async function perform(action, id, body = {}) {
   if (!paths[action]) throw new Error('不支持的操作');
   await api(paths[action], { method: 'POST', body: JSON.stringify(body) }); showNotice('操作已完成，正在刷新状态。'); await refresh();
 }
+// Agent id → 显示名：正在运行列表与串行节点执行者共用同一口径。
+function agentNameMap() { return Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)); }
 // #75：串行链节点点击 → 与 DAG 节点同构的运行详情视图（由 DAG 控制器统一承载）。
 document.addEventListener('click', event => {
   const hit = event.target.closest('[data-serial-node]');
@@ -249,7 +251,8 @@ document.addEventListener('click', event => {
   const chain = (state.serial?.chains || []).find(item => item.sourceFile === hit.dataset.serialRun);
   if (!chain) return;
   const usage = chainUsageText(chainUsage(chain, state.rules, state.snapshot?.lines || [], state.serial?.chains || []));
-  dag.openSerialDetail(chain, hit.dataset.serialNode, usage);
+  const executor = chainCurrentExecutor(chain, state.rules, state.snapshot?.runs || [], state.serial?.chains || [], state.models || {}, agentNameMap());
+  dag.openSerialDetail(chain, hit.dataset.serialNode, usage, executor);
 });
 document.addEventListener('click', async event => {
   const button = event.target.closest('button[data-action]'); if (!button) return;

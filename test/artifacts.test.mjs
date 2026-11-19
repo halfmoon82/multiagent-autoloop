@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { listArtifacts, readArtifact } from '../src/artifacts.mjs';
@@ -32,6 +32,18 @@ test('listArtifacts finds md/html files within depth, excluding VCS/dependency/w
   const names = files.map(file => file.path).sort();
   assert.deepEqual(names, ['README.md', 'docs/dashboard.html', 'docs/report.md']);
   assert.ok(files.every(file => typeof file.size === 'number' && typeof file.at === 'string'));
+});
+
+test('listArtifacts with since keeps only files touched after session start, newest first', () => {
+  const root = fixture();
+  const old = new Date('2026-01-01T00:00:00Z');
+  for (const rel of ['README.md', 'docs/report.md', 'docs/dashboard.html']) utimesSync(path.join(root, rel), old, old);
+  writeFileSync(path.join(root, 'docs', 'session-plan.md'), '# 本会话计划\n');
+  writeFileSync(path.join(root, 'summary.html'), '<p>本会话总结</p>');
+  utimesSync(path.join(root, 'docs', 'session-plan.md'), new Date('2026-11-19T03:00:00Z'), new Date('2026-11-19T03:00:00Z'));
+  utimesSync(path.join(root, 'summary.html'), new Date('2026-11-19T04:00:00Z'), new Date('2026-11-19T04:00:00Z'));
+  const files = listArtifacts(root, { since: '2026-11-19T02:00:00.000Z' });
+  assert.deepEqual(files.map(file => file.path), ['summary.html', 'docs/session-plan.md']);
 });
 
 test('readArtifact reads a file and rejects traversal, absolute escape and unknown extensions', () => {

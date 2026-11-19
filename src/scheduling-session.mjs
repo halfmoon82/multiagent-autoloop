@@ -750,7 +750,8 @@ export class SchedulingSessionManager {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
     try {
-      return listArtifacts(record.cwd);
+      // 只列本会话开始后新建/修改的文件：同项目的会话共用一个工作目录，不按时间界会把整个仓库的旧文档当成本会话产物。
+      return listArtifacts(record.cwd, { since: record.createdAt });
     } catch (error) {
       throw new SchedulingSessionError(`产物目录不可读：${safeMessage(error)}`, { status: 404 });
     }

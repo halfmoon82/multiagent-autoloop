@@ -25,8 +25,11 @@ function assertInside(root, relPath) {
   return real;
 }
 
-export function listArtifacts(cwd, { maxDepth = MAX_DEPTH, maxFiles = MAX_FILES } = {}) {
+// since：只收会话开始后新建/修改的文件（按 mtime），否则同项目所有会话看到的都是整个仓库的旧文档。
+// 结果按修改时间倒序，上限先留给最新产物。
+export function listArtifacts(cwd, { maxDepth = MAX_DEPTH, maxFiles = MAX_FILES, since = null } = {}) {
   if (!cwd) return [];
+  const sinceMs = since ? Date.parse(since) : NaN;
   const root = realpathSync(cwd);
   const files = [];
   const walk = (dir, depth) => {
@@ -44,13 +47,14 @@ export function listArtifacts(cwd, { maxDepth = MAX_DEPTH, maxFiles = MAX_FILES 
       } else if (entry.isFile() && ARTIFACT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
         try {
           const stat = statSync(full);
+          if (Number.isFinite(sinceMs) && stat.mtimeMs < sinceMs) continue;
           files.push({ path: path.relative(root, full), name: entry.name, size: stat.size, at: stat.mtime.toISOString() });
         } catch { /* 读取失败跳过 */ }
       }
     }
   };
   walk(root, 0);
-  return files.sort((a, b) => a.path.localeCompare(b.path));
+  return files.sort((a, b) => b.at.localeCompare(a.at) || a.path.localeCompare(b.path));
 }
 
 export function readArtifact(cwd, relPath, { maxBytes = MAX_BYTES } = {}) {

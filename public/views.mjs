@@ -1,5 +1,5 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
-import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, projectUsageText, usageNotes } from './status-sections.mjs';
+import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, chainCurrentExecutor, projectUsageText, usageNotes } from './status-sections.mjs';
 import { buildSerialView, progressVisual } from './progress-view.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
@@ -345,7 +345,7 @@ function projectUsageChips(project, projectUsage = [], loadError = false) {
 }
 
 // 项目任务进度：每行一个项目（串行链或有活动但无链文件）。节点段可点击，展开卡显示节点摘要。
-export function renderProjectProgress({ chains: rawChains = [], sessions = [], rules = [], snapshot = {}, loadError = false, projectUsage = [], usageLoadError = false } = {}) {
+export function renderProjectProgress({ chains: rawChains = [], sessions = [], rules = [], snapshot = {}, loadError = false, projectUsage = [], usageLoadError = false, agentNames = {} } = {}) {
   const chains = latestChainsByProject(rawChains); // 同一项目多条链只显示最近更新的一条
   const openCards = (snapshot.cards || []).filter(card => card.state === 'open');
   const lines = snapshot.lines || [];
@@ -354,7 +354,8 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
 
   // 有串行状态文件的项目：完整任务条
   for (const chain of chains) {
-    rows.push(renderChainRow(chain, sessions, rules, openCards, lines, chains, projectUsage, usageLoadError));
+    const executor = chainCurrentExecutor(chain, rules, snapshot.runs || [], chains, snapshot.models || {}, agentNames);
+    rows.push(renderChainRow(chain, sessions, rules, openCards, lines, chains, projectUsage, usageLoadError, executor));
   }
 
   // 有活动但没有链文件的项目：只显示计数行（会话绑定项目 + 有今日活动的规则项目）
@@ -382,7 +383,7 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
   return rows;
 }
 
-function renderChainRow(chain, sessions, rules, openCards, lines, allChains = [], projectUsage = [], usageLoadError = false) {
+function renderChainRow(chain, sessions, rules, openCards, lines, allChains = [], projectUsage = [], usageLoadError = false, executor = null) {
     const name = projectName(chain.project);
     const row = el('div', 'list-row serial-chain-row');
     row.dataset.chain = name;
@@ -398,7 +399,7 @@ function renderChainRow(chain, sessions, rules, openCards, lines, allChains = []
     main.append(head);
 
     // #75：串行链与 DAG 共用「分段环形总进度 + 分组四栏节点卡片」组件语言。
-    const view = buildSerialView(chain, chainUsageText(chainUsage(chain, rules, lines, allChains)));
+    const view = buildSerialView(chain, chainUsageText(chainUsage(chain, rules, lines, allChains)), executor);
     main.append(progressVisual(view, { label: `${name} `, cls: 'progress-node', key: 'serialNode', runId: chain.sourceFile, donutCls: 'serial-donut', clampSummary: true }));
 
     if (chain.current) {
