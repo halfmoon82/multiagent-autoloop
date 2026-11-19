@@ -166,6 +166,9 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       try { pr = await publisher.commitPr(ctx); }
       catch (error) {
         if (error?.code === 'SENSITIVE_PATH') return failure(root, st, id, run, 'sensitive-path');
+        // 开发回执 done 但没有任何提交：属于这一轮实现失败，按失败尝试重派/换打法，
+        // 不能让同一个 done run 每 tick 重抛同一错误原地空转（2026-11-19 device-binding 卡住）。
+        if (error?.code === 'NOTHING_TO_PUBLISH') return failure(root, st, id, run, 'nothing-to-publish');
         throw error;
       }
       store.registerPr(root.runId, id, pr.prUrl); n.prUrl = pr.prUrl; n.commit = pr.commit;
@@ -294,6 +297,16 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     return true;
   }
 
+  // 原槽位重试是否安全：槽位必须确实预置成本节点的开发分支，且冻结基准是“基底”而不是节点提交本身。
+  // 审阅 prepare（变基重审）会把 prepareBase 记成节点 commit，泄漏给开发重试就永远没有提交可发。
+  const devSlotReusable = (id, n) => {
+    if (n.slot == null || !n.prepareBase) return false;
+    if (n.commit && n.prepareBase === n.commit) return false;
+    const slot = typeof rt.loadState === 'function' ? (rt.loadState() || {})[n.slot] : null;
+    if (slot && (slot.nodeId !== id || slot.branch !== n.branch)) return false;
+    return true;
+  };
+
   async function runTodo(root, st, id) {
     const n = st.nodes[id]; const todo = n.todo;
     if (todo.kind === 'review') {
@@ -332,6 +345,13 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     }
     const reason = todo.reason === 'change-approach' || (role === 'review' && latest(root, id, role).attempt >= MAX_ATTEMPTS) ? 'change-approach' : 'retry';
     if (role === 'dev' && todo.newSlot === false) { // 原槽位重试：保持分支与槽位
+      if (!devSlotReusable(id, n)) {
+        // 槽位已被审阅 prepare 改成本节点的 commit 基准/审阅分支：直接复用会让 prepareBase == commit，
+        // commitPr 永远报“没有任何提交可发 PR”。按纪律先释放（WIP 保全），再在冻结基底重新 prepare。
+        const released = await releaseNodeSlot(root, st, id);
+        if (!released) { n.lastError = '原槽位需重备但槽位暂不能安全释放（Hub run 未终态），下一轮再试'; return; }
+        await reattempt(root, st, id, role, reason, true); return;
+      }
       const run = store.createAttempt(latest(root, id, 'dev').runId, { reason });
       n.todo = null; n.state = 'dev'; await start(root, st, id, run, n.slot, { prepare: false }); return;
     }
