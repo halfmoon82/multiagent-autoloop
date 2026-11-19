@@ -165,7 +165,7 @@ test('createDagRuntime：真实 publisher 使用控制器 mirror，不受 worker
     called++; received = input;
     return { ok: true, evidence: { commit: input.commit, designDigest: designBaseline.designDigest, contractDigest: designContractDigest({ designDigest: designBaseline.designDigest, contract: ui.contract.design }), checks: [{ ok: true }] } };
   };
-  const ctl = await createDagRuntime({ rootRun: root, config: {}, store, request, gh, runTests: async () => ({ exitCode: 0 }), verifyDesign });
+  const ctl = await createDagRuntime({ rootRun: root, config: {}, store, request, gh, runTests: async () => ({ exitCode: 0 }), verifyDesign, readToken: async () => 'test-gh-token' });
   await ctl.tick();
   const slotDir = path.join(mirror.mirrorPath, '.worktrees', `dag-${root.runId}-slot-1`);
   mkdirSync(path.join(slotDir, 'src'), { recursive: true }); writeFileSync(path.join(slotDir, 'src', 'a.mjs'), 'export const a = 1;\n');

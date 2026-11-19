@@ -69,7 +69,7 @@ test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', a
     if (args[1] === 'close') { closed.push(args[2]); return { stdout: '' }; }
     return { stdout: '' };
   };
-  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh: createGhAdapter({ runner }), runTests: async () => ({ exitCode: 0 }), baseRef: 'refs/heads/main' });
+  const pub = createPublisher({ store, rootRunId: root.runId, rt, gh: createGhAdapter({ runner }), runTests: async () => ({ exitCode: 0 }), baseRef: 'refs/heads/main', readToken: async () => 'test-gh-token' });
   const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId, base: baseCommit };
   const write = c => { mkdirSync(path.join(ctx.worktree, 'src'), { recursive: true }); writeFileSync(path.join(ctx.worktree, 'src/a.mjs'), c); };
   write('export const a = 1;\n');

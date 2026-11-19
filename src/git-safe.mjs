@@ -1,7 +1,7 @@
 // 控制器侧安全 Git：禁 hooks/fsmonitor/untrackedCache/external diff/textconv，
 // 并提供无 clean filter 的工作区树构造。不要在不可信 worktree 上执行 git add。
 import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -11,6 +11,7 @@ export const GIT_HARDENING = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmo
 const ALLOWED_ENV = new Set([
   'PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'GIT_TERMINAL_PROMPT', 'NODE_OPTIONS',
   'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_INDEX_FILE', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
+  'GIT_ASKPASS',
 ]);
 
 export function hardenedGitArgs(args = []) {
@@ -100,8 +101,13 @@ export async function worktreeChanges({ git, cwd, base = 'HEAD' } = {}) {
 
 export async function buildWorktreeTree({ git, cwd, base = 'HEAD' } = {}) {
   const root = path.resolve(cwd);
+  const realRoot = realpathSync(root);
+  // 未跟踪且真实路径落在工作区外的符号链接（典型：node_modules 软链到主 checkout）跳过，不提交。
+  // 已跟踪项、工作区内部链接、其他非普通文件一律照旧抛错，不静默吞掉真实改动。
+  const untracked = new Set(String(await git(cwd, ['ls-files', '--others', '--exclude-standard', '-z']) ?? '').split('\0').filter(Boolean));
   const files = await worktreeChanges({ git, cwd, base });
   const entries = files.map(file => ({ file, deleted: !existsSync(path.join(root, file)) }));
+  const skipped = [];
   const dir = mkdtempSync(path.join(tmpdir(), 'dag-safe-index-'));
   const index = path.join(dir, 'index');
   try {
@@ -114,13 +120,27 @@ export async function buildWorktreeTree({ git, cwd, base = 'HEAD' } = {}) {
       const file = path.resolve(root, entry.file);
       if (!inside(root, file)) throw new Error(`工作区路径逃逸：${entry.file}`);
       const stat = lstatSync(file);
+      if (stat.isSymbolicLink()) {
+        let external = false;
+        if (untracked.has(entry.file)) {
+          try { external = !inside(realRoot, realpathSync(file)); }
+          catch { external = false; } // 断链无法核实真实路径，按内部链接处理（抛错）。
+        }
+        if (external) {
+          entry.skipped = true;
+          entry.skipReason = 'untracked-external-symlink';
+          skipped.push(entry.file);
+          continue;
+        }
+        throw new Error(`暂不支持该工作区文件类型：${entry.file}`);
+      }
       if (!stat.isFile()) throw new Error(`暂不支持该工作区文件类型：${entry.file}`);
       const mode = (stat.mode & 0o111) ? '100755' : '100644';
       const blob = String(await git(cwd, ['hash-object', '-w', '--no-filters', '--', entry.file], { env: { GIT_INDEX_FILE: index } })).trim();
       await git(cwd, ['update-index', '--add', '--cacheinfo', mode, blob, entry.file], { env: { GIT_INDEX_FILE: index } });
     }
     const tree = String(await git(cwd, ['write-tree'], { env: { GIT_INDEX_FILE: index } })).trim();
-    return { tree, entries };
+    return { tree, entries, skipped, ...(skipped.length ? { warnings: [`跳过未跟踪且指向工作区外的符号链接：${skipped.join(', ')}`] } : {}) };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
