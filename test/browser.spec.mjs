@@ -399,7 +399,7 @@ try {
     lastEventAt: '2026-11-15T07:00:00Z',
     nodes: {
       n1: { status: 'done', title: '节点一', label: '一', summary: '交付了第一块功能' },
-      n2: { status: 'dev_dispatched', title: '节点二', label: '二', part: '联调', percent: 50, summary: '正在实现第二块功能', pr_url: 'https://github.com/example-org/x/pull/9' },
+      n2: { status: 'dev_dispatched', title: '节点二', label: '二', part: '联调', percent: 50, summary: '正在实现第二块功能：补齐导出链路的异常分支并补充回归测试，完成后进入联调', pr_url: 'https://github.com/example-org/x/pull/9' },
       n3: { status: 'pending', title: '节点三', label: '三' },
     },
   }));
@@ -425,8 +425,23 @@ try {
   assert.ok(progressText.includes('项目累计 · 费用 $0.21 · Token 1,666（入 1,234 / 出 432）'), 'project cumulative usage must come from the runs ledger across pages, not the today-window rule lines');
   assert.ok(progressText.includes('项目累计 · 费用 $0.21 · Token 1,666（入 1,234 / 出 432）'), 'project cumulative usage must come from the runs ledger across pages, not the today-window rule lines');
   assert.equal(await progressRow.locator('.node-pop').count(), 0, 'node-only popover is retired');
+  // 任务摘要默认收起一行，点摘要行就地展开；点击不得把用户带离总览
+  const summaryRow = progressRow.locator('.progress-node[data-serial-node="n2"] .node-field').filter({ hasText: '任务摘要' });
+  const summaryValue = summaryRow.locator('.node-task-summary');
+  assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-collapsed')), true, 'overview task summary defaults to collapsed');
+  assert.equal(await summaryValue.evaluate(node => getComputedStyle(node).webkitLineClamp), '1', 'collapsed summary is clamped to a single line');
+  assert.ok(await summaryValue.evaluate(node => node.scrollHeight > node.clientHeight + 1), 'collapsed summary actually clips the longer text');
+  await summaryRow.click();
+  assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-expanded')), true, 'clicking the summary expands it in place');
+  assert.ok(await summaryValue.evaluate(node => node.scrollHeight <= node.clientHeight + 1), 'expanded summary shows the full text');
+  assert.equal(await page.locator('#view-overview').isVisible(), true, 'expanding a summary must stay on the overview');
+  assert.equal(await page.locator('#view-dag').isVisible(), false, 'expanding a summary must not open the detail view');
+  await page.waitForTimeout(2300); // 跨过一次 2s 轮询重建，展开状态不能被刷新吞掉
+  assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-expanded')), true, 'expanded state survives the polling re-render');
+  await summaryRow.click();
+  assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-collapsed')), true, 'second click collapses it again');
   // 串行节点点击 → 与 DAG 同构的运行详情视图（不再是只有浮层）
-  await progressRow.locator('.progress-node[data-serial-node="n2"]').click();
+  await progressRow.locator('.progress-node[data-serial-node="n2"] strong').click(); // 点标题进详情；点任务摘要行只就地展开
   await page.locator('#view-dag').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#dag-detail .dag-detail').count(), 1);
   assert.equal(await page.locator('#dag-detail .dag-node[data-serial-node]').count(), 3, 'detail uses the same node-card component');
@@ -438,7 +453,7 @@ try {
   assert.ok((await detail.innerText()).includes('费用 / Token'), 'detail shows cost/token column');
   // 无摘要节点（pending）详情必须有兜底文案，不能是空面板
   await page.getByRole('button', { name: '总览', exact: true }).click();
-  await page.locator('#progress-list .progress-node[data-serial-node="n3"]').click();
+  await page.locator('#progress-list .progress-node[data-serial-node="n3"] strong').click();
   await page.locator('#dag-node-detail').waitFor();
   assert.ok((await page.locator('#dag-node-detail').innerText()).includes('暂无任务摘要'), 'pending node without summary must show a truthful fallback');
   await page.getByRole('button', { name: '总览', exact: true }).click();
