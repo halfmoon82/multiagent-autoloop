@@ -313,9 +313,10 @@ try {
   // 指针按下未抬起（点击/拖选进行中）同帧轮询不能拆除目标节点，否则 click 丢失；
   // 拖出窗口外释放收不到 pointerup，靠 window blur 兜底清除按压状态
   const pressCard = page.locator('#runs-list .run-card').filter({ hasText: 'beta 项目已改派' });
-  const pressBox = await pressCard.boundingBox();
+  // 不用 boundingBox 读坐标：2s 后台刷新可能刚好重建列表，坐标读取会拿到 null。
+  // hover 由 Playwright 等待可见并稳定，元素若在途中被替换会自动重试。
+  await pressCard.hover();
   snapshot.runs[1].summary = 'beta 项目二次改派';
-  await page.mouse.move(pressBox.x + 20, pressBox.y + 10);
   await page.mouse.down();
   await page.waitForTimeout(4500); // 按下未抬起跨两轮轮询
   assert.ok((await page.locator('#runs-list').innerText()).includes('beta 项目已改派'), 'the list under a held pointer freezes instead of rebuilding the pressed target away');
