@@ -248,7 +248,9 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         if (store.getRun(run.runId).status !== run.status) return advanceNode(root, st, id, true);
       }
       if (h.status === 'unknown') { store.markUnknown(run.runId, { at: now() }); return; }
-      if (h.status === 'queued' && run.attempt >= MAX_ATTEMPTS) { await hub.cancel(run.hub.hubRunId); store.cancel(run.runId, { reason: 'attempts-exhausted' }); return failure(root, st, id, run, 'queued-attempts'); }
+      // 变基重审是外部强推后的恢复路径，虽落在最大 attempt 上，但刚派发的 queued 只代表 worker 还没接单，
+      // 不能按“排队满次”取消——否则会白丢一次已准备的重审并退回开发重做（2026-11-19 device-binding 事故）。
+      if (h.status === 'queued' && run.attempt >= MAX_ATTEMPTS && run.attemptReason !== 'rebase-review') { await hub.cancel(run.hub.hubRunId); store.cancel(run.runId, { reason: 'attempts-exhausted' }); return failure(root, st, id, run, 'queued-attempts'); }
       // Hub run 已终态却没有合法 advance：按一次失败尝试计数（attempt 即累计次数）。
       if (HUB_TERMINAL.has(h.status)) { store.cancel(run.runId, { reason: 'attempts-exhausted' }); return failure(root, st, id, run, 'no-valid-advance'); }
     } else if (run.status === 'unknown') {
