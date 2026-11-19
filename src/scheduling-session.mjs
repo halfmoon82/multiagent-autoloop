@@ -110,6 +110,8 @@ function toPublicSession(record) {
     kind: record.kind || 'scheduling',
     sessionId: record.sessionId,
     agent: record.agent,
+    model: record.model || null,
+    tier: record.tier || null,
     cwd: record.cwd,
     status: record.status,
     statusText: statusLabel(record.status),
@@ -144,7 +146,7 @@ function summarizeUpdate(update) {
 }
 
 export class SchedulingSessionManager {
-  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null, hubScheduling, hubReconcileMs = HUB_RECONCILE_INTERVAL_MS } = {}) {
+  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null, sessionLaunch = null, hubScheduling, hubReconcileMs = HUB_RECONCILE_INTERVAL_MS } = {}) {
     this.cwd = path.resolve(cwd);
     this.writableDir = writableDir ? path.resolve(writableDir) : null;
     // §6：kind=scheduling 走 Hub 事项/run/resume，绝不派生私有 ACP；normal/design 始终走 ACP。
@@ -174,6 +176,8 @@ export class SchedulingSessionManager {
     // 会话专用 CODEX_HOME：默认放在运行目录 <archiveRoot>/codex-home；无运行目录时放系统临时目录。
     this.codexHomeDir = codexHomeDir ? path.resolve(codexHomeDir) : path.join(archiveRoot || path.join(tmpdir(), 'autoloop-console'), 'codex-home');
     this.userCodexHome = userCodexHome;
+    // 管理后台「平台与模型」：kind → { model, tier, label } | null（null = 沿用用户默认模型）。
+    this.sessionLaunch = typeof sessionLaunch === 'function' ? sessionLaunch : null;
     this.auditFile = archiveRoot ? path.join(archiveRoot, 'permission-audit.jsonl') : null;
     this.auditWarned = false;
   }
@@ -327,8 +331,11 @@ export class SchedulingSessionManager {
 
     const sessionCwd = this.#projectCwd(projectId);
     // fail closed：专用 CODEX_HOME 准备失败就不启动，绝不回退到继承全局 approval_policy 的环境。
+    let launch = null;
+    try { launch = this.sessionLaunch ? this.sessionLaunch(sessionKind) : null; } catch { launch = null; }
+    if (launch && launch.use !== 'codex') launch = null; // 只有 Codex 能保证会话沙箱护栏
     let codexHome;
-    try { codexHome = prepareSessionCodexHome({ targetDir: this.codexHomeDir, userCodexHome: this.userCodexHome || defaultUserCodexHome() }); }
+    try { codexHome = prepareSessionCodexHome({ targetDir: this.codexHomeDir, userCodexHome: this.userCodexHome || defaultUserCodexHome(), model: launch?.model || null }); }
     catch (error) { throw new SchedulingSessionError(`无法准备会话专用 CODEX_HOME：${safeMessage(error)}`, { status: 500 }); }
     const child = this.spawnFn(process.execPath, [this.adapterPath], {
       cwd: sessionCwd,
@@ -345,6 +352,8 @@ export class SchedulingSessionManager {
       kind: sessionKind,
       sessionId: null,
       agent: 'Codex ACP',
+      model: launch?.model || null,
+      tier: launch?.tier || null,
       cwd: sessionCwd,
       status: 'initializing',
       project: projectId,

@@ -4,7 +4,10 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HubError, hubRequest } from './hub.mjs';
-import { readRuleOptions, saveRule, RuleError } from './rules.mjs';
+import { readRuleOptions, saveRule, RuleError, defaultCheck } from './rules.mjs';
+import { readPlatformModels, applyPlatformModels, sessionLaunch, PlatformModelsError } from './platform-models.mjs';
+import { loadPolicy } from './detour-policy.mjs';
+import { seg } from './dag-slots.mjs';
 import { modelLabels } from './models.mjs';
 import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-session.mjs';
 import { HubSchedulingSessionAdapter } from './hub-scheduling-session.mjs';
@@ -26,7 +29,7 @@ const FILES = new Map([
   ['/dom-stable.mjs', ['dom-stable.mjs', 'text/javascript; charset=utf-8']],
   ['/status-sections.mjs', ['status-sections.mjs', 'text/javascript; charset=utf-8']],
   ['/views.mjs', ['views.mjs', 'text/javascript; charset=utf-8']], ['/rule-form.mjs', ['rule-form.mjs', 'text/javascript; charset=utf-8']],
-  ['/dag-model.mjs', ['dag-model.mjs', 'text/javascript; charset=utf-8']], ['/dag-views.mjs', ['dag-views.mjs', 'text/javascript; charset=utf-8']], ['/dag-authorize.mjs', ['dag-authorize.mjs', 'text/javascript; charset=utf-8']], ['/dag-app.mjs', ['dag-app.mjs', 'text/javascript; charset=utf-8']], ['/progress-view.mjs', ['progress-view.mjs', 'text/javascript; charset=utf-8']], ['/dag.css', ['dag.css', 'text/css; charset=utf-8']],
+  ['/dag-model.mjs', ['dag-model.mjs', 'text/javascript; charset=utf-8']], ['/dag-views.mjs', ['dag-views.mjs', 'text/javascript; charset=utf-8']], ['/dag-authorize.mjs', ['dag-authorize.mjs', 'text/javascript; charset=utf-8']], ['/dag-app.mjs', ['dag-app.mjs', 'text/javascript; charset=utf-8']], ['/admin-platform-models.mjs', ['admin-platform-models.mjs', 'text/javascript; charset=utf-8']], ['/progress-view.mjs', ['progress-view.mjs', 'text/javascript; charset=utf-8']], ['/dag.css', ['dag.css', 'text/css; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
 ]);
 export function securityHeaders() {
@@ -52,6 +55,10 @@ function idOf(text) { const id = Number(text); if (!/^[1-9][0-9]*$/.test(text) |
 async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/state') return jsonResponse(res, 200, await hubRequest(config, '/v1/state'));
   if (req.method === 'GET' && url.pathname === '/api/rules') return jsonResponse(res, 200, { ...readRuleOptions(config), models: modelLabels() });
+  if (req.method === 'GET' && url.pathname === '/api/admin/platform-models') {
+    let policy = null; try { policy = loadPolicy(config); } catch { policy = null; }
+    return jsonResponse(res, 200, readPlatformModels(config, { ...(config.platformCatalog ? { catalog: config.platformCatalog } : {}), policy }));
+  }
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
   if (req.method === 'GET' && url.pathname === '/api/session-archives') return jsonResponse(res, 200, { sessions: await config.schedulingSessions.listArchived() });
   if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
@@ -170,6 +177,11 @@ async function handleApi(config, req, res, url) {
     catch (error) { if (error instanceof CardFilterError) throw new RequestError(error.code === 'VERSION_MISSING' ? 404 : 400, error.message); throw error; }
   }
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
+  if (req.method === 'PUT' && url.pathname === '/api/admin/platform-models') {
+    // DAG 分档规则只为控制台已发现的 Git 项目生成（事件类型 dag.<项目>.<角色>.<档>）。
+    const dagSlugs = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).map(item => seg(path.basename(item.path)));
+    return jsonResponse(res, 200, await applyPlatformModels(config, body, { check: config.platformCheck || defaultCheck, dagSlugs }));
+  }
   let match;
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/clear$/))) return jsonResponse(res, 200, await config.schedulingSessions.clearQueued(decodeURIComponent(match[1])));
   if (req.method === 'PUT' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/([^/]+)$/))) return jsonResponse(res, 200, await config.schedulingSessions.updateQueued(decodeURIComponent(match[1]), decodeURIComponent(match[2]), String(body.text ?? '')));
@@ -212,7 +224,7 @@ export function createConsoleServer(config, schedulingSessions) {
       try { mkdirSync(allowedDir, { recursive: true }); }
       catch (error) { console.error(`[console] 脚本目录 ${allowedDir} 创建失败，会话按只读处理：${error.message}`); allowedDir = null; }
     }
-    schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }) });
+    schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }), sessionLaunch: kind => sessionLaunch(config, kind) });
   }
   const dagService = config.dagService || (config.root ? createDagService({ root: config.root, storeDirectory: path.join(config.root, 'dag-runs') }) : null);
   // 退回记录落盘：重启后「待代理决策」列表不丢；无运行目录退回内存 store（退回行为不变）。
@@ -224,7 +236,7 @@ export function createConsoleServer(config, schedulingSessions) {
     if (!['127.0.0.1', 'localhost'].includes(host)) return jsonResponse(res, 403, { error: '控制台只接受本机地址' });
     try { if (url.pathname.startsWith('/api/') && await handleApi(config, req, res, url) !== false) return; }
     catch (error) {
-      const status = error instanceof RequestError || error instanceof RuleError || error instanceof SchedulingSessionError || error instanceof DagServiceError || error instanceof CardDelegateError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
+      const status = error instanceof RequestError || error instanceof RuleError || error instanceof PlatformModelsError || error instanceof SchedulingSessionError || error instanceof DagServiceError || error instanceof CardDelegateError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
       return jsonResponse(res, status, { error: error.message, ...(error instanceof SchedulingSessionError && error.conflict ? { conflict: error.conflict } : {}) });
     }
     const asset = FILES.get(url.pathname);

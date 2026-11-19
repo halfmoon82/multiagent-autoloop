@@ -116,6 +116,45 @@ for (const kind of ['normal', 'scheduling', 'design']) {
   });
 }
 
+test('管理后台选定的会话模型：只替换顶层 model，表内同名键与供应商段不动；非法模型名拒绝', () => {
+  const user = userHome({ config: `${USER_CONFIG}\n[model_providers.other]\nmodel = "keep-me"\n` });
+  const target = tmp();
+  prepareSessionCodexHome({ targetDir: target, userCodexHome: user, model: 'k3.1-pro' });
+  const out = readFileSync(path.join(target, 'config.toml'), 'utf8');
+  const top = out.split(/^\[/m)[0];
+  assert.match(top, /^model = "k3\.1-pro"$/m);
+  assert.doesNotMatch(top, /kimi-for-coding/);
+  assert.match(out, /\[model_providers\.other\]\nmodel = "keep-me"/);
+  assert.match(out, /model_provider = "kimi"/);
+  assert.throws(() => prepareSessionCodexHome({ targetDir: target, userCodexHome: user, model: 'x" \nnotify = 1' }), /不合法/);
+});
+
+for (const kind of ['normal', 'design']) {
+  test(`${kind} 会话按管理后台设置的档位模型启动，并在会话记录里标明平台与模型`, async () => {
+    const user = userHome(); const target = tmp(); const fake = fakeAcp();
+    let configAtSpawn = null;
+    const manager = new SchedulingSessionManager({
+      cwd: '/workspace/demo', adapterPath: '/fixed/acp.js', codexHomeDir: target, userCodexHome: user,
+      sessionLaunch: k => (k === kind ? { platform: 'codex-full', use: 'codex', tier: 'heavy', model: 'k3.1-pro', label: 'Codex 可写调度' } : null),
+      spawnFn: () => { configAtSpawn = readFileSync(path.join(target, 'config.toml'), 'utf8'); return fake.child; },
+    });
+    const started = await manager.start({ kind, project: '/workspace/demo', prompt: '开始' });
+    assert.match(configAtSpawn, /^model = "k3\.1-pro"$/m);
+    assert.equal(started.model, 'k3.1-pro');
+    assert.equal(started.tier, 'heavy');
+    manager.dispose();
+  });
+}
+
+test('未开启分档（sessionLaunch 返回空）时会话沿用用户默认模型', async () => {
+  const user = userHome(); const target = tmp(); const fake = fakeAcp();
+  let configAtSpawn = null;
+  const manager = new SchedulingSessionManager({ cwd: '/workspace/demo', adapterPath: '/fixed/acp.js', codexHomeDir: target, userCodexHome: user, sessionLaunch: () => null, spawnFn: () => { configAtSpawn = readFileSync(path.join(target, 'config.toml'), 'utf8'); return fake.child; } });
+  await manager.start({ kind: 'normal', project: '/workspace/demo', prompt: '开始' });
+  assert.match(configAtSpawn, /^model = "kimi-for-coding"$/m);
+  manager.dispose();
+});
+
 test('default CODEX_HOME lives under the runtime home (<archiveRoot>/codex-home)', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'autoloop-home-'));
   const fake = fakeAcp();

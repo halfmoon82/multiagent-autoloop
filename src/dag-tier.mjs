@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 export const TIERS = ['light', 'standard', 'heavy'];
-export const TIER_FILE = 'dag-tiers.json';
+export const TIER_FILE = 'platform-models.json';
 const RISKS = new Set(['funds', 'data', 'security']);
 // 按词边界匹配敏感路径，避免 author→auth 之类误判；驼峰先拆成 kebab 再匹配（paymentService → payment-service）。
 const SENSITIVE_PATH = /(^|[/._-])(pay(ment)?s?|billing|invoices?|ledger|funds?|wallets?|accounts?|accounting|refunds?|checkout|transactions?|auth|oauth|authentication|authoriz\w*|login|passwords?|secrets?|credentials?|crypto|migrations?|schema|db)([/._-]|$)|\.sql$|(^|\/)\.env(\.|$)/i;
@@ -47,12 +47,22 @@ export function nodeTier(node, role, { bump = 0 } = {}) {
   return tier;
 }
 
-// 运行目录下的分档开关：{ "enabled": ["light", ...] }。只有对应 Hub 规则配好后才开启；
-// 缺失/损坏/非法值一律视为未启用，派发回落原事件类型（fail closed 到旧行为，不派往不存在的规则）。
+// 分档开关：管理后台「平台与模型」保存的 platform-models.json（enabled=true 即三档全开）。
+// 缺失/损坏/未开启一律视为未启用，派发回落原事件类型（fail closed 到旧行为）。
+// 是否真有规则接这个分档事件由派发方（dag-runtime）再核一次，避免派往不存在的规则。
 export function loadEnabledTiers(root) {
   if (!root) return new Set();
   try {
     const data = JSON.parse(readFileSync(path.join(String(root), TIER_FILE), 'utf8'));
-    return new Set((Array.isArray(data?.enabled) ? data.enabled : []).filter(tier => TIERS.includes(tier)));
+    return data?.enabled === true ? new Set(TIERS) : new Set();
   } catch { return new Set(); }
+}
+
+// rules.json 里是否有规则接收该事件类型（只读，每次派发现读；读不到按没有处理）。
+export function rulesConsume(rulesFile, type) {
+  if (!rulesFile) return false;
+  try {
+    const raw = JSON.parse(readFileSync(String(rulesFile), 'utf8'));
+    return (raw.rules || []).some(rule => (rule.when?.types || []).includes(type));
+  } catch { return false; }
 }
