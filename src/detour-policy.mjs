@@ -26,7 +26,7 @@ const KIND_KEYWORDS = [
 
 /** 从规则名/提示词判定工作类型；显式 kind 优先；判不出返回 null（调用方跳过，不臆测）。 */
 export function classifyKind(text, explicit) {
-  if (explicit === 'dev' || explicit === 'review') return explicit;
+  if (KINDS.includes(explicit)) return explicit;
   const value = String(text ?? '');
   for (const [kind, patterns] of KIND_KEYWORDS) {
     if (patterns.some((pattern) => pattern.test(value))) return kind;

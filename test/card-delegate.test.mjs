@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  DELEGATE_REASON, CardDelegateError, createCardDelegateStore, delegateEventId,
+  DELEGATE_REASON, CardDelegateError, createCardDelegateStore, delegateEventId, settleDelegations,
   delegateOpenCard, delegateSubject, buildEscalationCard,
 } from '../src/card-delegate.mjs';
 import { createConsoleServer } from '../src/server.mjs';
@@ -211,4 +211,32 @@ test('GET /api/delegated-cards lists pending delegations', async () => {
     assert.equal(body.cards.length, 1);
     assert.equal(body.cards[0].cardId, 9);
   } finally { server.close(); }
+});
+
+test('settleDelegations moves a delegation out of the pending list once its scheduling run finishes (P2)', () => {
+  const store = createCardDelegateStore();
+  store.set('console:card:21:delegate:r1', { cardId: 21, originId: 21, revision: 1, at: '2026-11-19T01:00:00Z', status: 'delegated' });
+  store.set('console:card:22:delegate:r1', { cardId: 22, originId: 22, revision: 1, at: '2026-11-19T01:00:00Z', status: 'delegated' });
+  const state = { runs: [
+    { id: 50, state: 'done', finishedAt: '2026-11-19T01:05:00Z', events: [{ subject: delegateSubject(21) }] },
+    { id: 51, state: 'claimed', finishedAt: null, events: [{ subject: delegateSubject(22) }] },
+    { id: 40, state: 'done', finishedAt: '2026-11-18T23:00:00Z', events: [{ subject: delegateSubject(22) }] },
+  ] };
+  const settled = settleDelegations(store, state);
+  assert.deepEqual(settled.map(record => record.cardId), [21]);
+  assert.deepEqual(store.listPending().map(record => record.cardId), [22], '仍在跑的、以及退回之前就结束的旧轮次都不算收口');
+  assert.equal(store.listByOrigin(21).length, 1, '记录保留给冷却与循环检测');
+});
+
+test('GET /api/delegated-cards settles finished delegations through Hub state', async () => {
+  const store = createCardDelegateStore();
+  store.set('console:card:31:delegate:r1', { cardId: 31, originId: 31, revision: 1, at: '2026-11-19T01:00:00Z', status: 'delegated' });
+  const { hub, server, url } = await apiFixture((req, res) => {
+    if (req.url === '/v1/state') return json(res, { cards: [], runs: [{ id: 60, state: 'nothing', finishedAt: '2026-11-19T02:00:00Z', events: [{ subject: delegateSubject(31) }] }] });
+    return json(res, {}, 404);
+  }, store);
+  try {
+    const body = await (await fetch(`${url}/api/delegated-cards`)).json();
+    assert.equal(body.cards.length, 0);
+  } finally { await close(server); await close(hub.server); }
 });

@@ -51,6 +51,27 @@ export function createCardDelegateStore({ file = null } = {}) {
     listPending() { return [...records.values()].filter(record => record.status === 'delegated' || record.status === 'event_accepted'); },
   };
 }
+
+const FINISHED_RUN_STATES = new Set(['done', 'nothing', 'cancelled']);
+
+/**
+ * 待代理决策收口：退回事件所在事项（subject = scheduling:card-delegate:<originId>）的调度轮次结束后，
+ * 把记录标为 settled，从「待代理决策」列表移出。依据 /v1/state 的 runs[].events[].subject（runs 没有 lane 字段）。
+ * 只改状态不删记录：冷却与循环检测仍按 listByOrigin 读到全部历史。
+ */
+export function settleDelegations(store, state, now = () => new Date()) {
+  const runs = Array.isArray(state?.runs) ? state.runs : [];
+  const settled = [];
+  for (const record of store.listPending()) {
+    const subject = delegateSubject(record.originId);
+    const finished = runs.find(run => FINISHED_RUN_STATES.has(run?.state)
+      && Array.isArray(run.events) && run.events.some(event => event?.subject === subject)
+      && Date.parse(run.finishedAt || run.createdAt || 0) >= Date.parse(record.at || 0));
+    if (!finished) continue;
+    settled.push(store.set(record.key, { ...record, status: 'settled', settledAt: now().toISOString(), settledByRun: finished.id ?? null }));
+  }
+  return settled;
+}
 const defaultStore = createCardDelegateStore();
 
 export async function delegateOpenCard({

@@ -70,8 +70,9 @@ export function buildSnapshotSection(providers = {}) {
  * 组装并写出本轮资料文件，返回绝对路径；不可写/缺参数时返回 null（调用方退回无提示的行为）。
  * providers: { rules, runs, cards, dag } 各返回字符串数组（每元素一条概要行），同步/异步皆可。
  * prevAgent：上一轮执行者标注（如 'claude'），换执行者后首轮提示词据此自报身份；未知传 null。
+ * guide：调度会话护栏/任务说明（首轮的调度提示词），放进资料文件而不是事件正文，避免挤掉用户原话。
  */
-export async function buildSchedulingContext({ root, sessionId, turn, project, lastSummary = '', openItems = '', prevAgent = null, providers = {} } = {}) {
+export async function buildSchedulingContext({ root, sessionId, turn, project, lastSummary = '', openItems = '', prevAgent = null, providers = {}, guide = '' } = {}) {
   if (!root || !sessionId) return null;
   // project 允许不存在：AGENTS.md/契约找不到时按「（未找到）」占位，资料照常落盘——
   // 项目路径本身也是资料，缺路径不应阻断每轮上下文。
@@ -80,6 +81,7 @@ export async function buildSchedulingContext({ root, sessionId, turn, project, l
   const snapshot = await buildSnapshotSection(providers);
   const parts = [`# 调度会话本轮资料\n`, `- 项目：${project}`, `- 会话：${sessionId}`, `- 轮次：${turn}`];
   if (prevAgent) parts.push(`- 上一轮执行者：${prevAgent}（若本轮换了执行者，第一行必须自报：我是备用执行者，上一轮由 ${prevAgent} 执行；从本文件重建上下文，不得假装记得聊天历史）`);
+  if (guide) parts.push('\n## 调度会话护栏与任务\n', String(guide), '\n');
   parts.push('\n## 项目 AGENTS.md\n', agents || '（未找到 AGENTS.md）\n');
   if (contract) parts.push('\n## 调度契约（docs/scheduling-contract.md，截断版）\n', contract);
   parts.push('\n', snapshot);
@@ -101,18 +103,71 @@ export function contextTrailer(file) {
   return file ? `\n\n本轮完整资料（项目规则、状态快照与上一轮结论）：${file}；动手前先读它。` : '';
 }
 
+const TRUNCATED_MARK = '\n[已截断]';
+// Hub 字段上限按 Unicode 码点计算（protocol.md「文字上限按 Unicode 码点计算」）。
+export const codePoints = text => [...String(text ?? '')].length;
+const detailSize = (project, text) => codePoints(JSON.stringify({ project, text }));
+
 /**
- * 把用户正文与资料提示合成最终事件 detail 的 text；总字节数 ≤ budget（默认 3950）。
- * 提示必须完整保留：先截正文，截到放不下提示时整段丢弃提示（宁缺不残）。
+ * 合成最终事件文本：以序列化后的 detail（JSON.stringify({project,text})）为准，码点数 ≤ limit（默认 3950）。
+ * JSON 转义（换行→\n 两字符、引号）与 project 路径都计入。提示必须完整保留：先截正文；
+ * 连提示都放不下时整段丢弃提示（宁缺不残）。
  */
-export function composeTurnText({ text, trailer, budget = EVENT_DETAIL_BUDGET }) {
-  const body = String(text ?? '');
+export function composeTurnText({ text, trailer, project = '', limit = EVENT_DETAIL_BUDGET }) {
+  const body = [...String(text ?? '')];
   const hint = String(trailer ?? '');
-  const total = Buffer.byteLength(body, 'utf8') + Buffer.byteLength(hint, 'utf8');
-  if (total <= budget) return `${body}${hint}`;
-  const room = budget - Buffer.byteLength(hint, 'utf8');
-  if (room < 32) return body.length > budget ? truncateToBytes(body, budget) : body;
-  return `${truncateToBytes(body, room - Buffer.byteLength('\n[已截断]', 'utf8'))}\n[已截断]${hint}`;
+  const whole = `${body.join('')}${hint}`;
+  if (detailSize(project, whole) <= limit) return whole;
+  const keepHint = detailSize(project, `${TRUNCATED_MARK}${hint}`) <= limit;
+  const tail = keepHint ? `${TRUNCATED_MARK}${hint}` : TRUNCATED_MARK;
+  // 二分找能放下的最长正文前缀（码点粒度，不会切断多字节字符或转义序列）。
+  let low = 0;
+  let high = body.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (detailSize(project, `${body.slice(0, mid).join('')}${tail}`) <= limit) low = mid;
+    else high = mid - 1;
+  }
+  return `${body.slice(0, low).join('')}${tail}`;
+}
+
+/** /v1/state 的 runs 只有 id，没有 lane：按 run.events[].subject 归属事项。 */
+export function runsOfSubject(state, subject) {
+  const runs = Array.isArray(state?.runs) ? state.runs : [];
+  if (!subject) return [];
+  return runs.filter(run => Array.isArray(run?.events) && run.events.some(event => event?.subject === subject));
+}
+
+/** 上一轮执行者：同事项最近一条已结束（done/nothing）轮次的 agent；拿不到返回 null，不编造。 */
+export function prevAgentFrom(state, subject) {
+  const finished = runsOfSubject(state, subject)
+    .filter(run => run.state === 'done' || run.state === 'nothing')
+    .sort((a, b) => Number(b.id) - Number(a.id));
+  return finished[0]?.agent ?? null;
+}
+
+/** 同事项是否还有未收尾卡片（cards[].lane 是 parallel 规则的事件对象）。 */
+export function hasOpenCardsFor(state, subject) {
+  const cards = Array.isArray(state?.cards) ? state.cards : [];
+  return cards.some(card => card?.state === 'open' && (!subject || card.lane === subject));
+}
+
+/** 「继续/已解决」这类没有具体内容的续接话术（空上下文守卫只拦这一类）。 */
+export function isBareContinuation(text) {
+  return /^\s*(继续|接着|好了?|已解决|已处理|搞定|done|ok|继续吧|continue)\s*[。.!！]*\s*$/i.test(String(text ?? ''));
+}
+
+/** 快照行：按 /v1/state 真实字段（runs[].id、usage.cost、lines[].paused）排版。 */
+export function snapshotLinesFrom(state) {
+  const lines = Array.isArray(state?.lines) ? state.lines : [];
+  const runs = Array.isArray(state?.runs) ? state.runs : [];
+  const cards = Array.isArray(state?.cards) ? state.cards.filter(card => card?.state === 'open') : [];
+  const cost = usage => (typeof usage?.cost === 'number' ? `｜$${usage.cost.toFixed(4)}` : '｜费用未上报');
+  return {
+    rules: lines.slice(0, 12).map(line => `${line.name}｜${Array.isArray(line.types) ? line.types.join(',') : line.cron || ''}｜${line.agent || '未配置'}${line.paused ? `｜已暂停:${line.paused.reason || ''}` : ''}`),
+    runs: runs.slice(0, 8).map(run => `#${run.id}｜${run.rule}｜${run.agent || '未知'}｜${run.state}${run.error ? `｜${String(run.error).slice(0, 80)}` : ''}${cost(run.usage)}`),
+    cards: cards.slice(0, 8).map(card => `#${card.id}｜${String(card.title || '').slice(0, 60)}｜${card.rule || '未关联'}`),
+  };
 }
 
 export function truncateToBytes(text, bytes) {

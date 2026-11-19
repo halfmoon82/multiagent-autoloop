@@ -13,7 +13,7 @@ import { listArtifacts, readArtifact } from './artifacts.mjs';
 import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
 import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_LABEL, HUB_RECONCILE_INTERVAL_MS, schedulingSubject, schedulingEventId, mapHubStateToStatus, numericEventId, readHubRun } from './hub-scheduling-session.mjs';
-import { buildSchedulingContext, contextTrailer, composeTurnText } from './scheduling-context.mjs';
+import { buildSchedulingContext, contextTrailer, composeTurnText, prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation } from './scheduling-context.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -304,7 +304,11 @@ export class SchedulingSessionManager {
     if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的${SESSION_KIND_LABELS[sessionKind]}（${duplicate.id.slice(0, 8)}），请先关闭再开启`);
     if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个会话`);
     // §6：调度会话从首轮起进入 Hub，绝不派生私有 ACP 进程；normal/design 保持既有 ACP 语义。
-    if (sessionKind === 'scheduling' && this.hubScheduling) return this.#startHubSession({ projectId, text, continuedFrom });
+    // Hub 路径：护栏/任务说明（base）进本轮资料文件，事件正文只放用户原话，避免 4000 码点预算截掉用户需求。
+    if (sessionKind === 'scheduling' && this.hubScheduling) {
+      const userText = String(prompt ?? '').trim() || '按调度会话护栏开局：读 open 事项并汇报处理清单。';
+      return this.#startHubSession({ projectId, text: this.#validatePrompt(userText, 64000), guide: base, continuedFrom });
+    }
     if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
 
     const sessionCwd = this.#projectCwd(projectId);
@@ -418,71 +422,37 @@ export class SchedulingSessionManager {
 
   // §6.3 start：生成 subject、投递首个事件，返回 Hub 支持的会话视图；失败保留输入且不派生进程。
   // #92 POST 只提供数字 event id；status/runId 一律经 GET /v1/events/<id> 的 runs[0] 派生。
-  // Hub 事件 detail 上限 4000 字节：完整资料（项目 AGENTS.md、契约、状态快照、上一轮结论、未收尾）
-  // 落盘到运行目录，正文只附一行「先读它」；正文自身超预算时按字节截断并标注。
-  // prevAgent 留空（首轮无上一轮）；后续轮次由 #prevAgent 从 Hub 运行记录对账得出。
-  async #hubTurnText(record, turn, text, { prevAgent = null } = {}) {
+  // Hub 事件 detail 上限 4000 码点：完整资料（护栏、项目 AGENTS.md、契约、状态快照、上一轮结论、未收尾）
+  // 落盘到运行目录，正文只放用户原话 + 一行「先读它」；以序列化后的 detail 为准截断。
+  // hubState：本轮共享的一份 /v1/state（读一次给快照、上一轮执行者用），缺省时快照降级为空。
+  async #hubTurnText(record, turn, text, { hubState = null } = {}) {
     const lastSummary = [...(record.messages || [])].reverse().find(message => message.role === 'agent')?.text || '';
-    const file = await buildSchedulingContext({ root: this.archive?.root, sessionId: record.id, turn, project: record.project, lastSummary, prevAgent, providers: this.#snapshotProviders(record) }).catch(() => null);
-    return composeTurnText({ text, trailer: contextTrailer(file) });
+    const subject = record.hub?.subject ?? schedulingSubject(record.id);
+    const prevAgent = hubState ? prevAgentFrom(hubState, subject) : null;
+    // 护栏每轮都进资料文件：换执行者后新会话没有历史，只能靠资料重建；重启恢复的记录按项目重新生成。
+    const guide = record.guide || buildSchedulingPrompt({ project: record.project, writableDir: this.writableDir });
+    const file = await buildSchedulingContext({
+      root: this.archive?.root, sessionId: record.id, turn, project: record.project, lastSummary, prevAgent,
+      guide, providers: this.#snapshotProviders(hubState),
+    }).catch(() => null);
+    return composeTurnText({ text, trailer: contextTrailer(file), project: record.project });
   }
 
-  // 会话本身的未收尾事项：transcript 里的 agent 结论之外，Hub 上同 lane 的 open 卡片/未决回答也算上下文。
-  // 用于资料文件「未收尾事项」段与 B4 守卫；查询失败返回 ''/false（宁可放过，不误拦）。
-  async #hasHubOpenItems(record) {
-    try {
-      const state = await this.hubScheduling.readState();
-      const lane = record.hub?.subject ?? '';
-      const cards = Array.isArray(state?.cards) ? state.cards : [];
-      return cards.some(c => c.state === 'open' && (!lane || c.lane === lane));
-    } catch { return false; }
+  // 本轮读一次 /v1/state；读不到返回 null（调用方据此降级，绝不当成「没有未收尾事项」）。
+  async #readHubSnapshot() {
+    if (typeof this.hubScheduling?.readState !== 'function') return null;
+    try { return await this.hubScheduling.readState(); } catch { return null; }
   }
 
-  #openItemsText() {
-    // 占位：本轮「未收尾事项」以 Hub 同 lane open 卡片为准（快照已单列），transcript 侧由 #prevAgent/回显覆盖。
-    return '';
-  }
-
-  // 上一轮执行者：Hub runs[].agent 只在 /v1/state 出现，/v1/events 不返回；
-  // 从 /v1/state 里找本规则（同 lane=subject）最近一条终态 run 的 agent；查不到返回 null（不写进资料，不编造）。
-  async #prevAgent(record) {
-    try {
-      const state = await this.hubScheduling.readState();
-      const runs = Array.isArray(state?.runs) ? state.runs : [];
-      const lane = record.hub?.subject ?? '';
-      const done = runs
-        .filter(r => (r.state === 'done' || r.state === 'nothing') && (!lane || r.lane === lane))
-        .sort((a, b) => b.run - a.run);
-      return done[0]?.agent ?? null;
-    } catch { return null; }
-  }
-
-  // 状态快照的四个 provider：Hub 只读接口 + 运行目录台账。任何一节失败只影响该行，不阻断资料落盘。
-  // rules/runs/cards 走 owner 密钥读 /v1/state；dag 读运行目录 dag-runs/*.json（只列本项目根 run）。
-  // 状态快照的四个 provider：Hub 只读接口 + 运行目录台账。任何一节失败只影响该行，不阻断资料落盘。
-  // rules/runs/cards 走 owner 密钥读 /v1/state；dag 读运行目录 dag-runs/*.json（只列本项目根 run）。
-  #snapshotProviders(record) {
-    const readable = this.hubScheduling && typeof this.hubScheduling.readState === 'function';
+  // 状态快照的四个 provider：规则/轮次/卡片来自本轮共享的 /v1/state，DAG 读运行目录 dag-runs/*.json。
+  // 任何一节失败只影响该行，不阻断资料落盘。
+  #snapshotProviders(hubState) {
     const root = this.archive?.root;
+    const lines = hubState ? snapshotLinesFrom(hubState) : { rules: [], runs: [], cards: [] };
     return {
-      rules: async () => {
-        if (!readable) return [];
-        const state = await this.hubScheduling.readState().catch(() => null);
-        const lines = Array.isArray(state?.lines) ? state.lines : [];
-        return lines.slice(0, 12).map(l => `${l.name}｜${Array.isArray(l.types) ? l.types.join(',') : l.cron || ''}｜${l.agent || ''}${l.paused ? `｜已暂停:${l.paused.reason || ''}` : ''}`);
-      },
-      runs: async () => {
-        if (!readable) return [];
-        const state = await this.hubScheduling.readState().catch(() => null);
-        const runs = Array.isArray(state?.runs) ? state.runs : [];
-        return runs.slice(0, 8).map(r => `run ${r.run}｜${r.rule}｜${r.state}${r.error ? `｜${String(r.error).slice(0, 80)}` : ''}${r.cost != null ? `｜$${r.cost}` : ''}`);
-      },
-      cards: async () => {
-        if (!readable) return [];
-        const state = await this.hubScheduling.readState().catch(() => null);
-        const cards = Array.isArray(state?.cards) ? state.cards.filter(c => c.state === 'open') : [];
-        return cards.slice(0, 8).map(c => `#${c.id}｜${String(c.title || '').slice(0, 60)}｜等待${c.lane || '本人'}`);
-      },
+      rules: () => lines.rules,
+      runs: () => lines.runs,
+      cards: () => lines.cards,
       dag: async () => {
         if (!root) return [];
         const dir = path.join(root, 'dag-runs');
@@ -501,10 +471,10 @@ export class SchedulingSessionManager {
     };
   }
 
-  async #startHubSession({ projectId, text: rawText, continuedFrom }) {
+  async #startHubSession({ projectId, text: rawText, guide = '', continuedFrom }) {
     const id = randomUUID();
     const turn = 1;
-    const text = await this.#hubTurnText({ id, project: projectId, messages: [] }, turn, rawText);
+    const text = await this.#hubTurnText({ id, project: projectId, messages: [], guide }, turn, rawText);
     let result;
     try {
       result = await this.hubScheduling.postTurn({ sessionId: id, turn, project: projectId, text });
@@ -580,7 +550,8 @@ export class SchedulingSessionManager {
     }
     const message = this.#validatePrompt(raw);
     const turn = record.hub.turn + 1;
-    const messageText = await this.#hubTurnText(record, turn, message, { prevAgent: await this.#prevAgent(record) });
+    const hubState = await this.#readHubSnapshot();
+    const messageText = await this.#hubTurnText(record, turn, message, { hubState });
     let result;
     try {
       result = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn, project: record.project, text: messageText });
@@ -598,7 +569,7 @@ export class SchedulingSessionManager {
       const next = record.queue[0];
       const queuedTurn = record.hub.turn + 1;
       try {
-        const queuedText = await this.#hubTurnText(record, queuedTurn, next.text, { prevAgent: null });
+        const queuedText = await this.#hubTurnText(record, queuedTurn, next.text, { hubState });
         const queuedResult = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn: queuedTurn, project: record.project, text: queuedText });
         record.queue.shift();
         record.hub.turn = queuedTurn;
@@ -619,16 +590,21 @@ export class SchedulingSessionManager {
     if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
     if (record.status === 'error') throw new SchedulingSessionError('会话处于异常状态，请关闭后重新开启', { status: 409 });
     const raw = String(text ?? '').trim();
-    // B4 空上下文守卫：转录里还没有任何 agent 结论且没有 Hub 侧未收尾事项时，
-    // 「继续/已解决/好了」这类续接话术没有可续接的上下文——不派发，直接回显可读原因，省一次模型调用。
-    if (record.hub && !['closing', 'closed'].includes(record.status)) {
+    // B4 空上下文守卫：只拦「继续/已解决」这类续接话术，且仅当确实没有可续接的东西——
+    // 转录里没有 worker 结论、首轮 run 不在进行中、Hub 同事项也没有未收尾卡片。
+    // 先比正则再读 Hub（不是续接话术不花一次请求）；读 Hub 失败按「有上下文」放行，宁可放过不误拦。
+    if (record.hub && !['closing', 'closed'].includes(record.status) && isBareContinuation(raw)) {
       const hasAgentTurn = (record.messages || []).some(m => m.role === 'agent');
-      const hasHubOpen = await this.#hasHubOpenItems(record);
-      if (!hasAgentTurn && !hasHubOpen && /^\s*(继续|接着|好了?|已解决|已处理|搞定|done|ok|继续吧|continue)\s*[。.!！]*\s*$/i.test(raw)) {
-        this.#pushMessage(record, 'user', raw);
-        this.#pushMessage(record, 'agent', '没有可续接的上下文：这一轮还没有 worker 结论，也没有未收尾事项。请说明要继续哪件事（贴任务名/卡片号/需求一句话），我再发事件。');
-        this.#persist(record);
-        return toPublicSession(record);
+      const runActive = ['running', 'unknown'].includes(record.status);
+      if (!hasAgentTurn && !runActive) {
+        const hubState = await this.#readHubSnapshot();
+        const hasHubOpen = hubState === null || hasOpenCardsFor(hubState, record.hub.subject);
+        if (!hasHubOpen) {
+          this.#pushMessage(record, 'user', raw);
+          this.#pushMessage(record, 'agent', '没有可续接的上下文：这一轮还没有 worker 结论，也没有未收尾事项。请说明要继续哪件事（贴任务名/卡片号/需求一句话），我再发事件。');
+          this.#persist(record);
+          return toPublicSession(record);
+        }
       }
     }
     // 设计会话拒绝斜杠命令（至少 /plan 必须拦截），防止借命令切换模式；排队与打断入口同样在此统一拦截。

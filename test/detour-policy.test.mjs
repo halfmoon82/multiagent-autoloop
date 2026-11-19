@@ -133,3 +133,8 @@ test('loadPolicy accepts coord override in defaults and projects', () => {
   // 未覆盖 coord 的项目继承 defaults 覆盖后的值
   assert.deepEqual(effectivePolicy(policy, '/other').coord, { primary: 'claude', fallback: 'workbuddy' });
 });
+
+test('classifyKind honours an explicit coord kind', () => {
+  assert.equal(classifyKind('执行波开发', 'coord'), 'coord');
+  assert.equal(classifyKind('执行波开发', 'bogus'), 'dev'); // 未知显式值不生效，回退关键词
+});

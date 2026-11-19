@@ -631,3 +631,82 @@ test('#85 loadConsoleConfig exposes sourceKey from the source object and tolerat
   assert.equal(make({ source: { name: 'console' } }).sourceKey, null);
   assert.equal(make({ source: 'sk' }).sourceKey, null, 'a bare string is not the documented shape');
 });
+
+// —— 空上下文守卫（P2 回归）——
+function guardManager({ readState, runs = [{ run: 1, rule: '调度会话执行', state: 'done', summary: '' }] } = {}) {
+  const client = fakeHubClient({ runs });
+  if (readState) client.readState = readState;
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  return { client, manager: newManager(adapter, { hubReconcileMs: 0 }) };
+}
+const posts = client => client.calls.filter(call => call[0] === 'postEvent').length;
+
+test('guard intercepts a bare 继续 when there is no conclusion, no active run and no open card', async () => {
+  const { client, manager } = guardManager({ readState: async () => ({ runs: [], cards: [], lines: [] }) });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const before = posts(client);
+  const sent = await manager.send(started.id, '继续');
+  assert.equal(posts(client), before, '不得派发 Hub 事件');
+  assert.match(sent.messages.at(-1).text, /没有可续接的上下文/);
+});
+
+test('guard lets 继续 through when reading Hub state fails (宁可放过，不误拦)', async () => {
+  const { client, manager } = guardManager({ readState: async () => { throw new Error('hub down'); } });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const before = posts(client);
+  await manager.send(started.id, '继续');
+  assert.equal(posts(client), before + 1);
+});
+
+test('guard lets 继续 through while the first run is still active', async () => {
+  const { client, manager } = guardManager({
+    readState: async () => ({ runs: [], cards: [], lines: [] }),
+    runs: [{ run: 1, rule: '调度会话执行', state: 'claimed', summary: '' }],
+  });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const before = posts(client);
+  await manager.send(started.id, '继续');
+  assert.equal(posts(client), before + 1);
+});
+
+test('guard lets 继续 through when the matter has an open card', async () => {
+  let subject = '';
+  const { client, manager } = guardManager({ readState: async () => ({ runs: [], lines: [], cards: [{ id: 3, state: 'open', lane: subject, title: 't' }] }) });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  subject = started.hubSubject;
+  const before = posts(client);
+  await manager.send(started.id, '继续');
+  assert.equal(posts(client), before + 1);
+});
+
+test('guard never reads Hub state for messages that are not bare continuations', async () => {
+  let reads = 0;
+  const { manager } = guardManager({ readState: async () => { reads += 1; return { runs: [], cards: [], lines: [] }; } });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const baseline = reads;
+  await manager.send(started.id, '看看 DAG 进度');
+  assert.equal(reads - baseline, 1, '只为本轮快照读一次，守卫不再额外读');
+});
+
+test('serialized detail stays within 3950 code points for a long multi-line message (P1 回归)', async () => {
+  const { client, manager } = guardManager({ readState: async () => ({ runs: [], cards: [], lines: [] }) });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  // 用户输入合法（< 4000 字），但 JSON 转义（换行、引号）与项目路径让序列化后的 detail 超出 Hub 上限。
+  const text = Array.from({ length: 1200 }, () => '"\n').join('');
+  assert.ok(text.length < 4000);
+  assert.ok([...JSON.stringify({ project: 'x', text })].length > 3950, '夹具必须真能复现超限');
+  await manager.send(started.id, text);
+  const last = client.calls.filter(call => call[0] === 'postEvent').at(-1)[1];
+  assert.ok([...last.detail].length <= 3950, `detail 码点数 ${[...last.detail].length}`);
+  assert.match(JSON.parse(last.detail).text, /动手前先读它。$/);
+});
+
+test('first turn keeps the user request verbatim and moves the guardrails into the context file', async () => {
+  const { client, manager } = guardManager({ readState: async () => ({ runs: [], cards: [], lines: [] }) });
+  await manager.start({ project: fixtureProject(), prompt: '把卡片 7 推进完' });
+  const first = JSON.parse(client.calls.find(call => call[0] === 'postEvent')[1].detail).text;
+  assert.match(first, /^把卡片 7 推进完/);
+  assert.doesNotMatch(first, /行为护栏/, '护栏不进事件正文');
+  const file = first.match(/本轮完整资料[^：]*：(.+?)；动手前先读它/)[1];
+  assert.match(readFileSync(file, 'utf8'), /行为护栏/);
+});
