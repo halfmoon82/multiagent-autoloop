@@ -61,32 +61,39 @@ test('升档：light→standard→heavy，heavy 封顶；升档不低于底线',
   assert.equal(nodeTier(node(['src/a.mjs']), 'review', { bump: 2 }), 'heavy');
 });
 
-test('分档开关：缺文件/坏文件/非法档位都视为未启用（保持旧事件类型）', () => {
+test('分档开关：读后台 platform-models.json；缺文件/坏文件/未开启都视为未启用', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'tier-'));
   assert.deepEqual([...loadEnabledTiers(dir)], []);
-  writeFileSync(path.join(dir, 'dag-tiers.json'), 'not json');
+  writeFileSync(path.join(dir, 'platform-models.json'), 'not json');
   assert.deepEqual([...loadEnabledTiers(dir)], []);
-  writeFileSync(path.join(dir, 'dag-tiers.json'), JSON.stringify({ enabled: ['light', 'bogus', 'heavy'] }));
-  assert.deepEqual([...loadEnabledTiers(dir)].sort(), ['heavy', 'light']);
+  writeFileSync(path.join(dir, 'platform-models.json'), JSON.stringify({ enabled: false }));
+  assert.deepEqual([...loadEnabledTiers(dir)], []);
+  writeFileSync(path.join(dir, 'platform-models.json'), JSON.stringify({ enabled: true }));
+  assert.deepEqual([...loadEnabledTiers(dir)].sort(), ['heavy', 'light', 'standard']);
   assert.deepEqual([...loadEnabledTiers(undefined)], []);
 });
 
 const recorder = () => { const calls = []; return { calls, request: async (cfg, p, opts = {}) => { calls.push({ p, ...opts }); return { event: calls.length }; } }; };
 const run = { runId: 'r1', project: '/p/My Project', nodeId: 'n1', role: 'dev', generation: 1, attempt: 1 };
 
-test('派发：档位已启用时事件类型带档位后缀，detail 记录档位；未启用时保持原类型', async () => {
+test('派发：开关开启且有规则接收时事件类型带档位后缀；没有对应规则或未开启时保持原类型', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'tier-'));
-  writeFileSync(path.join(dir, 'dag-tiers.json'), JSON.stringify({ enabled: ['light'] }));
+  const rulesFile = path.join(dir, 'rules.json');
+  writeFileSync(path.join(dir, 'platform-models.json'), JSON.stringify({ enabled: true }));
+  writeFileSync(rulesFile, JSON.stringify({ rules: [{ name: 'x·light', when: { source: 'local', types: ['dag.my-project.dev.light'] } }] }));
   const { calls, request } = recorder();
-  const hub = createHubAdapter({ config: { root: dir }, request });
+  const hub = createHubAdapter({ config: { root: dir, rulesFile }, request });
   await hub.dispatch({ run, slot: 1, worktree: '/w', branch: 'b', expectedAdvanceId: 'e', tier: 'light', prompt: 'p' });
   await hub.dispatch({ run, slot: 1, worktree: '/w', branch: 'b', expectedAdvanceId: 'e', tier: 'heavy', prompt: 'p' });
   await hub.dispatch({ run, slot: 1, worktree: '/w', branch: 'b', expectedAdvanceId: 'e', prompt: 'p' });
   assert.equal(calls[0].body.type, 'dag.my-project.dev.light');
   assert.equal(JSON.parse(calls[0].body.detail).tier, 'light');
-  assert.equal(calls[1].body.type, 'dag.my-project.dev', 'heavy 未启用：回落原类型，不派到不存在的规则');
+  assert.equal(calls[1].body.type, 'dag.my-project.dev', 'heavy 没有规则接收：回落原类型，不派到不存在的规则');
   assert.equal(JSON.parse(calls[1].body.detail).tier, 'heavy');
   assert.equal(calls[2].body.type, 'dag.my-project.dev');
+  writeFileSync(path.join(dir, 'platform-models.json'), JSON.stringify({ enabled: false }));
+  await hub.dispatch({ run, slot: 1, worktree: '/w', branch: 'b', expectedAdvanceId: 'e', tier: 'light', prompt: 'p' });
+  assert.equal(calls[3].body.type, 'dag.my-project.dev', '关闭后立即回落，无需重启');
   const long = dagEventType('/p/' + 'x'.repeat(200), 'review.standard');
   assert.ok(long.length <= 64 && long.endsWith('.review.standard'));
 });

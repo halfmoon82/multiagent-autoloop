@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设计稿 · 底部归档区</title>
+<link rel="stylesheet" href="../../../public/styles.css">
+<style>
+  .demo-note{max-width:1240px;margin:0 auto;padding:14px 24px 0;color:var(--muted);font-size:12px;line-height:1.7}
+  .mock-filter{display:flex;gap:8px;max-width:1240px;margin:10px auto 0;padding:0 24px}
+  .mock-filter button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 12px;font-size:12px;color:var(--muted)}
+  .mock-filter button.on{border-color:var(--accent);color:var(--accent-dark);background:var(--accent-soft);font-weight:600}
+  details.arch{margin:0 20px 18px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+  details.arch summary{cursor:pointer;padding:13px 16px;list-style:none;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  details.arch summary::-webkit-details-marker{display:none}
+  details.arch summary::before{content:'▸';color:var(--muted);font-size:12px;display:inline-block;transition:transform .12s}
+  details.arch[open] summary::before{transform:rotate(90deg)}
+  .arch-title{font-size:13px;font-weight:650}
+  .arch-sub{font-size:11px;color:var(--muted)}
+  .arch-body{padding:0 0 10px}
+  .arch-group{border-top:1px solid var(--line);padding:8px 16px 4px}
+  .arch-group-name{font-size:11px;color:var(--muted);letter-spacing:.04em;padding:6px 0 4px}
+  .arch-row{display:grid;grid-template-columns:minmax(0,1fr) 76px 96px 96px auto;gap:12px;align-items:center;padding:9px 0;border-bottom:1px dashed var(--line)}
+  .arch-row:last-child{border-bottom:0}
+  .arch-row .t{font-size:13px;font-weight:600;overflow-wrap:anywhere}
+  .arch-row .t small{display:block;font-weight:400;color:var(--muted);font-size:11px;margin-top:2px}
+  .arch-row .pct{font-variant-numeric:tabular-nums;font-size:12px;color:var(--muted)}
+  .arch-row .reason{justify-self:start}
+  .arch-row .date{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .arch-row .open{font-size:12px;color:var(--accent);text-decoration:none;white-space:nowrap}
+  .arch-empty{padding:16px;color:var(--muted);font-size:12px}
+  @media(max-width:560px){
+    details.arch{margin:0 12px 16px}
+    .arch-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:'t r' 'p d';gap:4px 10px}
+    .arch-row .t{grid-area:t}.arch-row .pct{grid-area:p}.arch-row .reason{grid-area:r;justify-self:end}.arch-row .date{grid-area:d}.arch-row .open{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a class="brand" href="#"><span class="brand-mark">A</span><span>Agent <strong>Autoloop</strong></span></a>
+  <div class="header-actions">
+    <label class="project-filter">项目 <select id="pf"><option value="">全部项目</option><option value="auto调度">auto调度</option></select></label>
+    <span class="connection online"><span class="dot"></span>已连接</span>
+    <button class="button secondary" type="button">刷新</button>
+  </div>
+</div>
+<div class="demo-note">设计稿（静态演示）：底部「已归档的任务环」区。受顶部统一的项目级筛选约束——筛到某项目时，归档区只列该项目的环；「全部项目」时按项目分组。</div>
+<div class="mock-filter">
+  <button data-f="" class="on">全部项目</button>
+  <button data-f="auto调度">只看 auto调度</button>
+  <button data-f="none" class="off">该项目无归档</button>
+</div>
+<main>
+  <section class="panel">
+    <div class="panel-heading"><div><h2>项目任务进度</h2><span class="subtle">进行中的环（示意占位，环样式由另一会话负责）</span></div></div>
+    <div style="padding:14px 20px 6px;color:var(--muted);font-size:12px">—— 主视图只放进行中的任务环 ——</div>
+    <details class="arch" id="arch">
+      <summary>
+        <span class="arch-title">已归档的任务环</span>
+        <span class="status" id="archCount">4</span>
+        <span class="arch-sub" id="archSub">全部完成 3 · 已取消 1</span>
+        <span style="flex:1"></span>
+        <span class="arch-sub" id="archScope"></span>
+      </summary>
+      <div class="arch-body" id="archBody"></div>
+    </details>
+  </section>
+</main>
+<script>
+const ITEMS = [
+  { project:'auto调度', task:'并行 DAG 改造', sub:'dag-serial · 7 节点 · 7 个 PR 已合并', pct:'100%', reason:'全部完成', cls:'good', date:'2026-11-18' },
+  { project:'auto调度', task:'console-hub-native-and-card-routing', sub:'6 节点 · 全部运行已取消', pct:'0%', reason:'已取消', cls:'warn', date:'2026-11-18' },
+  { project:'health-service-core', task:'Phase1 多租户推进', sub:'phase1-serial · 8 节点', pct:'100%', reason:'全部完成', cls:'good', date:'2026-11-17' },
+  { project:'vibeguide', task:'V6 串行推进', sub:'v6-serial · 11 节点', pct:'100%', reason:'全部完成', cls:'good', date:'2026-11-17' },
+];
+let filter = '';
+function render(){
+  const list = filter ? ITEMS.filter(i => i.project === filter) : ITEMS;
+  document.getElementById('archCount').textContent = String(list.length);
+  const done = list.filter(i => i.reason === '全部完成').length;
+  document.getElementById('archSub').textContent = list.length ? `全部完成 ${done} · 已取消 ${list.length - done}` : '该项目暂无归档';
+  document.getElementById('archScope').textContent = filter ? `筛选：${filter}` : '';
+  const body = document.getElementById('archBody');
+  body.replaceChildren();
+  if (!list.length){ body.innerHTML = '<div class="arch-empty">该项目还没有已归档的任务环。</div>'; return; }
+  const groups = filter ? [[filter, list]] : [...new Map(list.map(i => [i.project, null])).keys()].map(p => [p, list.filter(i => i.project === p)]);
+  for (const [proj, rows] of groups){
+    const g = document.createElement('div'); g.className = 'arch-group';
+    if (!filter) g.innerHTML = `<div class="arch-group-name">${proj}</div>`;
+    for (const r of rows){
+      const row = document.createElement('div'); row.className = 'arch-row';
+      row.innerHTML = `<div class="t">${r.task}<small>${r.sub}</small></div>
+        <div class="pct">${r.pct}</div>
+        <div class="reason"><span class="status ${r.cls}">${r.reason}</span></div>
+        <div class="date">${r.date}</div>
+        <a class="open" href="#">查看记录 →</a>`;
+      g.append(row);
+    }
+    body.append(g);
+  }
+}
+document.querySelectorAll('.mock-filter button').forEach(b => b.onclick = () => {
+  filter = b.dataset.f; if (filter === 'none') filter = 'health-service-core' === '' ? '' : 'vibeguide-x';
+  document.querySelectorAll('.mock-filter button').forEach(x => x.classList.toggle('on', x === b));
+  document.getElementById('pf').value = filter === 'vibeguide-x' ? '' : filter;
+  render();
+});
+render();
+</script>
+</body>
+</html>

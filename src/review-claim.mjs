@@ -20,6 +20,9 @@ const check = (re, value, label) => {
   return text;
 };
 
+// DAG 节点审阅占位的持有者标识：DAG自动审阅规则按此占位，控制器合并时只认这一个标识（跨模块约定，只在这里定义）。
+export const dagReviewHolder = nodeId => `hub-dag-${String(nodeId)}`;
+
 export function claimMarker({ holder, head, state }) {
   return `<!-- review-claim:v1 ${JSON.stringify({ holder, head, state })} -->\n审阅占位：${state === 'active' ? `${holder} 正在审阅（head ${head}）` : `${holder} 已释放`}`;
 }

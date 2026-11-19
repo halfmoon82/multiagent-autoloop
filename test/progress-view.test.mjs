@@ -99,13 +99,15 @@ test('串行状态映射未知状态不崩、不当成完成', () => {
   assert.notEqual(view.nodes[0].color, '#157a65');
 });
 
-test('串行当前节点显示 Hub 最近一轮的实际执行者与自报用量，其余节点仍如实标注', () => {
-  const s = buildSerialView(serialChain, '链累计 · 120 Token · $0.21', { agent: 'claude', model: 'opus', usage: { input: 10, output: 20, cost: 0.05 } });
-  const current = s.nodes.find(node => node.id === 'n2');
-  assert.equal(current.agent, 'claude'); assert.equal(current.model, 'opus');
-  assert.match(current.usageText, /^最近一轮 · 费用 \$0\.05 · Token 30/);
-  const other = s.nodes.find(node => node.id === 'n3');
-  assert.equal(other.agent, '未上报'); assert.equal(other.usageText, '费用未上报 · Token 未上报');
-  const noUsage = buildSerialView(serialChain, '', { agent: 'codex-full', model: '未配置', usage: null });
-  assert.equal(noUsage.nodes.find(node => node.id === 'n2').usageText, '费用未上报 · Token 未上报');
+test('串行每个节点显示自己最近一轮的执行者与自报用量，正在跑的标本轮，查不到如实标注', () => {
+  const s = buildSerialView(serialChain, '链累计 · 120 Token · $0.21', {
+    n1: { agent: 'claude', model: 'opus', usage: { input: 10, output: 20, cost: 0.05 }, running: false },
+    n2: { agent: 'workbuddy', model: '未配置', usage: null, running: true },
+  });
+  const byId = id => s.nodes.find(node => node.id === id);
+  assert.equal(byId('n1').agent, 'claude'); assert.equal(byId('n1').model, 'opus');
+  assert.match(byId('n1').usageText, /^最近一轮 · 费用 \$0\.05 · Token 30/);
+  assert.equal(byId('n2').agent, 'workbuddy'); assert.equal(byId('n2').usageText, '本轮进行中 · 费用未上报 · Token 未上报');
+  assert.equal(byId('n3').agent, '未上报'); assert.equal(byId('n3').model, '未上报'); assert.equal(byId('n3').usageText, '费用未上报 · Token 未上报');
+  assert.equal(buildSerialView(serialChain, '').nodes.find(node => node.id === 'n2').model, '模型待选择', '当前节点无记录仍显示模型待选择');
 });

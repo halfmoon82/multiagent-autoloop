@@ -8,6 +8,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%228%22 fill=%22%23157a65%22/%3E%3Ctext x=%2216%22 y=%2222%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2218%22 font-weight=%22700%22 fill=%22white%22%3EA%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/dag.css">
+  <link rel="stylesheet" href="/archive.css">
 </head>
 <body>
   <header class="topbar">
@@ -20,13 +21,14 @@
     <button class="nav-item" data-view="sessions">会话管理 <span id="session-nav-count" class="count info" hidden>0</span></button>
     <button class="nav-item" data-view="runs">执行轮次</button>
     <button class="nav-item" data-view="cards">待我处理 <span id="card-count" class="count" hidden>0</span></button>
+    <button class="nav-item" data-view="admin">管理后台</button>
   </nav>
   <main>
     <div id="notice" class="notice" role="status" hidden></div>
     <section id="view-overview" class="view" aria-labelledby="overview-title">
       <div class="page-heading"><div><p class="eyebrow">PILOT OVERVIEW</p><h1 id="overview-title">今天的自动化</h1><p class="subtle">看见进展，只处理真正需要你的事。</p></div><button id="overview-new-session" class="button primary" type="button"><span class="button-icon">＋</span>新建会话</button></div>
       <div id="summary" class="summary-grid" aria-live="polite"></div>
-      <section class="panel" aria-labelledby="progress-title"><div class="panel-heading"><div><h2 id="progress-title">项目任务进度</h2><span class="subtle">串行链与并行 DAG 在同一项目中汇总 · 环形扇区 = 节点，点扇区切换右侧详情</span></div><button id="overview-dag-new" class="button secondary" type="button">新建 DAG（执行授权）</button></div><div id="progress-state" class="state-banner" role="status" hidden></div><div id="progress-list" class="list" aria-live="polite"></div><div id="dag-overview-list" class="dag-overview-list" aria-live="polite"></div></section>
+      <section class="panel" aria-labelledby="progress-title"><div class="panel-heading"><div><h2 id="progress-title">项目任务进度</h2><span class="subtle">串行链与并行 DAG 在同一项目中汇总 · 环形扇区 = 节点，点扇区切换右侧详情</span></div><button id="overview-dag-new" class="button secondary" type="button">新建 DAG（执行授权）</button></div><div id="progress-state" class="state-banner" role="status" hidden></div><div id="progress-list" class="list" aria-live="polite"></div><div id="dag-overview-list" class="dag-overview-list" aria-live="polite"></div><div id="archive-section"></div></section>
       <div class="work-grid" aria-live="polite">
         <section class="panel"><div class="panel-heading"><h2>正在运行</h2><span class="subtle">最近 5 条</span></div><div id="running-list" class="list compact-list"></div></section>
         <section class="panel"><div class="panel-heading"><h2>等待重试</h2><span class="subtle">最近 5 条</span></div><div id="retrying-list" class="list compact-list"></div></section>
@@ -83,6 +85,13 @@
       <div class="page-heading"><div><p class="eyebrow">HUMAN DECISIONS</p><h1 id="cards-title">待我处理</h1><p class="subtle">只有 AGENTS.md 约定的最小门禁才会出现在这里：产品功能、个人隐私、财务、对外影响、只有您掌握的凭据授权。回答后，任务会接回原会话继续。</p></div></div>
       <div id="cards-list" class="card-list"></div>
     </section>
+    <section id="view-admin" class="view" hidden aria-labelledby="admin-title">
+      <div class="page-heading"><div><p class="eyebrow">ADMIN</p><h1 id="admin-title">管理后台</h1><p class="subtle">控制台的长期配置。这里的改动会写入真实调度配置，保存前自动备份。</p></div></div>
+      <div class="admin-layout">
+        <nav class="admin-subnav" aria-label="后台分区"><div class="admin-subnav-group">配置</div><a href="#admin" class="active" aria-current="page">平台与模型</a></nav>
+        <div id="admin-platform-models" class="admin-stack" aria-live="polite"><p class="subtle">正在读取平台与模型设置…</p></div>
+      </div>
+    </section>
   </main>
   <dialog id="new-session-dialog" class="new-session-dialog" aria-labelledby="new-session-title">
     <div class="dialog-heading"><div><p class="eyebrow">NEW SESSION</p><h2 id="new-session-title">新建会话</h2><p class="subtle">根据第一句话的语义推荐会话类型，您也可以手动更改。</p></div><button class="icon-button js-close-new-session" type="button" aria-label="关闭">×</button></div>
@@ -110,5 +119,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" hidden></div>
   <script type="module" src="/app.mjs"></script>
+<script type="module" src="/archive-view.mjs"></script>
 </body>
 </html>

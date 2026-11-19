@@ -40,7 +40,10 @@ const schedulingSessions = {
   async list() { return this.records; },
   async start({ prompt, project, kind } = {}) {
     (this.startCalls ||= []).push({ prompt, project, kind });
-    const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
+    // 测试开关（一次性）：failNextStart 让下一次新建失败；nextStartId 给下一次新建指定 id（默认沿用 browser-session）。
+    if (this.failNextStart) { const message = this.failNextStart; this.failNextStart = null; throw new Error(message); }
+    const id = this.nextStartId || 'browser-session'; this.nextStartId = null;
+    const session = { id, sessionId: id === 'browser-session' ? 'acp-browser' : `acp-${id}`, agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
     this.records.push(session); return session;
   },
   async listSessionArtifacts(id) {
@@ -145,7 +148,8 @@ const hubEvents = [];
 // 台账翻页的历史轮次：demo 巡检在 ?before= 页里还有更早完成的两轮，
 // 链/项目累计必须来自这些 runs 全量累加，而不是 lines 的今日窗口。
 const historyRuns = [
-  { id: 2, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: '2026-11-10T01:00:00Z', usage: { input: 600, output: 200, cost: 0.1 }, summary: '更早完成一轮巡检' },
+  // 这一轮由串行编排派给节点 n2（触发事件 subject=节点 id），它就是 n2 的最近一轮；首页 #5 没有节点编号，不算任何节点的。
+  { id: 2, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: '2026-11-10T01:00:00Z', usage: { input: 600, output: 200, cost: 0.1 }, summary: '更早完成一轮巡检', events: [{ source: 'local', type: 'demo.dev', subject: 'n2', summary: '节点二开发' }] },
   { id: 1, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: '2026-11-09T01:00:00Z', usage: { input: 574, output: 192, cost: 0.04 }, summary: '首轮巡检' },
 ];
 const hub = await fakeHub((req, res) => {
@@ -429,9 +433,9 @@ try {
   for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node detail must carry ${label}`);
   assert.ok(progressText.includes('正在实现第二块功能'), 'detail shows the real task summary');
   assert.ok(progressText.includes('联调'), 'detail keeps the node part');
-  // 当前节点的执行者/用量来自该链规则在 Hub 上最近一轮自报了用量的轮次（假 Hub：demo 巡检 #5 · fake · $0.07），不编造
-  assert.equal(await progressRow.locator('.overview-node .node-agent').innerText(), '无模型 Agent', 'current node agent comes from the latest Hub round that reported usage');
-  assert.match(await progressRow.locator('.overview-node .node-usage').innerText(), /^最近一轮 · 费用 \$0\.07 · Token 100/, 'current node usage is the latest round self-report');
+  // 节点的执行者/用量只来自派给它自己的那一轮（假 Hub 历史页 #2：subject=n2 · fake · $0.10）；首页更新的 #5 没有节点编号，不能挂到节点上
+  assert.equal(await progressRow.locator('.overview-node .node-agent').innerText(), '无模型 Agent', 'current node agent comes from its own latest Hub round');
+  assert.match(await progressRow.locator('.overview-node .node-usage').innerText(), /^最近一轮 · 费用 \$0\.10 · Token 800/, 'current node usage is its own round self-report, not the chain-wide latest round');
   await progressRow.locator('.ring-seg[data-ring-node="n3"]').focus(); await page.keyboard.press('Enter');
   assert.equal(await progressRow.locator('.overview-node .node-agent').innerText(), '未上报', 'non-current nodes without data stay unreported, never fabricated');
   assert.equal(await progressRow.locator('.overview-node .node-usage').innerText(), '费用未上报 · Token 未上报');
@@ -442,32 +446,28 @@ try {
   assert.ok(progressText.includes('项目累计 · 费用 $0.21 · Token 1,666（入 1,234 / 出 432）'), 'project cumulative usage must come from the runs ledger across pages, not the today-window rule lines');
   assert.equal(await progressRow.locator('.node-pop').count(), 0, 'node-only popover is retired');
   // 固定高度：节点数量与切换都不改变卡片高度
-  // 扇区是圆环描边（中空），按下标算出该扇区中角在描边上的绝对坐标再点；
-  // 2s 轮询会重建 DOM，取坐标与点击之间可能换节点，失败就重试一次。
-  const clickSector = async (row, id, index, count) => {
+  // 扇区是圆环描边（中空），按下标算出该扇区中角在描边上的绝对坐标再点。
+  // 找扇区、滚入视口、算坐标在页面内一次同步完成（#132）：总览每 2 秒整块重建进度面板，
+  // 分几次往返会撞上重建；同一同步脚本里重建插不进来。几何按本分支 280 环的 r/stroke 通用计算。
+  const clickSector = async (rowText, id, index, count) => {
     const angle = (-90 + (index + 0.5) * (360 / count)) * Math.PI / 180;
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      try {
-        const seg = row.locator(`.ring-seg[data-ring-node="${id}"]`);
-        await seg.evaluate(el => el.scrollIntoView({ block: 'center' }));
-        const point = await seg.evaluate((el, radians) => {
-          const box = el.getBoundingClientRect();
-          const r = parseFloat(el.getAttribute('r'));
-          const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
-          const scale = box.width / (2 * r + stroke);
-          return { x: box.x + box.width / 2 + r * scale * Math.cos(radians), y: box.y + box.height / 2 + r * scale * Math.sin(radians) };
-        }, angle);
-        await page.mouse.click(point.x, point.y);
-        return;
-      } catch {
-        await page.waitForTimeout(150);
-      }
-    }
-    throw new Error(`ring sector ${id} not clickable`);
+    const point = await page.evaluate(({ rowText, id, radians }) => {
+      const row = [...document.querySelectorAll('#progress-list .list-row')].find(node => node.textContent.includes(rowText));
+      const el = row?.querySelector(`.ring-seg[data-ring-node="${CSS.escape(id)}"]`);
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const box = el.getBoundingClientRect();
+      const r = parseFloat(el.getAttribute('r'));
+      const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
+      const scale = box.width / (2 * r + stroke);
+      return { x: box.x + box.width / 2 + r * scale * Math.cos(radians), y: box.y + box.height / 2 + r * scale * Math.sin(radians) };
+    }, { rowText, id, radians: angle });
+    assert.ok(point, `找不到 ${rowText} 的扇区 ${id}`);
+    await page.mouse.click(point.x, point.y);
   };
   const fixedHeight = await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height);
   assert.ok([280, 540].includes(Math.round(fixedHeight)), `overview progress uses a fixed design height (got ${fixedHeight})`);
-  await clickSector(progressRow, 'n1', 0, 3);
+  await clickSector('demo-repo', 'n1', 0, 3);
   assert.equal(await detailTitle.innerText(), '节点一', 'clicking a ring sector switches the node detail');
   assert.ok((await progressRow.locator('.overview-node').innerText()).includes('交付了第一块功能'), 'switched detail shows that node summary');
   assert.equal(await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height), fixedHeight, 'switching nodes must not change the fixed height');
@@ -478,7 +478,7 @@ try {
   await page.keyboard.press('Enter');
   assert.equal(await detailTitle.innerText(), '节点二', 'keyboard selection switches the detail too');
   // 无摘要节点必须有兜底文案
-  await clickSector(progressRow, 'n3', 2, 3);
+  await clickSector('demo-repo', 'n3', 2, 3);
   assert.ok((await progressRow.locator('.overview-node').innerText()).includes('暂无任务摘要'), 'pending node summary falls back truthfully');
   // 节点数增加时高度不变：扩到 12 个节点再对比
   const manyNodes = [...threeNodes, ...Array.from({ length: 9 }, (_, index) => [`n${index + 4}`, { status: 'pending', title: `节点${index + 4}`, label: String(index + 4) }])];
@@ -490,7 +490,7 @@ try {
   writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify(chainFixture(threeNodes, ['n1', 'n2', 'n3'])));
   await page.waitForTimeout(2600);
   // 选中长摘要节点（n2）：面板必然溢出，用来验证 sticky 入口与滚动保持
-  await clickSector(progressRow, 'n2', 1, 3);
+  await clickSector('demo-repo', 'n2', 1, 3);
   const pane = progressRow.locator('.overview-node');
   // 等点击后的重绘落地（标题切到 n2 且面板确实溢出），再做滚动断言，避免和轮询/rAF 抢时序
   await page.waitForFunction(() => {
@@ -510,7 +510,7 @@ try {
   assert.ok(await pane.evaluate(node => node.scrollTop) > 0, 'panel scroll survives the polling re-render');
   await pane.evaluate(node => { node.scrollTop = 0; });
   // 打开运行详情：走面板里的入口按钮（环形点击只在总览内切换，不跳页）
-  await clickSector(progressRow, 'n2', 1, 3);
+  await clickSector('demo-repo', 'n2', 1, 3);
   await progressRow.locator('.overview-node [data-serial-node="n2"]').click();
   await page.locator('#view-dag').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#dag-detail .dag-detail').count(), 1);
@@ -523,7 +523,7 @@ try {
   assert.ok((await detail.innerText()).includes('费用 / Token'), 'detail shows cost/token column');
   // 无摘要节点（pending）详情必须有兜底文案，不能是空面板
   await page.getByRole('button', { name: '总览', exact: true }).click();
-  await clickSector(progressRow, 'n3', 2, 3);
+  await clickSector('demo-repo', 'n3', 2, 3);
   await progressRow.locator('.overview-node [data-serial-node="n3"]').click();
   await page.locator('#dag-node-detail').waitFor();
   assert.ok((await page.locator('#dag-node-detail').innerText()).includes('暂无任务摘要'), 'pending node without summary must show a truthful fallback');
@@ -595,6 +595,79 @@ try {
   }
   assert.equal(schedulingSessions.startCalls.length, startsBeforeDuplicate, 'continuing the old session must not create a new one');
   await page.getByLabel('发消息给会话 browser-session').fill('');
+  // 「关闭旧会话并新建」：用同项目的一个设计会话当旧会话（browser-session 后续步骤还要用，不能关）。
+  const designOld = { ...schedulingSessions.records[0], id: 'design-old', sessionId: 'acp-design-old', kind: 'design', prompt: '旧的设计会话', messages: [], queue: [], queued: [], queuedCount: 0 };
+  schedulingSessions.records.push(designOld);
+  const closeCallsOf = id => (schedulingSessions.closeCalls || []).filter(call => call === id).length;
+  const originalClose = schedulingSessions.close;
+  const originalStart = schedulingSessions.start;
+  const callOrder = [];
+  schedulingSessions.close = async function (id) { (this.closeCalls ||= []).push(id); callOrder.push(`close:${id}`); return originalClose.call(this, id); };
+  // 真实服务端会回传 kind；假管理器默认不回传（既有用例依赖此行为），本段包装里补上，新会话才会落在设计 tab。
+  schedulingSessions.start = async function (input) { callOrder.push('start'); const session = await originalStart.call(this, input); if (input?.kind) session.kind = input.kind; return session; };
+  const openDesignConflict = async (request, designCount) => {
+    await page.getByRole('button', { name: '会话管理', exact: false }).click();
+    await page.locator('#refresh').click();
+    // 等页面真的拿到含旧会话的列表（refresh 可能与后台 2 秒轮询撞车而空转），而不是固定等 300ms。
+    await page.waitForFunction(count => document.querySelector('[data-kind-count="design"]')?.textContent === String(count), designCount, { timeout: 6000 });
+    await page.locator('#session-new').click();
+    await page.locator('#new-session-dialog').waitFor({ state: 'visible' });
+    await page.locator('#new-session-project').selectOption(demoRepo);
+    await page.locator('#new-session-request').fill(request);
+    await page.locator('[data-type-override="design"]').click();
+    await page.locator('#create-session').click();
+    await page.locator('#new-session-conflict').waitFor({ state: 'visible', timeout: 3000 });
+    assert.ok((await page.locator('#new-session-conflict-text').innerText()).includes('设计会话'), 'design conflict must name the session type');
+  };
+  // ① 关闭成功、新建失败：旧会话确实被关掉，对话框明说「旧会话已关闭」并保留输入，可重试。
+  await openDesignConflict('重新设计一遍计费方案', 1);
+  const startsBeforeReplace = schedulingSessions.startCalls.length;
+  schedulingSessions.failNextStart = '模拟：Codex 启动失败';
+  await page.locator('#conflict-replace').click();
+  await page.locator('#new-session-error').waitFor({ state: 'visible', timeout: 5000 });
+  const replaceError = await page.locator('#new-session-error').innerText();
+  assert.ok(replaceError.includes('旧会话已关闭') && replaceError.includes('模拟：Codex 启动失败'), 'close-ok/create-failed must say the old session is already closed and why creation failed');
+  assert.equal(closeCallsOf('design-old'), 1, 'replace must close the old session exactly once');
+  assert.equal(schedulingSessions.startCalls.length, startsBeforeReplace + 1, 'replace must attempt exactly one create after closing');
+  assert.equal(await page.locator('#new-session-dialog').isVisible(), true, 'a failed create must keep the dialog open');
+  assert.equal(await page.locator('#new-session-request').inputValue(), '重新设计一遍计费方案', 'a failed create must keep what the user wrote');
+  assert.equal(await page.locator('#new-session-conflict').isHidden(), true, 'the stale conflict must not reappear once the old session is closed');
+  await page.locator('#new-session-dialog .js-close-new-session').first().click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'hidden' });
+  // ② 正常路径：先关旧会话、再新建，新会话被选中，旧会话不再出现在进行中列表。
+  // 诱饵：同项目、同类型、排在新会话前面的「关闭中」会话。本地查重跳过 closing，冲突仍指向 design-old；
+  // 若新会话没被真正选中，侧栏会回退高亮列表第一项（诱饵），下面的选中断言就会变红。
+  schedulingSessions.records.push({ ...designOld, id: 'design-decoy', sessionId: 'acp-design-decoy', status: 'closing', statusText: '关闭中', prompt: '关闭中的设计会话' });
+  schedulingSessions.records.push({ ...designOld });
+  await openDesignConflict('再设计一遍计费方案', 2);
+  assert.ok((await page.locator('#new-session-conflict-text').innerText()).includes('design-o'), 'the conflict must point at the active old session, not the closing decoy');
+  acceptDialogs = false;
+  await page.locator('#conflict-replace').click();
+  await page.waitForTimeout(300);
+  assert.equal(closeCallsOf('design-old'), 1, 'cancelling the confirmation must not close the old session');
+  assert.equal(await page.locator('#new-session-conflict').isVisible(), true, 'cancelling the confirmation must leave the choice in place');
+  acceptDialogs = true;
+  const startsBeforeOk = schedulingSessions.startCalls.length;
+  callOrder.length = 0;
+  schedulingSessions.nextStartId = 'design-new';
+  await page.locator('#conflict-replace').click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'hidden', timeout: 5000 });
+  assert.equal(closeCallsOf('design-old'), 2, 'confirmed replace must close the old session');
+  assert.equal(schedulingSessions.startCalls.length, startsBeforeOk + 1, 'confirmed replace must create exactly one new session');
+  assert.deepEqual(schedulingSessions.startCalls.at(-1), { prompt: '再设计一遍计费方案', project: demoRepo, kind: 'design' }, 'the new session must carry the dialog request, project and kind');
+  assert.deepEqual(callOrder, ['close:design-old', 'start'], 'replace must close the old session before creating the new one');
+  assert.equal(schedulingSessions.records.some(session => session.id === 'design-old'), false, 'the old session must be gone from the live list');
+  await page.waitForFunction(() => document.querySelector('form[data-action="session-message"][data-id="design-new"]'), null, { timeout: 5000 });
+  assert.equal(await page.locator('.session-kind-tabs [data-kind="design"]').getAttribute('aria-selected'), 'true', 'a new design session must land in the design tab');
+  assert.deepEqual(await page.locator('#session-items .session-item').evaluateAll(items => items.map(item => item.dataset.session)), ['design-decoy', 'design-new'], 'the decoy must be listed ahead of the new session for the selection check to mean anything');
+  assert.equal(await page.locator('#session-items .session-item.active').getAttribute('data-session'), 'design-new', 'the newly created session must be the selected one');
+  // 清场：移除本段造的设计会话，切回调度会话，后续步骤照旧使用 browser-session。
+  schedulingSessions.records = schedulingSessions.records.filter(session => !['design-new', 'design-decoy'].includes(session.id));
+  schedulingSessions.close = originalClose;
+  schedulingSessions.start = originalStart;
+  await page.locator('[data-kind="scheduling"]').first().click();
+  await page.locator('#refresh').click();
+  await page.waitForFunction(() => document.querySelector('form[data-action="session-message"][data-id="browser-session"]'), null, { timeout: 5000 });
   await page.getByRole('button', { name: '会话管理', exact: false }).click();
   await page.locator('#session-new').click();
   await page.locator('#new-session-dialog').waitFor({ state: 'visible' });

@@ -5,6 +5,7 @@ import { normalizeProjectPath } from './dag.mjs';
 import { canClosePr, canExecuteAction } from './dag-run.mjs';
 import { assertNodeDesignSnapshot, designContractDigest } from './design-baseline.mjs';
 import { buildWorktreeTree, worktreeChanges } from './git-safe.mjs';
+import { dagReviewHolder } from './review-claim.mjs';
 
 export class PublishError extends Error {
   constructor(message, code = 'PUBLISH_ERROR') { super(message); this.name = 'PublishError'; this.code = code; }
@@ -169,6 +170,11 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (pr.state === 'merged') return { mergeCommit: pr.mergeCommit };
       const head = await gh.prHead(prUrl);
       if (head !== commit) throw new PublishError(`远端 PR head ${head} 与已审 SHA ${commit} 不一致（head 变化），拒绝合并`, 'HEAD_MISMATCH');
+      // 审阅占位：他人（非本节点 DAG 审阅）正在审时暂缓合并，抛错由控制器下一 tick 重试，节点状态不变。
+      if (typeof gh.claimHolder === 'function') {
+        const holder = await gh.claimHolder(prUrl);
+        if (holder && holder !== dagReviewHolder(nodeId)) throw new PublishError(`PR ${prUrl} 正被 ${holder} 审阅占位，暂缓合并（占位释放或过期后自动重试）`, 'REVIEW_CLAIMED');
+      }
       const designWarning = evidenceIssues(root, nodeOf(root, nodeId), evidence, commit, { requirePassed: true });
       const result = (await gh.mergePr(prUrl, { strategy: root.authorizationSnapshot.mergeStrategy })) || {};
       // fetch/rev-parse 失败直接抛错由控制器下一 tick 重试：mergePr 与 markPrMerged 均幂等，

@@ -77,9 +77,9 @@ try {
   const noOverflow = async label => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${label}: 页面主体不得横向溢出`);
   await page.goto(url); await page.getByRole('heading', { name: '今天的自动化' }).waitFor();
 
-  // IA 基线：主导航恰好 5 项；「DAG 运行」「执行授权」不得作为顶级导航项，只能是情境屏幕
+  // IA 基线：主导航恰好 6 项（2026-11-19 主人确认 v3 设计稿新增「管理后台」）；「DAG 运行」「执行授权」不得作为顶级导航项，只能是情境屏幕
   assert.deepEqual((await page.locator('.navigation .nav-item').allInnerTexts()).map(text => text.replace(/\s+/g, ' ').trim()),
-    ['总览', '调度规则', '会话管理', '执行轮次', '待我处理'], '主导航必须是基线五项');
+    ['总览', '调度规则', '会话管理', '执行轮次', '待我处理', '管理后台'], '主导航必须是基线六项');
   assert.equal(await page.locator('.navigation .nav-item', { hasText: 'DAG 运行' }).count(), 0, '「DAG 运行」不得出现在主导航');
   assert.equal(await page.locator('.navigation .nav-item', { hasText: '执行授权' }).count(), 0, '「执行授权」不得出现在主导航');
   assert.equal(await page.locator('#view-dag').isHidden(), true, 'DAG 是情境屏幕，默认隐藏');

@@ -1,9 +1,10 @@
 import { openRuleForm } from './rule-form.mjs';
 import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSessionItems, renderSessionCard, renderArchivedSessions, renderArchivedEntries, renderProjectProgress, chainUsageText } from './views.mjs';
 import { projectName } from './format.mjs';
-import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject, chainUsage, chainCurrentExecutor } from './status-sections.mjs';
+import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject, chainUsage, chainNodeExecutors } from './status-sections.mjs';
 import { el } from './views.mjs';
 import { initDag } from './dag-app.mjs';
+import { initAdmin } from './admin-platform-models.mjs';
 import { stableReplace, hasLiveInteraction } from './dom-stable.mjs';
 const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null, queueEditing: null, artifactsPanel: null, sessionTab: 'scheduling', selectedSession: '', sessionQuery: '', collapsedSessions: {}, archivedOpen: false, archivedView: '', sessionDrafts: {} };
 const $ = id => document.getElementById(id);
@@ -234,6 +235,7 @@ function renderSessionsChrome(sessions) {
 
 function showView(name) {
   state.view = name;
+  if (name === 'admin' && !admin.loaded()) admin.load();
   document.querySelectorAll('.view').forEach(view => { view.hidden = view.id !== `view-${name}`; });
   // 回到某个视图时把可见聊天框停到最新消息（隐藏期间的刷新不碰滚动位置，见 render 里的 offsetHeight 守卫）
   requestAnimationFrame(() => { document.querySelectorAll(`#view-${name} .chat-log`).forEach(log => { log.scrollTop = log.scrollHeight; }); });
@@ -241,6 +243,7 @@ function showView(name) {
 }
 document.querySelectorAll('.nav-item').forEach(item => item.addEventListener('click', () => showView(item.dataset.view)));
 const dag = initDag({ api, notify: showNotice, showView, getProjects: () => state.projects });
+const admin = initAdmin({ api, toast: showToast });
 document.querySelectorAll('[data-go]').forEach(item => item.addEventListener('click', () => showView(item.dataset.go)));
 async function perform(action, id, body = {}) {
   const paths = { resolve: `/api/cards/${id}/resolve`, run: `/api/rules/${encodeURIComponent(id)}/run`, pause: `/api/rules/${encodeURIComponent(id)}/pause`, resume: `/api/rules/${encodeURIComponent(id)}/resume`, cancel: `/api/runs/${id}/cancel`, 'close-session': `/api/scheduling-sessions/${encodeURIComponent(id)}/close` };
@@ -256,8 +259,8 @@ document.addEventListener('click', event => {
   const chain = (state.serial?.chains || []).find(item => item.sourceFile === hit.dataset.serialRun);
   if (!chain) return;
   const usage = chainUsageText(chainUsage(chain, state.rules, state.snapshot?.lines || [], state.serial?.chains || []));
-  const executor = chainCurrentExecutor(chain, state.rules, state.snapshot?.runs || [], state.serial?.chains || [], state.models || {}, agentNameMap());
-  dag.openSerialDetail(chain, hit.dataset.serialNode, usage, executor);
+  const executors = chainNodeExecutors(chain, state.rules, state.snapshot?.runs || [], state.serial?.chains || [], state.models || {}, agentNameMap());
+  dag.openSerialDetail(chain, hit.dataset.serialNode, usage, executors);
 });
 document.addEventListener('click', async event => {
   const button = event.target.closest('button[data-action]'); if (!button) return;

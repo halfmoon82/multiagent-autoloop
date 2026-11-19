@@ -100,6 +100,9 @@ export function resolveFallback(kind, blockedAgent, { policy, cwd } = {}) {
   const agent = String(blockedAgent ?? '').trim();
   if (!agent) throw new PolicyError('缺少被拦 Agent');
   const rule = effectivePolicy(policy, cwd)[kind];
+  // 管理后台生成的分档执行者（<平台>-tier-<档>）：按平台判主备，绕到备用平台的同一档。
+  const tiered = /^(.+)-tier-(light|standard|heavy)$/.exec(agent);
+  if (tiered) return tiered[1] === rule.primary ? `${rule.fallback}-tier-${tiered[2]}` : null;
   // 只有被拦 Agent 是该类型主 Agent 时才自动改派到备选；第三 Agent（如 codex 上的开发规则）
   // 和已处于备选的都不自动往下绕，留给调度会话按 §4 第 9/10 条处理。
   if (agent !== rule.primary) return null;
