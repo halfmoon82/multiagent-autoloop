@@ -489,9 +489,11 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         }
       } finally { trackPersistentErrors(st, before, now()); persist(root, st); }
       const progress = [];
+      const at = now();
       for (const [id, n] of Object.entries(st.nodes)) {
         const prev = before[id] || {};
-        if (n.state !== prev.state && PROGRESS_WAKE.has(n.state)) progress.push({ nodeId: id, from: prev.state ?? null, to: n.state });
+        // at 让「返工后再次进入同一状态」得到不同的事件 ID；同一份快照重投时 at 不变，仍然幂等。
+        if (n.state !== prev.state && PROGRESS_WAKE.has(n.state)) progress.push({ nodeId: id, from: prev.state ?? null, to: n.state, at });
       }
       return snapshot(loadRoot(), progress);
     },

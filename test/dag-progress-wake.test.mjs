@@ -44,6 +44,25 @@ test('事件发往调度会话通道并去敏；通知方按事件 ID 去重', a
   assert.equal(posted.length, 1);
 });
 
+test('返工回环：节点第二次进入同一状态，事件 ID 不同，不被去重吞掉', async () => {
+  const s = setup([mkNode('a')]);
+  const idOf = snap => buildProgressEvent(rootRuns(s)[0], snap).id;
+  await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done');
+  const first = await s.ctl.tick();
+  assert.deepEqual(wakeOf(first), ['a:review']);
+  s.clock.t += 60_000; s.claimAll(); s.receipt('a', 'review', 'rework');
+  const back = await s.ctl.tick();
+  assert.deepEqual(wakeOf(back), ['a:dev']);
+  s.clock.t += 60_000; s.claimAll(); s.receipt('a', 'dev', 'done');
+  const again = await s.ctl.tick();
+  assert.deepEqual(wakeOf(again), ['a:review'], '再次进入 review 仍被记录');
+  assert.notEqual(idOf(again), idOf(first), '返工后再进 review 的事件 ID 必须不同');
+  const sent = new Set(); const posted = [];
+  const notify = createProgressNotifier({ post: async e => posted.push(e), sent });
+  await notify(rootRuns(s)[0], first); await notify(rootRuns(s)[0], again);
+  assert.equal(posted.length, 2, '两次都要唤醒');
+});
+
 test('通知投递失败只记日志，不影响 tick 结果', async () => {
   const s = setup([mkNode('a')]);
   const notify = createProgressNotifier({ post: async () => { throw new Error('hub down'); } });
