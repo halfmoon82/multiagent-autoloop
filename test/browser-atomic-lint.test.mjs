@@ -10,8 +10,9 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 
 const TWO_STEP = ['boundingBox', 'evaluate', 'evaluateHandle', 'screenshot', 'scrollIntoViewIfNeeded', 'selectText', 'elementHandle', 'elementHandles'];
-const CALL = new RegExp(`([A-Za-z_$][\\w$]*|[)\\]])\\s*\\.\\s*(${TWO_STEP.join('|')})\\s*\\(`, 'g');
-const PAGE_RECEIVER = 'page';
+const CALL = new RegExp(`([A-Za-z_$][\\w$]*|[)\\]])\\s*\\??\\.\\s*(${TWO_STEP.join('|')})\\s*\\(`, 'g');
+// page：整页方法；document：页面内 DOM 自带的 document.evaluate（XPath），出现在推荐的 page.evaluate 写法里
+const ALLOWED_RECEIVERS = new Set(['page', 'document']);
 const MARKER = /\/\/\s*atomic-ok:\s*\S/;
 
 // 把注释与字符串内容替换为空格（保留换行与长度，行号不变），避免注释/文案里提到方法名时误报。
@@ -30,9 +31,11 @@ export function stripCommentsAndStrings(source) {
       const quote = ch; out += ' '; i++;
       while (i < source.length && source[i] !== quote) {
         if (source[i] === '\\') { out += '  '; i += 2; continue; }
+        if (source[i] === '\n' && quote !== '`') break; // 单/双引号字符串不跨行：正则字面量里的单个引号最多影响本行
         out += source[i] === '\n' ? '\n' : ' '; i++;
       }
-      out += ' '; i++; continue;
+      if (source[i] === quote) { out += ' '; i++; }
+      continue;
     }
     out += ch; i++;
   }
@@ -44,14 +47,22 @@ export function findTwoStepCalls(source) {
   const lines = source.split('\n');
   const findings = [];
   for (const match of code.matchAll(CALL)) {
-    const [, receiver, method] = match;
-    if (receiver === PAGE_RECEIVER) continue;
-    const line = code.slice(0, match.index).split('\n').length;
-    const here = lines[line - 1] || '';
-    let prev = line - 2;
-    while (prev >= 0 && !lines[prev].trim()) prev--;
-    if (MARKER.test(here) || (prev >= 0 && MARKER.test(lines[prev]))) continue;
-    findings.push({ line, method, text: here.trim().slice(0, 120) });
+    const [whole, receiver, method] = match;
+    if (ALLOWED_RECEIVERS.has(receiver)) continue;
+    const lineOf = offset => code.slice(0, offset).split('\n').length;
+    const receiverLine = lineOf(match.index);
+    const line = lineOf(match.index + whole.lastIndexOf(method)); // 报 .method( 所在行，跨行链式调用也能直接定位
+    const justified = target => {
+      if (MARKER.test(lines[target - 1] || '')) return true;
+      let prev = target - 2;
+      while (prev >= 0 && !lines[prev].trim()) prev--;
+      return prev >= 0 && MARKER.test(lines[prev]);
+    };
+    const codeLines = code.split('\n');
+    let head = line; // 跨行链式调用的首行：自方法行向上越过以 . / ?. 开头的续行
+    while (head > 1 && /^\s*\??\./.test(codeLines[head - 1] || '')) head--;
+    if (justified(line) || justified(receiverLine) || justified(head)) continue;
+    findings.push({ line, method, text: (lines[line - 1] || '').trim().slice(0, 120) });
   }
   return findings;
 }
@@ -66,6 +77,8 @@ test('two-step lint: flags locator two-step calls, allows page-level calls and j
     "await card.screenshot({ path: 'a.png' });",
     "await list.elementHandles();",
     "await getRow()[0].evaluate(el => el.id);",
+    "const v = await handle?.evaluate(el => el.id);", // 可选链（page.$() 句柄可能为 null）
+    "const re = /'/;\nawait row.evaluate(x => x);", // 正则里的单引号不能吞掉下一行
   ];
   for (const sample of flagged) assert.equal(findTwoStepCalls(sample).length, 1, `应报出：${sample}`);
   const allowed = [
@@ -79,14 +92,18 @@ test('two-step lint: flags locator two-step calls, allows page-level calls and j
     "/* card.screenshot() 在块注释里 */",
     "// atomic-ok: 输入框有内容、卡片被钉住，本意是校验同一节点存活\nconst h = await input.elementHandle();",
     "const h = await input.elementHandle(); // atomic-ok: 卡片被钉住",
+    "await page.evaluate(() => document.evaluate('//a', document).iterateNext());", // 页面内 DOM 的 XPath API
+    "// atomic-ok: 有意持有旧节点\nconst h = await page.locator('#x')\n  .first()\n  .elementHandle();", // 跨行：注释在语句首行上方
+    "const h = await page.locator('#x')\n  .first() // atomic-ok: 有意持有旧节点\n  .elementHandle();", // 跨行：注释在接收者行
   ];
   for (const sample of allowed) assert.deepEqual(findTwoStepCalls(sample), [], `不应报出：${sample}`);
   // 放行注释必须写理由；空理由不算
   assert.equal(findTwoStepCalls("// atomic-ok:\nconst h = await input.elementHandle();").length, 1, '空理由的 atomic-ok 不放行');
   // 放行只管紧邻的下一行，隔一段代码不算
   assert.equal(findTwoStepCalls("// atomic-ok: 理由\nconst a = 1;\nconst h = await input.elementHandle();").length, 1, 'atomic-ok 只放行同一行或紧邻上一行');
-  // 行号准确（报错信息要能直接定位）
+  // 行号准确（报错信息要能直接定位）：报方法所在行
   assert.equal(findTwoStepCalls("const a = 1;\n\nawait row.evaluate(x => x);")[0].line, 3);
+  assert.equal(findTwoStepCalls("await page.locator('#x')\n  .first()\n  .evaluate(x => x);")[0].line, 3, '跨行链式调用报 .evaluate( 所在行');
 });
 
 test('browser regression files contain no unjustified two-step element reads/writes', () => {
@@ -94,5 +111,5 @@ test('browser regression files contain no unjustified two-step element reads/wri
   const files = readdirSync(dir).filter(name => name.endsWith('.mjs') && /from\s+['"]@?playwright/.test(readFileSync(new URL(name, dir), 'utf8')));
   assert.ok(files.length >= 4, `应扫描到浏览器回归文件，实际：${files.join(', ')}`);
   const problems = files.flatMap(name => findTwoStepCalls(readFileSync(new URL(name, dir), 'utf8')).map(item => `${name}:${item.line} .${item.method}()  ${item.text}`));
-  assert.deepEqual(problems, [], `以下调用会在 2 秒整块重建时读到已摘除节点；改为单个 page.evaluate 在页面内定位并完成读写，或在同一行/上一行写 // atomic-ok: <理由>：\n${problems.join('\n')}`);
+  assert.deepEqual(problems, [], `以下调用会在 2 秒整块重建时读到已摘除节点；改为单个 page.evaluate 在页面内定位并完成读写，或在同一行/上一行写 // atomic-ok: <理由>（跨行链式调用写在链首行、接收者行或 .方法( 行的同一行/上一行均可；若命中的是 page.evaluate 回调里页面内 DOM 自带的同名方法，同样用 atomic-ok 注明）：\n${problems.join('\n')}`);
 });
