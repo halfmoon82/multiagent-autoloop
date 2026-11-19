@@ -76,10 +76,10 @@ test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', a
   await rt.ensureSlots();
   const { baseCommit } = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'refs/heads/main' });
   store.updateRun(root.runId, { publish: { nodes: { a: { prepareBase: baseCommit } } } });
-  const closed = []; let prNo = 0;
+  const closed = []; const created = []; let prNo = 0;
   const runner = async (cmd, args) => {
     if (args[1] === 'list') return { stdout: '[]' };
-    if (args[1] === 'create') return { stdout: `https://gh/pr/${++prNo}` };
+    if (args[1] === 'create') { created.push(args); return { stdout: `https://gh/pr/${++prNo}` }; }
     if (args[1] === 'close') { closed.push(args[2]); return { stdout: '' }; }
     return { stdout: '' };
   };
@@ -92,6 +92,8 @@ test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', a
   await pub.commitPr({ ...ctx, branch: 'feat/a-att2' });
   assert.equal(closed.length, 1, '旧 PR 被生产适配器关闭');
   assert.equal(prNo, 2);
+  // publisher 必须把冻结基底透传给 gh（缺省 --base 会落到仓库默认分支）。
+  assert.equal(created[0][created[0].indexOf('--base') + 1], 'main');
 });
 
 test('生产适配器 claimHolder：读 PR 评论里的有效审阅占位，无占位返回 null', async () => {
