@@ -33,11 +33,18 @@ test('Agent/模型如实：已上报才显示，缺失显示待派发/未上报�
   assert.equal(a.prUrl, 'https://example.com/pr/1');
 });
 
-test('分段环：每节点一段，百分比=accepted 占比，阻塞为琥珀色', () => {
+test('分段环：每节点一段，百分比=accepted 占比，颜色=波次色相+完成度深浅', () => {
   const model = donutModel(buildDagNodes(detail));
   assert.equal(model.segments, 4); assert.equal(model.percent, 25);
   assert.match(model.gradient, /^conic-gradient\(/);
-  assert.ok(model.gradient.includes('#d59a37'));
+  const stops = model.gradient.match(/hsl\([^)]+\)/g) || [];
+  assert.equal(stops.length, 4, '每个节点一段');
+  const parse = color => { const match = /hsl\((\d+), 52%, (\d+)%\)/.exec(color); return { hue: Number(match[1]), light: Number(match[2]) }; };
+  const [a, b, c] = stops.map(parse); // a=已完成(第1波)、b=开发中(第2波)、c=阻塞(第2波)
+  assert.equal(b.hue, c.hue, '同波次共用一个色相');
+  assert.notEqual(a.hue, b.hue, '不同波次不同色相');
+  assert.equal(a.light, 27, '全深 = 该节点已完成');
+  assert.ok(a.light < b.light && b.light < c.light, '完成度越低颜色越浅');
   assert.equal(donutModel([]).segments, 0);
 });
 

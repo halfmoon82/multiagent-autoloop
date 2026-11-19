@@ -138,20 +138,43 @@ try {
   await page.locator('#dag-overview-list .dag-project').waitFor();
   assert.equal(await page.locator('#dag-overview-list .overview-ring').getAttribute('data-segments'), '4');
   assert.equal(await page.locator('#dag-overview-list .ring-seg').count(), 4);
+  assert.match(await page.locator('#dag-overview-list .overview-ring-center').innerText(), /%/, 'DAG ring keeps the total percent center');
+  // 环上颜色语义：同波次同色相，不同波次不同色相（a=第1波，b/c=第2波，整合=第3波）
+  const ringStrokes = await page.locator('#dag-overview-list .ring-seg').evaluateAll(list => list.map(node => node.getAttribute('stroke')));
+  const hueOf = stroke => Number(/hsl\((\d+)/.exec(stroke)?.[1]);
+  assert.equal(hueOf(ringStrokes[1]), hueOf(ringStrokes[2]), 'same wave shares one hue');
+  assert.notEqual(hueOf(ringStrokes[0]), hueOf(ringStrokes[1]), 'different waves use different hues');
+  const dagRingLabels = await page.locator('#dag-overview-list .ring-label').evaluateAll(list => list.map(node => node.textContent));
+  assert.equal(dagRingLabels.length, 4, 'each sector carries its node name');
+  assert.equal(dagRingLabels[0], '账户模型');
+  assert.equal(dagRingLabels[3], '整合审查');
+  assert.equal(await page.locator('#dag-overview-list .ring-label img').count(), 0, 'ring labels stay plain text');
+  assert.equal(await page.locator('#dag-overview-list .ring-divider.wave').count(), 2, 'wave boundaries use solid dividers');
+  assert.equal(await page.locator('#dag-overview-list .ring-divider.node').count(), 1, 'nodes inside a wave use dashed dividers');
   assert.match(await page.locator('#dag-overview-list .dag-project').innerText(), /待派发/);
   assert.match(await page.locator('#dag-overview-list .dag-project').innerText(), /费用未上报 · Token 未上报/);
   // DAG 总览与串行总览同构：环形扇区切换右侧单个节点详情，不离开总览
   const dagDetailTitle = page.locator('#dag-overview-list .overview-node-head strong');
   assert.equal(await dagDetailTitle.innerText(), '账户模型', 'default DAG detail shows the current pending node');
-  const dagSeg = page.locator('#dag-overview-list .ring-seg[data-ring-node="b"]');
-  await dagSeg.scrollIntoViewIfNeeded();
-  const dagPoint = await dagSeg.evaluate((el, radians) => {
-    const box = el.getBoundingClientRect();
-    const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
-    const scale = box.width / (104 + stroke);
-    return { x: box.x + box.width / 2 + 52 * scale * Math.cos(radians), y: box.y + box.height / 2 + 52 * scale * Math.sin(radians) };
-  }, (-90 + 1.5 * 90) * Math.PI / 180); // 4 个扇区里第 2 个（b）的中角
-  await page.mouse.click(dagPoint.x, dagPoint.y);
+  let dagClicked = false;
+  for (let attempt = 0; attempt < 6 && !dagClicked; attempt += 1) {
+    try {
+      const seg = page.locator('#dag-overview-list .ring-seg[data-ring-node="b"]');
+      await seg.evaluate(el => el.scrollIntoView({ block: 'center' }));
+      const point = await seg.evaluate((el, radians) => {
+        const box = el.getBoundingClientRect();
+        const r = parseFloat(el.getAttribute('r'));
+        const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
+        const scale = box.width / (2 * r + stroke);
+        return { x: box.x + box.width / 2 + r * scale * Math.cos(radians), y: box.y + box.height / 2 + r * scale * Math.sin(radians) };
+      }, (-90 + 1.5 * 90) * Math.PI / 180); // 4 个扇区里第 2 个（b）的中角
+      await page.mouse.click(point.x, point.y);
+      dagClicked = true;
+    } catch {
+      await page.waitForTimeout(150);
+    }
+  }
+  assert.equal(dagClicked, true, 'ring sector click dispatched');
   assert.equal(await dagDetailTitle.innerText(), XSS, 'clicking a DAG sector switches the detail');
   assert.equal(await page.locator('#dag-overview-list .overview-node img').count(), 0, 'node title renders as text in the overview detail');
   assert.equal(await page.locator('#view-overview').isVisible(), true, 'DAG ring click stays on the overview');
