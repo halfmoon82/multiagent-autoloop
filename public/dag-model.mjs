@@ -55,7 +55,7 @@ export function buildDagNodes(detail) {
     const mine = nodeRuns.filter(item => item.nodeId === node.id);
     const latest = mine.at(-1);
     // PR 由发布器登记在根 run.prs（带 nodeId）：取该节点最新一个仍开着或已合并的；被取代/已关闭的不算。
-    // 根上没有该节点的登记时，回退各轮 nodeRuns[].prs（旧记录）。
+    // 根上没有该节点的登记时才看各轮 nodeRuns[].prs：仅作兜底，当前发布器不写这里（registerPr 只写根 run）。
     const rootPrs = (run.prs || []).filter(pr => pr.nodeId === node.id);
     const livePr = rootPrs.filter(pr => pr.state === 'open' || pr.state === 'merged').at(-1);
     const prs = rootPrs.length ? (livePr ? [livePr] : []) : mine.flatMap(item => item.prs || []);
