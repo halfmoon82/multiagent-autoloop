@@ -4,6 +4,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { createSyncState, normalizeSyncState, applySubmission, SyncStateError } from '../mobile/src/features/device-sync/index.mjs';
 
 export const BINDING_TTL_MS = 5 * 60 * 1000;
 const MAX_AUDIT = 500;
@@ -34,8 +35,13 @@ function publicDevice(device) {
   };
 }
 
+// 公开同步状态：normalizeSyncState 返回规范化副本，不暴露任何凭证或原始上游字段。
+function publicSyncState(state) {
+  return normalizeSyncState(state);
+}
+
 export function createDeviceStore({ file = null, now = () => new Date(), ttlMs = BINDING_TTL_MS, random = randomBytes } = {}) {
-  let data = { devices: [], bindings: [], audit: [] };
+  let data = { devices: [], bindings: [], audit: [], sync: createSyncState() };
   const load = () => {
     if (!file || !existsSync(file)) return;
     try {
@@ -44,6 +50,7 @@ export function createDeviceStore({ file = null, now = () => new Date(), ttlMs =
         devices: Array.isArray(parsed?.devices) ? parsed.devices : [],
         bindings: Array.isArray(parsed?.bindings) ? parsed.bindings : [],
         audit: Array.isArray(parsed?.audit) ? parsed.audit : [],
+        sync: normalizeSyncState(parsed?.sync),
       };
     } catch { /* 台账损坏按空表处理，不阻断授权通道 */ }
   };
@@ -76,6 +83,12 @@ export function createDeviceStore({ file = null, now = () => new Date(), ttlMs =
   function requireText(value, label, max) {
     if (typeof value !== 'string' || !value.trim() || value.trim().length > max) throw new DeviceAuthError(400, `${label}不合法`, 'INVALID_INPUT');
     return value.trim();
+  }
+  // 已授权设备判定：解除授权后 status 变为 revoked，同一凭据立即失效。
+  function authorizedByToken(token) {
+    if (typeof token !== 'string' || !token) return null;
+    const hash = sha256(token);
+    return data.devices.find(item => item && item.status === 'authorized' && item.tokenHash === hash) || null;
   }
 
   load();
@@ -149,19 +162,39 @@ export function createDeviceStore({ file = null, now = () => new Date(), ttlMs =
 
     // 访问与通知的统一判定入口：解除授权后同一凭据立即失效。
     isAuthorizedToken(token) {
-      if (typeof token !== 'string' || !token) return false;
-      const hash = sha256(token);
-      return data.devices.some(item => item && item.status === 'authorized' && item.tokenHash === hash);
+      return Boolean(authorizedByToken(token));
     },
 
     touch(token) {
-      if (typeof token !== 'string' || !token) return null;
-      const hash = sha256(token);
-      const device = data.devices.find(item => item && item.status === 'authorized' && item.tokenHash === hash);
+      const device = authorizedByToken(token);
       if (!device) return null;
       device.lastActiveAt = stamp();
       flush();
       return publicDevice(device);
+    },
+
+    // 多设备同步：任意已授权设备提交结论即推进共享状态并写审计；解除授权后同一凭据立即失效。
+    submitDecision(token, submission) {
+      const device = authorizedByToken(token);
+      if (!device) throw new DeviceAuthError(403, '设备未授权或已解除授权', 'FORBIDDEN');
+      let next;
+      try {
+        next = applySubmission(data.sync, { ...submission, deviceId: device.id }, stamp());
+      } catch (error) {
+        if (error instanceof SyncStateError) throw new DeviceAuthError(error.status, error.message, error.code);
+        throw error;
+      }
+      data.sync = next;
+      record('sync.submit', { cardId: String(submission?.cardId ?? submission?.key ?? ''), byDevice: device.id, revision: next.revision }, 'device');
+      flush();
+      return publicSyncState(next);
+    },
+
+    // 其他设备拉取最新一致状态；被解除授权的凭据无法读取。
+    getSyncState(token) {
+      const device = authorizedByToken(token);
+      if (!device) throw new DeviceAuthError(403, '设备未授权或已解除授权', 'FORBIDDEN');
+      return publicSyncState(data.sync);
     },
   };
 }

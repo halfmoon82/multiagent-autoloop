@@ -4,6 +4,7 @@ import { getCardRouting } from './card-routing.mjs';
 import {
   buildTodoNotification, buildNodeDoneNotification, isNotifiableNodeEvent, badgeCount,
 } from '../mobile/src/features/notifications/index.mjs';
+import { createSyncState, reconcile, processedCardKeys, syncPrompt } from '../mobile/src/features/device-sync/index.mjs';
 
 // macOS 桌面系统通知：文本做 AppleScript 安全清洗（去引号/反斜杠/控制字符并截断），
 // 通知失败绝不影响控制台主流程。移动端系统通知复用同一事件分发（见 CardNotifier），
@@ -25,7 +26,7 @@ export function macosNotify({ title, body }) {
 // 普通失败、自动重试、调度自愈不通知：isNotifiableNodeEvent 只放行 done 回执；
 // 失败若形成待办，则只发该待办通知（卡片照常分发）。
 export class CardNotifier {
-  constructor({ config, intervalMs = 15000, notify = macosNotify, fetchState, setTimer = setInterval, clearTimer = clearInterval, routing, fetchNodeEvents, setBadge } = {}) {
+  constructor({ config, intervalMs = 15000, notify = macosNotify, fetchState, setTimer = setInterval, clearTimer = clearInterval, routing, fetchNodeEvents, setBadge, syncState = null, onSyncPrompt = null } = {}) {
     // 路由装配复用本轮询周期；无数据目录（如纯通知测试）则不启用。
     this.routing = routing === undefined ? getCardRouting(config) : routing;
     this.intervalMs = intervalMs;
@@ -38,6 +39,24 @@ export class CardNotifier {
     this.seeded = false;
     this.notified = new Map();
     this.handle = null;
+    // 跨设备同步（Spec §7 / issue 12）：注入共享状态来源后，任意设备提交即在本设备生效；
+    // 未注入时维持原有桌面通知行为，不改变现有调用方（含 scripts/start.mjs）。
+    this.syncStateProvider = typeof syncState === 'function' ? syncState : null;
+    this.onSyncPrompt = typeof onSyncPrompt === 'function' ? onSyncPrompt : null;
+    this.sharedSyncState = createSyncState();
+  }
+
+  // 拉取并对账共享状态：远端缺失/更旧/同步失败时保留本地最新一致状态（不回退），
+  // 仅失败时把可读提示交给调用方呈现；提示失败不影响通知主流程。
+  async loadSharedState() {
+    if (!this.syncStateProvider) return;
+    let remote = null;
+    let error = null;
+    try { remote = await this.syncStateProvider(); } catch (err) { error = err; }
+    this.sharedSyncState = reconcile(this.sharedSyncState, remote);
+    if (error && this.onSyncPrompt) {
+      try { this.onSyncPrompt(syncPrompt(this.sharedSyncState, error)); } catch { /* 提示失败不影响主流程 */ }
+    }
   }
 
   start() {
@@ -69,7 +88,11 @@ export class CardNotifier {
     let state;
     try { state = await this.fetchState(); } catch { return; } // 中台断线等下次轮询
 
+    // 多设备同步：已被任意设备处理的卡片从本地待办/角标视图移除；失败时沿用上次一致状态。
+    await this.loadSharedState();
     let open = (state?.cards || []).filter(card => card?.state === 'open');
+    const processed = processedCardKeys(this.sharedSyncState);
+    if (processed.size) open = open.filter(card => !processed.has(String(card?.id)));
     if (this.routing) {
       try {
         const delegated = new Set((await this.routing.routeOpenCards(open)).map(String));
