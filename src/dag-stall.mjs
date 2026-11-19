@@ -3,6 +3,7 @@
 // 只用中台原生 POST /v1/events；事件 ID 按「链 + 节点 + 首次报错时间」确定，中台对重复 ID 不重复执行，
 // 同一次卡住最多唤醒一次；错误变了或恢复后再卡，首次时间变化才会再唤醒。
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { hubRequest } from './hub.mjs';
 import { createRunStore, isTerminal, ROOT_NODE } from './dag-run.mjs';
 
@@ -78,6 +79,36 @@ export function findDagClaimedStalls(runs, { now = Date.now(), thresholdMs = CLA
 }
 
 const seg = value => String(value).replace(/[^A-Za-z0-9._-]/g, '_');
+
+// 状态变化唤醒：一轮 tick 里值得调度会话知道的变化（dev/review/accepted/blocked/gated），
+// 合并成一条 scheduling.message，同一批变化只投一次；瞬时错误不叫醒（归卡住巡检）。
+export function buildProgressEvent(rootRun, snapshot) {
+  const lines = snapshot.progress.map(p => `${p.nodeId}: ${p.from ?? '?'} → ${p.to}`).join('、');
+  const text = [
+    `DAG 推进：链 ${rootRun.runId}（计划 ${rootRun.planId}）本轮有节点状态变化：${lines}。`,
+    `根 run 状态 ${rootRun.status}；detail.progress 为本次变化明细。`,
+    '请按调度契约接手本轮后续（派审阅、处理 blocked/gated、放行 accepted 后续波次等）；若只是中间进展可自行判断是否行动。核实后本轮结束。',
+  ].join('\n');
+  // 事件 ID 由进度内容派生：同一批变化重放幂等，换一批变化即新事件；进程重启也能自愈。
+  const digest = createHash('sha1').update(JSON.stringify(snapshot.progress)).digest('hex').slice(0, 12);
+  return {
+    id: `console:dag-progress:${seg(rootRun.runId)}:${digest}`,
+    subject: `scheduling:dag:${seg(rootRun.runId)}`,
+    type: 'scheduling.message',
+    summary: `DAG 推进：${rootRun.planId}`.slice(0, 80),
+    detail: JSON.stringify({ project: rootRun.project, text, progress: snapshot.progress }),
+  };
+}
+
+export function createProgressNotifier({ post, sent = new Set(), log = console.error } = {}) {
+  return async (rootRun, snapshot) => {
+    if (!snapshot?.progress?.length) return;
+    const event = buildProgressEvent(rootRun, snapshot);
+    if (sent.has(event.id)) return;
+    try { await post(event); sent.add(event.id); }
+    catch (error) { log(`[dag-progress] 唤醒投递失败 ${rootRun?.runId ?? event.id}：${error.message}`); }
+  };
+}
 
 export function buildStallEvent(stall, now = Date.now()) {
   const minutes = Math.max(1, Math.round((now - stall.since) / 60000));

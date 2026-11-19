@@ -445,10 +445,13 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     if (!left && Object.values(st.nodes).every(n => n.slot == null)) store.finishRoot(root.runId, 'cancelled');
   }
 
-  const snapshot = (root = loadRoot()) => {
+  // 值得唤醒调度会话的节点状态变化（每轮合并成一条 progress，由 dag-stall 巡检投递）。
+  // 不覆盖瞬时错误（中台超时仍归卡住巡检）；accepted 进 review 的那次变化也算 accepted。
+  const PROGRESS_WAKE = new Set(['dev', 'review', 'accepted', 'blocked', 'gated']);
+  const snapshot = (root = loadRoot(), progress = []) => {
     const st = load(root); const slots = {};
     for (const [id, n] of Object.entries(st.nodes)) if (n.slot != null) slots[n.slot] = id;
-    return { runId: root.runId, status: root.status, nodes: st.nodes, slots, approachChanges: st.approachChanges, capacity: MAX_SLOTS };
+    return { runId: root.runId, status: root.status, nodes: st.nodes, slots, approachChanges: st.approachChanges, capacity: MAX_SLOTS, progress };
   };
 
   return {
@@ -462,7 +465,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     async tick() {
       const root = loadRoot(); if (isTerminal(root.status)) return snapshot(root);
       const st = load(root);
-      const before = Object.fromEntries(Object.entries(st.nodes).map(([id, n]) => [id, { error: n.lastError, since: n.errorSince, count: n.errorCount }]));
+      const before = Object.fromEntries(Object.entries(st.nodes).map(([id, n]) => [id, { error: n.lastError, since: n.errorSince, count: n.errorCount, state: n.state }]));
       try {
         if (root.publish?.cancelRequested) await cancelStep(root, st);
         else {
@@ -485,7 +488,14 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
           if (Object.values(st.nodes).length && Object.values(st.nodes).every(n => n.state === 'accepted' && n.slot == null)) store.finishRoot(root.runId, 'done');
         }
       } finally { trackPersistentErrors(st, before, now()); persist(root, st); }
-      return snapshot(loadRoot());
+      const progress = [];
+      const at = now();
+      for (const [id, n] of Object.entries(st.nodes)) {
+        const prev = before[id] || {};
+        // at 让「返工后再次进入同一状态」得到不同的事件 ID；同一份快照重投时 at 不变，仍然幂等。
+        if (n.state !== prev.state && PROGRESS_WAKE.has(n.state)) progress.push({ nodeId: id, from: prev.state ?? null, to: n.state, at });
+      }
+      return snapshot(loadRoot(), progress);
     },
   };
 }
