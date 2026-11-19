@@ -79,6 +79,16 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       `expectedAdvanceId=${run.expectedAdvanceId}（回执必须逐字一致，只从本事件 detail 读取，不得猜测）`,
       `节点契约：${JSON.stringify(node.contract || {})}`,
     ];
+    // 回执模板写进派发提示：worker 只看到契约与 expectedAdvanceId 时容易漏掉 detail，
+    // 中台解析出空 detail 会被判 malformed，Hub run 终态却没有合法 advance，节点白跑一轮（2026-11-19 device-binding review）。
+    // 模板必须逐字可被 evaluateAdvance 接受：runId 用节点 run（不是根 run），detail 只用字符串/数字/布尔/数组。
+    const receiptDetail = run.role === 'dev'
+      ? '"outcome":"done","detail":{"prUrl":"<真实 PR 链接>","commit":"<真实提交 SHA>","tests":"<真实测试结论>"}'
+      : '"outcome":"accepted","detail":{"pr":0,"head":"<审阅的真实提交 SHA>","p0":0,"p1":0,"p2":0,"p3":0,"tests":"<真实测试结论>"}';
+    lines.push(
+      '回执（写在最后一条消息的 agent-autoloop 代码块）：结构逐字照抄下方 JSON，尖括号占位符与数字计数必须换成真实值，字段不得省略或改名：',
+      `{"events":[{"id":"${run.expectedAdvanceId}","type":"dag.node.advance","subject":"dag-${seg(id)}","summary":"一句话结论","detail":{"advanceId":"${run.expectedAdvanceId}","runId":"${run.runId}","nodeId":"${id}","role":"${run.role}","generation":${run.generation},"attempt":${run.attempt},${receiptDetail}}}]}`,
+    );
     if (design) lines.push(
       `设计基线：${root.designBaseline.designDigest}（冻结于本 DAG；不得读取新稿替代）`,
       `设计合同：${JSON.stringify(node.contract.design)}`,

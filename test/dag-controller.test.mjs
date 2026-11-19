@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkNode, setup } from './dag-fakes.mjs';
 import { designContractDigest } from '../src/design-baseline.mjs';
+import { evaluateAdvance } from '../src/dag-run.mjs';
 
 const six = () => ['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(id => mkNode(id));
 // 驱动一个节点从开发回执到 accepted（两个 tick）。
@@ -403,4 +404,30 @@ test('开发回执 done 但没有任何提交：按失败尝试重派，不原�
   assert.equal(s.runOf('a', 'dev').attempt, 2, '无提交属于一次失败尝试，必须换 attempt 重派');
   assert.ok(s.hub.last('a'), '重派开发而不是把同一个 done run 每轮重抛');
   assert.equal(s.ctl.snapshot().nodes.a.lastError, null, '已转为失败重试，不再记同一错误');
+});
+
+test('派发提示的回执模板逐字可被状态机接受（dev 与 review）', async () => {
+  const templateOf = prompt => {
+    const line = prompt.split('\n').find(item => item.trim().startsWith('{"events"'));
+    assert.ok(line, '派发提示必须带逐字回执模板');
+    const [event] = JSON.parse(line).events;
+    return { event, receipt: event.detail };
+  };
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick();
+  const devRun = s.runOf('a');
+  const dev = templateOf(s.hub.last('a').prompt);
+  assert.equal(dev.event.id, devRun.expectedAdvanceId);
+  assert.equal(dev.receipt.runId, devRun.runId, '回执 runId 必须是节点 run，不是根 run');
+  assert.equal(dev.receipt.nodeId, 'a');
+  assert.equal(dev.receipt.role, 'dev');
+  assert.deepEqual(evaluateAdvance(s.store.getRun(devRun.runId), dev.receipt), { verdict: 'apply', failureCounted: false, nextStatus: 'done' });
+  s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  const reviewRun = s.runOf('a', 'review');
+  const review = templateOf(s.hub.last('a', 'review').prompt);
+  assert.equal(review.event.id, reviewRun.expectedAdvanceId);
+  assert.equal(review.receipt.runId, reviewRun.runId);
+  assert.equal(review.receipt.role, 'review');
+  assert.equal(review.receipt.outcome, 'accepted');
+  assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), review.receipt), { verdict: 'apply', failureCounted: false, nextStatus: 'done' });
 });
