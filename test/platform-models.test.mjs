@@ -59,6 +59,25 @@ test('平台自动发现：只列 AI 执行者，排除脚本与生成的分档�
   assert.equal(list.find(p => p.id === 'claude').sessionCapable, false);
 });
 
+test('平台 = 宿主程序：同一程序上的多个执行者合并为一个平台，模板优先选工作分配在用、可写的执行者', () => {
+  const raw = baseRules();
+  // 复现本机：Codex 程序上有只读 codex、项目专用 liuxue-heal、通用 codex-full 三个执行者，且前两个登记在前
+  raw.agents = { codex: { name: 'Codex', worker: 'w', use: 'codex', access: 'read' }, 'liuxue-heal': { name: '留学辅导自愈', worker: 'w', use: 'codex', access: 'full' }, ...raw.agents };
+  raw.agents.feishu = { name: '飞书通知', worker: 'w', use: 'feishu', access: 'read' };
+  const list = discoverPlatforms(raw, { catalog, preferred: ['codex-full', 'claude'] });
+  const codex = list.filter(p => p.use === 'codex');
+  assert.equal(codex.length, 1, 'Codex 程序只算一个平台');
+  assert.equal(codex[0].id, 'codex-full', '模板选工作分配在用的可写执行者');
+  assert.equal(codex[0].name, 'Codex', '显示平台名，不显示执行者名');
+  assert.ok(!list.some(p => p.id === 'liuxue-heal' || p.name === '留学辅导自愈'));
+  assert.ok(!list.some(p => p.use === 'feishu'), '通知渠道不是 AI 宿主平台');
+  // 没有偏好时：可写优先，不选只读
+  assert.equal(discoverPlatforms(raw, { catalog }).find(p => p.use === 'codex').access, 'full');
+  // 不同 ACP 程序是不同平台
+  raw.agents.kimi = { name: 'Kimi CLI', worker: 'w', use: 'acp', command: ['/bin/kimi', '--acp'], access: 'full' };
+  assert.equal(discoverPlatforms(raw, { catalog }).filter(p => p.use === 'acp').length, 2);
+});
+
 test('分档执行者 id 只用小写字母数字横线，可反解', () => {
   assert.equal(tierAgentId('codex-full', 'heavy'), 'codex-full-tier-heavy');
   assert.deepEqual(parseTierAgent('codex-full-tier-heavy'), { platform: 'codex-full', tier: 'heavy' });
@@ -181,6 +200,34 @@ test('会话启动：按会话类型给出平台、模型与启动方式；未�
   assert.equal(sessionLaunch(config, 'scheduling'), null, '调度会话走中台规则，不在这里启动');
 });
 
+test('读取接口：同一程序只出一行；工作分配映射到平台；保存后平台 id 稳定、三档不丢', async () => {
+  const raw = baseRules();
+  raw.agents = { codex: { name: 'Codex', worker: 'w', use: 'codex', access: 'read' }, 'liuxue-heal': { name: '留学辅导自愈', worker: 'w', use: 'codex', access: 'full' }, ...raw.agents };
+  const config = setup(raw);
+  writeFileSync(path.join(config.root, 'detour-policy.json'), JSON.stringify({ defaults: { review: { primary: 'claude', fallback: 'codex' } } }));
+  const data = readPlatformModels(config, { catalog });
+  assert.deepEqual(data.platforms.map(p => p.name).sort(), ['Claude Code', 'Codex', 'WorkBuddy AI']);
+  assert.equal(data.roles.review.fallback, 'codex-full', '审阅备用记的是只读 codex 执行者 → 映射到 Codex 平台');
+  await applyPlatformModels(config, settings(), opts);
+  const after = readPlatformModels(config, { catalog });
+  assert.equal(after.platforms.find(p => p.use === 'codex').id, 'codex-full');
+  assert.deepEqual(after.platforms.find(p => p.use === 'codex').tiers, settings().platforms['codex-full']);
+});
+
+test('旧版保存过的设置（每个执行者一行、项目专用执行者排在前）不会让项目专用执行者当模板', async () => {
+  const raw = baseRules();
+  raw.agents = { codex: { name: 'Codex', worker: 'w', use: 'codex', access: 'read' }, 'liuxue-heal': { name: '留学辅导自愈', worker: 'w', use: 'codex', access: 'full' }, ...raw.agents };
+  const config = setup(raw);
+  const tiers = { light: 'deepseek-v4.1-flash', standard: 'kimi-for-coding', heavy: 'k3.1-pro' };
+  writeFileSync(path.join(config.root, 'platform-models.json'), JSON.stringify({ enabled: false, platforms: { codex: tiers, 'liuxue-heal': tiers, workbuddy: settings().platforms.workbuddy, claude: settings().platforms.claude, 'codex-full': tiers }, sessions: settings().sessions, savedAt: '2026-11-19T05:00:00Z' }));
+  const data = readPlatformModels(config, { catalog });
+  assert.equal(data.platforms.find(p => p.use === 'codex').id, 'codex-full');
+  await applyPlatformModels(config, settings(), opts);
+  const saved = rulesOf(config);
+  assert.ok(!Object.keys(saved.agents).some(id => id.startsWith('liuxue-heal-tier-')), '不得从项目专用执行者复制分档执行者');
+  assert.equal(saved.rules.find(r => r.when.types?.includes('scheduling.message')).to, 'codex-full-tier-light');
+});
+
 test('建议值：按平台可选模型由便宜到贵挑三档，挑不到就用平台默认模型', () => {
   const platforms = discoverPlatforms(baseRules(), { catalog });
   const s = suggestedSettings(platforms);
@@ -198,10 +245,10 @@ test('会话预填平台：优先选工作分配里在用的通用平台，不�
   const s = suggestedSettings(platforms, roles);
   assert.equal(s.sessions.design.platform, 'codex-full');
   assert.equal(s.sessions.normal.platform, 'codex-full');
-  // 工作分配里没有能开会话的平台时，退回第一个可写的 Codex 类平台（只读的不选）
+  // 工作分配里没有 Codex 时：项目专用执行者也不会被当成平台，Codex 平台的模板仍是通用、可写、被规则引用更多的执行者
   raw.agents = { codex: { name: 'Codex', worker: 'w', use: 'codex', access: 'read' }, ...raw.agents };
   const fallback = suggestedSettings(discoverPlatforms(raw, { catalog }), { dev: { primary: 'workbuddy', fallback: 'claude' }, review: { primary: 'claude', fallback: 'workbuddy' }, coord: { primary: 'workbuddy', fallback: 'claude' } });
-  assert.equal(fallback.sessions.design.platform, 'liuxue-heal');
+  assert.equal(fallback.sessions.design.platform, 'codex-full');
 });
 
 test('读取接口：首次进入时会话预填跟随当前工作分配', () => {

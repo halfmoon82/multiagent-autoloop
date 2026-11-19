@@ -16,10 +16,13 @@ const rulesFile = path.join(root, 'rules.json');
 const rawRules = {
   sources: { local: { name: '本机' } },
   agents: {
+    codex: { name: 'Codex', worker: 'w', use: 'codex', access: 'read' },
+    'liuxue-heal': { name: '留学辅导自愈', worker: 'w', use: 'codex', access: 'full' },
     workbuddy: { name: 'WorkBuddy AI', worker: 'w', use: 'acp', command: ['/bin/wb.sh', '--acp'], access: 'full' },
     claude: { name: 'Claude Code', worker: 'w', use: 'claude', access: 'full', model: 'claude-sonnet-5-5' },
     'codex-full': { name: 'Codex 可写调度', worker: 'w', use: 'codex', access: 'full' },
     gemini: { name: 'Gemini CLI', worker: 'w', use: 'gemini', access: 'full' },
+    scan: { name: '巡检脚本', worker: 'w', use: 'command', command: ['/bin/scan'] },
   },
   rules: [
     { name: 'DAG自动开发', when: { source: 'local', types: ['dag.auto.dev'] }, to: 'workbuddy', cwd: repo, prompt: 'dev', parallel: 5, resume: false },
@@ -46,27 +49,30 @@ try {
   await page.getByRole('heading', { name: '管理后台' }).waitFor();
   await page.getByRole('heading', { name: '平台分档模型' }).waitFor();
 
-  // 平台自动发现：四个 AI 执行者都在；读不到清单的 Gemini 改手填
-  for (const name of ['WorkBuddy AI', 'Claude Code', 'Codex 可写调度', 'Gemini CLI']) await page.locator('tr[data-platform] .admin-name', { hasText: name }).first().waitFor();
+  // 平台 = 宿主程序：Codex 上三个执行者只算一个「Codex」平台；脚本不算平台；读不到清单的 Gemini 改手填
+  const platformNames = await page.locator('tr[data-platform] .admin-name').evaluateAll(nodes => nodes.map(n => n.firstChild.textContent.trim()));
+  assert.deepEqual(platformNames.sort(), ['Claude Code', 'Codex', 'Gemini CLI', 'WorkBuddy AI']);
+  assert.equal(await page.locator('tr[data-platform="codex-full"]').count(), 1, 'Codex 平台以可写的 codex-full 为模板');
+  assert.equal(await page.locator('tr[data-platform] .admin-name', { hasText: /留学辅导自愈|Codex 可写调度/ }).count(), 0, '执行者名不当平台显示');
   assert.equal(await page.locator('tr[data-platform="gemini"] input').count(), 3, 'Gemini 读不到模型清单 → 三档手填');
   // 首次进入：开关显示真实状态（关闭），表中预填建议值
   await page.locator('.pill.off', { hasText: '已关闭' }).waitFor();
   assert.equal(await page.getByLabel('WorkBuddy AI 便宜档').inputValue(), 'hy4flash-free');
   assert.equal(await page.getByLabel('Claude Code 高档').inputValue(), 'opus');
-  assert.equal(await page.getByLabel('Codex 可写调度 中档').inputValue(), 'kimi-for-coding');
+  assert.equal(await page.getByLabel('Codex 中档').inputValue(), 'kimi-for-coding');
   assert.equal(await page.getByLabel('Claude Code 中档').inputValue(), 'claude-sonnet-5-5');
   assert.equal(await page.getByText('（不可用）').count(), 0, '预填值都必须是可选项');
 
   // 会话平台：WorkBuddy / Claude 显示未接入且不可选
-  const designOptions = await page.getByLabel('设计会话平台').locator('option').evaluateAll(nodes => nodes.map(n => ({ text: n.textContent, disabled: n.disabled })));
+  const designOptions = await page.getByLabel('设计会话平台').locator('option').evaluateAll(nodes => nodes.map(n => ({ text: n.textContent, disabled: n.disabled, selected: n.selected })));
   assert.ok(designOptions.some(o => o.text === 'WorkBuddy AI（未接入）' && o.disabled));
-  assert.ok(designOptions.some(o => o.text === 'Codex 可写调度' && !o.disabled));
+  assert.ok(designOptions.some(o => o.text === 'Codex' && !o.disabled && o.selected), '设计会话预填 Codex 平台');
 
   // 打开开关 → 改调度会话档位 → 预览实时变化
   await page.getByRole('switch', { name: '按档位选模型' }).click();
   await page.locator('.pill.on', { hasText: '已开启' }).waitFor();
   await page.getByLabel('调度会话档位').selectOption('heavy');
-  await page.locator('#admin-preview', { hasText: '调度会话 → Codex 可写调度 · k3.1-pro' }).waitFor();
+  await page.locator('#admin-preview', { hasText: '调度会话 → Codex · k3.1-pro' }).waitFor();
 
   // 校验失败：Gemini 只填一档 → 服务端拒绝并在页面上说明，rules.json 不变
   await page.getByLabel('Gemini CLI 便宜档').fill('gemini-flash');

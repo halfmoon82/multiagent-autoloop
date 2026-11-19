@@ -76,18 +76,36 @@ function defaultModelOf(agent) {
   return null;
 }
 
-// 平台 = rules.json 里已登记的 AI 执行者（use 不是 command），不含本模块生成的分档执行者。新登记的执行者自动出现。
-export function discoverPlatforms(raw, { catalog = defaultCatalog } = {}) {
-  return Object.entries(raw?.agents || {})
-    .filter(([id, agent]) => agent && agent.use && agent.use !== 'command' && !parseTierAgent(id))
-    .map(([id, agent]) => {
-      let models = null;
-      try { models = catalog[agent.use] ? catalog[agent.use](agent) : null; } catch { models = null; }
-      const defaultModel = defaultModelOf(agent);
-      // 平台默认模型总在可选清单里（如 claude 的别名清单不含具体版本号）。
-      if (models?.length && defaultModel && !models.includes(defaultModel)) models = [...models, defaultModel];
-      return { id, name: agent.name || id, use: agent.use, access: agent.access || 'edit', defaultModel, models: models?.length ? models : null, sessionCapable: SESSION_USES.has(agent.use) };
-    });
+// 平台 = 宿主程序（Codex、Claude Code、某个 ACP 程序如 WorkBuddy…），不是执行者：
+// 同一程序上的多个执行者（如 codex、codex-full、项目专用的 liuxue-heal）合并为一个平台。
+// 平台 id 取该程序上选出的「模板执行者」id（分档执行者由它复制而来，频限绕行与关闭回退都沿用这个 id）：
+// 可写优先，其次工作分配在用（preferred 顺序）、id 与程序同名、被规则引用更多。新程序登记后自动出现。
+const NON_AI_USES = new Set(['command', 'delivery', 'desktop', 'dsh', 'feishu', 'github', 'gitlab', 'webhook']);
+const HOST_NAMES = { codex: 'Codex', claude: 'Claude Code' };
+const hostKey = agent => (agent.use === 'acp' && Array.isArray(agent.command) && agent.command[0] ? `acp:${agent.command[0]}` : agent.use);
+const accessRank = agent => ({ full: 0, edit: 1, read: 2 }[agent.access || 'edit'] ?? 1);
+
+export function discoverPlatforms(raw, { catalog = defaultCatalog, preferred = [] } = {}) {
+  const groups = new Map();
+  for (const [id, agent] of Object.entries(raw?.agents || {})) {
+    if (!agent || !agent.use || NON_AI_USES.has(agent.use) || parseTierAgent(id)) continue;
+    const key = hostKey(agent);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push([id, agent]);
+  }
+  const order = id => { const index = preferred.indexOf(id); return index < 0 ? Infinity : index; };
+  // 最后的平手规则：被规则引用越多越像通用执行者（项目专用执行者通常只挂少数规则）。
+  const uses = id => (raw?.rules || []).filter(rule => rule.to === id).length;
+  return [...groups.values()].map(members => {
+    // 可写优先（分档执行者复制模板的权限，开发/调度需要写）；同权限内再按在用偏好、同名、被引用多少。
+    const [id, agent] = [...members].sort((a, b) => accessRank(a[1]) - accessRank(b[1]) || order(a[0]) - order(b[0]) || (b[0] === b[1].use) - (a[0] === a[1].use) || uses(b[0]) - uses(a[0]))[0];
+    let models = null;
+    try { models = catalog[agent.use] ? catalog[agent.use](agent) : null; } catch { models = null; }
+    const defaultModel = defaultModelOf(agent);
+    // 平台默认模型总在可选清单里（如 claude 的别名清单不含具体版本号）。
+    if (models?.length && defaultModel && !models.includes(defaultModel)) models = [...models, defaultModel];
+    return { id, name: HOST_NAMES[agent.use] || agent.name || id, use: agent.use, access: agent.access || 'edit', defaultModel, models: models?.length ? models : null, sessionCapable: SESSION_USES.has(agent.use) };
+  });
 }
 
 // ---- 设置读写 ----
@@ -127,13 +145,31 @@ function readPolicyDoc(config) {
   return doc;
 }
 
+const FALLBACK_ROLES = { dev: { primary: 'workbuddy', fallback: 'claude' }, review: { primary: 'claude', fallback: 'codex-full' }, coord: { primary: 'codex-full', fallback: 'claude' } };
+function currentRoles(config, policy) {
+  const effective = policy?.defaults || {};
+  const doc = readPolicyDoc(config);
+  return Object.fromEntries(ROLES.map(role => [role, effective[role] || doc.defaults?.[role] || FALLBACK_ROLES[role]]));
+}
+// 模板执行者偏好：当前工作分配在用的执行者优先（与契约文档一致，也防旧版按执行者保存的设置把项目专用执行者顶成模板），
+// 其次已保存设置里的平台 id（工作分配不涉及该程序时保持保存前后稳定）。
+const preferredIds = (saved, roles) => [...ROLES.flatMap(role => [roles[role]?.primary, roles[role]?.fallback]), ...Object.keys(saved?.platforms || {})].filter(Boolean);
+// 工作分配里记的是执行者 id；页面按平台展示，把同一程序上的执行者映射到该平台 id。
+function rolesByPlatform(raw, platforms, roles) {
+  const toPlatform = id => {
+    const agent = raw.agents?.[id];
+    if (!agent) return id;
+    return platforms.find(p => p.id === id || hostKey(raw.agents[p.id] || {}) === hostKey(agent))?.id || id;
+  };
+  return Object.fromEntries(ROLES.map(role => [role, { primary: toPlatform(roles[role].primary), fallback: toPlatform(roles[role].fallback) }]));
+}
+
 export function readPlatformModels(config, { catalog = defaultCatalog, policy } = {}) {
   const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
-  const platforms = discoverPlatforms(raw, { catalog });
   const saved = loadSettings(config);
-  const effective = policy?.defaults || {};
-  const fallbackRoles = { dev: { primary: 'workbuddy', fallback: 'claude' }, review: { primary: 'claude', fallback: 'codex-full' }, coord: { primary: 'codex-full', fallback: 'claude' } };
-  const roles = Object.fromEntries(ROLES.map(role => [role, effective[role] || readPolicyDoc(config).defaults?.[role] || fallbackRoles[role]]));
+  const policyRoles = currentRoles(config, policy);
+  const platforms = discoverPlatforms(raw, { catalog, preferred: preferredIds(saved, policyRoles) });
+  const roles = rolesByPlatform(raw, platforms, policyRoles);
   const suggested = suggestedSettings(platforms, roles);
   return {
     enabled: saved?.enabled === true,
@@ -249,7 +285,8 @@ export async function applyPlatformModels(config, input, { check, catalog = defa
   try {
     return await withStateLockAsync(config, async () => {
       const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
-      const platforms = discoverPlatforms(raw, { catalog: Object.fromEntries(Object.keys(catalog).map(k => [k, () => null])) });
+      // 与读取接口同一偏好算平台 id（已保存设置 → 当前工作分配），页面提交的 id 才对得上。
+      const platforms = discoverPlatforms(raw, { catalog: Object.fromEntries(Object.keys(catalog).map(k => [k, () => null])), preferred: preferredIds(loadSettings(config), currentRoles(config)) });
       const settings = validate(input, platforms);
       const coordNames = new Set(raw.rules.filter(rule => rule.when?.types?.includes('scheduling.message')).map(rule => rule.name));
       const busy = readDetours(config).find(item => item.status === 'detoured' && (parseTierAgent(item.blockedAgent) || item.rules.some(rule => GENERATED_RULE.test(rule.name) || coordNames.has(rule.name))));

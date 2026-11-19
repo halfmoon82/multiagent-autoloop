@@ -287,3 +287,76 @@ test('审阅占位：他人占位时合并暂缓，节点保持待合并且记�
   assert.equal(st().state, 'accepted');
   assert.equal(st().lastError, null);
 });
+
+test('审阅通过后 PR 被变基（head 变化）：不合并旧 SHA，改在新 head 补跑测试并重审后再合并', async () => {
+  const s = setup([mkNode('a')]);
+  const devSha = 'a'.repeat(40), rebased = 'b'.repeat(40);
+  s.publisher.commitPr = async a => { s.publisher.calls.push(['commitPr', a.nodeId]); return { prUrl: 'https://x/pr/a', commit: devSha }; };
+  s.publisher.fetchHead = async a => { s.publisher.calls.push(['fetchHead', a.nodeId]); return rebased; };
+  let firstMerge = true;
+  s.publisher.merge = async a => {
+    s.publisher.calls.push(['merge', a.nodeId, a.commit]);
+    if (firstMerge) { firstMerge = false; const error = new Error('远端 PR head 与已审 SHA 不一致'); error.code = 'HEAD_MISMATCH'; error.head = rebased; throw error; }
+    return { mergeCommit: 'm-a' };
+  };
+  await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  s.claimAll(); s.receipt('a', 'review', 'accepted'); await s.ctl.tick();
+  // 第一次合并被拒：不落 accepted，commit 切到新 head，并挂起重审待办。
+  let node = s.ctl.snapshot().nodes.a;
+  assert.equal(node.state, 'review', '变基后回到审阅阶段而不是 accepted');
+  assert.equal(node.commit, rebased, '审阅基准切到 PR 当前 head');
+  assert.ok(s.hub.last('a', 'review'), '重审已派发');
+  const prepares = s.rt.events.filter(e => e[0] === 'prepare' && e[2] === 'a');
+  assert.equal(prepares.at(-1)[3], rebased, '重审槽位从新 head 起步');
+  assert.equal(s.runOf('a', 'review').attempt, 2, '重审以新 attempt 进行');
+  assert.ok(s.publisher.calls.some(c => c[0] === 'fetchHead'), '重审前先从远端取回变基后的 head');
+  // 新 head 上必须补跑测试，再交给独立审阅裁决。
+  s.claimAll(); s.receipt('a', 'review', 'accepted'); await s.ctl.tick();
+  node = s.ctl.snapshot().nodes.a;
+  assert.equal(node.state, 'accepted');
+  const verifies = s.publisher.calls.filter(c => c[0] === 'verify');
+  assert.equal(verifies.length, 2, '开发后 + 变基后各跑一次测试');
+  assert.deepEqual(s.publisher.calls.filter(c => c[0] === 'merge').map(c => c[2]), [devSha, rebased], '第二次合并用新 head');
+});
+
+test('head 变化的错误不带合法 SHA：不采纳，按普通错误继续报（防止自造 SHA 绕过）', async () => {
+  const s = setup([mkNode('a')]);
+  s.publisher.commitPr = async a => ({ prUrl: 'https://x/pr/a', commit: 'a'.repeat(40) });
+  s.publisher.merge = async a => { s.publisher.calls.push(['merge', a.nodeId, a.commit]); const error = new Error('bad head'); error.code = 'HEAD_MISMATCH'; error.head = 'not-a-sha'; throw error; };
+  await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  s.claimAll(); s.receipt('a', 'review', 'accepted'); await s.ctl.tick();
+  const node = s.ctl.snapshot().nodes.a;
+  assert.equal(node.state, 'review');
+  assert.notEqual(node.commit, 'not-a-sha');
+  assert.match(node.lastError || '', /bad head|不一致/, '错误仍出现在节点 lastError，交由卡住巡检');
+});
+
+test('变基重审的第 3 次尝试排队等待时不按“排队满次”取消，避免退回开发重做', async () => {
+  const s = setup([mkNode('a')]);
+  const sha = c => c.repeat(40);
+  s.publisher.commitPr = async a => { s.publisher.calls.push(['commitPr', a.nodeId]); return { prUrl: 'https://x/pr/a', commit: sha('a') }; };
+  const heads = ['b', 'c'].map(sha);
+  let merges = 0;
+  s.publisher.merge = async a => {
+    s.publisher.calls.push(['merge', a.nodeId, a.commit]);
+    if (merges < 2) { const error = new Error('head 变化'); error.code = 'HEAD_MISMATCH'; error.head = heads[merges]; merges += 1; throw error; }
+    return { mergeCommit: 'm-a' };
+  };
+  s.publisher.fetchHead = async a => { s.publisher.calls.push(['fetchHead', a.nodeId]); return heads[Math.min(merges, 2) - 1]; };
+  await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  s.claimAll(); s.receipt('a', 'review', 'accepted'); await s.ctl.tick(); // 合并被拒（head=b）
+  await s.ctl.tick(); // 释放+取回+重审 attempt 2
+  s.claimAll(); s.receipt('a', 'review', 'accepted'); await s.ctl.tick(); // 补测后合并再被拒（head=c）
+  await s.ctl.tick(); // 重审 attempt 3 派发（不 claim，保持 queued）
+  const review = s.runOf('a', 'review');
+  assert.equal(review.attempt, 3);
+  assert.equal(review.attemptReason, 'rebase-review');
+  await s.ctl.tick(); // 旧逻辑会在这里以 queued-attempts 取消并退回 dev
+  assert.ok(!s.hub.cancelled.length, '重审队列等待不应被取消');
+  assert.equal(s.hub.runs.get(s.hub.last('a', 'review').id).status, 'queued', 'Hub 侧仍是排队中');
+  assert.equal(s.ctl.snapshot().nodes.a.state, 'review');
+  assert.equal(s.runOf('a', 'dev').attempt, 1, '没有退回开发重做');
+  // worker 接单后仍可完成审阅并合并
+  s.claimAll(); s.receipt('a', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.a.state, 'accepted');
+});
