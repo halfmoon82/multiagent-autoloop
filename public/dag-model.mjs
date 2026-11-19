@@ -96,8 +96,10 @@ export function donutModel(nodes) {
   if (!nodes.length) return { segments: 0, percent: 0, gradient: '' };
   const share = 100 / nodes.length;
   const stops = nodes.map((node, index) => `${segmentColor(node)} ${(index * share).toFixed(3)}% ${((index + 1) * share).toFixed(3)}%`);
-  const done = nodes.filter(node => node.status.kind === 'done').length;
-  return { segments: nodes.length, percent: Math.round(done / nodes.length * 100), gradient: `conic-gradient(${stops.join(',')})` };
+  // 总进度 = 节点完成度均值：已合并算 100%，在途/审阅/阻塞按节点内档位计入，
+  // 与串行链同向（在途节点按节点内完成度计入）；档值各自定义，两侧数字不必相等。
+  const completion = nodes.reduce((sum, node) => sum + completionOf(node.status), 0);
+  return { segments: nodes.length, percent: Math.round(completion / nodes.length * 100), gradient: `conic-gradient(${stops.join(',')})` };
 }
 export function dagRunSummary(detail, nodes) {
   const waves = groupWaves(nodes);
