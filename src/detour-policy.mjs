@@ -9,19 +9,24 @@ export class PolicyError extends Error {}
 export const DEFAULT_POLICY = Object.freeze({
   dev: Object.freeze({ primary: 'workbuddy', fallback: 'claude' }),
   review: Object.freeze({ primary: 'claude', fallback: 'codex-full' }),
+  // coord（调度会话/协调/诊断）：主人定的主 codex-full 备 claude——与 dev/review 方向相反，
+  // 调度会话日常主力就是 codex-full，claude 是频限绕行时的备用执行者。
+  coord: Object.freeze({ primary: 'codex-full', fallback: 'claude' }),
 });
 
-const KINDS = ['dev', 'review'];
+const KINDS = ['dev', 'review', 'coord'];
 
 // 审阅先判：像「开发审阅返工」这类混合名优先按审阅（高风险走更可靠的备选）。
+// coord 再于 dev 前判：协调类规则名含「调度/协调/诊断」，与开发关键词区分。
 const KIND_KEYWORDS = [
   ['review', [/审阅/, /审核/, /评审/, /\breview\b/i]],
+  ['coord', [/调度会话/, /协调/, /诊断/, /\bcoordinator?\b/i]],
   ['dev', [/开发/, /编码/, /写代码/, /\bdev(elop|eloper)?\b/i, /\bcoder?\b/i]],
 ];
 
 /** 从规则名/提示词判定工作类型；显式 kind 优先；判不出返回 null（调用方跳过，不臆测）。 */
 export function classifyKind(text, explicit) {
-  if (explicit === 'dev' || explicit === 'review') return explicit;
+  if (KINDS.includes(explicit)) return explicit;
   const value = String(text ?? '');
   for (const [kind, patterns] of KIND_KEYWORDS) {
     if (patterns.some((pattern) => pattern.test(value))) return kind;
@@ -44,7 +49,7 @@ function validateSection(section, label) {
   for (const kind of KINDS) {
     if (section[kind] !== undefined) out[kind] = validatePair(section[kind], `${label}.${kind}`);
   }
-  if (!Object.keys(out).length) throw new PolicyError(`${label} 至少要覆盖 dev 或 review`);
+  if (!Object.keys(out).length) throw new PolicyError(`${label} 至少要覆盖 dev、review 或 coord`);
   return out;
 }
 
@@ -78,7 +83,7 @@ function cwdMatches(cwd, base) {
 
 /** 取某 cwd 生效的政策：最长前缀匹配的项目覆盖优先于全局默认，逐 kind 合并。 */
 export function effectivePolicy(policy, cwd) {
-  const result = { dev: { ...policy.defaults.dev }, review: { ...policy.defaults.review } };
+  const result = { dev: { ...policy.defaults.dev }, review: { ...policy.defaults.review }, coord: { ...policy.defaults.coord } };
   // 短前缀先写入，长前缀后写覆盖——保证最长匹配胜出。
   const matches = Object.entries(policy.projects || {})
     .filter(([base]) => cwdMatches(cwd, base))

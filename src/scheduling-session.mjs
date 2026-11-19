@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, statSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, statSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { appendFileSync } from 'node:fs';
@@ -13,6 +13,7 @@ import { listArtifacts, readArtifact } from './artifacts.mjs';
 import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
 import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_LABEL, HUB_RECONCILE_INTERVAL_MS, schedulingSubject, schedulingEventId, mapHubStateToStatus, numericEventId, readHubRun } from './hub-scheduling-session.mjs';
+import { buildSchedulingContext, contextTrailer, composeTurnText, prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation } from './scheduling-context.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -256,6 +257,7 @@ export class SchedulingSessionManager {
           turn: Number.isInteger(hub.turn) && hub.turn > 0 ? hub.turn : 1,
           lastEventId: hub.lastEventId,
           runId: hub.runId ?? null,
+          summaryEventId: Number.isInteger(hub.summaryEventId) ? hub.summaryEventId : null,
           lastState: null,
         },
       };
@@ -302,7 +304,11 @@ export class SchedulingSessionManager {
     if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的${SESSION_KIND_LABELS[sessionKind]}（${duplicate.id.slice(0, 8)}），请先关闭再开启`);
     if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个会话`);
     // §6：调度会话从首轮起进入 Hub，绝不派生私有 ACP 进程；normal/design 保持既有 ACP 语义。
-    if (sessionKind === 'scheduling' && this.hubScheduling) return this.#startHubSession({ projectId, text, continuedFrom });
+    // Hub 路径：护栏/任务说明（base）进本轮资料文件，事件正文只放用户原话，避免 4000 码点预算截掉用户需求。
+    if (sessionKind === 'scheduling' && this.hubScheduling) {
+      const userText = String(prompt ?? '').trim() || '按调度会话护栏开局：读 open 事项并汇报处理清单。';
+      return this.#startHubSession({ projectId, text: this.#validatePrompt(userText, 64000), guide: base, continuedFrom });
+    }
     if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
 
     const sessionCwd = this.#projectCwd(projectId);
@@ -416,9 +422,59 @@ export class SchedulingSessionManager {
 
   // §6.3 start：生成 subject、投递首个事件，返回 Hub 支持的会话视图；失败保留输入且不派生进程。
   // #92 POST 只提供数字 event id；status/runId 一律经 GET /v1/events/<id> 的 runs[0] 派生。
-  async #startHubSession({ projectId, text, continuedFrom }) {
+  // Hub 事件 detail 上限 4000 码点：完整资料（护栏、项目 AGENTS.md、契约、状态快照、上一轮结论、未收尾）
+  // 落盘到运行目录，正文只放用户原话 + 一行「先读它」；以序列化后的 detail 为准截断。
+  // hubState：本轮共享的一份 /v1/state（读一次给快照、上一轮执行者用），缺省时快照降级为空。
+  async #hubTurnText(record, turn, text, { hubState = null } = {}) {
+    const lastSummary = [...(record.messages || [])].reverse().find(message => message.role === 'agent')?.text || '';
+    const subject = record.hub?.subject ?? schedulingSubject(record.id);
+    const prevAgent = hubState ? prevAgentFrom(hubState, subject) : null;
+    // 护栏每轮都进资料文件：换执行者后新会话没有历史，只能靠资料重建；重启恢复的记录按项目重新生成。
+    const guide = record.guide || buildSchedulingPrompt({ project: record.project, writableDir: this.writableDir });
+    const file = await buildSchedulingContext({
+      root: this.archive?.root, sessionId: record.id, turn, project: record.project, lastSummary, prevAgent,
+      guide, userText: text, providers: this.#snapshotProviders(hubState),
+    }).catch(() => null);
+    return composeTurnText({ text, trailer: contextTrailer(file), project: record.project });
+  }
+
+  // 本轮读一次 /v1/state；读不到返回 null（调用方据此降级，绝不当成「没有未收尾事项」）。
+  async #readHubSnapshot() {
+    if (typeof this.hubScheduling?.readState !== 'function') return null;
+    try { return await this.hubScheduling.readState(); } catch { return null; }
+  }
+
+  // 状态快照的四个 provider：规则/轮次/卡片来自本轮共享的 /v1/state，DAG 读运行目录 dag-runs/*.json。
+  // 任何一节失败只影响该行，不阻断资料落盘。
+  #snapshotProviders(hubState) {
+    const root = this.archive?.root;
+    const lines = hubState ? snapshotLinesFrom(hubState) : { rules: [], runs: [], cards: [] };
+    return {
+      rules: () => lines.rules,
+      runs: () => lines.runs,
+      cards: () => lines.cards,
+      dag: async () => {
+        if (!root) return [];
+        const dir = path.join(root, 'dag-runs');
+        let names = [];
+        try { names = readdirSync(dir).filter(n => n.endsWith('.json')).slice(-20); } catch { return []; }
+        const rows = [];
+        for (const name of names) {
+          try {
+            const raw = JSON.parse(readFileSync(path.join(dir, name), 'utf8'));
+            if (raw.nodeId !== 'root' || !raw.runId) continue;
+            rows.push(`${raw.runId}｜${raw.planId || ''}｜${raw.status || ''}`);
+          } catch { /* 单条损坏不影响其余 */ }
+        }
+        return rows.slice(0, 8);
+      },
+    };
+  }
+
+  async #startHubSession({ projectId, text: rawText, guide = '', continuedFrom }) {
     const id = randomUUID();
     const turn = 1;
+    const text = await this.#hubTurnText({ id, project: projectId, messages: [], guide }, turn, rawText);
     let result;
     try {
       result = await this.hubScheduling.postTurn({ sessionId: id, turn, project: projectId, text });
@@ -456,12 +512,14 @@ export class SchedulingSessionManager {
         turn,
         lastEventId: eventId,
         runId: null,
+        summaryEventId: null,
         lastState: null,
       },
     };
     this.sessions.set(record.id, record);
+    // 先记用户消息再对账：worker 结论追加在用户消息之后，转录顺序才正确。
+    this.#pushMessage(record, 'user', rawText);
     await this.#reconcileHubRun(record, eventId);
-    this.#pushMessage(record, 'user', text);
     return toPublicSession(record);
   }
 
@@ -492,9 +550,11 @@ export class SchedulingSessionManager {
     }
     const message = this.#validatePrompt(raw);
     const turn = record.hub.turn + 1;
+    const hubState = await this.#readHubSnapshot();
+    const messageText = await this.#hubTurnText(record, turn, message, { hubState });
     let result;
     try {
-      result = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn, project: record.project, text: message });
+      result = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn, project: record.project, text: messageText });
     } catch (error) {
       // 输入保留：不记入转录、不推进轮次，让调用方/界面保留草稿可重试。
       throw new SchedulingSessionError(`发送失败：${safeMessage(error)}（内容已保留，请重试）`, { status: error.status || 502 });
@@ -509,7 +569,8 @@ export class SchedulingSessionManager {
       const next = record.queue[0];
       const queuedTurn = record.hub.turn + 1;
       try {
-        const queuedResult = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn: queuedTurn, project: record.project, text: next.text });
+        const queuedText = await this.#hubTurnText(record, queuedTurn, next.text, { hubState });
+        const queuedResult = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn: queuedTurn, project: record.project, text: queuedText });
         record.queue.shift();
         record.hub.turn = queuedTurn;
         record.hub.lastEventId = numericEventId(queuedResult);
@@ -529,6 +590,23 @@ export class SchedulingSessionManager {
     if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
     if (record.status === 'error') throw new SchedulingSessionError('会话处于异常状态，请关闭后重新开启', { status: 409 });
     const raw = String(text ?? '').trim();
+    // B4 空上下文守卫：只拦「继续/已解决」这类续接话术，且仅当确实没有可续接的东西——
+    // 转录里没有 worker 结论、首轮 run 不在进行中、Hub 同事项也没有未收尾卡片。
+    // 先比正则再读 Hub（不是续接话术不花一次请求）；读 Hub 失败按「有上下文」放行，宁可放过不误拦。
+    if (record.hub && !['closing', 'closed'].includes(record.status) && isBareContinuation(raw)) {
+      const hasAgentTurn = (record.messages || []).some(m => m.role === 'agent');
+      const runActive = ['running', 'unknown'].includes(record.status);
+      if (!hasAgentTurn && !runActive) {
+        const hubState = await this.#readHubSnapshot();
+        const hasHubOpen = hubState === null || hasOpenCardsFor(hubState, record.hub.subject);
+        if (!hasHubOpen) {
+          this.#pushMessage(record, 'user', raw);
+          this.#pushMessage(record, 'agent', '没有可续接的上下文：这一轮还没有 worker 结论，也没有未收尾事项。请说明要继续哪件事（贴任务名/卡片号/需求一句话），我再发事件。');
+          this.#persist(record);
+          return toPublicSession(record);
+        }
+      }
+    }
     // 设计会话拒绝斜杠命令（至少 /plan 必须拦截），防止借命令切换模式；排队与打断入口同样在此统一拦截。
     if ((record.kind || 'scheduling') === 'design' && raw.startsWith('/')) {
       throw new SchedulingSessionError('设计会话不接受斜杠命令（防止切换模式），请用自然语言描述需求', { status: 400 });
@@ -801,6 +879,7 @@ export class SchedulingSessionManager {
       turn: record.hub.turn,
       lastEventId: record.hub.lastEventId,
       runId: record.hub.runId ?? null,
+      summaryEventId: record.hub.summaryEventId ?? null,
     };
     if (existing?.closed === true || isHubTerminal(record)) payload.closed = true;
     try {
@@ -842,6 +921,11 @@ export class SchedulingSessionManager {
       record.updatedAt = this.now().toISOString();
       this.#persist(record);
       return null;
+    }
+    // worker 结论回显到会话转录：同一事件只追加一次，重启/重复对账不重复。
+    if (run.summary && record.hub.summaryEventId !== Number(eventId)) {
+      record.hub.summaryEventId = Number(eventId);
+      this.#pushMessage(record, 'agent', String(run.summary));
     }
     if (run.runId) record.hub.runId = run.runId;
     record.hub.lastState = run.state ?? null;

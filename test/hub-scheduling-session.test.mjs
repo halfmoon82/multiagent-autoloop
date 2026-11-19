@@ -24,6 +24,15 @@ const HUB_CONFIG = { hubUrl: 'http://127.0.0.1:9', ownerKey: 'owner-key', source
 const EVENT_WHITELIST = new Set(['id', 'type', 'subject', 'summary', 'detail', 'link']);
 const ARCHIVED_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
 
+// 调度会话首轮 prompt 会落一份资料文件（AGENTS.md/契约/快照）；测试需要一个最小项目夹具。
+function fixtureProject() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'sched-proj-'));
+  writeFileSync(path.join(dir, 'AGENTS.md'), '# 项目规则\n必须 TDD。');
+  mkdirSync(path.join(dir, 'docs'), { recursive: true });
+  writeFileSync(path.join(dir, 'docs', 'scheduling-contract.md'), '# 契约');
+  return dir;
+}
+
 // #92: 假 Hub 必须复刻真实响应形状，杜绝再次形状漏网：
 // POST /v1/events -> {event,duplicate,routed,paused}（event 是数字 Hub 事件 id）
 // GET  /v1/events/<数字 id> -> {event,routed,paused,runs:[{run,rule,state,...}]}
@@ -80,7 +89,9 @@ function flagSpawn(label = 'spawn') {
 
 function newManager(adapter, extra = {}) {
   return new SchedulingSessionManager({
-    cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: adapter, ...extra,
+    cwd: '/x', adapterPath: '/a.js', spawnFn: flagSpawn().fn, hubScheduling: adapter,
+    // 资料文件需要运行目录落盘；默认给临时 archiveRoot（传 archiveRoot:null 显式关闭）。
+    archiveRoot: mkdtempSync(path.join(tmpdir(), 'hub-archive-')), ...extra,
   });
 }
 
@@ -172,7 +183,8 @@ test('#92 numericEventId / readHubRun tolerate the real shapes and reject the ol
   assert.equal(numericEventId({ event: 7184, duplicate: false, routed: true, paused: false }), 7184);
   assert.equal(numericEventId({ id: 'console:s:turn:1', runId: 'run-1', state: 'running' }), null, 'the old response shape must not be mistaken for a numeric id');
   assert.equal(numericEventId(null), null);
-  assert.deepEqual(readHubRun({ event: 7184, runs: [{ run: 6586, rule: 'r', state: 'done', attempts: 1, error: null, finishedAt: 'x', summary: '', events: [] }] }), { runId: 6586, state: 'done' });
+  assert.deepEqual(readHubRun({ event: 7184, runs: [{ run: 6586, rule: 'r', state: 'done', attempts: 1, error: null, finishedAt: 'x', summary: '', events: [] }] }), { runId: 6586, state: 'done', summary: '' });
+  assert.deepEqual(readHubRun({ event: 7184, runs: [{ run: 6586, rule: 'r', state: 'done', attempts: 1, error: null, finishedAt: 'x', summary: '结论', events: [] }] }), { runId: 6586, state: 'done', summary: '结论' });
   assert.equal(readHubRun({ event: 7184, runs: [] }), null);
   assert.equal(readHubRun({ id: 'e1', runId: 'run-1', state: 'running' }), null);
 });
@@ -250,7 +262,7 @@ test('#92 start saves the numeric event id and derives status/runId from GET run
   const home = archiveHome();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = newManager(adapter, { archiveRoot: home });
-  const started = await manager.start({ project: 'owner/demo', prompt: '首轮调度' });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮调度' });
   assert.equal(started.status, 'running');
   assert.equal(started.hubRunId, 6586);
   const reads = client.calls.filter(call => call[0] === 'readEvent');
@@ -284,7 +296,7 @@ test('#92 a missing/failed GET keeps start usable but marks it 待复核, never 
   const client = fakeHubClient({ readError: new Error('hub down') });
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = newManager(adapter);
-  const started = await manager.start({ project: 'owner/demo', prompt: '保留我' });
+  const started = await manager.start({ project: fixtureProject(), prompt: '保留我' });
   assert.equal(started.status, 'unknown');
   assert.match(started.error, /hub down/);
   assert.equal(manager.list().length, 1, 'a failed status read must not make the session disappear');
@@ -296,8 +308,9 @@ test('scheduling start uses the Hub adapter and never spawns a private ACP proce
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = new SchedulingSessionManager({
     cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: spawned.fn, hubScheduling: adapter,
+    archiveRoot: mkdtempSync(path.join(tmpdir(), 'hub-archive-')),
   });
-  const started = await manager.start({ project: 'owner/demo', prompt: '首轮调度' });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮调度' });
   assert.equal(spawned.count, 0);
   assert.equal(started.agent, HUB_SCHEDULING_AGENT_LABEL);
   assert.match(started.hubSubject, /^scheduling:/);
@@ -305,7 +318,10 @@ test('scheduling start uses the Hub adapter and never spawns a private ACP proce
   assert.equal(manager.list().length, 1);
   const posted = client.calls.filter(call => call[0] === 'postEvent');
   assert.equal(posted.length, 1);
-  assert.match(JSON.parse(posted[0][1].detail).text, /首轮调度/);
+  const firstText = JSON.parse(posted[0][1].detail).text;
+  assert.match(firstText, /本轮完整资料.*；动手前先读它。$/);
+  assert.ok(Buffer.byteLength(firstText, 'utf8') <= 3950);
+  assert.match(firstText, /首轮调度|已截断/);
 });
 
 test('subsequent messages join the same Hub matter with a new turn', async () => {
@@ -313,7 +329,7 @@ test('subsequent messages join the same Hub matter with a new turn', async () =>
   const client = fakeHubClient();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: spawned.fn, hubScheduling: adapter });
-  const started = await manager.start({ project: 'owner/demo', prompt: '首轮' });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
   await manager.send(started.id, '第二轮重点看卡片');
   const posted = client.calls.filter(call => call[0] === 'postEvent').map(call => call[1]);
   assert.equal(posted.length, 2);
@@ -327,7 +343,7 @@ test('#92 a follow-up send refreshes status through GET, not the POST response',
   const client = fakeHubClient();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = newManager(adapter);
-  const started = await manager.start({ project: 'owner/demo', prompt: '首轮' });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
   const before = client.calls.filter(call => call[0] === 'readEvent').length;
   const sent = await manager.send(started.id, '继续');
   assert.equal(sent.status, 'running');
@@ -341,7 +357,7 @@ test('Hub unavailable preserves input and never falls back to ACP', async () => 
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: spawned.fn, hubScheduling: adapter });
   await assert.rejects(
-    manager.start({ project: 'owner/demo', prompt: '检查当前调度' }),
+    manager.start({ project: fixtureProject(), prompt: '检查当前调度' }),
     error => { assert.match(error.message, /中台|未接线|保留/); return true; },
   );
   assert.equal(spawned.count, 0);
@@ -354,7 +370,7 @@ test('unwired rule (Hub 404) returns a readable error, not an ACP fallback', asy
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: spawned.fn, hubScheduling: adapter });
   await assert.rejects(
-    manager.start({ project: 'owner/demo', prompt: '检查' }),
+    manager.start({ project: fixtureProject(), prompt: '检查' }),
     error => { assert.match(error.message, /规则|未接线|保留/); return true; },
   );
   assert.equal(spawned.count, 0);
@@ -364,7 +380,7 @@ test('interrupt maps to canceling the active Hub run without posting a new event
   const client = fakeHubClient();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = newManager(adapter);
-  const started = await manager.start({ project: 'owner/demo', prompt: '首轮' });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
   const before = client.calls.filter(call => call[0] === 'postEvent').length;
   await manager.send(started.id, '', { interrupt: true });
   assert.equal(client.calls.filter(call => call[0] === 'postEvent').length, before);
@@ -375,7 +391,7 @@ test('close stops new events and does not kill any local ACP process', async () 
   const client = fakeHubClient();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = newManager(adapter);
-  const started = await manager.start({ project: 'owner/demo', prompt: '首轮' });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
   const closed = await manager.close(started.id);
   assert.equal(closed.status, 'closed');
   assert.equal(manager.list().length, 0);
@@ -479,7 +495,7 @@ test('normal and design sessions keep the existing ACP spawn path', async () => 
   const client = fakeHubClient();
   const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
   const manager = new SchedulingSessionManager({ cwd: '/x', adapterPath: '/a.js', spawnFn: () => { spawned += 1; return makeProcess(); }, hubScheduling: adapter });
-  const started = await manager.start({ kind: 'normal', project: 'owner/demo', prompt: '普通会话' });
+  const started = await manager.start({ kind: 'normal', project: '/x', prompt: '普通会话' });
   assert.equal(spawned, 1, 'normal sessions must still use ACP');
   assert.equal(started.sessionId, 'acp-1');
   assert.equal(client.calls.length, 0, 'normal sessions must not touch the Hub scheduling adapter');
@@ -614,4 +630,83 @@ test('#85 loadConsoleConfig exposes sourceKey from the source object and tolerat
   assert.equal(make({}).sourceKey, null);
   assert.equal(make({ source: { name: 'console' } }).sourceKey, null);
   assert.equal(make({ source: 'sk' }).sourceKey, null, 'a bare string is not the documented shape');
+});
+
+// —— 空上下文守卫（P2 回归）——
+function guardManager({ readState, runs = [{ run: 1, rule: '调度会话执行', state: 'done', summary: '' }] } = {}) {
+  const client = fakeHubClient({ runs });
+  if (readState) client.readState = readState;
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  return { client, manager: newManager(adapter, { hubReconcileMs: 0 }) };
+}
+const posts = client => client.calls.filter(call => call[0] === 'postEvent').length;
+
+test('guard intercepts a bare 继续 when there is no conclusion, no active run and no open card', async () => {
+  const { client, manager } = guardManager({ readState: async () => ({ runs: [], cards: [], lines: [] }) });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const before = posts(client);
+  const sent = await manager.send(started.id, '继续');
+  assert.equal(posts(client), before, '不得派发 Hub 事件');
+  assert.match(sent.messages.at(-1).text, /没有可续接的上下文/);
+});
+
+test('guard lets 继续 through when reading Hub state fails (宁可放过，不误拦)', async () => {
+  const { client, manager } = guardManager({ readState: async () => { throw new Error('hub down'); } });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const before = posts(client);
+  await manager.send(started.id, '继续');
+  assert.equal(posts(client), before + 1);
+});
+
+test('guard lets 继续 through while the first run is still active', async () => {
+  const { client, manager } = guardManager({
+    readState: async () => ({ runs: [], cards: [], lines: [] }),
+    runs: [{ run: 1, rule: '调度会话执行', state: 'claimed', summary: '' }],
+  });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const before = posts(client);
+  await manager.send(started.id, '继续');
+  assert.equal(posts(client), before + 1);
+});
+
+test('guard lets 继续 through when the matter has an open card', async () => {
+  let subject = '';
+  const { client, manager } = guardManager({ readState: async () => ({ runs: [], lines: [], cards: [{ id: 3, state: 'open', lane: subject, title: 't' }] }) });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  subject = started.hubSubject;
+  const before = posts(client);
+  await manager.send(started.id, '继续');
+  assert.equal(posts(client), before + 1);
+});
+
+test('guard never reads Hub state for messages that are not bare continuations', async () => {
+  let reads = 0;
+  const { manager } = guardManager({ readState: async () => { reads += 1; return { runs: [], cards: [], lines: [] }; } });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const baseline = reads;
+  await manager.send(started.id, '看看 DAG 进度');
+  assert.equal(reads - baseline, 1, '只为本轮快照读一次，守卫不再额外读');
+});
+
+test('serialized detail stays within 3950 code points for a long multi-line message (P1 回归)', async () => {
+  const { client, manager } = guardManager({ readState: async () => ({ runs: [], cards: [], lines: [] }) });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  // 用户输入合法（< 4000 字），但 JSON 转义（换行、引号）与项目路径让序列化后的 detail 超出 Hub 上限。
+  const text = Array.from({ length: 1200 }, () => '"\n').join('');
+  assert.ok(text.length < 4000);
+  assert.ok([...JSON.stringify({ project: 'x', text })].length > 3950, '夹具必须真能复现超限');
+  await manager.send(started.id, text);
+  const last = client.calls.filter(call => call[0] === 'postEvent').at(-1)[1];
+  assert.ok([...last.detail].length <= 3950, `detail 码点数 ${[...last.detail].length}`);
+  assert.match(JSON.parse(last.detail).text, /动手前先读它。$/);
+});
+
+test('first turn keeps the user request verbatim and moves the guardrails into the context file', async () => {
+  const { client, manager } = guardManager({ readState: async () => ({ runs: [], cards: [], lines: [] }) });
+  await manager.start({ project: fixtureProject(), prompt: '把卡片 7 推进完' });
+  const first = JSON.parse(client.calls.find(call => call[0] === 'postEvent')[1].detail).text;
+  assert.match(first, /^把卡片 7 推进完/);
+  assert.doesNotMatch(first, /行为护栏/, '护栏不进事件正文');
+  const file = first.match(/本轮完整资料[^：]*：(.+?)；动手前先读它/)[1];
+  assert.match(readFileSync(file, 'utf8'), /行为护栏/);
 });

@@ -2,6 +2,8 @@
 // 顺序：先落 Hub 调度事件，Hub 接受后才结案原卡；事件失败则原卡保持开放。
 // 幂等键用确定性的事件 ID（Hub 对重复事件 ID 不重复执行），进程内记录承担冷却与循环检测。
 import { validateCardQuality } from './card-quality.mjs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 export const DELEGATE_REASON = '已退回调度处理';
 export const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000;
@@ -24,13 +26,51 @@ export function delegateSubject(originId) {
   return `scheduling:card-delegate:${originId}`;
 }
 
-export function createCardDelegateStore() {
+export function createCardDelegateStore({ file = null } = {}) {
   const records = new Map();
+  const load = () => {
+    if (!file || !existsSync(file)) return;
+    try {
+      for (const item of JSON.parse(readFileSync(file, 'utf8'))?.records || []) {
+        if (item && typeof item.key === 'string') records.set(item.key, item);
+      }
+    } catch { /* 台账损坏时按空表处理，不阻断退回通道 */ }
+  };
+  const flush = () => {
+    if (!file) return;
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify({ records: [...records.values()] }, null, 2), { mode: 0o600 });
+    renameSync(tmp, file);
+  };
+  load();
   return {
     get(key) { return records.get(key) || null; },
-    set(key, value) { const record = { ...value, key }; records.set(key, record); return record; },
+    set(key, value) { const record = { ...value, key }; records.set(key, record); flush(); return record; },
     listByOrigin(originId) { return [...records.values()].filter(record => record.originId === originId); },
+    listPending() { return [...records.values()].filter(record => record.status === 'delegated' || record.status === 'event_accepted'); },
   };
+}
+
+const FINISHED_RUN_STATES = new Set(['done', 'nothing', 'cancelled']);
+
+/**
+ * 待代理决策收口：退回事件所在事项（subject = scheduling:card-delegate:<originId>）的调度轮次结束后，
+ * 把记录标为 settled，从「待代理决策」列表移出。依据 /v1/state 的 runs[].events[].subject（runs 没有 lane 字段）。
+ * 只改状态不删记录：冷却与循环检测仍按 listByOrigin 读到全部历史。
+ */
+export function settleDelegations(store, state, now = () => new Date()) {
+  const runs = Array.isArray(state?.runs) ? state.runs : [];
+  const settled = [];
+  for (const record of store.listPending()) {
+    const subject = delegateSubject(record.originId);
+    const finished = runs.find(run => FINISHED_RUN_STATES.has(run?.state)
+      && Array.isArray(run.events) && run.events.some(event => event?.subject === subject)
+      && Date.parse(run.finishedAt || run.createdAt || 0) >= Date.parse(record.at || 0));
+    if (!finished) continue;
+    settled.push(store.set(record.key, { ...record, status: 'settled', settledAt: now().toISOString(), settledByRun: finished.id ?? null }));
+  }
+  return settled;
 }
 const defaultStore = createCardDelegateStore();
 

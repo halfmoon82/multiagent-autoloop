@@ -25,7 +25,8 @@ export async function api(path, options = {}) {
 export async function refresh() {
   if (state.loading) return; state.loading = true;
   try {
-    const [snapshot, ruleData, sessions, projectData, serial, archives, detourData, projectUsage] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null), api('/api/session-archives').catch(() => ({ sessions: [] })), api('/api/detours').catch(() => ({ detours: [] })), api('/api/project-usage').catch(() => null)]);
+    const [snapshot, ruleData, sessions, projectData, serial, archives, detourData, projectUsage, delegatedData] = await Promise.all([api('/api/state'), api('/api/rules'), api('/api/scheduling-sessions'), api('/api/projects'), api('/api/serial-progress').catch(() => null), api('/api/session-archives').catch(() => ({ sessions: [] })), api('/api/detours').catch(() => ({ detours: [] })), api('/api/project-usage').catch(() => null), api('/api/delegated-cards').catch(() => ({ cards: [] }))]);
+    state.delegatedCards = delegatedData?.cards || [];
     // 加载失败保留最后成功数据，不把未知当完成（设计基线状态契约）
     state.projectUsage = projectUsage?.projects || [];
     state.projectUsageFailed = !projectUsage;
@@ -174,7 +175,7 @@ function render() {
   progressState.textContent = progressStateText;
   progressState.hidden = !progressStateText;
   progressState.className = `state-banner ${state.serialFailed ? 'error' : 'loading'}`;
-  const work = renderWorkSections(view.snapshot, view.rules, Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)), state.detours || []);
+  const work = renderWorkSections(view.snapshot, view.rules, Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)), state.detours || [], state.delegatedCards || []);
   replace('running-list', work.running); replace('retrying-list', work.retrying); replace('done-list', work.doneToday); replace('attention-list', work.attention); replace('environment-list', renderEnvironment(state.snapshot)); replace('timer-list', renderTimers({ ...state.snapshot, timers: timersForProject(state.snapshot.timers || [], state.rules, filter) }));
   replace('rules-list', renderRules(view.snapshot, view.rules, state.models)); renderSessionsChrome(view.sessions); replace('runs-list', renderRuns(view.snapshot, view.rules)); replaceKeyedPreserving('cards-list', renderCards(view.snapshot, view.rules), 'card', state.skipPinOnce); state.skipPinOnce = null;
   syncProjectFilter();

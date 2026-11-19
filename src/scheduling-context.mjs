@@ -1,0 +1,187 @@
+// 调度会话每轮的资料包：项目 AGENTS.md + 调度契约 + 状态快照 + 上一轮结论 + 未收尾事项。
+// Hub 事件 detail 上限 4000 字节，正文只放「先读这个文件」的一行路径提示，完整资料落盘到运行目录。
+// 本模块只做文件组装与预算校验：Hub/HTTP 依赖一律由调用方经 provider 回调注入。
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+
+export const CONTEXT_DIR = 'scheduling-context';
+export const EVENT_DETAIL_LIMIT = 4000;
+export const EVENT_DETAIL_BUDGET = 3950;
+
+const MAX_AGENTS_MD_BYTES = 60 * 1024;
+const MAX_CONTRACT_BYTES = 12 * 1024;
+const MAX_SNAPSHOT_BYTES = 16 * 1024;
+const MAX_SUMMARY_CHARS = 1200;
+const MAX_SECTION_ITEMS = 5;
+const TRUNCATED_NOTE = cap => `[已截断：原文超过 ${cap} 字节，完整内容见原文路径]`;
+
+function readCapped(file, cap) {
+  try {
+    if (!existsSync(file) || !statSync(file).isFile()) return null;
+    const raw = readFileSync(file, 'utf8');
+    if (Buffer.byteLength(raw, 'utf8') <= cap) return raw;
+    // 按字节截断：slice(0, cap) 是字符数不是字节数，多字节字符会超预算；逐字符累加字节才可靠。
+    let out = '';
+    let bytes = 0;
+    for (const ch of raw) {
+      const size = Buffer.byteLength(ch, 'utf8');
+      if (bytes + size > cap) break;
+      out += ch;
+      bytes += size;
+    }
+    return `${out}\n\n${TRUNCATED_NOTE(cap)}（原文：${file}）`;
+  } catch { return null; }
+}
+
+const line = text => `- ${String(text ?? '').replace(/[\r\n]+/g, ' ').trim()}`;
+
+function section(title, items, { empty = '（无）' } = {}) {
+  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+  const body = list.length ? list.slice(0, MAX_SECTION_ITEMS).map(line).join('\n') : empty;
+  return `### ${title}\n${body}`;
+}
+
+/** 状态快照：由调用方提供 provider（读 Hub/本地台账），本函数只排格式与截断；任一节异常降级为可读占位。 */
+export function buildSnapshotSection(providers = {}) {
+  const parts = [];
+  const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
+  return (async () => {
+    parts.push(section('规则（名称｜事件类型｜agent｜暂停）', await safe(providers.rules, [])));
+    parts.push(section('最近轮次（run｜规则｜状态｜失败原因｜费用）', await safe(providers.runs, [])));
+    parts.push(section('待处理卡片（编号｜标题｜等待谁）', await safe(providers.cards, [])));
+    parts.push(section('DAG 运行（runId｜计划｜节点状态/PR/阻塞）', await safe(providers.dag, [])));
+    let text = `## 状态快照\n${parts.join('\n')}`;
+    if (Buffer.byteLength(text, 'utf8') > MAX_SNAPSHOT_BYTES) {
+      let out = '';
+      let bytes = 0;
+      for (const ch of text) {
+        const size = Buffer.byteLength(ch, 'utf8');
+        if (bytes + size > MAX_SNAPSHOT_BYTES) break;
+        out += ch;
+        bytes += size;
+      }
+      text = `${out}\n\n${TRUNCATED_NOTE(MAX_SNAPSHOT_BYTES)}`;
+    }
+    return text;
+  })();
+}
+
+/**
+ * 组装并写出本轮资料文件，返回绝对路径；不可写/缺参数时返回 null（调用方退回无提示的行为）。
+ * providers: { rules, runs, cards, dag } 各返回字符串数组（每元素一条概要行），同步/异步皆可。
+ * prevAgent：上一轮执行者标注（如 'claude'），换执行者后首轮提示词据此自报身份；未知传 null。
+ * guide：调度会话护栏/任务说明（首轮的调度提示词），放进资料文件而不是事件正文，避免挤掉用户原话。
+ */
+export async function buildSchedulingContext({ root, sessionId, turn, project, lastSummary = '', openItems = '', prevAgent = null, providers = {}, guide = '', userText = '' } = {}) {
+  if (!root || !sessionId) return null;
+  // project 允许不存在：AGENTS.md/契约找不到时按「（未找到）」占位，资料照常落盘——
+  // 项目路径本身也是资料，缺路径不应阻断每轮上下文。
+  const agents = project ? readCapped(path.join(project, 'AGENTS.md'), MAX_AGENTS_MD_BYTES) : null;
+  const contract = project ? readCapped(path.join(project, 'docs', 'scheduling-contract.md'), MAX_CONTRACT_BYTES) : null;
+  const snapshot = await buildSnapshotSection(providers);
+  const parts = [`# 调度会话本轮资料\n`, `- 项目：${project}`, `- 会话：${sessionId}`, `- 轮次：${turn}`];
+  if (prevAgent) parts.push(`- 上一轮执行者：${prevAgent}（若本轮换了执行者，第一行必须自报：我是备用执行者，上一轮由 ${prevAgent} 执行；从本文件重建上下文，不得假装记得聊天历史）`);
+  // 用户原话全文：事件正文受 Hub 上限可能被截断，这里保留完整版本，worker 以此为准。
+  if (userText) parts.push('\n## 本轮用户原话（完整）\n', String(userText), '\n');
+  if (guide) parts.push('\n## 调度会话护栏与任务\n', String(guide), '\n');
+  parts.push('\n## 项目 AGENTS.md\n', agents || '（未找到 AGENTS.md）\n');
+  if (contract) parts.push('\n## 调度契约（docs/scheduling-contract.md，截断版）\n', contract);
+  parts.push('\n', snapshot);
+  if (lastSummary) parts.push('\n## 上一轮结论\n', String(lastSummary).slice(0, MAX_SUMMARY_CHARS), '\n');
+  if (openItems) parts.push('\n## 未收尾事项\n', String(openItems), '\n');
+  const dir = path.join(root, CONTEXT_DIR);
+  const file = path.join(dir, `${sessionId}-turn${turn}.md`);
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const tmp = `${file}.tmp-${process.pid}`;
+    writeFileSync(tmp, parts.join('\n'), { mode: 0o600 });
+    renameSync(tmp, file);
+    return file;
+  } catch { return null; }
+}
+
+/** 事件正文尾部提示；没有资料文件时返回空串。 */
+export function contextTrailer(file) {
+  return file ? `\n\n本轮完整资料（项目规则、状态快照与上一轮结论）：${file}；动手前先读它。` : '';
+}
+
+const TRUNCATED_MARK = '\n[已截断：完整原话见本轮资料文件「本轮用户原话（完整）」]';
+// Hub 字段上限按 Unicode 码点计算（protocol.md「文字上限按 Unicode 码点计算」）。
+export const codePoints = text => [...String(text ?? '')].length;
+const detailSize = (project, text) => codePoints(JSON.stringify({ project, text }));
+
+/**
+ * 合成最终事件文本：以序列化后的 detail（JSON.stringify({project,text})）为准，码点数 ≤ limit（默认 3950）。
+ * JSON 转义（换行→\n 两字符、引号）与 project 路径都计入。提示必须完整保留：先截正文；
+ * 连提示都放不下时整段丢弃提示（宁缺不残）。
+ */
+export function composeTurnText({ text, trailer, project = '', limit = EVENT_DETAIL_BUDGET }) {
+  const body = [...String(text ?? '')];
+  const hint = String(trailer ?? '');
+  const whole = `${body.join('')}${hint}`;
+  if (detailSize(project, whole) <= limit) return whole;
+  const keepHint = detailSize(project, `${TRUNCATED_MARK}${hint}`) <= limit;
+  const tail = keepHint ? `${TRUNCATED_MARK}${hint}` : TRUNCATED_MARK;
+  // 二分找能放下的最长正文前缀（码点粒度，不会切断多字节字符或转义序列）。
+  let low = 0;
+  let high = body.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (detailSize(project, `${body.slice(0, mid).join('')}${tail}`) <= limit) low = mid;
+    else high = mid - 1;
+  }
+  return `${body.slice(0, low).join('')}${tail}`;
+}
+
+/** /v1/state 的 runs 只有 id，没有 lane：按 run.events[].subject 归属事项。 */
+export function runsOfSubject(state, subject) {
+  const runs = Array.isArray(state?.runs) ? state.runs : [];
+  if (!subject) return [];
+  return runs.filter(run => Array.isArray(run?.events) && run.events.some(event => event?.subject === subject));
+}
+
+/** 上一轮执行者：同事项最近一条已结束（done/nothing）轮次的 agent；拿不到返回 null，不编造。 */
+export function prevAgentFrom(state, subject) {
+  const finished = runsOfSubject(state, subject)
+    .filter(run => run.state === 'done' || run.state === 'nothing')
+    .sort((a, b) => Number(b.id) - Number(a.id));
+  return finished[0]?.agent ?? null;
+}
+
+/** 同事项是否还有未收尾卡片（cards[].lane 是 parallel 规则的事件对象）。 */
+export function hasOpenCardsFor(state, subject) {
+  const cards = Array.isArray(state?.cards) ? state.cards : [];
+  return cards.some(card => card?.state === 'open' && (!subject || card.lane === subject));
+}
+
+/** 「继续/已解决」这类没有具体内容的续接话术（空上下文守卫只拦这一类）。 */
+export function isBareContinuation(text) {
+  return /^\s*(继续|接着|好了?|已解决|已处理|搞定|done|ok|继续吧|continue)\s*[。.!！]*\s*$/i.test(String(text ?? ''));
+}
+
+/** 快照行：按 /v1/state 真实字段（runs[].id、usage.cost、lines[].paused）排版。 */
+export function snapshotLinesFrom(state) {
+  const lines = Array.isArray(state?.lines) ? state.lines : [];
+  const runs = Array.isArray(state?.runs) ? state.runs : [];
+  const cards = Array.isArray(state?.cards) ? state.cards.filter(card => card?.state === 'open') : [];
+  const cost = usage => (typeof usage?.cost === 'number' ? `｜$${usage.cost.toFixed(4)}` : '｜费用未上报');
+  return {
+    rules: lines.slice(0, 12).map(line => `${line.name}｜${Array.isArray(line.types) ? line.types.join(',') : line.cron || ''}｜${line.agent || '未配置'}${line.paused ? `｜已暂停:${line.paused.reason || ''}` : ''}`),
+    runs: runs.slice(0, 8).map(run => `#${run.id}｜${run.rule}｜${run.agent || '未知'}｜${run.state}${run.error ? `｜${String(run.error).slice(0, 80)}` : ''}${cost(run.usage)}`),
+    cards: cards.slice(0, 8).map(card => `#${card.id}｜${String(card.title || '').slice(0, 60)}｜${card.rule || '未关联'}`),
+  };
+}
+
+export function truncateToBytes(text, bytes) {
+  const raw = String(text ?? '');
+  if (Buffer.byteLength(raw, 'utf8') <= bytes) return raw;
+  let out = '';
+  let used = 0;
+  for (const ch of raw) {
+    const size = Buffer.byteLength(ch, 'utf8');
+    if (used + size > bytes) break;
+    out += ch;
+    used += size;
+  }
+  return out;
+}

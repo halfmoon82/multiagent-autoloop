@@ -235,3 +235,36 @@ test('CLI accepts configurable patterns and rejects a bad JSON probe', () => {
   assert.equal(custom.status, 0, custom.stderr);
   assert.equal(JSON.parse(custom.stdout).candidates.length, 0); // 默认 refusal 被自定义模式替换
 });
+
+test('coord kind: quota hits on codex-full reroute 调度会话执行 to claude', () => {
+  const { config } = fixture({
+    runs: [
+      { n: 100, agent: 'codex-full', rule: '调度会话执行' },
+      { n: 101, agent: 'codex-full', rule: '调度会话执行' },
+      { n: 102, agent: 'codex-full', rule: '调度会话执行' },
+    ],
+    ruleDefs: [{ name: '调度会话执行', when: { source: 'local', types: ['scheduling.message'] }, to: 'codex-full', cwd: '/proj/a', prompt: '协调' }],
+  });
+  const result = scanForQuotaDetours(config, { now: NOW });
+  assert.equal(result.detours.length, 1);
+  const record = result.detours[0];
+  assert.equal(record.blockedAgent, 'codex-full');
+  assert.equal(record.fallbackAgent, 'claude');
+  assert.deepEqual(record.rules, [{ name: '调度会话执行', originalTo: 'codex-full' }]);
+  const saved = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
+  assert.equal(saved.rules[0].to, 'claude');
+});
+
+test('coord hits on claude (fallback agent) do not register a detour', () => {
+  const { config } = fixture({
+    runs: [
+      { n: 100, agent: 'claude', rule: '调度会话执行' },
+      { n: 101, agent: 'claude', rule: '调度会话执行' },
+      { n: 102, agent: 'claude', rule: '调度会话执行' },
+    ],
+    ruleDefs: [{ name: '调度会话执行', when: { source: 'local', types: ['scheduling.message'] }, to: 'claude', cwd: '/proj/a', prompt: '协调' }],
+  });
+  const result = scanForQuotaDetours(config, { now: NOW });
+  assert.equal(result.detours.length, 0);
+  assert.ok(result.skipped.some((s) => /非主 Agent/.test(s.reason)));
+});

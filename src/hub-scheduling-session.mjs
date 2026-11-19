@@ -69,7 +69,7 @@ export function numericEventId(result) {
 export function readHubRun(payload) {
   const run = Array.isArray(payload?.runs) ? payload.runs[0] : null;
   if (!run || typeof run !== 'object') return null;
-  return { runId: run.run ?? null, state: run.state ?? null };
+  return { runId: run.run ?? null, state: run.state ?? null, summary: typeof run.summary === 'string' ? run.summary : null };
 }
 
 // #100 权威词表来源（只读核对，不复制实现）：中台 host/state.ts 的 tally/active 查询与
@@ -101,6 +101,7 @@ export function hubStateCompletionText(state) {
 const defaultHubClient = {
   async postEvent(config, event) { return postSchedulingEvent(config, event); },
   async readEvent(config, eventId) { return readSchedulingEvent(config, eventId); },
+  async readState(config) { return hubRequest(config, '/v1/state'); },
   async cancelRun(config, runId) { return hubRequest(config, `/v1/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', body: {} }); },
 };
 
@@ -143,6 +144,16 @@ export class HubSchedulingSessionAdapter {
 
   // #92 读取 Hub 事件状态；失败必须抛出，交给调用方如实标成 unknown/待复核，
   // 绝不能吞成 null 让上层误以为「无 run / 会话消失」。
+  async readState() {
+    const client = this.hubClient?.readState;
+    if (typeof client !== 'function') throw new HubSchedulingError('Hub 状态读取不可用', { status: 503 });
+    try { return await client(this.#config()); }
+    catch (error) {
+      if (error instanceof HubSchedulingError) throw error;
+      throw new HubSchedulingError(`读取 Hub 状态失败：${safeMessage(error)}`, { status: error?.status >= 400 && error.status < 600 ? error.status : 502 });
+    }
+  }
+
   async readStatus({ eventId }) {
     if (!eventId) return null;
     try { return await this.hubClient.readEvent(this.#config(), eventId); }
