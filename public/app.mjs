@@ -641,13 +641,19 @@ $('conflict-replace').addEventListener('click', async event => {
   const { sessionId, kind, project } = pendingConflict;
   if (!confirm(`关闭旧${KIND_NAMES[kind] || '会话'}（${String(sessionId).slice(0, 8)}）后新建？旧会话会进入历史区，之后仍可查看或继续。新会话会启动 Codex，并可能消耗模型额度。`)) return;
   const button = event.currentTarget; button.disabled = true;
+  let closed = false;
   try {
     await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST', body: JSON.stringify({}) });
+    closed = true;
     state.sessions = (state.sessions || []).filter(session => session.id !== sessionId);
     pendingConflict = null; $('new-session-conflict').hidden = true;
     if (project && $('new-session-project').value !== project) $('new-session-project').value = project;
     await createFromDialog();
-  } catch (error) { if (error.conflict) showDialogConflict(error.conflict); else showDialogError(error.message); }
+  } catch (error) {
+    if (error.conflict) showDialogConflict(error.conflict);
+    // 关闭已成功、新建失败：明说旧会话已关，免得以为两边都没动。
+    else showDialogError(closed ? `旧会话已关闭（可在会话管理的历史区继续），但新会话没建成：${error.message}` : error.message);
+  }
   finally { button.disabled = false; }
 });
 // 总览常驻入口：无论当前有没有运行中的 DAG，都能进入执行授权页新建 DAG。
