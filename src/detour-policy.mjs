@@ -20,7 +20,7 @@ const KINDS = ['dev', 'review', 'coord'];
 // coord 再于 dev 前判：协调类规则名含「调度/协调/诊断」，与开发关键词区分。
 const KIND_KEYWORDS = [
   ['review', [/审阅/, /审核/, /评审/, /\breview\b/i]],
-  ['coord', [/调度会话/, /协调/, /诊断/, /\bcoordinator?\b/i]],
+  ['coord', [/调度会话/, /协调/, /诊断/, /自愈/, /巡检/, /\bcoordinator?\b/i]],
   ['dev', [/开发/, /编码/, /写代码/, /\bdev(elop|eloper)?\b/i, /\bcoder?\b/i]],
 ];
 

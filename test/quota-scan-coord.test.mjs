@@ -110,3 +110,29 @@ test('Hub db 缺失或读不到时不影响 worker 侧扫描', () => {
   assert.equal(result.detours.length, 0);
   assert.deepEqual(result.skipped, []);
 });
+
+test('「调度自愈处理」这类 coord 规则名能被判出工作类型，撞限绕行到 claude', () => {
+  const config = setup();
+  mkHubDb(config.root, [
+    { id: 1, rule: '调度自愈处理', agent: 'codex-full', error: hubErr },
+    { id: 2, rule: '调度自愈处理', agent: 'codex-full', error: hubErr },
+    { id: 3, rule: '调度自愈处理', agent: 'codex-full', error: hubErr },
+  ]);
+  const result = scanForQuotaDetours(config, { policy, threshold: 3, now: new Date('2026-11-19T11:00:00Z'), dryRun: false });
+  assert.equal(result.detours.length, 1, '调度自愈处理判为 coord 才绕行');
+  assert.equal(result.detours[0].blockedAgent, 'codex-full');
+  assert.equal(result.detours[0].fallbackAgent, 'claude');
+  assert.deepEqual(result.detours[0].rules.map(r => r.name), ['调度自愈处理']);
+});
+
+test('窗口内出现过连续命中但最新已恢复成功，不误登记绕行', () => {
+  const config = setup();
+  mkHubDb(config.root, [
+    { id: 1, rule: '调度会话执行', agent: 'codex-full-tier-light', error: hubErr },
+    { id: 2, rule: '调度会话执行', agent: 'codex-full-tier-light', error: hubErr },
+    { id: 3, rule: '调度会话执行', agent: 'codex-full-tier-light', error: hubErr },
+    { id: 4, rule: '调度会话执行', agent: 'codex-full-tier-light', state: 'done', attempts: 0, error: null },
+  ]);
+  const result = scanForQuotaDetours(config, { policy, threshold: 3, now: new Date('2026-11-19T11:00:00Z'), dryRun: false });
+  assert.equal(result.detours.length, 0, '末尾已恢复成功的历史 streak 不再登记');
+});

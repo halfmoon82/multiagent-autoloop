@@ -12,6 +12,15 @@ export class QuotaScanError extends Error {}
 /** 默认额度拒绝模式；CLI --patterns 可整体替换。英文模式不区分大小写。 */
 export const DEFAULT_PATTERNS = ['429', 'refusal', '配额', 'quota', '额度', 'rate.?limit', 'exhausted', 'too many requests'];
 
+// 凭证/密钥/token/URL 凭据去敏：与 dag-stall.mjs 同口径，证据写入 detours.json 与控制台响应前先抹掉。
+export function redactEvidence(text) {
+  return String(text ?? '')
+    .replace(/(https?:\/\/)[^\s/@]+@/gi, '$1***@')
+    .replace(/\b(gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})/g, '***')
+    .replace(/\b(sk-[A-Za-z0-9]{10,})/g, '***')
+    .slice(0, 600);
+}
+
 const AGENT_HINTS = [
   [/codex-full/i, 'codex-full'],
   [/codex/i, 'codex'],
@@ -139,7 +148,8 @@ export function readHubRunFailures({ dbFile, window = 200, patterns = DEFAULT_PA
     rows = JSON.parse(out);
     if (!Array.isArray(rows)) rows = [];
   } catch { return []; }
-  return rows.map(row => {
+  // 从新到旧返回；主流程与 worker 侧同口径：同 agent+model 连续命中累计，被成功打断的清零。
+  return rows.reverse().map(row => {
     const errorText = [row.error, row.summary].filter(Boolean).join('\n');
     const quota = matchesPattern(errorText, patterns);
     // done/nothing 的回合是成功的，不算失败——summary 里即使出现"429"也只是叙述；
@@ -148,7 +158,7 @@ export function readHubRunFailures({ dbFile, window = 200, patterns = DEFAULT_PA
     return {
       id: String(row.id), run: Number(row.id), attempt: 1, agent: String(row.agent || ''), model: '',
       kind: classifyKind(row.rule), ruleName: String(row.rule || ''),
-      failed: failed && quota, quota, evidence: errorText || '(无错误原文)', at: row.created_at || '',
+      failed: failed && quota, quota, evidence: redactEvidence(errorText) || '(无错误原文)', at: row.created_at || '',
     };
   });
 }
@@ -169,27 +179,25 @@ export function scanForQuotaDetours(config, options = {}) {
   ];
 
   const states = new Map();
-  const candidates = [];
   for (const failure of failures) {
     if (!failure.agent) continue; // 认不出 agent 的轮次不参与计数
     const key = `${failure.agent}|${failure.model}`;
     if (failure.failed && failure.quota) {
       const state = states.get(key) || { count: 0, samples: [], kind: failure.kind, at: failure.at };
+      state.agent = failure.agent; state.model = failure.model;
       state.count += 1;
       state.samples.push(`run ${failure.id}「${failure.evidence}」`);
       state.kind = state.kind || failure.kind;
       state.at = failure.at;
       states.set(key, state);
-      if (state.count === threshold) {
-        candidates.push({
-          agent: failure.agent, model: failure.model, kind: state.kind,
-          at: state.at, hits: state.count, evidence: state.samples.join('；'),
-        });
-      }
     } else {
       states.delete(key); // 成功或非额度失败都打断同 agent+model 的连续命中
     }
   }
+  // 只有窗口末尾仍在连续命中的 streak 才登记：历史 streak 被后来的成功打断的不误绕。
+  const candidates = [...states.values()]
+    .filter(state => state.count === threshold)
+    .map(state => ({ agent: state.agent, model: state.model, kind: state.kind, at: state.at, hits: state.count, evidence: state.samples.join('；') }));
 
   const detours = [];
   const skipped = [];
