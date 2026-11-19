@@ -59,7 +59,9 @@ export function buildStallEvent(stall, now = Date.now()) {
     `自 ${new Date(stall.since).toISOString()} 起同一错误已连续出现 ${stall.count} 次（约 ${minutes} 分钟），控制器每轮自动重试但没有进展。`,
     `错误原文：${redactError(stall.error)}`,
     '请按调度契约处理：先定位根因（读控制台 dag-runs 状态与相关源码/配置），工程问题自行修复或派 worker 修复并做最小验证；',
-    '修好后控制器下一轮会自动重试，无需手工重派。只有用户掌握的凭据/授权才向用户提问。核实后本轮结束。',
+    stall.state === 'gated'
+      ? '修好后调用 POST /api/dag-runs/<runId>/revive（body 带 nodeId、reason=gated-resolved）让控制器换打法重派；只有用户掌握的凭据/授权才向用户提问。核实后本轮结束。'
+      : '修好后控制器下一轮会自动重试，无需手工重派。只有用户掌握的凭据/授权才向用户提问。核实后本轮结束。',
   ].join('\n');
   return {
     id: `console:dag-stall:${seg(stall.runId)}:${seg(stall.nodeId)}:${stall.since}`,

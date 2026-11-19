@@ -156,3 +156,26 @@ test('sweep：gated 节点也唤醒调度会话，事件走同一去重通道', 
   assert.equal(posted[0].type, 'scheduling.message');
   assert.match(JSON.parse(posted[0].detail).text, /a（状态 gated）/);
 });
+
+test('gated 节点受控复活：调度会话修好后 revive 回 dev/review，不留在死胡同', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick();
+  for (let g = 0; g < 2; g++) for (let i = 0; i < 3; i++) { s.claimAll(); s.receipt('a', 'dev', 'failed'); await s.ctl.tick(); }
+  assert.equal(s.ctl.snapshot().nodes.a.state, 'gated');
+  // gated 状态下 revive 的 reason 走 gated-resolved（内部必须换打法，因为尝试已满）
+  s.ctl.revive('a', 'gated-resolved', { evidence: '调度会话已修好根因' });
+  await s.ctl.tick();
+  const n = s.ctl.snapshot().nodes.a;
+  assert.equal(n.state, 'dev');
+  assert.equal(s.runOf('a').generation, 3, '换新代');
+  assert.equal(s.runOf('a').attemptReason, 'change-approach');
+  assert.ok(s.hub.last('a'), '已重新派发');
+});
+
+test('gated 拒绝 blocked-resolved 复活（与 blocked 的语义区分）', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick();
+  for (let g = 0; g < 2; g++) for (let i = 0; i < 3; i++) { s.claimAll(); s.receipt('a', 'dev', 'failed'); await s.ctl.tick(); }
+  assert.equal(s.ctl.snapshot().nodes.a.state, 'gated');
+  assert.throws(() => s.ctl.revive('a', 'blocked-resolved'), /REVIVE_REASON_REQUIRED|只能是/);
+});
