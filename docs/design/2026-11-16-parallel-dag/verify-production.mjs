@@ -67,6 +67,8 @@ export async function verify({ worktree, contract, evidenceDir }) {
           await page.goto(url, { waitUntil: 'load' });
           await page.getByRole('heading', { name: '今天的自动化' }).waitFor();
         } else {
+          // 每个视口都从「该项目尚无设计会话」开始：控制台按 (project,kind) 查重，上一视口建的会话会挡住下一轮新建。
+          sessions.record = null;
           await page.goto(url, { waitUntil: 'load' });
           await page.getByRole('button', { name: '会话管理', exact: false }).click();
           await page.locator('#session-new').click();

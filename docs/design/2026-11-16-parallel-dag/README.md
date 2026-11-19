@@ -107,3 +107,7 @@ R3 结果：14 张精确视口 PNG，107 项断言通过，浏览器脚本错误
 **2026-11-16 产品经理已确认本版为实现基线。** 右侧会话区沿用当前 Codex App 会话界面，左侧管理采用本设计。任何后续视觉或交互改动都需要重新渲染并再次确认。
 
 机器可读基线见 [design-manifest.json](./design-manifest.json)，生产定向 verifier 见 [verify-production.mjs](./verify-production.mjs)。当前原生 DAG 只引用 `overview` 与 `authorize` 两个受影响 surface，且当前节点只声明 `normal` 状态；批准记录位于 `docs/prd/console-hub-native-and-card-routing/design-approval.json`。截图是审阅证据，不生成像素 diff；定向交互、布局和状态断言才是执行硬门。
+
+### 基线修订记录
+
+- **2026-11-19（PR #118，产品经理确认重新登记）**：只改 verifier 的测试夹具，不改任何视觉、交互、surface 或验收断言。控制台新增「同项目同类型已有会话时在对话框内提示冲突」后，verifier 在第二个视口新建设计会话会被第一个视口留下的假会话挡住；修订为每个视口开头清空假会话记录（`sessions.record = null`）。verifier sha256 与设计摘要随之更新，批准记录同步重签。

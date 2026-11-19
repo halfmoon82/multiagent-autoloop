@@ -19,7 +19,12 @@ function setConnection(online, text) { const node = $('connection'); node.classN
 export async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...(options.body ? { 'content-type': 'application/json', 'x-console-request': '1' } : {}), ...options.headers } });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
+  if (!response.ok) {
+    const error = new Error(data.error || `请求失败（${response.status}）`);
+    error.status = response.status;
+    if (data.conflict) error.conflict = data.conflict; // 同项目同类型已有会话：界面据此给出继续/替换
+    throw error;
+  }
   return data;
 }
 export async function refresh() {
@@ -537,11 +542,49 @@ function openNewSession() {
   typeOverride = 'auto'; classification = null; classifiedText = '';
   overrideButtons.forEach(button => { const active = button.dataset.typeOverride === 'auto'; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); });
   $('new-session-request').value = '';
+  clearDialogFeedback();
   paintClassification();
   newSessionDialog.showModal();
   $('new-session-request').focus();
 }
 function closeNewSession() { newSessionDialog.close(); }
+
+// 对话框是模态窗，页面顶部的提示条会被遮住：对话框里的一切错误与冲突都显示在对话框内。
+let pendingConflict = null; // { sessionId, kind, project }
+function clearDialogFeedback() {
+  pendingConflict = null;
+  $('new-session-error').hidden = true; $('new-session-error').textContent = '';
+  $('new-session-conflict').hidden = true;
+}
+function showDialogError(text) {
+  $('new-session-conflict').hidden = true; pendingConflict = null;
+  const box = $('new-session-error'); box.textContent = text; box.hidden = !text;
+}
+function showDialogConflict(conflict) {
+  pendingConflict = conflict;
+  $('new-session-error').hidden = true;
+  const name = KIND_NAMES[conflict.kind] || '会话';
+  $('new-session-conflict-text').textContent = `项目 ${projectName(conflict.project)} 已有一个进行中的${name}（${String(conflict.sessionId).slice(0, 8)}）。同一项目同时只开一个${name}，避免两个会话重复派活、互相打架。你可以继续旧会话（上下文都在），或者关闭旧会话后新建（旧会话进历史区，之后仍可查看或继续）。`;
+  $('new-session-conflict').hidden = false;
+}
+// 本地先查一次（与服务端同口径：同项目 + 同类型），在弹「会消耗额度」确认框之前就说明冲突。
+function localConflict(project, kind) {
+  if (!kind) return null;
+  const found = (state.sessions || []).find(session => session.project === project && (session.kind || 'scheduling') === kind && !['closing', 'closed'].includes(session.status));
+  return found ? { sessionId: found.id, kind, project } : null;
+}
+async function createFromDialog() {
+  const project = $('new-session-project').value.trim();
+  const prompt = $('new-session-request').value.trim();
+  const kind = typeOverride !== 'auto' ? typeOverride : (classification?.kind || null);
+  const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project, prompt, kind }) });
+  showToast(`${KIND_NAMES[session.kind] || '会话'}已创建并进入${KIND_NAMES[session.kind] || '会话'}列表。`);
+  state.projectFilter = projectName(session.project || '');
+  state.sessionTab = session.kind || 'scheduling'; state.selectedSession = session.id; state.archivedView = ''; state.sessionQuery = '';
+  $('session-search').value = '';
+  closeNewSession();
+  await refresh();
+}
 $('overview-new-session').addEventListener('click', openNewSession);
 $('session-new').addEventListener('click', openNewSession);
 newSessionDialog.querySelectorAll('.js-close-new-session').forEach(button => button.addEventListener('click', closeNewSession));
@@ -568,23 +611,60 @@ $('create-session').addEventListener('click', async event => {
   const button = event.currentTarget;
   const project = $('new-session-project').value.trim();
   const prompt = $('new-session-request').value.trim();
-  if (!project) { showNotice('请先从列表选择项目工作区。'); return; }
-  if (!prompt) { showNotice('请先输入首轮提示词。'); return; }
+  if (!project) { showDialogError('请先从列表选择项目工作区。'); return; }
+  if (!prompt) { showDialogError('请先输入首轮提示词。'); return; }
   // 确认门：手动覆盖优先，自动则用语义分类；确认后创建会话并随首轮一次性发送。
   const kind = typeOverride !== 'auto' ? typeOverride : (classification?.kind || null);
+  const conflict = localConflict(project, kind);
+  if (conflict) { showDialogConflict(conflict); return; }
   if (!confirm(`为项目 ${projectName(project)} 开启${KIND_NAMES[kind] || '会话'}并发送首轮？这会启动 Codex，并可能消耗模型额度。`)) return;
   button.disabled = true;
-  try {
-    const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project, prompt, kind }) });
-    showToast(`${KIND_NAMES[session.kind] || '会话'}已创建并进入${KIND_NAMES[session.kind] || '会话'}列表。`);
-    state.projectFilter = projectName(session.project || '');
-    state.sessionTab = session.kind || 'scheduling'; state.selectedSession = session.id; state.archivedView = ''; state.sessionQuery = '';
-    $('session-search').value = '';
-    closeNewSession();
-    await refresh();
-  } catch (error) { showNotice(error.message); }
+  try { await createFromDialog(); }
+  catch (error) { if (error.conflict) showDialogConflict(error.conflict); else showDialogError(error.message); }
   finally { button.disabled = false; }
 });
+// 继续旧会话：关掉对话框，打开那个会话，把刚写的内容放进它的输入框（不丢输入、不自动发送）。
+$('conflict-continue').addEventListener('click', async () => {
+  if (!pendingConflict) return;
+  const { sessionId, kind, project } = pendingConflict;
+  const draft = $('new-session-request').value.trim();
+  closeNewSession();
+  state.projectFilter = projectName(project || ''); state.sessionTab = kind || 'scheduling'; state.selectedSession = sessionId; state.archivedView = ''; state.sessionQuery = '';
+  $('session-search').value = '';
+  showView('sessions');
+  await refresh();
+  const input = document.querySelector(`form[data-action="session-message"][data-id="${CSS.escape(sessionId)}"] [name="message"]`);
+  // 旧会话输入框里可能已有没发出的草稿：不覆盖，把刚写的内容追加在后面，两份都保留。
+  if (input && draft) { input.value = input.value.trim() ? `${input.value.trimEnd()}\n\n${draft}` : draft; autoGrow(input); input.focus(); }
+  showToast('已切到旧会话，刚才写的内容放进了输入框，确认后点发送。');
+});
+// 关闭旧会话并新建：先确认（会话进历史区，可恢复），关闭成功后再走正常创建与额度确认。
+$('conflict-replace').addEventListener('click', async event => {
+  if (!pendingConflict) return;
+  const { sessionId, kind, project } = pendingConflict;
+  if (!confirm(`关闭旧${KIND_NAMES[kind] || '会话'}（${String(sessionId).slice(0, 8)}）后新建？旧会话会进入历史区，之后仍可查看或继续。新会话会启动 Codex，并可能消耗模型额度。`)) return;
+  const button = event.currentTarget; button.disabled = true;
+  let closed = false;
+  try {
+    await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST', body: JSON.stringify({}) });
+    closed = true;
+    state.sessions = (state.sessions || []).filter(session => session.id !== sessionId);
+    pendingConflict = null; $('new-session-conflict').hidden = true;
+    if (project && $('new-session-project').value !== project) $('new-session-project').value = project;
+    await createFromDialog();
+  } catch (error) {
+    if (error.conflict) showDialogConflict(error.conflict);
+    // 关闭已成功、新建失败：明说旧会话已关，免得以为两边都没动。
+    else showDialogError(closed ? `旧会话已关闭（可在会话管理的历史区继续），但新会话没建成：${error.message}` : error.message);
+  }
+  finally { button.disabled = false; }
+});
+// 总览常驻入口：无论当前有没有运行中的 DAG，都能进入执行授权页新建 DAG。
+$('overview-dag-new').addEventListener('click', () => showView('authorize'));
+// 输入、项目或类型一变，之前的冲突/错误就过时了。
+$('new-session-request').addEventListener('input', clearDialogFeedback);
+$('new-session-project').addEventListener('change', clearDialogFeedback);
+overrideButtons.forEach(button => button.addEventListener('click', clearDialogFeedback));
 $('project-filter').addEventListener('change', event => { state.projectFilter = event.target.value; render(); });
 $('clear-project-filter').addEventListener('click', () => { state.projectFilter = ''; render(); });
 $('refresh').addEventListener('click', refresh);
