@@ -53,9 +53,10 @@ test('节点 PR 取自根 run.prs：同节点最新一个 open/merged，被取�
   assert.equal(buildDagNodes(detail)[0].prUrl, 'https://example.com/pr/1');
 });
 
-test('分段环：每节点一段，百分比=accepted 占比，颜色=波次色相+完成度深浅', () => {
+test('分段环：每节点一段，百分比计入节点内完成度（accepted=100%/review=75%/dev=50%/blocked=20%/pending=0），颜色=波次色相+完成度深浅', () => {
   const model = donutModel(buildDagNodes(detail));
-  assert.equal(model.segments, 4); assert.equal(model.percent, 25);
+  // a=accepted(1)、b=dev(0.5)、c=blocked(0.2)、ir=pending(0) → (1+0.5+0.2+0)/4 = 42.5% → 43%
+  assert.equal(model.segments, 4); assert.equal(model.percent, 43);
   assert.match(model.gradient, /^conic-gradient\(/);
   const stops = model.gradient.match(/hsl\([^)]+\)/g) || [];
   assert.equal(stops.length, 4, '每个节点一段');
@@ -66,6 +67,19 @@ test('分段环：每节点一段，百分比=accepted 占比，颜色=波次色
   assert.equal(a.light, 27, '全深 = 该节点已完成');
   assert.ok(a.light < b.light && b.light < c.light, '完成度越低颜色越浅');
   assert.equal(donutModel([]).segments, 0);
+});
+
+test('总进度计入节点内完成度：审阅中节点不再显示 0%，与串行链节点内 percent 语义一致', () => {
+  // 复现 2026-11-19 问题：13 节点只有 1 个在审阅中，旧口径显示 0%
+  const inReview = {
+    run: { runId: 'r3', nodes: Array.from({ length: 13 }, (_, i) => ({ id: `n${i}`, depends_on: [] })),
+      publish: { nodes: { n0: { state: 'review' } } } },
+    nodeRuns: [],
+  };
+  const model = donutModel(buildDagNodes(inReview));
+  assert.equal(model.percent, 6, '(0.75)/13 ≈ 5.8% → 6%，不再显示 0%');
+  const oneDone = { run: { runId: 'r4', nodes: [{ id: 'a' }, { id: 'b' }], publish: { nodes: { a: { state: 'accepted' }, b: { state: 'review' } } } }, nodeRuns: [] };
+  assert.equal(donutModel(buildDagNodes(oneDone)).percent, 88, '(1+0.75)/2 = 87.5% → 88%');
 });
 
 test('用量汇总：没有上报就写未上报，不输出 0 冒充', () => {

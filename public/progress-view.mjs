@@ -3,7 +3,7 @@
 // 波次（DAG）/ 执行顺序分段（串行）映射到同一分组语言；四栏节点卡片字段一律如实标注，缺失写未上报。
 // 所有上游文本只经 textContent 写入（本模块自建 el，避免与 views.mjs 形成循环依赖）。
 import { projectName } from './format.mjs';
-import { buildDagNodes, groupWaves, dagRunSummary, formatUsage, sumUsage, segmentColor } from './dag-model.mjs';
+import { buildDagNodes, groupWaves, dagRunSummary, donutModel, formatUsage, sumUsage, segmentColor } from './dag-model.mjs';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -103,11 +103,10 @@ export function buildDagView(detail) {
     sublabel: wave.nodes.every(node => node.status.kind === 'done') ? `${wave.nodes.length} 个已完成` : `${wave.nodes.filter(node => ['active', 'review'].includes(node.status.kind)).length} 路在途`,
     nodes: nodes.filter(node => node.wave === wave.wave),
   }));
-  const done = nodesRaw.filter(node => node.status.kind === 'done').length;
   return {
     key: `dag:${detail?.run?.runId || ''}`, kind: 'dag', id: detail?.run?.runId || '', runId: detail?.run?.runId || '', project: detail?.run?.project || '',
     title: projectName(detail?.run?.project || ''), subtitle: `${detail?.run?.planId || detail?.run?.runId || ''} · ${nodes.length} 个节点 · 第 ${sum.currentWave}/${sum.totalWaves} 波`,
-    percent: nodes.length ? Math.round(done / nodes.length * 100) : 0, segmentNote: '颜色 = 波次 · 深浅 = 完成度',
+    percent: donutModel(nodesRaw).percent, segmentNote: '颜色 = 波次 · 深浅 = 完成度',
     nodes, groups, usageText: `本次运行 · ${formatUsage(sum.usage)}`,
     metrics: [['当前波次', `${sum.currentWave} / ${sum.totalWaves}`], ['业务槽位', `${sum.slotsUsed} / 5`], ['已完成', `${sum.doneCount} / ${sum.nodeCount}`], ['换打法', `${(detail?.run?.publish?.approachChanges || []).length} 次`], ['隔离槽位', `${sum.quarantined.length} 个`]],
     detailFacts(node) {
