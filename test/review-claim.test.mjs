@@ -142,3 +142,59 @@ test('CLI：被他人占位时退出码 3，参数错误退出码 1', async () =
   const bad = spawnSync(process.execPath, [script, 'claim', '--pr', 'x', '--holder', 'codex-a'], { env, encoding: 'utf8' });
   assert.equal(bad.status, 1);
 });
+
+test('文档示例的持有者标识都能通过校验，含中文的标识被拒', async () => {
+  const gh = fakeGh();
+  const claims = createReviewClaims({ runner: gh.runner, ...at('2026-11-19T03:00:30Z') });
+  for (const holder of ['codex-9f94e800', 'claude-8932a769', 'hub-pr-review-7712']) {
+    assert.equal((await createReviewClaims({ runner: fakeGh().runner, ...at('2026-11-19T03:00:30Z') }).claim({ pr: '1', holder })).ok, true, holder);
+  }
+  await assert.rejects(claims.claim({ pr: '1', holder: 'hub-PR独立审阅' }));
+});
+
+test('旧占位过期后同一持有者再占，不能带着过期前的开始时间插队', () => {
+  const t = iso => ({ createdAt: iso });
+  const comments = [
+    { body: claimMarker({ holder: 'codex-a', head: 'aaa1111', state: 'active' }), ...t('2026-11-19T00:00:00Z') },
+    { body: claimMarker({ holder: 'claude-b', head: 'aaa1111', state: 'active' }), ...t('2026-11-19T04:00:01Z') },
+    { body: claimMarker({ holder: 'codex-a', head: 'aaa1111', state: 'active' }), ...t('2026-11-19T04:00:02Z') },
+  ];
+  assert.equal(parseClaims(comments, Date.parse('2026-11-19T04:00:05Z')).active.holder, 'claude-b');
+});
+
+test('抢输后仍在排队的记录可由本人 release 清掉', async () => {
+  const gh = fakeGh({ comments: [
+    { body: claimMarker({ holder: 'claude-b', head: 'aaa1111', state: 'active' }), createdAt: '2026-11-19T02:59:00Z' },
+    { body: claimMarker({ holder: 'codex-a', head: 'aaa1111', state: 'active' }), createdAt: '2026-11-19T02:59:30Z' },
+  ] });
+  const claims = createReviewClaims({ runner: gh.runner, ...at('2026-11-19T03:00:00Z') });
+  assert.equal((await claims.release({ pr: '116', holder: 'codex-a' })).ok, true);
+  assert.equal(parseClaims(gh.state.comments, Date.parse('2026-11-19T03:00:30Z')).live.some(h => h.holder === 'codex-a'), false);
+});
+
+test('合并报错但 PR 已被他人按别的提交合并：不报成功', async () => {
+  const gh = fakeGh();
+  const claims = createReviewClaims({ runner: gh.runner, ...at('2026-11-19T03:00:30Z') });
+  await claims.claim({ pr: '116', holder: 'codex-a' });
+  const original = gh.runner;
+  const runner = async (cmd, args) => {
+    if (args[1] === 'merge') { gh.state.head = 'ccc3333'; gh.state.merged = { args }; throw new Error('already merged'); }
+    return original(cmd, args);
+  };
+  const result = await createReviewClaims({ runner, ...at('2026-11-19T03:00:40Z') }).merge({ pr: '116', holder: 'codex-a', head: 'aaa1111' });
+  assert.deepEqual([result.ok, result.reason], [false, 'merged-by-other']);
+});
+
+test('合并成功但释放评论失败：仍报合并成功并带 warning', async () => {
+  const gh = fakeGh();
+  const claims = createReviewClaims({ runner: gh.runner, ...at('2026-11-19T03:00:30Z') });
+  await claims.claim({ pr: '116', holder: 'codex-a' });
+  const original = gh.runner;
+  const runner = async (cmd, args) => {
+    if (args[1] === 'comment') throw new Error('network down');
+    return original(cmd, args);
+  };
+  const result = await createReviewClaims({ runner, ...at('2026-11-19T03:00:40Z') }).merge({ pr: '116', holder: 'codex-a', head: 'aaa1111' });
+  assert.equal(result.ok, true);
+  assert.match(result.warning, /释放占位评论失败/);
+});

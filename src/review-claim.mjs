@@ -34,11 +34,12 @@ export function parseClaims(comments, now, ttlMs = DEFAULT_TTL_MS) {
   for (const row of rows) {
     if (row.state === 'active') {
       const prev = holders.get(row.holder);
-      holders.set(row.holder, { holder: row.holder, head: row.head, since: prev ? prev.since : row.at, last: row.at });
+      // 旧占位已过期再续上时重新计起点，不能把过期前的开始时间带回来插队。
+      holders.set(row.holder, { holder: row.holder, head: row.head, since: prev && row.at - prev.last < ttlMs ? prev.since : row.at, last: row.at });
     } else holders.delete(row.holder);
   }
   const live = [...holders.values()].filter(h => now - h.last < ttlMs).sort((a, b) => a.since - b.since);
-  return { active: live[0] || null };
+  return { active: live[0] || null, live };
 }
 
 export function createReviewClaims({ runner = defaultRunner, gh = 'gh', now = () => Date.now(), ttlMs = DEFAULT_TTL_MS } = {}) {
@@ -72,9 +73,10 @@ export function createReviewClaims({ runner = defaultRunner, gh = 'gh', now = ()
 
   async function release(input) {
     const holder = check(HOLDER, input.holder, '持有者');
-    const current = parseClaims((await view(input)).comments, now(), ttlMs).active;
-    if (!current || current.holder !== holder) return { ok: false, reason: 'not-holder', holder: current?.holder ?? null };
-    await comment(input, claimMarker({ holder, head: current.head, state: 'released' }));
+    // 自己名下有有效记录就释放（包括抢输后撤回失败、仍在排队的记录），不要求是当前持有者。
+    const mine = parseClaims((await view(input)).comments, now(), ttlMs).live.find(h => h.holder === holder);
+    if (!mine) return { ok: false, reason: 'not-holder' };
+    await comment(input, claimMarker({ holder, head: mine.head, state: 'released' }));
     return { ok: true };
   }
 
@@ -90,10 +92,14 @@ export function createReviewClaims({ runner = defaultRunner, gh = 'gh', now = ()
     let warning;
     try { await runner(gh, args); } catch (error) {
       // gh 合并成功但本地删分支失败（分支挂在 worktree 上）时也会报错：以 PR 实际状态为准。
-      if ((await view(input)).state !== 'MERGED') throw error;
+      const after = await view(input);
+      if (after.state !== 'MERGED') throw error;
+      // 已合并但合进去的不是审过的提交：可能是别人绕过占位合并的，不能报成功。
+      if (after.headRefOid !== pr.headRefOid) return { ok: false, reason: 'merged-by-other', head: after.headRefOid };
       warning = String(error.message || error).split('\n')[0];
     }
-    await comment(input, claimMarker({ holder, head: pr.headRefOid, state: 'released' }));
+    try { await comment(input, claimMarker({ holder, head: pr.headRefOid, state: 'released' })); }
+    catch (error) { warning = [warning, `合并已完成，但释放占位评论失败：${String(error.message || error).split('\n')[0]}`].filter(Boolean).join('；'); }
     return { ok: true, head: pr.headRefOid, ...(warning ? { warning } : {}) };
   }
 
