@@ -55,6 +55,35 @@ test('hub.getRun：无 run=queued，终态与回执映射；404=unknown；不可
   await assert.rejects(() => createHubAdapter({ config: {}, request: recorder({ 'GET /v1/events/9': new Error('down') }).request }).getRun(9), /down/);
 });
 
+test('getRun 回执解析：纯文本 key=value 回执被解析为合法对象，非回执文本标记 malformed', async () => {
+  const receipt = 'advanceId=r:a:dev:1:1 runId=r nodeId=a role=dev generation=1 attempt=1 outcome=done prUrl=https://x/pr/1';
+  const outcomes = [{ event: 1, runs: [{ run: 3, state: 'done', events: [
+    { type: 'dag.node.advance', detail: receipt },
+    { type: 'dag.node.advance', detail: 'a=b c=d' },           // 无 advanceId → malformed
+    { type: 'dag.auto.review.advance', detail: 'not json' },   // 非回执事件类型也走同一解析 → malformed
+  ] }] }];
+  let i = 0; const { request } = recorder({ 'GET /v1/events/1': () => outcomes[i++] });
+  const hub = createHubAdapter({ config: {}, request });
+  const { receipts } = await hub.getRun(1);
+  assert.deepEqual(receipts[0], { advanceId: 'r:a:dev:1:1', runId: 'r', nodeId: 'a', role: 'dev', generation: 1, attempt: 1, outcome: 'done', prUrl: 'https://x/pr/1' });
+  assert.deepEqual(receipts[1], { malformed: true });
+  assert.deepEqual(receipts[2], { malformed: true });
+});
+
+test('getRun 回执解析：纯文本 advanceId 空值仍标记 malformed', async () => {
+  const outcomes = [{ event: 1, runs: [{ run: 3, state: 'done', events: [{ type: 'dag.node.advance', detail: 'advanceId= runId=r outcome=done' }] }] }];
+  let i = 0; const { request } = recorder({ 'GET /v1/events/1': () => outcomes[i++] });
+  const { receipts } = await createHubAdapter({ config: {}, request }).getRun(1);
+  assert.deepEqual(receipts, [{ malformed: true }]);
+});
+
+test('getRun 回执解析：JSON detail 含 advanceId 优先走 JSON 路径，不走纯文本', async () => {
+  const outcomes = [{ event: 1, runs: [{ run: 3, state: 'done', events: [{ type: 'dag.node.advance', detail: '{"advanceId":"r:a:dev:1:1","custom":"x"}' }] }] }];
+  let i = 0; const { request } = recorder({ 'GET /v1/events/1': () => outcomes[i++] });
+  const { receipts } = await createHubAdapter({ config: {}, request }).getRun(1);
+  assert.deepEqual(receipts, [{ advanceId: 'r:a:dev:1:1', custom: 'x' }]);
+});
+
 test('hub.cancel 只取消未终态 run', async () => {
   const { calls, request } = recorder({ 'GET /v1/events/1': { event: 1, runs: [{ run: 3, state: 'done', events: [] }, { run: 4, state: 'queued', events: [] }, { run: 5, state: 'unknown', events: [] }] } });
   await createHubAdapter({ config: {}, request }).cancel(1);
