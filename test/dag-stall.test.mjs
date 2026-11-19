@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkNode, setup } from './dag-fakes.mjs';
 import { ROOT_NODE } from '../src/dag-run.mjs';
-import { findDagStalls, findDagGated, buildStallEvent, sweepDagStalls, createDagStallSweeper, STALL_THRESHOLD_MS } from '../src/dag-stall.mjs';
+import { findDagStalls, findDagGated, findDagClaimedStalls, CLAIMED_STALL_THRESHOLD_MS, buildStallEvent, sweepDagStalls, createDagStallSweeper, STALL_THRESHOLD_MS } from '../src/dag-stall.mjs';
 
 const pushFails = s => { s.publisher.commitPr = async () => { throw new Error("git push failed: could not read Username for 'https://github.com': terminal prompts disabled"); }; };
 const toReview = async s => { await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); };
@@ -178,4 +178,49 @@ test('gated 拒绝 blocked-resolved 复活（与 blocked 的语义区分）', as
   for (let g = 0; g < 2; g++) for (let i = 0; i < 3; i++) { s.claimAll(); s.receipt('a', 'dev', 'failed'); await s.ctl.tick(); }
   assert.equal(s.ctl.snapshot().nodes.a.state, 'gated');
   assert.throws(() => s.ctl.revive('a', 'blocked-resolved'), /REVIVE_REASON_REQUIRED|只能是/);
+});
+
+test('claimed 超时巡检：节点已派发但 worker 未接单超阈值 → 告警给调度会话', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick(); s.claimAll(); // 派发并被 worker 接单 → claimed，但 worker 不回执
+  assert.equal(s.runOf('a').status, 'claimed');
+  // 未达阈值不报（now 只比 since 晚 1ms）
+  assert.deepEqual(findDagClaimedStalls(s.store.listRuns(), { now: Date.now() + 1 }), []);
+  // 超阈值报
+  const stalled = findDagClaimedStalls(s.store.listRuns(), { now: Date.now() + CLAIMED_STALL_THRESHOLD_MS });
+  assert.equal(stalled.length, 1);
+  assert.equal(stalled[0].nodeId, 'a');
+  assert.equal(stalled[0].state, 'dev');
+  assert.match(stalled[0].error, /claimed.*未回执/);
+  // 同一 since 只报一次
+  const posted = []; const sent = new Set();
+  const post = async e => { posted.push(e); return { event: 1 }; };
+  await sweepDagStalls({ runs: s.store.listRuns(), post, sent, now: Date.now() + CLAIMED_STALL_THRESHOLD_MS });
+  await sweepDagStalls({ runs: s.store.listRuns(), post, sent, now: Date.now() + CLAIMED_STALL_THRESHOLD_MS });
+  const stallPosts = posted.filter(e => e.id.includes('dag-stall'));
+  assert.equal(stallPosts.length, 1, '同一 since 只报一次');
+  assert.match(JSON.parse(stallPosts[0].detail).text, /控制器不会自动重试/);
+});
+
+test('claimed 超时巡检：终态/新 run 不误报', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  // dev run 已 done（终态），review run claimed 未达阈值 → 都不报
+  assert.equal(s.runOf('a').status, 'done');
+  assert.equal(s.runOf('a', 'review').status, 'claimed');
+  assert.deepEqual(findDagClaimedStalls(s.store.listRuns(), { now: Date.now() + 1000 }), [], '终态+未达阈值不报');
+});
+
+test('claimed 超时巡检：异项目同 nodeId 的 claimed run 不误取', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick(); s.claimAll();
+  // 塞入一个异项目/异计划、更新的 claimed run
+  const other = s.store.createRun({ project: '/other', planId: 'p9', planDigest: 'd', nodeId: 'a', role: 'dev', nodes: s.root.nodes, confirmedActionIds: ['run-tests'], confirm: true });
+  // 异项目 run 也是 claimed 状态，slot 用空闲的 2
+  s.store.claim(other.runId, { slot: 2, expectedAdvanceId: 'x' });
+  const stalled = findDagClaimedStalls(s.store.listRuns(), { now: Date.now() + CLAIMED_STALL_THRESHOLD_MS });
+  assert.equal(stalled.length, 1);
+  assert.equal(stalled[0].runId, s.root.runId, '报的是本链 run，不是异项目 run');
+  const ownDevRun = s.store.listRuns().find(r => r.project === '/proj' && r.nodeId === 'a' && r.role === 'dev');
+  assert.match(stalled[0].error, new RegExp(`Hub run ${ownDevRun.runId}`), 'error 引用本链 dev run');
 });
