@@ -286,7 +286,12 @@ try {
   await page.getByRole('button', { name: '执行轮次', exact: true }).click();
   const runSummary = page.locator('#runs-list .run-summary').filter({ hasText: 'beta 项目等待重试' });
   await runSummary.waitFor();
-  const selectedText = await runSummary.evaluate(node => {
+  // 定位与选定在页面内一次同步完成：locator.evaluate 先定位、后执行，两步之间撞上 2 秒整块重建就会选中已摘除的旧节点。
+  const selectedText = await page.evaluate(() => {
+    // 与 locator 严格模式一致：必须恰好命中一个，多命中直接报错而不是悄悄取第一个
+    const matches = [...document.querySelectorAll('#runs-list .run-summary')].filter(item => item.textContent.includes('beta 项目等待重试'));
+    if (matches.length !== 1) throw new Error(`beta 项目等待重试 的执行摘要应恰好 1 个，实际 ${matches.length} 个`);
+    const [node] = matches;
     const range = document.createRange();
     range.selectNodeContents(node);
     const selection = document.getSelection();
@@ -311,8 +316,14 @@ try {
   assert.ok((await page.locator('#runs-list').innerText()).includes('beta 项目已改派'), 'after the selection collapses the next refresh must catch up with the latest data');
   // 指针按下未抬起（点击/拖选进行中）同帧轮询不能拆除目标节点，否则 click 丢失；
   // 拖出窗口外释放收不到 pointerup，靠 window blur 兜底清除按压状态
-  const pressCard = page.locator('#runs-list .run-card').filter({ hasText: 'beta 项目已改派' });
-  const pressBox = await pressCard.boundingBox();
+  // 坐标在页面内一次取：boundingBox 同样先定位后测量，撞上重建会拿到已摘除节点（null）。按下后 pressTarget 保护才生效。
+  const pressBox = await page.evaluate(() => {
+    const matches = [...document.querySelectorAll('#runs-list .run-card')].filter(item => item.textContent.includes('beta 项目已改派'));
+    if (matches.length !== 1) throw new Error(`beta 项目已改派 的执行卡片应恰好 1 个，实际 ${matches.length} 个`);
+    const [card] = matches;
+    const box = card.getBoundingClientRect();
+    return { x: box.x, y: box.y, width: box.width, height: box.height };
+  });
   snapshot.runs[1].summary = 'beta 项目二次改派';
   await page.mouse.move(pressBox.x + 20, pressBox.y + 10);
   await page.mouse.down();
@@ -465,12 +476,31 @@ try {
     assert.ok(point, `找不到 ${rowText} 的扇区 ${id}`);
     await page.mouse.click(point.x, point.y);
   };
-  const fixedHeight = await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height);
+  // 进度面板每 2 秒整块重建：所有读写都在页面内一次同步完成（定位当前节点 + 操作），不用 locator.evaluate 两步往返。
+  const inProgressRow = op => page.evaluate(({ op }) => {
+    const rows = [...document.querySelectorAll('#progress-list .list-row')].filter(item => item.textContent.includes('demo-repo'));
+    if (rows.length !== 1) throw new Error(`demo-repo 的进度行应恰好 1 个，实际 ${rows.length} 个`);
+    const [row] = rows;
+    const pane = row?.querySelector('.overview-node');
+    if (op === 'height') { const node = row?.querySelector('.overview-progress'); if (!node) throw new Error('找不到 demo-repo 的进度卡'); return node.getBoundingClientRect().height; }
+    if (!pane) throw new Error('找不到 demo-repo 的节点详情面板');
+    if (op === 'scrollTop') return pane.scrollTop;
+    if (op === 'scroll30') { pane.scrollTop = 30; return pane.scrollTop; }
+    if (op === 'scroll0') { pane.scrollTop = 0; return pane.scrollTop; }
+    if (op === 'entryInside') {
+      const entry = pane.querySelector('[data-serial-node]');
+      if (!entry) throw new Error('找不到节点详情入口');
+      const a = entry.getBoundingClientRect(), b = pane.getBoundingClientRect();
+      return a.bottom <= b.bottom + 1 && a.top >= b.top - 1;
+    }
+    throw new Error(`未知的 inProgressRow 操作：${op}`);
+  }, { op });
+  const fixedHeight = await inProgressRow('height');
   assert.ok([280, 540].includes(Math.round(fixedHeight)), `overview progress uses a fixed design height (got ${fixedHeight})`);
   await clickSector('demo-repo', 'n1', 0, 3);
   assert.equal(await detailTitle.innerText(), '节点一', 'clicking a ring sector switches the node detail');
   assert.ok((await progressRow.locator('.overview-node').innerText()).includes('交付了第一块功能'), 'switched detail shows that node summary');
-  assert.equal(await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height), fixedHeight, 'switching nodes must not change the fixed height');
+  assert.equal(await inProgressRow('height'), fixedHeight, 'switching nodes must not change the fixed height');
   assert.equal(await page.locator('#view-overview').isVisible(), true, 'ring click must stay on the overview');
   assert.equal(await page.locator('#view-dag').isVisible(), false, 'ring click must not open the detail view');
   // 键盘可达：Tab 到扇区按 Enter 同样切换
@@ -485,30 +515,25 @@ try {
   writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify(chainFixture(manyNodes, manyNodes.map(([id]) => id))));
   await page.waitForTimeout(2600);
   assert.equal(await progressRow.locator('.ring-seg').count(), 12, 'every node becomes a ring sector');
-  assert.equal(await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height), fixedHeight, 'height stays fixed with more nodes');
+  assert.equal(await inProgressRow('height'), fixedHeight, 'height stays fixed with more nodes');
   // 恢复三节点夹具供后续断言
   writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify(chainFixture(threeNodes, ['n1', 'n2', 'n3'])));
   await page.waitForTimeout(2600);
   // 选中长摘要节点（n2）：面板必然溢出，用来验证 sticky 入口与滚动保持
   await clickSector('demo-repo', 'n2', 1, 3);
-  const pane = progressRow.locator('.overview-node');
   // 等点击后的重绘落地（标题切到 n2 且面板确实溢出），再做滚动断言，避免和轮询/rAF 抢时序
   await page.waitForFunction(() => {
     const title = document.querySelector('#progress-list .overview-node-head strong')?.textContent;
     const panel = document.querySelector('#progress-list .overview-node');
     return title === '节点二' && panel && panel.scrollHeight > panel.clientHeight + 4;
   }, null, { timeout: 8000 });
-  await pane.evaluate(node => { node.scrollTop = 30; });
+  await inProgressRow('scroll30');
   await page.waitForTimeout(120);
-  const entryInside = await progressRow.locator('.overview-node [data-serial-node]').first().evaluate(el => {
-    const paneEl = el.closest('.overview-node');
-    const a = el.getBoundingClientRect(), b = paneEl.getBoundingClientRect();
-    return a.bottom <= b.bottom + 1 && a.top >= b.top - 1;
-  });
+  const entryInside = await inProgressRow('entryInside');
   assert.equal(entryInside, true, 'detail entry stays visible while the panel is scrolled');
   await page.waitForTimeout(2600);
-  assert.ok(await pane.evaluate(node => node.scrollTop) > 0, 'panel scroll survives the polling re-render');
-  await pane.evaluate(node => { node.scrollTop = 0; });
+  assert.ok(await inProgressRow('scrollTop') > 0, 'panel scroll survives the polling re-render');
+  await inProgressRow('scroll0');
   // 打开运行详情：走面板里的入口按钮（环形点击只在总览内切换，不跳页）
   await clickSector('demo-repo', 'n2', 1, 3);
   await progressRow.locator('.overview-node [data-serial-node="n2"]').click();
@@ -770,8 +795,15 @@ try {
   // 编辑（行内原位编辑，与 Codex queue_edit 一致）
   await page.getByRole('button', { name: /编辑排队消息 队列消息一/ }).click();
   const editor = page.locator('.queue-editor');
-  const editorBox = await editor.boundingBox();
-  const cardBox = await page.locator('#session-workspace .session-card .queue-item-editing').boundingBox();
+  await editor.waitFor();
+  // 编辑态不抢焦点、卡片不被钉住，会随 2 秒刷新重建：两个尺寸在页面内同一次同步测量，避免各自撞上重建拿到 null。
+  const { editorBox, cardBox } = await page.evaluate(() => {
+    const editorNode = document.querySelector('.queue-editor');
+    const cardNode = document.querySelector('#session-workspace .session-card .queue-item-editing');
+    if (!editorNode || !cardNode) throw new Error('找不到排队消息编辑器');
+    const box = node => { const r = node.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
+    return { editorBox: box(editorNode), cardBox: box(cardNode) };
+  });
   assert.ok(editorBox.width >= cardBox.width * 0.55, `the queue editor must expand horizontally (>=55% of the row, got ${Math.round(editorBox.width / cardBox.width * 100)}%)`);
   assert.ok(editorBox.height <= 80, `the queue editor height must cap at about 3 lines (<=80px, got ${editorBox.height})`);
   await editor.fill('队列消息一（改）');
