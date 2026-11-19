@@ -135,7 +135,14 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       if (!isTerminal(run.status) && !run.hub?.hubRunId) return false;
       if (!run.hub?.hubRunId) continue;
       // slot-release 前置：该槽位最近 Hub run 必须已终态；执行前再查一次。
-      if (!HUB_TERMINAL.has((await hub.getRun(run.hub.hubRunId)).status)) return false;
+      const hubRun = await hub.getRun(run.hub.hubRunId);
+      if (!HUB_TERMINAL.has(hubRun.status)) return false;
+      // Hub 已终态但 store 里这条 run 还非终态（回执丢了/没收下）：先照回执收敛，收不动就带原因取消。
+      // 否则 store.claim 与 usedSlots 都按「非终态 run」算占用，槽位看着空了却拿不回来（2026-11-19 device-binding）。
+      if (!isTerminal(run.status)) {
+        for (const receipt of hubRun.receipts || []) { try { store.advance(run.runId, receipt); } catch { /* 无效回执按无合法回执处理 */ } }
+        if (!isTerminal(store.getRun(run.runId).status)) store.cancel(run.runId, { reason: 'hub-terminal-slot-release' });
+      }
     }
     const last = latest(root, id, 'dev');
     await wip.releaseSlotWorktree(rt, { slot: n.slot, nodeId: id, attempt: last?.attempt || 1 });
@@ -462,7 +469,8 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
             try { await releaseNodeSlot(root, st, id); } catch (error) { n.lastError = msg(error); }
           }
           try { await dispatchReady(root, st); } catch (error) { st.lastError = msg(error); }
-          if (Object.values(st.nodes).length && Object.values(st.nodes).every(n => n.state === 'accepted')) store.finishRoot(root.runId, 'done');
+          // 收尾要等槽位都还干净：最后一个节点验收时若补释放被拒，root 一终结就再没有 tick 来补。
+          if (Object.values(st.nodes).length && Object.values(st.nodes).every(n => n.state === 'accepted' && n.slot == null)) store.finishRoot(root.runId, 'done');
         }
       } finally { trackPersistentErrors(st, before, now()); persist(root, st); }
       return snapshot(loadRoot());
