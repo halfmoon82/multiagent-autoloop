@@ -127,6 +127,8 @@ export function buildDagView(detail) {
 // ---------- 总览项目进度：环形扇区 + 单节点详情（高度固定，不随节点数变化） ----------
 // 选择只记用户显式点过的节点；没有显式选择时每次渲染都回到“当前活跃节点”，跟随轮询更新。
 const overviewSelection = new Map();
+// 面板内滚动位置：2s 轮询会重建 DOM，按 view.key 记住并恢复，避免读到一半被顶回顶部。
+const overviewScroll = new Map();
 
 function overviewDefaultNode(view) {
   const byId = id => (id ? view.nodes.find(node => node.id === id) : null);
@@ -143,37 +145,58 @@ function overviewRingCenter(view) {
   return center;
 }
 
-// 每个节点 = 环形中的一个扇区；扇区可点、可 Tab+Enter 切换右侧详情。
+// 每个节点 = 环形中的一个扇区；环连续不断开，节点间虚线、波次间实线分隔。
+// 节点名沿扇区弧线写在色带内（同弧长截断），完整标题见右侧面板与悬停提示。
+const RING_SIZE = 280;
+const RING_RADIUS = 84;
+const RING_STROKE = 28;
+
+function colorIsLight(color) {
+  const hsl = /^hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)$/.exec(String(color || ''));
+  if (hsl) return Number(hsl[3]) > 60;
+  const hex = /^#([0-9a-f]{6})$/i.exec(String(color || ''));
+  if (!hex) return true;
+  const value = parseInt(hex[1], 16);
+  const [r, g, b] = [(value >> 16) & 255, (value >> 8) & 255, value & 255].map(channel => {
+    const c = channel / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.42;
+}
+
 export function progressRing(view, { selectedId = '', onPick = null } = {}) {
   const NS = 'http://www.w3.org/2000/svg';
   const wrap = el('div', 'overview-ring');
   wrap.dataset.segments = String(view.nodes.length);
   wrap.setAttribute('role', 'group');
   wrap.setAttribute('aria-label', `${view.title} 节点环，共 ${view.nodes.length} 个节点，点击扇区切换详情`);
-  const size = 132, radius = 52, center = size / 2;
+  const size = RING_SIZE, radius = RING_RADIUS, center = size / 2;
   const circumference = 2 * Math.PI * radius;
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
   svg.setAttribute('class', 'overview-ring-svg');
+  const group = document.createElementNS(NS, 'g');
+  const dividers = document.createElementNS(NS, 'g');
+  dividers.setAttribute('class', 'ring-dividers');
+  const labels = document.createElementNS(NS, 'g');
+  labels.setAttribute('class', 'ring-labels');
   const count = view.nodes.length;
-  // 波次/分组边界多留一点缺口：同波次节点在环上连续成组，一眼能看出“波次=色相”。
-  const boundaries = view.nodes.filter((node, index) => index > 0 && node.groupOrder !== view.nodes[index - 1].groupOrder).length;
-  const provisional = count ? circumference / count : 0;
-  const boundaryGap = boundaries ? Math.min(5, provisional * 0.6) : 0;
-  const share = count ? (circumference - boundaries * boundaryGap) / count : 0;
-  const gap = count > 1 ? Math.min(2.4, share / 3) : 0;
+  const share = count ? circumference / count : 0;
+  const step = count ? 360 / count : 0;
+  const arcAt = radius + 6; // 节点名写在色带偏外沿，弧长更长、可读字更多
+  const labelFont = count > 8 ? 8 : 9;
+  const maxChars = Math.max(2, Math.floor(((2 * Math.PI * arcAt) / Math.max(count, 1) - 1.5) / (labelFont + 0.3)));
+  // 圆环空间紧，超长标题按可容纳字数截断（不加省略号，完整标题在悬停与右侧面板）。
+  const shorten = text => [...String(text || '')].slice(0, maxChars).join('');
   const frame = el('div', 'overview-ring-frame');
-  let offset = 0;
   view.nodes.forEach((node, index) => {
-    if (index > 0 && node.groupOrder !== view.nodes[index - 1].groupOrder) offset += boundaryGap;
-    const length = Math.max(share - gap, 0.6);
     const seg = document.createElementNS(NS, 'circle');
     seg.setAttribute('cx', String(center)); seg.setAttribute('cy', String(center)); seg.setAttribute('r', String(radius));
     seg.setAttribute('fill', 'none');
     seg.setAttribute('stroke', node.color);
-    seg.setAttribute('stroke-width', node.id === selectedId ? '20' : '15');
-    seg.setAttribute('stroke-dasharray', `${length} ${circumference - length}`);
-    seg.setAttribute('stroke-dashoffset', String(-(offset + gap / 2)));
+    seg.setAttribute('stroke-width', node.id === selectedId ? String(RING_STROKE + 4) : String(RING_STROKE));
+    seg.setAttribute('stroke-dasharray', `${share} ${circumference - share}`);
+    seg.setAttribute('stroke-dashoffset', String(-(index * share)));
     seg.setAttribute('transform', `rotate(-90 ${center} ${center})`);
     seg.setAttribute('class', `ring-seg ${node.status.kind}${node.id === selectedId ? ' selected' : ''}`);
     seg.dataset.ringNode = node.id;
@@ -184,30 +207,61 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
     const tip = document.createElementNS(NS, 'title');
     tip.textContent = `${node.title} · ${node.status.label}`;
     seg.append(tip);
-    if (onPick) {
-      const pick = event => {
-        if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault(); event.stopPropagation();
-        onPick(node.id);
-      };
-      seg.addEventListener('click', pick);
-      seg.addEventListener('keydown', pick);
+    const pick = event => {
+      if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault(); event.stopPropagation();
+      if (onPick) onPick(node.id);
+    };
+    if (onPick) { seg.addEventListener('click', pick); seg.addEventListener('keydown', pick); }
+    group.append(seg);
+
+    // 扇区分隔线：同一波次内虚线，波次之间实线。
+    if (index > 0) {
+      const waveBoundary = node.groupOrder !== view.nodes[index - 1].groupOrder;
+      const angle = (-90 + index * step) * Math.PI / 180;
+      const line = document.createElementNS(NS, 'line');
+      line.setAttribute('x1', String(center + (radius - RING_STROKE / 2) * Math.cos(angle)));
+      line.setAttribute('y1', String(center + (radius - RING_STROKE / 2) * Math.sin(angle)));
+      line.setAttribute('x2', String(center + (radius + RING_STROKE / 2) * Math.cos(angle)));
+      line.setAttribute('y2', String(center + (radius + RING_STROKE / 2) * Math.sin(angle)));
+      line.setAttribute('class', waveBoundary ? 'ring-divider wave' : 'ring-divider node');
+      dividers.append(line);
     }
-    svg.append(seg);
-    offset += share;
+
+    // 节点名：写在扇区色带中线，沿切线方向；左半圈翻转 180°，保证文字正向可读。
+    const mid = -90 + (index + 0.5) * step;
+    const rad = (mid * Math.PI) / 180;
+    const x = center + arcAt * Math.cos(rad);
+    const y = center + arcAt * Math.sin(rad);
+    let rotation = mid + 90;
+    if (rotation > 90 && rotation < 270) rotation -= 180;
+    const label = document.createElementNS(NS, 'text');
+    label.setAttribute('class', `ring-label${node.id === selectedId ? ' selected' : ''}`);
+    label.setAttribute('x', String(x));
+    label.setAttribute('y', String(y));
+    label.setAttribute('transform', `rotate(${rotation} ${x} ${y})`);
+    label.setAttribute('text-anchor', 'middle');
+    label.setAttribute('dominant-baseline', 'middle');
+    label.setAttribute('font-size', String(labelFont));
+    label.setAttribute('fill', colorIsLight(node.color) ? '#3f4d47' : '#ffffff');
+    label.textContent = shorten(node.title);
+    if (onPick) { label.addEventListener('click', pick); label.addEventListener('keydown', pick); }
+    labels.append(label);
   });
-  frame.append(svg, overviewRingCenter(view));
-  wrap.append(frame, el('small', 'overview-ring-note', view.segmentNote || ''), el('small', 'overview-ring-note', '点扇区切换节点'));
+  svg.append(group, dividers, labels); // 标签最后画，避免被色带盖住
+  frame.append(svg);
+  wrap.append(frame);
   return wrap;
 }
 
 // 右侧只显示一个节点：标题 + 状态 + 四栏事实；内容超出在面板内滚动，卡片高度不变。
-function overviewNodePanel(node, { open = '', runId = '' } = {}) {
+function overviewNodePanel(node, view, { open = '', runId = '' } = {}) {
   const panel = el('div', 'overview-node');
   if (!node) { panel.append(el('div', 'empty', '暂无节点。')); return panel; }
   const head = el('div', 'overview-node-head');
   head.append(el('strong', '', node.title), badge(node.status.label, node.status.kind === 'done' ? 'good' : node.status.kind === 'blocked' ? 'warn' : ''));
   panel.append(head);
+  panel.append(el('p', 'overview-node-note', `${view.segmentNote} · 点扇区切换节点`));
   const facts = el('div', 'overview-node-facts');
   const fact = (label, value, cls = '') => {
     const row = el('div', 'node-field');
@@ -215,6 +269,9 @@ function overviewNodePanel(node, { open = '', runId = '' } = {}) {
     facts.append(row);
   };
   fact('状态', `${node.status.label}${node.part ? ` · ${node.part}` : ''}`);
+  if (Number.isFinite(node.wave)) fact('波次', `第 ${node.wave} 波`);
+  if (node.slot != null) fact('槽位', `dag-slot-${node.slot}`);
+  if (node.branch) fact('分支', node.branch);
   if (Number.isFinite(node.percent)) fact('节点内进度', `${node.percent}%`);
   fact('任务摘要', node.summary, 'node-task-summary');
   fact('执行 Agent', node.agent, 'node-agent');
@@ -240,10 +297,12 @@ export function progressOverview(view, { runId = '', open = '' } = {}) {
     const chosen = overviewSelection.get(view.key);
     const node = (chosen && view.nodes.find(item => item.id === chosen)) || overviewDefaultNode(view);
     const hadFocus = root.contains(document.activeElement) && document.activeElement !== document.body;
-    root.replaceChildren(
-      progressRing(view, { selectedId: node?.id || '', onPick: id => paint(id) }),
-      overviewNodePanel(node, { open, runId }),
-    );
+    const previous = root.querySelector('.overview-node');
+    if (previous) overviewScroll.set(view.key, previous.scrollTop);
+    const panel = overviewNodePanel(node, view, { open, runId });
+    panel.addEventListener('scroll', () => overviewScroll.set(view.key, panel.scrollTop));
+    root.replaceChildren(progressRing(view, { selectedId: node?.id || '', onPick: id => paint(id) }), panel);
+    panel.scrollTop = overviewScroll.get(view.key) || 0; // 插入后再恢复，未挂载时设置无效
     if (hadFocus && node) root.querySelector(`.ring-seg[data-ring-node="${CSS.escape(String(node.id))}"]`)?.focus({ preventScroll: true });
   };
   paint();

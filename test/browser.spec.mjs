@@ -415,6 +415,9 @@ try {
   // 环形扇区 = 节点；右侧只显示一个节点详情，默认当前活跃节点
   assert.equal(await progressRow.locator('.overview-ring').getAttribute('data-segments'), '3', 'one ring sector per node');
   assert.equal(await progressRow.locator('.ring-seg').count(), 3, 'every node is a clickable sector');
+  assert.deepEqual(await progressRow.locator('.ring-label').evaluateAll(list => list.map(node => node.textContent)), ['节点一', '节点二', '节点三'], 'each sector carries its node name');
+  assert.equal(await progressRow.locator('.ring-divider.wave').count(), 2, 'node group boundaries use solid dividers');
+  assert.equal(await progressRow.locator('.ring-divider.node').count(), 0, 'single-node groups need no dashed dividers');
   const detailTitle = progressRow.locator('.overview-node-head strong');
   assert.equal(await detailTitle.innerText(), '节点二', 'default detail shows the current active node');
   for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node detail must carry ${label}`);
@@ -427,21 +430,31 @@ try {
   assert.ok(progressText.includes('项目累计 · 费用 $0.21 · Token 1,666（入 1,234 / 出 432）'), 'project cumulative usage must come from the runs ledger across pages, not the today-window rule lines');
   assert.equal(await progressRow.locator('.node-pop').count(), 0, 'node-only popover is retired');
   // 固定高度：节点数量与切换都不改变卡片高度
-  // 扇区是圆环描边（中空），按下标算出该扇区中角在描边上的绝对坐标再点
+  // 扇区是圆环描边（中空），按下标算出该扇区中角在描边上的绝对坐标再点；
+  // 2s 轮询会重建 DOM，取坐标与点击之间可能换节点，失败就重试一次。
   const clickSector = async (row, id, index, count) => {
-    const seg = row.locator(`.ring-seg[data-ring-node="${id}"]`);
-    await seg.scrollIntoViewIfNeeded();
     const angle = (-90 + (index + 0.5) * (360 / count)) * Math.PI / 180;
-    const point = await seg.evaluate((el, radians) => {
-      const box = el.getBoundingClientRect();
-      const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
-      const scale = box.width / (104 + stroke); // viewBox：r=52，直径 104
-      return { x: box.x + box.width / 2 + 52 * scale * Math.cos(radians), y: box.y + box.height / 2 + 52 * scale * Math.sin(radians) };
-    }, angle);
-    await page.mouse.click(point.x, point.y);
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        const seg = row.locator(`.ring-seg[data-ring-node="${id}"]`);
+        await seg.evaluate(el => el.scrollIntoView({ block: 'center' }));
+        const point = await seg.evaluate((el, radians) => {
+          const box = el.getBoundingClientRect();
+          const r = parseFloat(el.getAttribute('r'));
+          const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
+          const scale = box.width / (2 * r + stroke);
+          return { x: box.x + box.width / 2 + r * scale * Math.cos(radians), y: box.y + box.height / 2 + r * scale * Math.sin(radians) };
+        }, angle);
+        await page.mouse.click(point.x, point.y);
+        return;
+      } catch {
+        await page.waitForTimeout(150);
+      }
+    }
+    throw new Error(`ring sector ${id} not clickable`);
   };
   const fixedHeight = await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height);
-  assert.ok([200, 380].includes(Math.round(fixedHeight)), `overview progress uses a fixed design height (got ${fixedHeight})`);
+  assert.ok([280, 540].includes(Math.round(fixedHeight)), `overview progress uses a fixed design height (got ${fixedHeight})`);
   await clickSector(progressRow, 'n1', 0, 3);
   assert.equal(await detailTitle.innerText(), '节点一', 'clicking a ring sector switches the node detail');
   assert.ok((await progressRow.locator('.overview-node').innerText()).includes('交付了第一块功能'), 'switched detail shows that node summary');
@@ -464,6 +477,21 @@ try {
   // 恢复三节点夹具供后续断言
   writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify(chainFixture(threeNodes, ['n1', 'n2', 'n3'])));
   await page.waitForTimeout(2600);
+  // 详情入口常驻：不依赖面板内滚动即可见
+  const entryGeom = await progressRow.locator('.overview-node [data-serial-node]').first().evaluate(el => {
+    const pane = el.closest('.overview-node');
+    return { bottom: el.getBoundingClientRect().bottom, paneBottom: pane.getBoundingClientRect().bottom };
+  });
+  assert.ok(entryGeom.bottom <= entryGeom.paneBottom + 1, 'detail entry stays visible inside the fixed panel');
+  // 面板内滚动位置跨 2s 轮询重建保留
+  const pane = progressRow.locator('.overview-node');
+  const canScroll = await pane.evaluate(node => node.scrollHeight > node.clientHeight + 4);
+  if (canScroll) {
+    await pane.evaluate(node => { node.scrollTop = 12; });
+    await page.waitForTimeout(2600);
+    assert.ok(await pane.evaluate(node => node.scrollTop) > 0, 'panel scroll survives the polling re-render');
+    await pane.evaluate(node => { node.scrollTop = 0; });
+  }
   // 打开运行详情：走面板里的入口按钮（环形点击只在总览内切换，不跳页）
   await clickSector(progressRow, 'n2', 1, 3);
   await progressRow.locator('.overview-node [data-serial-node="n2"]').click();
