@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkNode, setup } from './dag-fakes.mjs';
 import { ROOT_NODE } from '../src/dag-run.mjs';
-import { findDagStalls, buildStallEvent, sweepDagStalls, createDagStallSweeper, STALL_THRESHOLD_MS } from '../src/dag-stall.mjs';
+import { findDagStalls, findDagGated, buildStallEvent, sweepDagStalls, createDagStallSweeper, STALL_THRESHOLD_MS } from '../src/dag-stall.mjs';
 
 const pushFails = s => { s.publisher.commitPr = async () => { throw new Error("git push failed: could not read Username for 'https://github.com': terminal prompts disabled"); }; };
 const toReview = async s => { await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); };
@@ -128,4 +128,31 @@ test('sweep：只为新卡住发一次事件；发送失败下轮重试', async 
   await sweepDagStalls({ runs: rootRuns(s), post, sent, now: now + 60_000 });
   assert.equal(posted.length, 1);
   assert.equal(posted[0].id, `console:dag-stall:${s.root.runId}:a:${s.clock.t}`);
+});
+
+test('findDagGated：gated 节点超过阈值才报，有 gateAt 用 gateAt，没有按已达阈值处理', () => {
+  const now = 1_000_000_000_000;
+  const run = { runId: 'r1', nodeId: ROOT_NODE, status: 'running', project: '/p', planId: 'p1', publish: { nodes: {
+    fresh: { state: 'gated', gateAt: now - 1000, gateReason: 'x' },
+    old: { state: 'gated', gateAt: now - STALL_THRESHOLD_MS - 1, gateReason: 'y' },
+    legacy: { state: 'gated', gateReason: 'z' },
+    busy: { state: 'gated', gateAt: 0, gateReason: 'w', todo: { kind: 'revive' } },
+  } } };
+  const gated = findDagGated([run], { now });
+  assert.deepEqual(gated.map(s => s.nodeId).sort(), ['legacy', 'old']);
+  assert.equal(gated.find(s => s.nodeId === 'old').since, now - STALL_THRESHOLD_MS - 1);
+});
+
+test('sweep：gated 节点也唤醒调度会话，事件走同一去重通道', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick();
+  // 满 3 次失败 → 换打法再满 3 次 → gate（等待人工决策）
+  for (let g = 0; g < 2; g++) for (let i = 0; i < 3; i++) { s.claimAll(); s.receipt('a', 'dev', 'failed'); await s.ctl.tick(); }
+  assert.equal(s.ctl.snapshot().nodes.a.state, 'gated');
+  const posted = []; const sent = new Set();
+  const post = async event => { posted.push(event); return { event: 1 }; };
+  await sweepDagStalls({ runs: rootRuns(s), post, sent, now: s.clock.t + STALL_THRESHOLD_MS });
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].type, 'scheduling.message');
+  assert.match(JSON.parse(posted[0].detail).text, /a（状态 gated）/);
 });

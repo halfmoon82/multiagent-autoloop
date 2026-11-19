@@ -142,7 +142,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     n.slot = null; return true;
   }
 
-  async function gate(root, st, id, reason) { const n = st.nodes[id]; n.state = 'gated'; n.todo = null; n.gateReason = reason; await releaseNodeSlot(root, st, id); }
+  async function gate(root, st, id, reason) { const n = st.nodes[id]; n.state = 'gated'; n.todo = null; n.gateReason = reason; n.gateAt = now(); await releaseNodeSlot(root, st, id); }
 
   // 失败计数：累计 3 次先换打法（保存 WIP、换模型），换打法后仍满 3 次才 gate。
   async function failure(root, st, id, run, reason, { newSlot = false } = {}) {
