@@ -54,7 +54,11 @@ export function buildDagNodes(detail) {
     const saved = runtime[node.id] || {}; const state = saved.state || 'pending';
     const mine = nodeRuns.filter(item => item.nodeId === node.id);
     const latest = mine.at(-1);
-    const prs = mine.flatMap(item => item.prs || []);
+    // PR 由发布器登记在根 run.prs（带 nodeId）：取该节点最新一个仍开着或已合并的；被取代/已关闭的不算。
+    // 根上没有该节点的登记时，回退各轮 nodeRuns[].prs（旧记录）。
+    const rootPrs = (run.prs || []).filter(pr => pr.nodeId === node.id);
+    const livePr = rootPrs.filter(pr => pr.state === 'open' || pr.state === 'merged').at(-1);
+    const prs = rootPrs.length ? (livePr ? [livePr] : []) : mine.flatMap(item => item.prs || []);
     let summary = node.contract?.output ? `产出契约：${node.contract.output}` : '暂无任务摘要';
     if (saved.blockedReason) summary = `阻塞：${saved.blockedReason}`;
     else if (saved.gateReason) summary = `等待人工决策：${saved.gateReason}`;
