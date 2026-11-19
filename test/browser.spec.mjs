@@ -444,21 +444,27 @@ try {
   assert.equal(await progressRow.locator('.node-pop').count(), 0, 'node-only popover is retired');
   // 固定高度：节点数量与切换都不改变卡片高度
   // 扇区是圆环描边（中空），按下标算出该扇区中角在描边上的绝对坐标再点
-  const clickSector = async (row, id, index, count) => {
-    const seg = row.locator(`.ring-seg[data-ring-node="${id}"]`);
-    await seg.scrollIntoViewIfNeeded();
+  // 找扇区、滚入视口、算坐标在页面内一次同步完成：总览每 2 秒整块重建进度面板，分几次往返（先 scroll 再 evaluate）
+  // 会撞上重建、报「Element is not attached to the DOM」。同一同步脚本里重建插不进来；随后按坐标点击，
+  // 即使中间重建，新扇区位置相同照样命中，按下后 dom-stable 的 pressTarget 保护会暂停重建直到松开。
+  const clickSector = async (rowText, id, index, count) => {
     const angle = (-90 + (index + 0.5) * (360 / count)) * Math.PI / 180;
-    const point = await seg.evaluate((el, radians) => {
+    const point = await page.evaluate(({ rowText, id, radians }) => {
+      const row = [...document.querySelectorAll('#progress-list .list-row')].find(node => node.textContent.includes(rowText));
+      const el = row?.querySelector(`.ring-seg[data-ring-node="${CSS.escape(id)}"]`);
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', inline: 'center' });
       const box = el.getBoundingClientRect();
       const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
       const scale = box.width / (104 + stroke); // viewBox：r=52，直径 104
       return { x: box.x + box.width / 2 + 52 * scale * Math.cos(radians), y: box.y + box.height / 2 + 52 * scale * Math.sin(radians) };
-    }, angle);
+    }, { rowText, id, radians: angle });
+    assert.ok(point, `找不到 ${rowText} 的扇区 ${id}`);
     await page.mouse.click(point.x, point.y);
   };
   const fixedHeight = await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height);
   assert.ok([200, 380].includes(Math.round(fixedHeight)), `overview progress uses a fixed design height (got ${fixedHeight})`);
-  await clickSector(progressRow, 'n1', 0, 3);
+  await clickSector('demo-repo', 'n1', 0, 3);
   assert.equal(await detailTitle.innerText(), '节点一', 'clicking a ring sector switches the node detail');
   assert.ok((await progressRow.locator('.overview-node').innerText()).includes('交付了第一块功能'), 'switched detail shows that node summary');
   assert.equal(await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height), fixedHeight, 'switching nodes must not change the fixed height');
@@ -469,7 +475,7 @@ try {
   await page.keyboard.press('Enter');
   assert.equal(await detailTitle.innerText(), '节点二', 'keyboard selection switches the detail too');
   // 无摘要节点必须有兜底文案
-  await clickSector(progressRow, 'n3', 2, 3);
+  await clickSector('demo-repo', 'n3', 2, 3);
   assert.ok((await progressRow.locator('.overview-node').innerText()).includes('暂无任务摘要'), 'pending node summary falls back truthfully');
   // 节点数增加时高度不变：扩到 12 个节点再对比
   const manyNodes = [...threeNodes, ...Array.from({ length: 9 }, (_, index) => [`n${index + 4}`, { status: 'pending', title: `节点${index + 4}`, label: String(index + 4) }])];
@@ -481,7 +487,7 @@ try {
   writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify(chainFixture(threeNodes, ['n1', 'n2', 'n3'])));
   await page.waitForTimeout(2600);
   // 打开运行详情：走面板里的入口按钮（环形点击只在总览内切换，不跳页）
-  await clickSector(progressRow, 'n2', 1, 3);
+  await clickSector('demo-repo', 'n2', 1, 3);
   await progressRow.locator('.overview-node [data-serial-node="n2"]').click();
   await page.locator('#view-dag').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#dag-detail .dag-detail').count(), 1);
@@ -494,7 +500,7 @@ try {
   assert.ok((await detail.innerText()).includes('费用 / Token'), 'detail shows cost/token column');
   // 无摘要节点（pending）详情必须有兜底文案，不能是空面板
   await page.getByRole('button', { name: '总览', exact: true }).click();
-  await clickSector(progressRow, 'n3', 2, 3);
+  await clickSector('demo-repo', 'n3', 2, 3);
   await progressRow.locator('.overview-node [data-serial-node="n3"]').click();
   await page.locator('#dag-node-detail').waitFor();
   assert.ok((await page.locator('#dag-node-detail').innerText()).includes('暂无任务摘要'), 'pending node without summary must show a truthful fallback');
