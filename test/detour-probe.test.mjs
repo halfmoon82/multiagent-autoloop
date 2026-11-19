@@ -22,9 +22,14 @@ test('claude program 追加 -p ping 与 --model', () => {
   assert.deepEqual(command, ['/pilot/bin/claude-real-home.sh', '-p', '只回复ok两个字母', '--model', 'opus']);
 });
 
-test('codex program 用 exec 子命令', () => {
+test('codex program 用 exec 子命令，--model 在 PROMPT 前', () => {
   const command = probeCommand({ use: 'codex', program: '/pilot/bin/codex-pilot.sh', model: 'deepseek-v4.1-flash' });
-  assert.deepEqual(command, ['/pilot/bin/codex-pilot.sh', 'exec', '只回复ok两个字母', '--model', 'deepseek-v4.1-flash']);
+  assert.deepEqual(command, ['/pilot/bin/codex-pilot.sh', 'exec', '--model', 'deepseek-v4.1-flash', '只回复ok两个字母']);
+});
+
+test('codex 无 model 时 exec 后直接是 PROMPT', () => {
+  const command = probeCommand({ use: 'codex', program: '/pilot/bin/codex-pilot.sh' });
+  assert.deepEqual(command, ['/pilot/bin/codex-pilot.sh', 'exec', '只回复ok两个字母']);
 });
 
 test('command/program/未知 use 返回 null', () => {

@@ -218,7 +218,10 @@ Agent 或改写成只读提示词。否定豁免只认紧邻动词的禁止（�
   拼不出（无 command/program 或未知 use）时登记仍成功但不带探测命令，定时核实时该项会跳过并要求人工回归。
 - `--dry-run` 只报候选不写文件；`--json` 输出机器可读摘要。
 
-cron 规则模板 JSON（`to` 用 `command` 类无模型执行者，prompt 只汇报，不自行改规则）：
+cron 规则模板 JSON（`to` 用 `command` 类无模型执行者，prompt 只汇报，不自行改规则）。
+**启用前必须先在 `agents` 里登记同名执行者**（如
+`"quota-scan":{"use":"command","command":["sh","-c","AGENT_AUTOLOOP_HOME=<root> node <repo>/scripts/quota-scan.mjs --json"],"access":"read"}`，
+`"detour-verify":{...verify-all...}`），否则 rules.json 保存校验会因 `to` 未注册而失败。
 
 ```json
 {

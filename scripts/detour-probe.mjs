@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// 额度绕行探测脚本：按 Agent 定义拼一条最便宜的试活命令，探测被拦平台是否恢复。
+// 额度绕行探测命令构造器：按 Agent 定义拼一条最便宜的试活命令，探测被拦平台是否恢复。
 // 用法：node scripts/detour-probe.mjs <agent-id> [--rules-file <path>] [--timeout 30000]
 //  退出码 0=探测通过（被拦平台已恢复）；1=仍不可用或不认识该 Agent；2=用法错误。
-//  被 detour.mjs verify 当作探测命令调用；只读 rules.json，不写任何文件。
+//  quota-scan 自动登记绕行时把拼出的命令存进 detour.probe.command；verify 阶段直接执行。
+//  本脚本只读 rules.json，不写任何文件。
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -14,25 +15,28 @@ const PING = '只回复ok两个字母';
 /** 各平台最便宜的试活方式（只发一条短提示词，收到任何正常退出即视为恢复）。 */
 const PING_ARGS = {
   // codebuddy/ACP 直出模式：--acp 去掉后单轮 -p，无会话持续负担
+  // 注意：过滤是 token-exact，--acp=1 / --acp stdio 这类带值形式不会命中，
+  //  当前生产定义都是裸 '--acp'，若以后有变需同步这里。
   acp: (command) => [...command.map(String).filter((item) => item !== '--acp'), '-p', PING],
-  // claude / codex CLI 都是一次性 -p
+  // claude CLI：一次性 -p
   claude: (command) => [...command.map(String), '-p', PING],
-  codex: (command) => [...command.map(String), 'exec', PING],
+  // codex CLI：exec 子命令；--model 放在 PROMPT 前，符合 clap 习惯位置
+  codex: (command) => [...command.map(String), 'exec', '--model'],
 };
 
-function modelArgs(use, model) {
-  if (!model) return [];
-  return ['--model', model];
-}
-
-/** 从 agent 定义拼探测命令；返回 null 表示该 Agent 定义无法探测（无 command/program 或 use 类型未知）。 */
+/** 把 ping 和 --model 插进命令模板；use=claude/codex/acp 分别走不同拼法。 */
 export function probeCommand(agent) {
   if (!agent) return null;
   const builder = PING_ARGS[agent.use];
   if (!builder) return null;
   const base = Array.isArray(agent.command) && agent.command.length ? agent.command : agent.program ? [agent.program] : null;
   if (!base) return null;
-  return [...builder(base), ...modelArgs(agent.use, agent.model)];
+  const model = String(agent.model || '').trim() || null;
+  if (agent.use === 'codex') {
+    // exec [OPTIONS] [PROMPT]：--model 必须在 PROMPT 前
+    return [...base, 'exec', ...(model ? ['--model', model] : []), PING];
+  }
+  return [...builder(base), ...(model ? ['--model', model] : [])];
 }
 
 function args() {
