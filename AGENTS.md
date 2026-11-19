@@ -35,6 +35,7 @@
 | `src/platform-models.mjs` | 管理后台「平台与模型」：平台自动发现与可选模型只读发现、三档模型/工作分配/会话档位校验、在状态锁内原子生成分档执行者与规则（含备份）、写 `platform-models.json` 与 `detour-policy.json` defaults、会话启动模型 | 节点分档判定、频限绕行登记、会话沙箱护栏 |
 | `src/serial-progress.mjs` | 串行编排状态文件（`*-serial.json`）读取、项目映射与进度计算 | 编排状态写入、节点计划定义 |
 | `src/chain-closeout.mjs` | 串行链收口巡检（无模型）：完成链独占 cron 规则暂停（中台 pause）、链文件归档（`.done-<日期>` 后缀）与收口审计（`closeouts.jsonl`） | rules.json 编辑、编排状态写入、事件路由 |
+| `src/dag-stall.mjs` | DAG 节点卡住巡检（无模型）：读节点持续报错（`errorSince/errorCount`），超阈值向调度会话投 `scheduling.message`（凭据去敏、按事件 ID 去重） | 节点推进与重试、修复动作本身、中台规则 |
 | `src/detour.mjs` | 频限绕行登记（`detours.json`）、冷却核实、rules.json 原子回归与状态锁（`withStateLock`，rules.mjs 表单保存共用） | 探测命令实现、Hub 事件、规则表单校验 |
 | `src/design-baseline.mjs` | 可选设计清单、产物 hash、一次批准记录、不可变 run 快照与 UI 节点合同子集校验 | 浏览器渲染、PRD 自由文本语义判定、执行授权 |
 | `src/git-safe.mjs` | 控制器侧 hardened Git、无 clean/smudge filter 的 tree 构造与工作区恢复 | worker 可信 Git config、任意 hooks/filter/shell 执行 |

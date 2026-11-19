@@ -9,6 +9,17 @@ import { nodeTier } from './dag-tier.mjs';
 export const HUB_TERMINAL = new Set(['done', 'cancelled', 'failed', 'nothing']);
 const SUCCESS = new Set(['done', 'accepted', 'merged']);
 const msg = error => String(error?.message || error).replace(/[\r\n]+/g, ' ');
+
+// 持续报错记账：一轮内可能先清空再写入 lastError，所以只在轮末与上一轮比较。
+// 同一错误保留首次时间、累计次数；换了错误重新计时；没有错误就清掉。卡住巡检（dag-stall.mjs）只读这两个字段。
+function trackPersistentErrors(st, before, at) {
+  for (const [id, n] of Object.entries(st.nodes)) {
+    const prev = before[id] || {};
+    if (!n.lastError) { delete n.errorSince; delete n.errorCount; continue; }
+    if (n.lastError === prev.error && prev.since != null) { n.errorSince = prev.since; n.errorCount = (prev.count || 1) + 1; }
+    else { n.errorSince = at; n.errorCount = 1; }
+  }
+}
 // 成本优先：首派用节点最便宜可行档，换打法默认升一档（light→standard→heavy），不直接上最贵模型。
 const defaultApproach = ({ run }) => ({ reason: `第 ${run.attempt} 次失败，升一档模型重派`, tierBump: 1 });
 
@@ -363,16 +374,18 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     async tick() {
       const root = loadRoot(); if (isTerminal(root.status)) return snapshot(root);
       const st = load(root);
+      const before = Object.fromEntries(Object.entries(st.nodes).map(([id, n]) => [id, { error: n.lastError, since: n.errorSince, count: n.errorCount }]));
       try {
         if (root.publish?.cancelRequested) await cancelStep(root, st);
         else {
-          for (const id of Object.keys(st.nodes)) { try { await advanceNode(root, st, id); st.nodes[id].lastError = null; } catch (error) { st.nodes[id].lastError = msg(error); } }
+          // 先清再推进：advanceNode 自己写入的 lastError（未抛出的拒绝补发等）要保留，才能累计成卡住。
+          for (const id of Object.keys(st.nodes)) { st.nodes[id].lastError = null; try { await advanceNode(root, st, id); } catch (error) { st.nodes[id].lastError = msg(error); } }
           try { await reviewBlocked(root, st); } catch (error) { st.lastError = msg(error); }
           for (const id of Object.keys(st.nodes)) if (st.nodes[id].todo) { try { await runTodo(root, st, id); } catch (error) { st.nodes[id].lastError = msg(error); } }
           try { await dispatchReady(root, st); } catch (error) { st.lastError = msg(error); }
           if (Object.values(st.nodes).length && Object.values(st.nodes).every(n => n.state === 'accepted')) store.finishRoot(root.runId, 'done');
         }
-      } finally { persist(root, st); }
+      } finally { trackPersistentErrors(st, before, now()); persist(root, st); }
       return snapshot(loadRoot());
     },
   };

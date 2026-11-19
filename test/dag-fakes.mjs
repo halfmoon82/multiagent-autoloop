@@ -38,7 +38,8 @@ export const fakePublisher = () => { const calls = []; return {
 }; };
 
 export function setup(nodes, { chooseApproach, blockedEvidence, designBaseline = null } = {}) {
-  const store = createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-ctl-')) });
+  const directory = mkdtempSync(path.join(tmpdir(), 'dag-ctl-'));
+  const store = createRunStore({ directory });
   const root = store.createRun({ project: '/proj', planId: 'p1', planDigest: 'd', confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, nodeId: ROOT_NODE, role: 'dev', nodes, designBaseline });
   const hub = new FakeHub(); const rt = fakeRt(); const wip = fakeWip(); const publisher = fakePublisher();
   const clock = { t: 1_000_000_000_000 };
@@ -50,5 +51,5 @@ export function setup(nodes, { chooseApproach, blockedEvidence, designBaseline =
     return store.advance(run.runId, { advanceId: run.expectedAdvanceId, runId: run.runId, nodeId, role, generation: run.generation, attempt: run.attempt, outcome, ...over });
   };
   const claimAll = () => { for (const d of hub.dispatched) if (hub.runs.get(d.id).status === 'queued') hub.set(d.id, { status: 'claimed' }); };
-  return { store, root, hub, rt, wip, publisher, ctl, clock, runOf, receipt, claimAll };
+  return { store, directory, root, hub, rt, wip, publisher, ctl, clock, runOf, receipt, claimAll };
 }
