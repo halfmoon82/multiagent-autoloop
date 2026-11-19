@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   buildSchedulingContext, composeTurnText, contextTrailer, truncateToBytes, codePoints,
   prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation, runsOfSubject,
+  exchangesFrom, handoverSection, previousUnanswered,
   EVENT_DETAIL_BUDGET, CONTEXT_DIR,
 } from '../src/scheduling-context.mjs';
 
@@ -196,8 +197,80 @@ test('上一轮结论超过上限时注明截断，不静默丢尾（P2）', asy
   const longSummary = `${'汇'.repeat(9000)}尾巴`;
   const file = await buildSchedulingContext({ root, sessionId: 'l1', turn: 2, project, lastSummary: longSummary });
   const body = readFileSync(file, 'utf8');
-  assert.match(body, /\[已截断：上一轮结论超过 8000 字，完整内容见会话转录\]/);
+  assert.match(body, /\[已截断：超过 8000 字，完整内容见会话转录\]/);
   const medium = '汇'.repeat(3000);
   const file2 = await buildSchedulingContext({ root, sessionId: 'l2', turn: 2, project, lastSummary: medium });
   assert.ok(readFileSync(file2, 'utf8').includes(medium), '3000 字的结论完整保留（旧上限 1200 会截掉）');
+});
+
+// —— 交接段：换执行者后新会话没有聊天记忆，要能看到「上一轮问了什么」（绕行演练发现的缺口）——
+const transcript = [
+  { role: 'user', text: '第一问' }, { role: 'agent', text: '第一答' },
+  { role: 'user', text: '第二问 A' }, { role: 'user', text: '第二问 B（排队）' }, { role: 'agent', text: '第二答' },
+  { role: 'user', text: '第三问' }, { role: 'agent', text: '第三答' },
+  { role: 'user', text: '第四问' }, { role: 'agent', text: '第四答' },
+];
+
+test('exchangesFrom pairs user messages with the next reply, merges queued messages, keeps the latest rounds', () => {
+  const rounds = exchangesFrom(transcript, { rounds: 3 });
+  assert.deepEqual(rounds.map(r => r.agent), ['第二答', '第三答', '第四答']);
+  assert.equal(rounds[0].user, '第二问 A\n\n第二问 B（排队）', '排队的多条消息合成一轮');
+  assert.equal(rounds.at(-1).user, '第四问');
+});
+
+test('exchangesFrom keeps a trailing unanswered user message as the previous round (P2: failed/interrupted turn)', () => {
+  const rounds = exchangesFrom([...transcript, { role: 'user', text: '没得到回答的上一问' }], { rounds: 2 });
+  assert.deepEqual(rounds.at(-1), { user: '没得到回答的上一问', agent: null }, '结尾没回答的是上一轮，不得丢弃');
+  assert.equal(rounds[0].user, '第四问');
+  assert.deepEqual(exchangesFrom([{ role: 'user', text: '只有问' }]), [{ user: '只有问', agent: null }]);
+  assert.deepEqual(exchangesFrom(undefined), []);
+});
+
+test('handoverSection marks an unanswered previous round and the context file relabels the older answer (P2)', async () => {
+  const exchanges = exchangesFrom([...transcript, { role: 'user', text: '频限失败的那一问' }]);
+  const text = handoverSection(exchanges);
+  assert.match(text, /## 上一轮用户原话（完整，未得到回答：失败、被打断或仍在执行）\n+频限失败的那一问/);
+  assert.match(text, /### 往前第 2 轮\n- 用户：第四问\n- 回答：第四答/);
+  const { root, project } = fixture();
+  const file = await buildSchedulingContext({ root, sessionId: 'u9', turn: 6, project, lastSummary: '第四答', exchanges });
+  const body = readFileSync(file, 'utf8');
+  assert.match(body, /## 最近一次得到的回答（属于更早一轮；上一轮未得到回答）\n+第四答/);
+  assert.doesNotMatch(body, /## 上一轮结论/, '更早一轮的回答不得冒充上一问的结论');
+});
+
+test('an empty previous question (late answer merged two rounds) is stated, not silently dropped (P3)', () => {
+  const late = exchangesFrom([
+    { role: 'user', text: 'Q1' }, { role: 'agent', text: 'A1' },
+    { role: 'user', text: 'Q2' }, { role: 'user', text: 'Q3' }, { role: 'agent', text: 'A2 迟到' }, { role: 'agent', text: 'A3' },
+  ]);
+  const text = handoverSection(late);
+  assert.match(text, /## 上一轮用户原话（完整）\n+（转录里上一轮没有对应的用户消息，可能是迟到的回答；以会话转录为准）/);
+});
+
+test('handoverSection writes the previous question in full and earlier rounds as capped summaries', () => {
+  const longEarlier = '早'.repeat(700);
+  const text = handoverSection([
+    { user: longEarlier, agent: '早答' },
+    { user: '第三问', agent: '第三答' },
+    { user: '上一轮的完整原话', agent: '上一轮回答' },
+  ]);
+  assert.match(text, /## 上一轮用户原话（完整）\n+上一轮的完整原话/);
+  assert.match(text, /## 更早的对话（最近 2 轮，旧的在前，每条最多 600 字）/);
+  assert.match(text, /### 往前第 3 轮\n- 用户：早{600}\n\[已截断：原文 700 字，此处只列前 600 字\]/);
+  assert.match(text, /### 往前第 2 轮\n- 用户：第三问\n- 回答：第三答/);
+  assert.equal(handoverSection([]), '');
+});
+
+test('previous question longer than the limit is cut with a note pointing to the transcript', () => {
+  const text = handoverSection([{ user: '问'.repeat(9000), agent: '答' }]);
+  assert.match(text, /\[已截断：上一轮用户原话共 9000 字，此处只列前 8000 字，完整内容见会话转录\]/);
+});
+
+test('buildSchedulingContext writes the handover section into the context file', async () => {
+  const { root, project } = fixture();
+  const file = await buildSchedulingContext({ root, sessionId: 'h1', turn: 5, project, lastSummary: '第四答', exchanges: exchangesFrom(transcript) });
+  const body = readFileSync(file, 'utf8');
+  assert.match(body, /## 上一轮用户原话（完整）\n+第四问/);
+  assert.match(body, /## 更早的对话/);
+  assert.match(body, /## 上一轮结论\n+第四答/);
 });
