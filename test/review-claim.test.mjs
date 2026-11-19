@@ -198,3 +198,26 @@ test('合并成功但释放评论失败：仍报合并成功并带 warning', asy
   assert.equal(result.ok, true);
   assert.match(result.warning, /释放占位评论失败/);
 });
+
+test('CI 检查未跑完或失败时拒绝合并；全绿或无检查才合并', async () => {
+  const cases = [
+    [[{ status: 'IN_PROGRESS', conclusion: '' , name: 'test' }], 'checks-pending'],
+    [[{ status: 'COMPLETED', conclusion: 'FAILURE', name: 'test' }], 'checks-failed'],
+    [[{ state: 'PENDING', context: 'ci/legacy' }], 'checks-pending'],
+    [[{ status: 'COMPLETED', conclusion: 'SUCCESS', name: 'test' }, { status: 'COMPLETED', conclusion: 'SKIPPED', name: 'x' }], null],
+  ];
+  for (const [rollup, reason] of cases) {
+    const gh = fakeGh();
+    const original = gh.runner;
+    const runner = async (cmd, args) => {
+      const out = await original(cmd, args);
+      if (args[1] === 'view') { const v = JSON.parse(out.stdout); v.statusCheckRollup = rollup; return { stdout: JSON.stringify(v) }; }
+      return out;
+    };
+    const claims = createReviewClaims({ runner, ...at('2026-11-19T03:00:30Z') });
+    await claims.claim({ pr: '116', holder: 'codex-a' });
+    const result = await claims.merge({ pr: '116', holder: 'codex-a', head: 'aaa1111' });
+    if (reason) { assert.deepEqual([result.ok, result.reason], [false, reason]); assert.equal(gh.state.merged, null); }
+    else assert.equal(result.ok, true);
+  }
+});
