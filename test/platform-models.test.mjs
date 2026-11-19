@@ -188,3 +188,27 @@ test('建议值：按平台可选模型由便宜到贵挑三档，挑不到就�
   assert.deepEqual(s.platforms.claude, { light: 'haiku', standard: 'claude-sonnet-5-5', heavy: 'opus' });
   assert.equal(s.sessions.design.tier, 'light');
 });
+
+test('会话预填平台：优先选工作分配里在用的通用平台，不选排在前面的项目专用执行者', () => {
+  const raw = baseRules();
+  // 复现：项目专用 Codex 执行者登记在通用 codex-full 之前
+  raw.agents = { 'liuxue-heal': { name: '留学辅导自愈', worker: 'w', use: 'codex', access: 'full' }, ...raw.agents };
+  const platforms = discoverPlatforms(raw, { catalog });
+  const roles = { dev: { primary: 'workbuddy', fallback: 'claude' }, review: { primary: 'claude', fallback: 'codex-full' }, coord: { primary: 'codex-full', fallback: 'claude' } };
+  const s = suggestedSettings(platforms, roles);
+  assert.equal(s.sessions.design.platform, 'codex-full');
+  assert.equal(s.sessions.normal.platform, 'codex-full');
+  // 工作分配里没有能开会话的平台时，退回第一个可写的 Codex 类平台（只读的不选）
+  raw.agents = { codex: { name: 'Codex', worker: 'w', use: 'codex', access: 'read' }, ...raw.agents };
+  const fallback = suggestedSettings(discoverPlatforms(raw, { catalog }), { dev: { primary: 'workbuddy', fallback: 'claude' }, review: { primary: 'claude', fallback: 'workbuddy' }, coord: { primary: 'workbuddy', fallback: 'claude' } });
+  assert.equal(fallback.sessions.design.platform, 'liuxue-heal');
+});
+
+test('读取接口：首次进入时会话预填跟随当前工作分配', () => {
+  const raw = baseRules();
+  raw.agents = { 'liuxue-heal': { name: '留学辅导自愈', worker: 'w', use: 'codex', access: 'full' }, ...raw.agents };
+  const config = setup(raw);
+  const data = readPlatformModels(config, { catalog });
+  assert.equal(data.sessions.design.platform, 'codex-full');
+  assert.equal(data.suggested.sessions.normal.platform, 'codex-full');
+});
