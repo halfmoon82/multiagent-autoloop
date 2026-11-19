@@ -1,6 +1,8 @@
 // 网页设备授权管理后台：一次性二维码、设备列表、解除授权与审计。
 // 所有文本走 textContent，不拼接不可信 HTML；令牌只在生成时展示一次，不写入页面持久化结构。
+// 绑定只由设备端提交：网页生成真实二维码并等待设备扫码，绝不代替设备点击绑定而丢弃设备凭证。
 import { el } from './views.mjs';
+import { encodeQr } from './qr.mjs';
 
 const ACTION_LABEL = { 'qr.create': '生成二维码', bind: '绑定设备', rename: '重命名设备', revoke: '解除授权' };
 const fmtTime = value => (value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '从未');
@@ -20,25 +22,26 @@ export function initDevices({ api, notify, showView }) {
     const host = $('device-qr');
     host.replaceChildren();
     host.hidden = !s.qr;
-    $('device-bind-submit').disabled = !s.qr;
     if (!s.qr) return;
-    // 用令牌生成确定性的方格图，作为二维码的可视内容；真实扫描读取下方的一次性绑定码。
+    const { modules, size } = encodeQr(s.qr.qrPayload);
     const grid = el('div', 'qr-grid');
-    for (let index = 0; index < 144; index += 1) {
-      const on = (s.qr.token.charCodeAt(index % s.qr.token.length) + index) % 3 === 0;
-      grid.append(el('span', on ? 'on' : ''));
-    }
+    grid.setAttribute('data-size', String(size));
+    grid.setAttribute('role', 'img');
+    grid.setAttribute('aria-label', '一次性绑定二维码');
+    grid.style.setProperty('--qr-size', String(size));
+    for (const row of modules) for (const dark of row) grid.append(el('span', dark ? 'on' : ''));
     const token = el('input', 'qr-token');
     token.type = 'text'; token.readOnly = true; token.id = 'device-qr-token';
     token.value = s.qr.token;
-    token.setAttribute('aria-label', '一次性绑定码');
+    token.setAttribute('aria-label', '备用绑定码（二维码无法扫描时手输）');
     const label = el('label', 'qr-token-label');
-    label.append(document.createTextNode('一次性绑定码（二维码内容）'), token);
+    label.append(document.createTextNode('备用绑定码（手机无法扫码时可手输）'), token);
     host.append(
-      el('p', 'subtle', '用手机 App 扫描或输入下方绑定码完成绑定；一次性有效，过期请重新生成。'),
+      el('p', 'subtle', '用手机 App 扫描上方二维码完成绑定；二维码内容就是下面的绑定码，一次性有效，过期请重新生成。'),
       grid,
       label,
       el('p', 'subtle', `失效时间：${fmtTime(s.qr.expiresAt)}`),
+      el('p', 'subtle', '等待设备扫码绑定：绑定成功后该二维码自动失效，设备会出现在下方「已绑定设备」列表。'),
     );
   }
 
@@ -51,7 +54,7 @@ export function initDevices({ api, notify, showView }) {
     badge.textContent = String(active);
     badge.hidden = active === 0;
     if (!s.devices.length) {
-      host.append(el('div', 'empty', '还没有已绑定设备。先生成一次性二维码并完成绑定。'));
+      host.append(el('div', 'empty', '还没有已绑定设备。先生成一次性二维码，再用手机扫码完成绑定。'));
       return;
     }
     for (const device of s.devices) {
@@ -99,6 +102,8 @@ export function initDevices({ api, notify, showView }) {
       const data = await api('/api/devices');
       s.devices = data.devices || [];
       s.audit = data.audit || [];
+      // 设备端完成绑定后，审计里出现同一 bindingId 的 bind 记录，二维码自动失效。
+      if (s.qr && s.audit.some(item => item.action === 'bind' && item.bindingId === s.qr.bindingId)) s.qr = null;
       s.failed = '';
     } catch (error) { s.failed = error.message; }
     render();
@@ -125,17 +130,7 @@ export function initDevices({ api, notify, showView }) {
 
   $('device-qr-create').addEventListener('click', () => act(async () => {
     s.qr = await api('/api/devices/bindings', { method: 'POST', body: '{}' });
-    notify('一次性二维码已生成，5 分钟内有效。');
-  }));
-
-  $('device-bind-submit').addEventListener('click', () => act(async () => {
-    const name = $('device-bind-name').value;
-    const platform = $('device-bind-platform').value;
-    await api('/api/devices/bind', { method: 'POST', body: JSON.stringify({ token: s.qr?.token, name, platform }) });
-    s.qr = null;
-    $('device-bind-name').value = '';
-    $('device-bind-platform').value = '';
-    notify('设备绑定成功。');
+    notify('一次性二维码已生成，5 分钟内有效，等待设备扫码。');
   }));
 
   $('device-refresh').addEventListener('click', load);

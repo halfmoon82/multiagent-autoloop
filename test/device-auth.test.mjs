@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createDeviceStore, DeviceAuthError, BINDING_TTL_MS } from '../src/device-auth.mjs';
 import { createConsoleServer } from '../src/server.mjs';
+import { encodeQr, decodeQr } from '../public/qr.mjs';
 import { listen, close } from './helpers.mjs';
 
 function fixture(t) {
@@ -41,6 +42,19 @@ test('createBinding 生成一次性二维码令牌并按 TTL 过期，令牌本�
   assert.equal(Date.parse(qr.expiresAt) - Date.parse(qr.createdAt || '2026-11-19T00:00:00.000Z'), BINDING_TTL_MS);
   assert.ok(!JSON.stringify(store.listDevices()).includes(qr.token));
   assert.ok(!JSON.stringify(store.listAudit()).includes(qr.token));
+});
+
+test('一次性二维码是真实可解码的 QR：编码 qrPayload 后解码结果逐字一致，且含三个定位角', t => {
+  const { store } = makeStore(t);
+  const qr = store.createBinding();
+  const { modules, size } = encodeQr(qr.qrPayload);
+  assert.equal(modules.length, size, '矩阵为方阵');
+  assert.ok(modules.every(row => row.length === size), '每行长度等于版本尺寸');
+  assert.equal(modules[0][0], true, '左上定位角');
+  assert.equal(modules[0][size - 1], true, '右上定位角');
+  assert.equal(modules[size - 1][0], true, '左下定位角');
+  assert.equal(decodeQr(modules), qr.qrPayload, '解码渲染的二维码必须等于 qrPayload');
+  assert.ok(decodeQr(modules).includes(qr.token), '二维码内容携带一次性令牌，手机扫码可完成绑定');
 });
 
 test('绑定成功后二维码作废：重复使用、过期、未知令牌都给出可读错误', t => {
@@ -111,6 +125,7 @@ test('审计记录覆盖创建二维码、绑定、重命名与解除，操作�
   const audit = store.listAudit();
   assert.deepEqual(audit.map(item => item.action), ['qr.create', 'bind', 'rename', 'revoke']);
   assert.ok(audit.every(item => item.at && item.source));
+  assert.equal(audit.find(item => item.action === 'bind').bindingId, qr.bindingId, 'bind audit links the QR so the page can detect consumption');
   assert.equal(store.listDevices()[0].name, 'Pixel 8 Pro');
   const dump = JSON.stringify(audit);
   assert.ok(!dump.includes(qr.token) && !dump.includes(deviceToken));
@@ -165,6 +180,18 @@ test('GET /api/devices 返回设备与审计，且不含任何令牌', async t =
     assert.equal(body.devices.length, 1);
     assert.equal(body.audit.length, 2);
     assert.ok(!JSON.stringify(body).includes(deviceToken));
+  } finally { await close(server); }
+});
+
+test('GET /qr.mjs 由静态白名单提供，页面能加载真实二维码模块', async t => {
+  const { root } = fixture(t);
+  const server = createConsoleServer({ ...base, root });
+  const url = await listen(server);
+  try {
+    const response = await fetch(`${url}/qr.mjs`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/javascript/);
+    assert.match(await response.text(), /export function encodeQr/);
   } finally { await close(server); }
 });
 

@@ -91,7 +91,8 @@ export function createDeviceStore({ file = null, now = () => new Date(), ttlMs =
       if (data.bindings.length > MAX_BINDINGS) data.bindings = data.bindings.slice(-MAX_BINDINGS);
       record('qr.create', { bindingId: binding.id }, source);
       flush();
-      return { token, qrPayload: `autoloop://bind?token=${token}`, createdAt, expiresAt };
+      // 返回 bindingId 供网页在审计里识别这张码是否已被设备端消费；凭证明文只在此刻出现一次。
+      return { token, qrPayload: `autoloop://bind?token=${token}`, bindingId: binding.id, createdAt, expiresAt };
     },
 
     bindDevice({ token, name, platform } = {}, source = 'device') {
@@ -116,7 +117,7 @@ export function createDeviceStore({ file = null, now = () => new Date(), ttlMs =
       };
       binding.usedAt = device.boundAt;
       data.devices.push(device);
-      record('bind', { deviceId: device.id, deviceName: safeName, platform: safePlatform }, source);
+      record('bind', { deviceId: device.id, deviceName: safeName, platform: safePlatform, bindingId: binding.id }, source);
       flush();
       return { device: publicDevice(device), deviceToken };
     },
