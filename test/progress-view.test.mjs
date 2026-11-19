@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSerialView, buildDagView, serialStatus } from '../public/progress-view.mjs';
+import { buildSerialView, buildDagView, serialStatus, nodeInnerProgress } from '../public/progress-view.mjs';
 import { waveHue } from '../public/dag-model.mjs';
 
 const serialChain = {
@@ -89,6 +89,22 @@ test('DAG 环：一个波次一个色相，同波次内深浅表达节点完成�
   assert.equal(a.light, 27, '全深固定为完成档');
   const hues = new Set(Array.from({ length: 10 }, (_, index) => waveHue(index + 1)));
   assert.equal(hues.size, 10, '前 10 个波次色相互不相同');
+});
+
+test('节点内进度：自报 percent 优先，缺失回落到状态完成度档，越界被夹到 0..1', () => {
+  const s = buildSerialView(serialChain, '');
+  const byId = id => s.nodes.find(node => node.id === id);
+  assert.equal(nodeInnerProgress(byId('n1')), 1, 'done 节点 percent=100 → 满弧');
+  assert.equal(nodeInnerProgress(byId('n2')), 0.5, 'dev 节点自报 percent=50');
+  assert.equal(nodeInnerProgress(byId('n3')), 0.2, '自报 percent=20 优先于 blocked 档');
+  assert.equal(nodeInnerProgress({ percent: 30, status: { kind: 'done' } }), 1, 'done 状态永远满弧，过期 percent 不拖回');
+  assert.equal(nodeInnerProgress({ status: { kind: 'active' } }), 0.5, '无 percent 回落到完成度档');
+  assert.equal(nodeInnerProgress({ status: { kind: 'pending' } }), 0, '未开始为空弧');
+  assert.equal(nodeInnerProgress({ percent: 140, status: { kind: 'active' } }), 1, 'percent 越界夹到 1');
+  const d = buildDagView(dagDetail);
+  const dagById = id => d.nodes.find(node => node.id === id);
+  assert.equal(nodeInnerProgress(dagById('a')), 1, 'DAG accepted → 满弧');
+  assert.equal(nodeInnerProgress(dagById('b')), 0.5, 'DAG dev → 状态档 0.5');
 });
 
 test('串行状态映射未知状态不崩、不当成完成', () => {

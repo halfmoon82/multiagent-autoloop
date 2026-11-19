@@ -445,6 +445,12 @@ try {
   assert.deepEqual(await progressRow.locator('.ring-label').evaluateAll(list => list.map(node => node.textContent)), ['节点一', '节点二', '节点三'], 'each sector carries its node name');
   assert.equal(await progressRow.locator('.ring-divider.wave').count(), 2, 'node group boundaries use solid dividers');
   assert.equal(await progressRow.locator('.ring-divider.node').count(), 0, 'single-node groups need no dashed dividers');
+  // 内圈进度弧：每节点一段轨道 + 按节点内进度填充；正在开发的节点叠一枚指针（夹具 n2 dev_dispatched·percent 50）
+  assert.equal(await progressRow.locator('.ring-inner-seg').count(), 3, '每节点一段内圈进度轨道');
+  const innerFill = await progressRow.locator('.ring-inner-fill').evaluateAll(list => list.map(node => parseFloat(node.getAttribute('stroke-dasharray'))));
+  assert.equal(innerFill.length, 3, '每节点一段内圈进度弧');
+  assert.ok(innerFill[0] > innerFill[1] && innerFill[1] > innerFill[2], '内圈进度弧长：done > dev 50% > pending 0');
+  assert.equal(await progressRow.locator('.ring-pointer').count(), 1, '正在开发的节点有一枚指向它的指针');
   const detailTitle = progressRow.locator('.overview-node-head strong');
   assert.equal(await detailTitle.innerText(), '节点二', 'default detail shows the current active node');
   for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node detail must carry ${label}`);
@@ -533,6 +539,11 @@ try {
     const panel = document.querySelector('#progress-list .overview-node');
     return title === '节点二' && panel && panel.scrollHeight > panel.clientHeight + 4;
   }, null, { timeout: 8000 });
+  // 选中扇区向外膨出一圈同色弧带（只往外扩），选中态在环上一眼可辨
+  assert.equal(await progressRow.locator('.ring-bulge').count(), 1, '选中扇区向外膨出弧带');
+  const bulgeColor = await progressRow.locator('.ring-bulge').getAttribute('stroke');
+  const segColor = await progressRow.locator('.ring-seg[data-ring-node="n2"]').getAttribute('stroke');
+  assert.equal(bulgeColor, segColor, '膨出弧带与扇区同色');
   await inProgressRow('scroll30');
   await page.waitForTimeout(120);
   const entryInside = await inProgressRow('entryInside');

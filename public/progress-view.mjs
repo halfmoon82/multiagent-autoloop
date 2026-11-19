@@ -3,7 +3,7 @@
 // 波次（DAG）/ 执行顺序分段（串行）映射到同一分组语言；四栏节点卡片字段一律如实标注，缺失写未上报。
 // 所有上游文本只经 textContent 写入（本模块自建 el，避免与 views.mjs 形成循环依赖）。
 import { projectName } from './format.mjs';
-import { buildDagNodes, groupWaves, dagRunSummary, formatUsage, sumUsage, segmentColor } from './dag-model.mjs';
+import { buildDagNodes, groupWaves, dagRunSummary, formatUsage, sumUsage, segmentColor, completionOf } from './dag-model.mjs';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -159,8 +159,22 @@ function overviewRingCenter(view) {
 // 每个节点 = 环形中的一个扇区；环连续不断开，节点间虚线、波次间实线分隔。
 // 节点名沿扇区弧线写在色带内（同弧长截断），完整标题见右侧面板与悬停提示。
 const RING_SIZE = 280;
-const RING_RADIUS = 84;
-const RING_STROKE = 28;
+const RING_RADIUS = 90;
+const RING_STROKE = 36;
+// 选中扇区向外膨出的额外弧带宽度（只往外扩，不压内圈进度弧）。
+const RING_BULGE = 12;
+// 内圈进度弧：节点内进度（串行 percent / DAG 完成度档）沿扇区弧长填充，正在开发的节点再叠一枚指向它的三角指示。
+const RING_INNER_STROKE = 7;
+const RING_INNER_GAP = 4;
+const RING_ACTIVE_KINDS = new Set(['active', 'review', 'rework']);
+
+// 节点内进度 0..1：优先节点自报的 percent（串行编排器写入），否则回落到状态完成度档（DAG/未报 percent 的串行节点）。
+export function nodeInnerProgress(node) {
+  if (node?.status?.kind === 'done') return 1;
+  const percent = Number(node?.percent);
+  if (Number.isFinite(percent) && percent > 0) return Math.min(1, percent / 100);
+  return Math.min(1, Math.max(0, completionOf(node?.status)));
+}
 
 function colorIsLight(color) {
   const hsl = /^hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)$/.exec(String(color || ''));
@@ -202,23 +216,38 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
   // 圆环空间紧，超长标题按可容纳字数截断（不加省略号，完整标题在悬停与右侧面板）。
   const shorten = text => [...String(text || '')].slice(0, maxChars).join('');
   const frame = el('div', 'overview-ring-frame');
-  view.nodes.forEach((node, index) => {
+  const innerRadius = radius - RING_STROKE / 2 - RING_INNER_GAP - RING_INNER_STROKE / 2;
+  const innerCircumference = 2 * Math.PI * innerRadius;
+  const innerShare = count ? innerCircumference / count : 0;
+  const innerTrack = document.createElementNS(NS, 'g');
+  innerTrack.setAttribute('class', 'ring-inner-track');
+  const innerArcs = document.createElementNS(NS, 'g');
+  innerArcs.setAttribute('class', 'ring-inner-arcs');
+  const pointers = document.createElementNS(NS, 'g');
+  pointers.setAttribute('class', 'ring-pointers');
+  const arc = (r, offset, length, width, cls) => {
     const seg = document.createElementNS(NS, 'circle');
-    seg.setAttribute('cx', String(center)); seg.setAttribute('cy', String(center)); seg.setAttribute('r', String(radius));
+    seg.setAttribute('cx', String(center)); seg.setAttribute('cy', String(center)); seg.setAttribute('r', String(r));
     seg.setAttribute('fill', 'none');
-    seg.setAttribute('stroke', node.color);
-    seg.setAttribute('stroke-width', node.id === selectedId ? String(RING_STROKE + 4) : String(RING_STROKE));
-    seg.setAttribute('stroke-dasharray', `${share} ${circumference - share}`);
-    seg.setAttribute('stroke-dashoffset', String(-(index * share)));
+    seg.setAttribute('stroke-width', String(width));
+    seg.setAttribute('stroke-dasharray', `${Math.max(0, length)} ${Math.max(0, 2 * Math.PI * r - length)}`);
+    seg.setAttribute('stroke-dashoffset', String(-offset));
     seg.setAttribute('transform', `rotate(-90 ${center} ${center})`);
-    seg.setAttribute('class', `ring-seg ${node.status.kind}${node.id === selectedId ? ' selected' : ''}`);
+    seg.setAttribute('class', cls);
+    return seg;
+  };
+  view.nodes.forEach((node, index) => {
+    const selected = node.id === selectedId;
+    const seg = arc(radius, index * share, share, RING_STROKE, `ring-seg ${node.status.kind}${selected ? ' selected' : ''}`);
+    seg.setAttribute('stroke', node.color);
     seg.dataset.ringNode = node.id;
     seg.setAttribute('role', 'button');
     seg.setAttribute('tabindex', '0');
-    seg.setAttribute('aria-pressed', String(node.id === selectedId));
-    seg.setAttribute('aria-label', `${node.title}，${node.status.label}${node.id === selectedId ? '，当前选中' : ''}`);
+    seg.setAttribute('aria-pressed', String(selected));
+    const innerPercent = Math.round(nodeInnerProgress(node) * 100);
+    seg.setAttribute('aria-label', `${node.title}，${node.status.label}，节点内进度 ${innerPercent}%${selected ? '，当前选中' : ''}`);
     const tip = document.createElementNS(NS, 'title');
-    tip.textContent = `${node.title} · ${node.status.label}`;
+    tip.textContent = `${node.title} · ${node.status.label} · 节点内 ${innerPercent}%`;
     seg.append(tip);
     const pick = event => {
       if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
@@ -227,6 +256,30 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
     };
     if (onPick) { seg.addEventListener('click', pick); seg.addEventListener('keydown', pick); }
     group.append(seg);
+    // 选中扇区向外膨出一圈同色弧带：比整圈等宽加粗更明显，也不挤压内圈进度弧。
+    if (selected) {
+      const bulge = arc(radius + RING_STROKE / 2 + RING_BULGE / 2, index * share, share, RING_BULGE, 'ring-bulge');
+      bulge.setAttribute('stroke', node.color);
+      group.append(bulge);
+    }
+    // 内圈进度弧：扇区底色轨道 + 按节点内进度填充的深色弧；并行节点各自成段。
+    const track = arc(innerRadius, index * innerShare, innerShare, RING_INNER_STROKE, 'ring-inner-seg');
+    innerTrack.append(track);
+    const filled = arc(innerRadius, index * innerShare, innerShare * nodeInnerProgress(node), RING_INNER_STROKE, `ring-inner-fill ${node.status.kind}`);
+    innerArcs.append(filled);
+    // 正在开发的节点在进度弧内侧叠一枚指向它的三角指示；并行时每个活跃节点各一枚。
+    if (RING_ACTIVE_KINDS.has(node.status.kind)) {
+      const mid = -90 + (index + 0.5) * step;
+      const rad = (mid * Math.PI) / 180;
+      const pointAt = innerRadius - RING_INNER_STROKE / 2;
+      const dot = document.createElementNS(NS, 'path');
+      dot.setAttribute('d', `M ${center + pointAt * Math.cos(rad)} ${center + pointAt * Math.sin(rad)} L ${center + (pointAt - 5.5) * Math.cos(rad - 4.5 / pointAt)} ${center + (pointAt - 5.5) * Math.sin(rad - 4.5 / pointAt)} L ${center + (pointAt - 5.5) * Math.cos(rad + 4.5 / pointAt)} ${center + (pointAt - 5.5) * Math.sin(rad + 4.5 / pointAt)} Z`);
+      dot.setAttribute('class', 'ring-pointer');
+      const pointerTip = document.createElementNS(NS, 'title');
+      pointerTip.textContent = `正在开发：${node.title}`;
+      dot.append(pointerTip);
+      pointers.append(dot);
+    }
 
     // 扇区分隔线：同一波次内虚线，波次之间实线。
     if (index > 0) {
@@ -266,7 +319,7 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
     label.textContent = shorten(node.title);
     labels.append(label);
   });
-  svg.append(group, dividers, labels); // 标签最后画，避免被色带盖住
+  svg.append(group, innerTrack, innerArcs, pointers, dividers, labels); // 标签最后画，避免被色带盖住
   frame.append(svg, overviewRingCenter(view));
   wrap.append(frame);
   return wrap;
