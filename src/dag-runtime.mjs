@@ -11,6 +11,7 @@ import { createGhAdapter } from './dag-gh.mjs';
 import { acquireControllerLock } from './dag-lock.mjs';
 import { createPublisher } from './dag-publish.mjs';
 import { ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
+import { createProgressNotifier } from './dag-stall.mjs';
 import { createSlotRuntime, seg } from './dag-slots.mjs';
 import * as wip from './dag-wip.mjs';
 import { hubRequest } from './hub.mjs';
@@ -130,6 +131,7 @@ export function startDagControllers({ config, store, directory = path.join(confi
   const controllers = new Map(); // rootRunId → { ctl, lock } | { pending:true }
   let inflight = null; let stopped = false;
   const every = Math.max(MIN_POLL_MS, Number(intervalMs) || MIN_POLL_MS);
+  const notifyProgress = createProgressNotifier({ post: event => request(config, '/v1/events', { method: 'POST', body: event, auth: 'source' }), sent: rest.progressSent });
 
   async function adopt(rootRun) {
     if (controllers.has(rootRun.runId)) return;
@@ -152,7 +154,14 @@ export function startDagControllers({ config, store, directory = path.join(confi
         await adopt(rootRun);
         const held = controllers.get(rootRun.runId);
         if (!held?.ctl) continue;
-        try { await held.ctl.tick(); } catch (error) { log(`[dag] tick 失败 ${rootRun.runId}：${msg(error)}`); }
+        try {
+          const snap = await held.ctl.tick();
+          // tick 已持久化后再叫醒：中台侧按 subject 串起同一链的事项，重复事件 ID 去重。
+          if (snap?.progress?.length) {
+            try { await notifyProgress(rootRun, snap); }
+            catch (error) { log(`[dag-progress] 唤醒投递失败 ${rootRun.runId}：${msg(error)}`); }
+          }
+        } catch (error) { log(`[dag] tick 失败 ${rootRun.runId}：${msg(error)}`); }
       }
     } catch (error) { log(`[dag] 轮询异常：${msg(error)}`); }
   }

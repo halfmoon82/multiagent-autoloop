@@ -79,6 +79,34 @@ export function findDagClaimedStalls(runs, { now = Date.now(), thresholdMs = CLA
 
 const seg = value => String(value).replace(/[^A-Za-z0-9._-]/g, '_');
 
+// 状态变化唤醒：一轮 tick 里值得调度会话知道的变化（dev/review/accepted/blocked/gated），
+// 合并成一条 scheduling.message，同一批变化只投一次；瞬时错误不叫醒（归卡住巡检）。
+export function buildProgressEvent(rootRun, snapshot, tickSeq = 1) {
+  const lines = snapshot.progress.map(p => `${p.nodeId}: ${p.from ?? '?'} → ${p.to}`).join('、');
+  const text = [
+    `DAG 推进：链 ${rootRun.runId}（计划 ${rootRun.planId}）本轮有节点状态变化：${lines}。`,
+    `根 run 状态 ${rootRun.status}；detail.progress 为本次变化明细。`,
+    '请按调度契约接手本轮后续（派审阅、处理 blocked/gated、放行 accepted 后续波次等）；若只是中间进展可自行判断是否行动。核实后本轮结束。',
+  ].join('\n');
+  return {
+    id: `console:dag-progress:${seg(rootRun.runId)}:${tickSeq}`,
+    subject: `scheduling:dag:${seg(rootRun.runId)}`,
+    type: 'scheduling.message',
+    summary: `DAG 推进：${rootRun.planId}`.slice(0, 80),
+    detail: JSON.stringify({ project: rootRun.project, text, progress: snapshot.progress }),
+  };
+}
+
+export function createProgressNotifier({ post, sent = new Set(), log = console.error } = {}) {
+  return async (rootRun, snapshot, tickSeq = 1) => {
+    if (!snapshot?.progress?.length) return;
+    const event = buildProgressEvent(rootRun, snapshot, tickSeq);
+    if (sent.has(event.id)) return;
+    try { await post(event); sent.add(event.id); }
+    catch (error) { log(`[dag-progress] 唤醒投递失败 ${rootRun?.runId ?? event.id}：${error.message}`); }
+  };
+}
+
 export function buildStallEvent(stall, now = Date.now()) {
   const minutes = Math.max(1, Math.round((now - stall.since) / 60000));
   const text = [

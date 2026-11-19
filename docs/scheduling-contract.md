@@ -265,6 +265,19 @@ cron 规则模板（每 30 分钟，提示词只调用 verify 并汇报，不手
 
 ## 13. DAG 节点卡住发现（无模型，2026-11-19）
 
+### 13.1 状态变化即唤醒（2026-11-19）
+
+卡住只能发现"出错了没人管"，发现不了"正常推进但没人接下一轮"。
+控制器每一轮 tick 记录本轮各节点状态变化（`dev / review / accepted / blocked / gated`），
+合并成一条 `scheduling.message`（subject=`scheduling:dag:<runId>`）投给调度会话；
+瞬时错误（中台超时等）仍归卡住巡检，不在此处叫醒。
+
+- **合并**：一轮内所有节点的变化合一条，不逐条发；同链复用同一事项。
+- **去重**：事件 ID `console:dag-progress:<runId>:<tickSeq>`；进程内按 ID 去重，中台对重复 ID 不重复执行兜底。
+- **失败不阻断**：投递失败只记日志，不影响本轮推进与持久化。
+- **出口**：仍是中台原生 `POST /v1/events`（来源密钥），不加新规则、不改协议字段。
+- 调度会话收到的 `detail` 除 `project,text` 外还带 `progress` 明细，便于直接接手下一轮动作。
+
 背景：DAG 控制器把节点推进错误只写在 `dag-runs/*.json` 的 `publish.nodes.<id>.lastError`，每轮重试时覆盖；
 中台异常扫描只看卡片与 run，看不到这里。2026-11-19 device-binding 推送因凭据缺失连续失败，链停摆而无人发现。
 
