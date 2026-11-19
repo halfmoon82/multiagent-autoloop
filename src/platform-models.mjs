@@ -151,8 +151,9 @@ function currentRoles(config, policy) {
   const doc = readPolicyDoc(config);
   return Object.fromEntries(ROLES.map(role => [role, effective[role] || doc.defaults?.[role] || FALLBACK_ROLES[role]]));
 }
-// 模板执行者偏好：已保存设置里的平台 id 优先（保证保存前后平台 id 稳定），其次当前工作分配在用的执行者。
-const preferredIds = (saved, roles) => [...Object.keys(saved?.platforms || {}), ...ROLES.flatMap(role => [roles[role]?.primary, roles[role]?.fallback])].filter(Boolean);
+// 模板执行者偏好：当前工作分配在用的执行者优先（与契约文档一致，也防旧版按执行者保存的设置把项目专用执行者顶成模板），
+// 其次已保存设置里的平台 id（工作分配不涉及该程序时保持保存前后稳定）。
+const preferredIds = (saved, roles) => [...ROLES.flatMap(role => [roles[role]?.primary, roles[role]?.fallback]), ...Object.keys(saved?.platforms || {})].filter(Boolean);
 // 工作分配里记的是执行者 id；页面按平台展示，把同一程序上的执行者映射到该平台 id。
 function rolesByPlatform(raw, platforms, roles) {
   const toPlatform = id => {

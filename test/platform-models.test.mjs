@@ -214,6 +214,20 @@ test('读取接口：同一程序只出一行；工作分配映射到平台；�
   assert.deepEqual(after.platforms.find(p => p.use === 'codex').tiers, settings().platforms['codex-full']);
 });
 
+test('旧版保存过的设置（每个执行者一行、项目专用执行者排在前）不会让项目专用执行者当模板', async () => {
+  const raw = baseRules();
+  raw.agents = { codex: { name: 'Codex', worker: 'w', use: 'codex', access: 'read' }, 'liuxue-heal': { name: '留学辅导自愈', worker: 'w', use: 'codex', access: 'full' }, ...raw.agents };
+  const config = setup(raw);
+  const tiers = { light: 'deepseek-v4.1-flash', standard: 'kimi-for-coding', heavy: 'k3.1-pro' };
+  writeFileSync(path.join(config.root, 'platform-models.json'), JSON.stringify({ enabled: false, platforms: { codex: tiers, 'liuxue-heal': tiers, workbuddy: settings().platforms.workbuddy, claude: settings().platforms.claude, 'codex-full': tiers }, sessions: settings().sessions, savedAt: '2026-11-19T05:00:00Z' }));
+  const data = readPlatformModels(config, { catalog });
+  assert.equal(data.platforms.find(p => p.use === 'codex').id, 'codex-full');
+  await applyPlatformModels(config, settings(), opts);
+  const saved = rulesOf(config);
+  assert.ok(!Object.keys(saved.agents).some(id => id.startsWith('liuxue-heal-tier-')), '不得从项目专用执行者复制分档执行者');
+  assert.equal(saved.rules.find(r => r.when.types?.includes('scheduling.message')).to, 'codex-full-tier-light');
+});
+
 test('建议值：按平台可选模型由便宜到贵挑三档，挑不到就用平台默认模型', () => {
   const platforms = discoverPlatforms(baseRules(), { catalog });
   const s = suggestedSettings(platforms);
