@@ -107,6 +107,6 @@ export function dagRunSummary(detail, nodes) {
     nodeCount: nodes.length, doneCount: nodes.filter(node => node.status.kind === 'done').length,
     slotsUsed: live.filter(item => item.slot != null && !item.quarantine).length,
     quarantined: live.filter(item => item.quarantine && item.slot != null),
-    usage: sumUsage(detail?.nodeRuns || []),
+    usage: { ...sumUsage(detail?.nodeRuns || []), unreportable: (detail?.nodeRuns || []).some(item => item.usageUnreportable) },
   };
 }
