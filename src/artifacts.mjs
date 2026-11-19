@@ -68,3 +68,51 @@ export function readArtifact(cwd, relPath, { maxBytes = MAX_BYTES } = {}) {
   // 注意：stat 与读取之间存在文件增长窗口；本机单人控制台、产物来源为本机 worker，风险可接受
   return { path: relative, name: path.basename(real), content: readFileSync(real, 'utf8') };
 }
+
+// ---- 全局产物页：跨会话只读汇总（DAG 节点 artifacts）----
+// sessions 来自控制台自身状态（受信任）：[{ id, task, cwd, startedAt }]。
+// 每个会话仍按自己的 cwd 走 listArtifacts 的越界/排除边界；这里只做汇总、标记与封顶。
+
+export function listSessionArtifacts(sessions, { maxDepth = MAX_DEPTH, maxFiles = MAX_FILES } = {}) {
+  if (!Array.isArray(sessions)) return [];
+  const files = [];
+  for (const session of sessions) {
+    if (!session || typeof session !== 'object' || !session.cwd) continue;
+    let found;
+    try {
+      found = listArtifacts(session.cwd, { maxDepth, maxFiles, since: session.startedAt || null });
+    } catch { continue; }
+    for (const artifact of found) {
+      files.push({
+        ...artifact,
+        sessionId: String(session.id ?? ''),
+        task: String(session.task ?? ''),
+      });
+    }
+  }
+  return files
+    .sort((a, b) => b.at.localeCompare(a.at) || a.path.localeCompare(b.path) || a.sessionId.localeCompare(b.sessionId))
+    .slice(0, maxFiles);
+}
+
+// 按会话定位并读取产物；拿不到会话或越界都给可读错误，不把外部路径回给移动端。
+export function readSessionArtifact(sessions, sessionId, relPath, options = {}) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const session = list.find(item => item && String(item.id ?? '') === String(sessionId));
+  if (!session) throw new Error('产物所属会话不存在');
+  if (!session.cwd) throw new Error('产物所属会话没有工作目录');
+  const artifact = readArtifact(session.cwd, relPath, options);
+  return { ...artifact, sessionId: String(session.id ?? ''), task: String(session.task ?? '') };
+}
+
+// 把服务端错误映射成固定可读文案：绝不回显可能含绝对路径的原始消息。
+export function readableArtifactError(error) {
+  const message = String(error?.message || error || '').trim();
+  if (!message) return '读取产物失败，请稍后重试';
+  if (/会话不存在/.test(message)) return '产物所属会话不存在';
+  if (/越界|符号链接|outside/i.test(message)) return '产物路径越界，不能访问会话目录外的文件';
+  if (/不存在|no such file|ENOENT/i.test(message)) return '产物不存在或已移出会话目录';
+  if (/不支持|扩展名/.test(message)) return '不支持的产物类型，仅可阅读 Markdown 与 HTML';
+  if (/过大|too large/i.test(message)) return '产物文件过大，无法在手机上预览';
+  return '读取产物失败，请稍后重试';
+}
