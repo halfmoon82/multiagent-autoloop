@@ -94,6 +94,24 @@ test('用量终态不上报：节点轮次标 usageUnreportable 时如实写「�
   assert.equal(formatUsage(mixed[0].usage), '费用未上报 · Token 12（入 10 / 出 2）');
 });
 
+test('不需要模型：节点轮次标 usageNoModel 时写「不需要模型」', () => {
+  assert.equal(formatUsage({ ...sumUsage([{}]), noModel: true }), '不需要模型');
+  const nodes = buildDagNodes({
+    run: { runId: 'r', nodes: [{ id: 'n1' }], publish: { nodes: { n1: { state: 'dev' } } } },
+    nodeRuns: [{ runId: 'a', nodeId: 'n1', agent: 'remote-watch', usageNoModel: true }],
+  });
+  assert.equal(formatUsage(nodes[0].usage), '不需要模型');
+  // unreportable 与 noModel 同时存在时优先写不上报（跑模型但读不到的语义更具体）
+  const both = buildDagNodes({
+    run: { runId: 'r', nodes: [{ id: 'n1' }], publish: { nodes: { n1: { state: 'dev' } } } },
+    nodeRuns: [
+      { runId: 'a', nodeId: 'n1', agent: 'remote-watch', usageNoModel: true },
+      { runId: 'b', nodeId: 'n1', agent: 'workbuddy', usageUnreportable: true },
+    ],
+  });
+  assert.equal(formatUsage(both[0].usage), '该执行者不上报用量');
+});
+
 test('运行摘要：波次、槽位占用、完成数、隔离槽位', () => {
   const nodes = buildDagNodes(detail);
   const summary = dagRunSummary(detail, nodes);

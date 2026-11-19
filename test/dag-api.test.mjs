@@ -411,22 +411,30 @@ test('withHubUsage 按 Hub 轮次号补节点执行 Agent/模型/自报用量；
   assert.equal(withHubUsage(detail, [{ id: 501, agent: 'codex-full', usage: null }], {}).nodeRuns[0].model, '未配置');
 });
 
-test('withHubUsage 标 usageUnreportable：acp/command 通道无用量是终态，界面写「不上报」而非「未上报」', () => {
+test('withHubUsage 分两类标注：跑模型无用量 → unreportable，不跑模型 → noModel', () => {
   const detail = { run: { runId: 'r' }, nodeRuns: [
     { runId: 'a', nodeId: 'n1', hub: { hubRunId: 11, hubRun: 501 } }, // workbuddy，acp 通道
-    { runId: 'b', nodeId: 'n2', hub: { hubRunId: 12, hubRun: 502 } }, // codex，codex 通道可上报
+    { runId: 'b', nodeId: 'n2', hub: { hubRunId: 12, hubRun: 502 } }, // remote-watch，command 通道
     { runId: 'c', nodeId: 'n3', hub: { hubRunId: 13, hubRun: 503 } }, // workbuddy 但有用量（防御：不标）
+    { runId: 'd', nodeId: 'n4', hub: { hubRunId: 14, hubRun: 504 } }, // codex，可上报但暂无数据
   ] };
   const hubRuns = [
     { id: 501, agent: 'workbuddy', usage: null },
-    { id: 502, agent: 'codex-full', usage: null },
+    { id: 502, agent: 'remote-watch', usage: null },
     { id: 503, agent: 'workbuddy', usage: { input: 5, output: 1 } },
+    { id: 504, agent: 'codex-full', usage: null },
   ];
-  const adapters = { workbuddy: 'acp', 'codex-full': 'codex' };
+  const adapters = { workbuddy: 'acp', 'remote-watch': 'command', 'codex-full': 'codex' };
   const out = withHubUsage(detail, hubRuns, {}, adapters);
   assert.equal(out.nodeRuns[0].usageUnreportable, true, 'acp 无用量 → 终态不上报');
-  assert.equal(out.nodeRuns[1].usageUnreportable, undefined, 'codex 无用量 → 仍是「未上报」');
+  assert.equal(out.nodeRuns[0].usageNoModel, undefined);
+  assert.equal(out.nodeRuns[1].usageNoModel, true, 'command 无用量 → 不需要模型');
+  assert.equal(out.nodeRuns[1].usageUnreportable, undefined);
   assert.equal(out.nodeRuns[2].usageUnreportable, undefined, '有用量则不标');
+  assert.equal(out.nodeRuns[3].usageUnreportable, undefined, 'codex 无用量 → 仍是「未上报」');
+  assert.equal(out.nodeRuns[3].usageNoModel, undefined);
   // adapters 缺数据时按未知处理，不误标
-  assert.equal(withHubUsage(detail, hubRuns).nodeRuns[0].usageUnreportable, undefined);
+  const bare = withHubUsage(detail, hubRuns);
+  assert.equal(bare.nodeRuns[0].usageUnreportable, undefined);
+  assert.equal(bare.nodeRuns[1].usageNoModel, undefined);
 });

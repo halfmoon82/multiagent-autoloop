@@ -26,6 +26,7 @@ export function formatUsage(usage) {
   const number = new Intl.NumberFormat('zh-CN');
   const tokenReported = usage.input > 0 || usage.output > 0 || usage.tokens > 0;
   if (usage.unreportable && usage.cost === null && !tokenReported) return '该执行者不上报用量';
+  if (usage.noModel && usage.cost === null && !tokenReported) return '不需要模型';
   const costText = usage.cost === null ? '费用未上报' : `费用 $${usage.cost.toFixed(2)}`;
   const tokenText = tokenReported ? `Token ${number.format(usage.tokens)}（入 ${number.format(usage.input)} / 出 ${number.format(usage.output)}）` : 'Token 未上报';
   return `${costText} · ${tokenText}`;
@@ -73,7 +74,7 @@ export function buildDagNodes(detail) {
       contract: node.contract || {}, summary,
       agent: latest ? (latest.agent || '未上报') : '待派发',
       model: latest ? (saved.model || latest.model || '未上报') : '模型待选择',
-      prUrl: prs.at(-1)?.prUrl || '', usage: { ...sumUsage(mine), unreportable: mine.some(item => item.usageUnreportable) }, warnings, lastError: saved.lastError || '',
+      prUrl: prs.at(-1)?.prUrl || '', usage: { ...sumUsage(mine), unreportable: mine.some(item => item.usageUnreportable), noModel: mine.some(item => item.usageNoModel) }, warnings, lastError: saved.lastError || '',
     };
   });
 }
@@ -107,6 +108,6 @@ export function dagRunSummary(detail, nodes) {
     nodeCount: nodes.length, doneCount: nodes.filter(node => node.status.kind === 'done').length,
     slotsUsed: live.filter(item => item.slot != null && !item.quarantine).length,
     quarantined: live.filter(item => item.quarantine && item.slot != null),
-    usage: { ...sumUsage(detail?.nodeRuns || []), unreportable: (detail?.nodeRuns || []).some(item => item.usageUnreportable) },
+    usage: { ...sumUsage(detail?.nodeRuns || []), unreportable: (detail?.nodeRuns || []).some(item => item.usageUnreportable), noModel: (detail?.nodeRuns || []).some(item => item.usageNoModel) },
   };
 }
