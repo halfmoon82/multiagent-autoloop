@@ -199,9 +199,13 @@ Agent 或改写成只读提示词。否定豁免只认紧邻动词的禁止（�
 
 ### 12.2 自动侦测 `scripts/quota-scan.mjs`
 
-- 只读运行目录 `<AGENT_AUTOLOOP_HOME>/worker/runs/<轮次号>-<尝试号>/` 最近 `window` 个轮次（默认 200，可配），
+两条独立扫描通道共用同一连续计数与裁定：
+- **worker 轮次**：只读 `<AGENT_AUTOLOOP_HOME>/worker/runs/<轮次号>-<尝试号>/` 最近 `window` 个（默认 200），
   从 `stdout-*.log` / `stderr-1.log` 的 `error` 原文与退出码判定失败；Agent/模型取自 `entry.json` 的
   `job.agent.id` / `model`，缺失时按命令里的 `--model` 等特征推断；工作类型按规则名（开发/dev、审阅/review）判定。
+- **Hub 调度回合**（2026-11-19 主人定）：只读 `<AGENT_AUTOLOOP_HOME>/hub.db` 的 `runs` 视图（用系统 `sqlite3 -json`），
+  `error` 或 `summary` 命中额度模式的 run（含仍在 `queued`/`claimed` 排队重试的）也算失败轮次；
+  `done`/`nothing` 打断连续命中。工作类型按规则名（coord/调度会话、dev、review）判定；命中后按政策表绕行到**同一档**的备选平台执行者。
 - 额度拒绝模式可配：默认 `429, refusal, 配额, quota, 额度, rate.?limit, exhausted, too many requests`，
   `--patterns` 整体替换。编译失败、网络错误等**非额度失败不触发**，并打断同一 agent+model 的连续命中。
 - 同一 agent+model 连续 3 次额度命中（`--threshold` 可配）才自动登记：调 `recordDetour`，
