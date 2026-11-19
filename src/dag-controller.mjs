@@ -378,7 +378,8 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       try {
         if (root.publish?.cancelRequested) await cancelStep(root, st);
         else {
-          for (const id of Object.keys(st.nodes)) { try { await advanceNode(root, st, id); st.nodes[id].lastError = null; } catch (error) { st.nodes[id].lastError = msg(error); } }
+          // 先清再推进：advanceNode 自己写入的 lastError（未抛出的拒绝补发等）要保留，才能累计成卡住。
+          for (const id of Object.keys(st.nodes)) { st.nodes[id].lastError = null; try { await advanceNode(root, st, id); } catch (error) { st.nodes[id].lastError = msg(error); } }
           try { await reviewBlocked(root, st); } catch (error) { st.lastError = msg(error); }
           for (const id of Object.keys(st.nodes)) if (st.nodes[id].todo) { try { await runTodo(root, st, id); } catch (error) { st.nodes[id].lastError = msg(error); } }
           try { await dispatchReady(root, st); } catch (error) { st.lastError = msg(error); }

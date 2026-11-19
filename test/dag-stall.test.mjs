@@ -55,6 +55,32 @@ test('巡检：终态 DAG 不报', async () => {
   assert.deepEqual(findDagStalls(rootRuns(s), { now: s.clock.t + STALL_THRESHOLD_MS * 10 }), []);
 });
 
+test('控制器：推进步骤自己写入的错误（未抛出）不被同轮清空，能累计成卡住', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick();
+  // 模拟派发中断：节点 run 已 claimed 但中台从未接单（无 hubRunId），且丢了冻结 prepare base
+  const run = s.runOf('a');
+  assert.equal(run.status, 'claimed');
+  s.store.updateRun(run.runId, { hub: { hubRunId: undefined } });
+  const root = s.store.getRun(s.root.runId);
+  delete root.publish.nodes.a.prepareBase;
+  s.store.updateRun(s.root.runId, { publish: { nodes: root.publish.nodes } });
+  await s.ctl.tick();
+  const since = s.clock.t;
+  s.clock.t += 60_000; await s.ctl.tick();
+  const n = s.ctl.snapshot().nodes.a;
+  assert.match(n.lastError || '', /prepare base/);
+  assert.equal(n.errorSince, since);
+  assert.equal(n.errorCount, 2);
+});
+
+test('巡检：正在取消的 DAG 不报旧错误', async () => {
+  const s = setup([mkNode('a')]);
+  await toReview(s); pushFails(s); await s.ctl.tick();
+  s.store.updateRun(s.root.runId, { publish: { cancelRequested: true } });
+  assert.deepEqual(findDagStalls(rootRuns(s), { now: s.clock.t + STALL_THRESHOLD_MS * 10 }), []);
+});
+
 test('事件：发往调度会话通道，同一次卡住事件 ID 稳定，错误里的凭证被抹掉', () => {
   const stall = { runId: 'dagrun-x', planId: 'p1', project: '/proj', nodeId: 'a', since: 1000, count: 7,
     error: 'push https://bot:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r.git failed; token gho_ABCDEFGHIJKLMNOPQRSTUV1234567890ab' };

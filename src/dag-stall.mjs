@@ -20,7 +20,7 @@ export function redactError(text) {
 export function findDagStalls(runs, { now = Date.now(), thresholdMs = STALL_THRESHOLD_MS } = {}) {
   const stalls = [];
   for (const run of runs || []) {
-    if (!run || run.nodeId !== ROOT_NODE || isTerminal(run.status)) continue;
+    if (!run || run.nodeId !== ROOT_NODE || isTerminal(run.status) || run.publish?.cancelRequested) continue;
     for (const [nodeId, node] of Object.entries(run.publish?.nodes || {})) {
       if (!node?.lastError || !Number.isFinite(node.errorSince)) continue;
       if (now - node.errorSince < thresholdMs) continue;
