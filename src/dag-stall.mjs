@@ -50,6 +50,30 @@ export function findDagGated(runs, { now = Date.now(), thresholdMs = STALL_THRES
   return gated;
 }
 
+// 「queued 永不接单」发现（无模型）：节点已派发但 Hub run 始终 queued，worker 未接单。
+// 与「报错卡住」和「gated」并列：不是失败（不 gate），但长期没人接手也值得调度会话知道。
+// since 用 run.createdAt（派发起算）；同一节点同一 run 只报一次（事件 id 含 since，中台按 id 去重）。
+export function findDagQueued(runs, { now = Date.now(), thresholdMs = STALL_THRESHOLD_MS } = {}) {
+  const stalled = [];
+  for (const run of runs || []) {
+    if (!run || run.nodeId !== ROOT_NODE || isTerminal(run.status) || run.publish?.cancelRequested) continue;
+    for (const [nodeId, node] of Object.entries(run.publish?.nodes || {})) {
+      if (node?.state !== 'dev' && node?.state !== 'review') continue;
+      const latest = (runs || []).filter(r => r.nodeId === nodeId && r.role === node.state)
+        .sort((a, b) => (b.generation - a.generation) || (b.attempt - a.attempt))[0];
+      // claimed = 已派给 worker 但还没回执；长期 claimed 才是「worker 接单但不交付」的卡住。
+      // queued（run 已建未 claim）是控制器自身的短暂状态，几秒内就会被 claim，不算卡住。
+      if (!latest || latest.status !== 'claimed') continue;
+      const since = latest.updatedAt ? new Date(latest.updatedAt).getTime() : (latest.createdAt ? new Date(latest.createdAt).getTime() : null);
+      if (!Number.isFinite(since)) continue;
+      if (now - since < thresholdMs) continue;
+      stalled.push({ runId: run.runId, planId: run.planId, project: run.project, nodeId, state: node.state,
+        since, count: 1, error: `Hub run ${latest.runId} 已 claimed ${Math.round((now - since) / 60000)} 分钟，worker 接单后未回执` });
+    }
+  }
+  return stalled;
+}
+
 const seg = value => String(value).replace(/[^A-Za-z0-9._-]/g, '_');
 
 export function buildStallEvent(stall, now = Date.now()) {
@@ -80,6 +104,12 @@ export async function sweepDagStalls({ runs, post, sent = new Set(), now = Date.
     if (sent.has(event.id)) continue;
     try { await post(event); sent.add(event.id); result.posted.push(event.id); }
     catch (error) { result.errors.push(`${stall.runId}/${stall.nodeId}：${error.message}`); }
+  }
+  for (const node of findDagQueued(runs, { now, thresholdMs })) {
+    const event = buildStallEvent(node, now);
+    if (sent.has(event.id)) continue;
+    try { await post(event); sent.add(event.id); result.posted.push(event.id); }
+    catch (error) { result.errors.push(`${node.runId}/${node.nodeId}：${error.message}`); }
   }
   for (const node of findDagGated(runs, { now, thresholdMs })) {
     const event = buildStallEvent(node, now);
