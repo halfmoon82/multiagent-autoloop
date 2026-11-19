@@ -4,6 +4,7 @@ import { CardNotifier } from '../src/notifier.mjs';
 import { createChainCloseoutSweeper } from '../src/chain-closeout.mjs';
 import { readRuleOptions } from '../src/rules.mjs';
 import { startDagControllers } from '../src/dag-runtime.mjs';
+import { createDagStallSweeper } from '../src/dag-stall.mjs';
 const config = loadConsoleConfig();
 const server = createConsoleServer(config);
 // 新出现的「待我处理」卡片发 macOS 系统通知；AUTOLOOP_NOTIFY=0 可关闭。
@@ -13,7 +14,9 @@ const notifier = process.env.AUTOLOOP_NOTIFY === '0' ? null : new CardNotifier({
 const closeout = process.env.AUTOLOOP_CLOSEOUT === '0' ? null : createChainCloseoutSweeper({ root: config.root, rules: () => readRuleOptions(config).rules || [], config });
 // DAG 控制器（无模型）：启动即从 dag-runs/*.json 恢复在途节点并对账 Hub；AUTOLOOP_DAG=0 可关闭。
 let dagControllers = null;
-const stopNotifier = () => { notifier?.stop(); closeout?.stop(); dagControllers?.stop(); };
+// DAG 卡住巡检（无模型）：节点同一错误持续 10 分钟即唤醒调度会话；AUTOLOOP_DAG_STALL=0 可关闭。
+const dagStall = process.env.AUTOLOOP_DAG === '0' || process.env.AUTOLOOP_DAG_STALL === '0' ? null : createDagStallSweeper({ config });
+const stopNotifier = () => { notifier?.stop(); closeout?.stop(); dagControllers?.stop(); dagStall?.stop(); };
 server.on('close', stopNotifier);
 server.on('error', error => { console.error(`控制台启动失败：${error.message}`); stopNotifier(); process.exitCode = 1; });
 server.listen(config.port, config.host, () => {
@@ -21,6 +24,7 @@ server.listen(config.port, config.host, () => {
   closeout?.start();
   server.restoreSchedulingSessions();
   if (process.env.AUTOLOOP_DAG !== '0') dagControllers = startDagControllers({ config });
+  dagStall?.start();
   console.log(`Autoloop 控制台：http://${config.host}:${server.address().port}`);
   console.log(`连接中台：${config.hubUrl}`);
   console.log('仅本机可访问；按 Ctrl+C 停止。');
