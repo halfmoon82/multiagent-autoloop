@@ -62,7 +62,7 @@ export const defaultCatalog = {
   },
 };
 
-function defaultModelOf(agent) {
+export function defaultModelOf(agent) {
   if (agent.model) return agent.model;
   const flag = Array.isArray(agent.command) ? agent.command.indexOf('--model') : -1;
   if (flag >= 0 && agent.command[flag + 1]) return agent.command[flag + 1];

@@ -42,8 +42,33 @@ function optionalActionOptions(loaded) {
   return pool.map(id => ({ id, ...HIGH_RISK_ACTION_INFO[id], selectedByDefault: false }));
 }
 
+// 节点记录只存 Hub 轮次号（hubRun）。/v1/state 首页只含最近 ~60 轮：已完成节点的轮次早已翻出首页，
+// 只读首页就会让这些节点丢执行 Agent / Token / 模型。按缺失的轮次号用 ?before=<id+1> 定向取回
+// （中台 runs 只增不删），去重复用同一页、每次请求限页数，取不到的保持缺失、界面如实写未上报。
+export const HUB_RUN_LOOKUP_MAX_PAGES = 12;
+export async function collectHubRuns(fetchState, wantedIds, { maxPages = HUB_RUN_LOOKUP_MAX_PAGES } = {}) {
+  const byId = new Map();
+  const absorb = state => { for (const run of Array.isArray(state?.runs) ? state.runs : []) { const id = Number(run?.id); if (Number.isInteger(id) && !byId.has(id)) byId.set(id, run); } };
+  const missing = () => [...new Set(wantedIds)].filter(id => Number.isInteger(id) && !byId.has(id)).sort((a, b) => b - a);
+  let pages = 0;
+  try { absorb(await fetchState(null)); pages += 1; } catch { return [...byId.values()]; }   // Hub 不可达：原样返回，不让详情页 502
+  while (pages < maxPages) {
+    const need = missing();
+    if (!need.length) break;
+    // 最新的缺失轮次优先：一页覆盖其前约 60 轮，同页内的更老轮次顺带取回。
+    let state;
+    try { state = await fetchState(need[0] + 1); } catch { break; }
+    pages += 1;
+    const before = byId.size;
+    absorb(state);
+    if (byId.size === before && !byId.has(need[0])) { byId.set(need[0], null); }   // 该轮次不存在：占位避免死循环，不入结果
+  }
+  return [...byId.values()].filter(Boolean);
+}
+
 // hubRunsById：/v1/state 的 runs（按 Hub 轮次号）。节点记录只存轮次号，执行 Agent 与自报 Token/费用
 // 只在 Hub 轮次上；按轮次号补到节点记录上供界面显示。查不到（翻页外、Hub 不可达）保持原样，界面如实写未上报。
+// models：{ [执行者 id]: 模型 }——每个执行者自己的模型（分档执行者命令里带 --model），缺失才退回宿主默认标签。
 // 通道分两类如实标注，避免把终态当成暂时缺数据：
 // - UNREPORTABLE_USAGE_ADAPTERS：跑模型但协议不带用量（acp）。2026-11-19 实测：workbuddy 的 ACP 协议帧无用量
 //   字段，但 --print stream-json 模式每条消息都带 usage_update（input/output/cache tokens + credits）——

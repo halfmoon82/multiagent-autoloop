@@ -438,3 +438,88 @@ test('withHubUsage 分两类标注：跑模型无用量 → unreportable，不�
   assert.equal(bare.nodeRuns[0].usageUnreportable, undefined);
   assert.equal(bare.nodeRuns[1].usageNoModel, undefined);
 });
+
+test('collectHubRuns：首页之外的老轮次按轮次号定向取回，Hub 不可达/轮次不存在都不炸', async () => {
+  const { collectHubRuns } = await import('../src/dag-service.mjs');
+  const all = Array.from({ length: 300 }, (_, i) => ({ id: i + 1, agent: `a${i + 1}`, usage: { input: i + 1 } }));
+  const calls = [];
+  const fetchState = async before => {
+    calls.push(before);
+    const pool = before == null ? all : all.filter(run => run.id < before);
+    const runs = pool.slice(-60).reverse();
+    return { runs, nextBefore: runs.length ? runs.at(-1).id : null };
+  };
+  // 首页是 241–300；要 7、130、295：295 在首页，130 与 7 要定向翻
+  const runs = await collectHubRuns(fetchState, [7, 130, 295]);
+  const ids = new Set(runs.map(run => run.id));
+  assert.ok(ids.has(295) && ids.has(130) && ids.has(7), '三个轮次都取回');
+  assert.deepEqual(calls, [null, 131, 8], '最新的缺失轮次优先，一页内顺带取回同页老轮次，不重复请求');
+  // 页数上限：不无限翻
+  const capped = [];
+  await collectHubRuns(async before => { capped.push(before); return { runs: [], nextBefore: null }; }, [1, 2, 3, 4, 5, 6, 7, 8], { maxPages: 4 });
+  assert.ok(capped.length <= 4, `请求数 ${capped.length} 不超过页数上限`);
+  // 轮次不存在：占位防死循环
+  const gone = await collectHubRuns(async before => ({ runs: before == null ? [{ id: 50 }] : [], nextBefore: null }), [3]);
+  assert.deepEqual(gone.map(run => run.id), [50]);
+  // Hub 首页就失败：返回空，不抛
+  assert.deepEqual(await collectHubRuns(async () => { throw new Error('连不上'); }, [1]), []);
+  // 后续页失败：保留已取到的
+  let n = 0;
+  const partial = await collectHubRuns(async before => { if (n++ === 0) return { runs: [{ id: 9 }] }; throw new Error('超时'); }, [1, 9]);
+  assert.deepEqual(partial.map(run => run.id), [9]);
+});
+
+test('GET /api/dag-runs/:id 经假 Hub：首页之外的已完成节点仍带执行 Agent/用量，模型取各执行者自己的（分档 --model）', async () => {
+  const http = await import('node:http');
+  const { writeFileSync: write } = await import('node:fs');
+  const t = setup(); const url = await listen(t.server);
+  try {
+    // 假 Hub：首页只有 200–259；老轮次 77、130 要走 ?before=
+    const all = Array.from({ length: 259 }, (_, i) => ({ id: i + 1, agent: i + 1 === 77 ? 'workbuddy-tier-standard' : i + 1 === 130 ? 'claude-tier-heavy' : 'other', usage: i + 1 === 130 ? { input: 9, output: 1, cost: 0.5 } : null, state: 'done' }));
+    const requests = [];
+    const hub = http.createServer((req, res) => {
+      const before = new URL(req.url, 'http://x').searchParams.get('before');
+      requests.push(before);
+      const pool = before == null ? all : all.filter(run => run.id < Number(before));
+      const runs = pool.slice(-60).reverse();
+      res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ runs, nextBefore: runs.length ? runs.at(-1).id : null }));
+    });
+    await new Promise(resolve => hub.listen(0, '127.0.0.1', resolve));
+    // 重建带假 Hub 地址、带分档执行者的控制台
+    await close(t.server);
+    const rules = { rules: [], agents: {
+      'workbuddy-tier-standard': { use: 'acp', command: ['x', '--acp', '--model', 'glm-5.3-flash'] },
+      'claude-tier-heavy': { use: 'claude', model: 'opus' },
+    } };
+    write(path.join(t.root, 'rules.json'), JSON.stringify(rules));
+    const sessions = { async start() { return { id: 's' }; }, dispose() {} };
+    const dagService = createDagService({ root: t.root, store: t.store });
+    const server = createConsoleServer({ hubUrl: `http://127.0.0.1:${hub.address().port}`, ownerKey: 'owner-secret-zzz', host: '127.0.0.1', root: t.root, rulesFile: path.join(t.root, 'rules.json'), projectRoots: [path.dirname(t.project)], dagService }, sessions);
+    const base = await listen(server);
+    try {
+      // 用真实创建接口得到带授权快照的根 run，再在同一存储目录补节点轮次（hub.hubRun 指向假 Hub 的老轮次）。
+      const createdRes = await post(base, '/api/dag-runs', t.payload());
+      const created = await createdRes.json();
+      assert.equal(createdRes.status, 201, `创建根 run 失败：${JSON.stringify(created).slice(0, 200)}`);
+      // 节点轮次走 store 的真实入口：createNodeRun 建、updateRun 记 hub 编号（hubRun 指向假 Hub 的老轮次）。
+      for (const [nodeId, hubRun] of [['a', 77], ['b', 130]]) {
+        const nodeRun = t.store.createNodeRun(created.runId, { nodeId, role: 'dev' });
+        t.store.updateRun(nodeRun.runId, { hub: { hubRunId: 1, hubRun } });
+      }
+      const detailRes = await fetch(`${base}/api/dag-runs/${created.runId}`);
+      const detail = await detailRes.json();
+      assert.equal(detailRes.status, 200, `详情接口回了 ${detailRes.status}：${JSON.stringify(detail).slice(0, 300)}`);
+      const byNode = id => detail.nodeRuns.find(item => item.nodeId === id);
+      assert.equal(byNode('a').agent, 'workbuddy-tier-standard', `首页之外的老轮次也带执行 Agent；假 Hub 收到 ${JSON.stringify(requests)}；节点 ${JSON.stringify(detail.nodeRuns.map(item => [item.nodeId, item.agent, item.hub]))}`);
+      assert.equal(byNode('a').model, 'glm-5.3-flash', '分档执行者的模型取命令里的 --model，而不是宿主默认标签');
+      assert.equal(byNode('a').usageUnreportable, true, 'acp 无用量仍标不上报');
+      assert.equal(byNode('b').model, 'opus');
+      assert.deepEqual(byNode('b').usage, { input: 9, output: 1, cost: 0.5 }, '老轮次的自报用量也取回');
+      assert.deepEqual(requests, [null, '131'], '首页 + 一次定向翻页（before=131 一页含 71–130，77 同页顺带取回，不重复请求）');
+      // 总览/串行链共用的 /api/rules 同口径
+      const ruleData = await (await fetch(`${base}/api/rules`)).json();
+      assert.equal(ruleData.models['workbuddy-tier-standard'], 'glm-5.3-flash');
+      assert.equal(ruleData.agents.find(agent => agent.id === 'claude-tier-heavy').model, 'opus');
+    } finally { await close(server); await new Promise(resolve => hub.close(resolve)); }
+  } finally { /* t.server 已在上面关闭 */ }
+});
