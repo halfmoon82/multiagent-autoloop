@@ -8,10 +8,28 @@ const SKIP_DIRS = new Set(['node_modules', 'Library', 'Pods', 'vendor']);
 // 临时产物命名约定：探针/排练/工作流状态目录与标记待删的目录不是可调度项目
 const JUNK_NAME = /(待删|-(workflow-state|probe|rehearsal)(-r\d+)?$)/;
 
+// 移动端只读摘要（Spec §8.2）：项目作为全局一级筛选的稳定标识与显示名。
+// 只由真实 name/path 投影；无效或缺失条目不生成，绝不编造项目或状态。
+export function mobileProjectSummary(project) {
+  const id = String(project?.path ?? project?.id ?? '').trim();
+  const label = String(project?.name ?? project?.label ?? '').trim();
+  return id && label ? { id, label } : null;
+}
+export function mobileProjectSummaries(projects = []) {
+  return (Array.isArray(projects) ? projects : []).map(mobileProjectSummary).filter(Boolean);
+}
+export function mobileProjectOptions(projects = []) {
+  return [{ id: '全部', label: '全部' }, ...mobileProjectSummaries(projects)];
+}
+// 把只读摘要附到既有 /api/projects 输出的每个项目上，移动端与网页控制台共用同一后端数据。
+function withMobileSummaries(projects) {
+  return projects.map(project => ({ ...project, mobileSummary: mobileProjectSummary(project) }));
+}
+
 export function discoverGitProjects({ roots = [], rules = [] } = {}) {
   const cacheKey = roots.join('|');
   if (cache.key === cacheKey && Date.now() - cache.at < CACHE_TTL_MS) {
-    return mergeRuleProjects(cache.value, rules);
+    return withMobileSummaries(mergeRuleProjects(cache.value, rules));
   }
   const found = new Map();
   const consider = dir => {
@@ -35,7 +53,7 @@ export function discoverGitProjects({ roots = [], rules = [] } = {}) {
   for (const root of roots) walk(path.resolve(root), 0);
   const discovered = [...found.values()];
   cache = { key: cacheKey, at: Date.now(), value: discovered };
-  return mergeRuleProjects(discovered, rules);
+  return withMobileSummaries(mergeRuleProjects(discovered, rules));
 }
 
 function mergeRuleProjects(discovered, rules) {

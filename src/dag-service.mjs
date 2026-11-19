@@ -66,6 +66,35 @@ export function withHubUsage(detail, hubRuns = [], models = {}, adapters = {}) {
   };
 }
 
+// 移动端只读摘要（Spec §8.2）：从根 run 真实字段投影项目 DAG 进度与执行授权范围。
+// 只读、不重算 digest、不改写 schema 1/2 授权快照；缺失字段留 null/空数组，不编造进度、模型或费用。
+// 旧 run 的 schema 1 授权记录一律原样读取，避免任何摘要公式变动影响既有 run。
+export function mobileDagSummaries(runs = []) {
+  const list = Array.isArray(runs) ? runs : [];
+  return list.map(run => {
+    const raw = run && typeof run === 'object' && !Array.isArray(run) ? run : {};
+    const grant = raw.authorizationSnapshot && typeof raw.authorizationSnapshot === 'object' && !Array.isArray(raw.authorizationSnapshot)
+      ? raw.authorizationSnapshot : null;
+    const nodes = Array.isArray(raw.nodes) ? raw.nodes : [];
+    const runId = String(raw.runId ?? '').trim();
+    if (!runId) return null;
+    return {
+      runId,
+      project: String(raw.project ?? '').trim() || null,
+      planId: String(raw.planId ?? '').trim() || null,
+      status: String(raw.status ?? '').trim() || null,
+      createdAt: String(raw.createdAt ?? '').trim() || null,
+      remoteUrl: String(raw.remoteUrl ?? grant?.remoteUrl ?? '').trim() || null,
+      nodeCount: nodes.length,
+      files: [...new Set(nodes.flatMap(node => (Array.isArray(node?.contract?.files) ? node.contract.files.map(String) : [])))],
+      planDigest: String(grant?.planDigest ?? raw.planDigest ?? '').trim() || null,
+      allowedActions: Array.isArray(grant?.allowedActions) ? [...grant.allowedActions].map(String).sort() : [],
+      deniedActions: [...DENIED_ACTIONS],
+      authorizationPresent: Boolean(grant),
+    };
+  }).filter(Boolean);
+}
+
 // hubEvidence({ run }) → { workerOnline?, offlineSince? }：来自 Hub“接单程序没连上”卡片；默认无证据即 fail closed。
 export function createDagService({ root, store: injected, storeDirectory, hubEvidence = async () => ({}), now = Date.now,
   log = console.error, writeAudit = (dir, name, content) => writeFileSync(path.join(dir, name), content) } = {}) {
@@ -79,7 +108,11 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
     return run;
   };
   return {
-    list: () => store.listRuns().filter(run => run.nodeId === ROOT_NODE),
+    list: () => {
+      const runs = store.listRuns().filter(run => run.nodeId === ROOT_NODE);
+      const summaries = new Map(mobileDagSummaries(runs).map(summary => [summary.runId, summary]));
+      return runs.map(run => ({ ...run, mobileSummary: summaries.get(String(run.runId)) || null }));
+    },
     get(id) {
       const run = getRoot(id);
       return { run, nodeRuns: store.listRuns().filter(r => r.project === run.project && r.planId === run.planId && r.nodeId !== ROOT_NODE) };

@@ -55,13 +55,39 @@ export function defaultCheck(config, draft) {
   try { execFileSync(config.cliPath, ['check', draft], { env: { ...process.env, AGENT_AUTOLOOP_HOME: config.root }, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 }); }
   catch (error) { throw new RuleError(error.stderr?.toString().trim() || error.stdout?.toString().trim() || error.message); }
 }
+// 移动端只读摘要（Spec §8.2）：把正式规则投影成触屏列表所需的最小字段。
+// 服务端不读 Hub 状态、不编造运行/暂停；状态由移动端从 /v1/state 的 lines 叠加，缺失显示明确空态。
+// 动作沿用网页控制台既有能力：运行 / 暂停 / 恢复 / 编辑，不新增能力。
+export function mobileRuleSummaries(options = {}) {
+  const rules = Array.isArray(options?.rules) ? options.rules : [];
+  const agents = new Map((Array.isArray(options?.agents) ? options.agents : []).map(agent => [String(agent?.id ?? ''), agent]));
+  return rules.map(rule => {
+    const name = String(rule?.name ?? '').trim();
+    if (!name) return null;
+    const agentId = String(rule?.to ?? '').trim();
+    const when = rule?.when || {};
+    const trigger = when.cron ? `定时 · ${when.cron}`
+      : when.source ? `${when.source} · ${(Array.isArray(when.types) ? when.types : []).join(', ')}`
+        : '手动触发';
+    return {
+      name,
+      project: String(rule?.cwd ?? '').trim(),
+      agent: agentId,
+      agentLabel: String(agents.get(agentId)?.name ?? '').trim() || null,
+      trigger,
+      actions: ['run', 'pause', 'resume', 'edit'],
+    };
+  }).filter(Boolean);
+}
+
 export function readRuleOptions(config) {
   const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
-  return {
+  const options = {
     rules: raw.rules.map(rule => ({ name: rule.name, when: rule.when, to: rule.to, cwd: rule.cwd, prompt: rule.prompt || '', parallel: rule.parallel, resume: !!rule.resume })),
     agents: Object.entries(raw.agents || {}).map(([id, agent]) => ({ id, name: agent.name || id, access: agent.access || 'edit', adapter: agent.use || '' })),
     sources: Object.entries(raw.sources || {}).map(([id, source]) => ({ id, name: source.name || id })),
   };
+  return { ...options, mobileRules: mobileRuleSummaries(options) };
 }
 export async function saveRule(config, input, existingName, check = defaultCheck) {
   // 与频限绕行等状态操作互斥（detour.mjs 的 withStateLock），整文件读-改-写不被交错。
