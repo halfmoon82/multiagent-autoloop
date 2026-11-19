@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitRunSections, runLine, projectForRun, projectForCard, matchesProject, collectProjects, ruleProject, scopedTotals, scopedSpending, timersForProject, sessionProgress, projectActivity, latestChainsByProject, chainUsage, chainCurrentExecutor } from '../public/status-sections.mjs';
+import { splitRunSections, runLine, projectForRun, projectForCard, matchesProject, collectProjects, ruleProject, scopedTotals, scopedSpending, timersForProject, sessionProgress, projectActivity, latestChainsByProject, chainUsage, chainNodeExecutors } from '../public/status-sections.mjs';
 import { formatCost } from '../public/format.mjs';
 const snapshot = { models: { claude: '默认模型' }, runs: [
   { id: 1, rule: '开发', state: 'claimed', summary: '正在改' },
@@ -280,16 +280,20 @@ test('chainUsage fallback without sibling chains takes all project rules', () =>
   assert.equal(usage.tokens, 55);
 });
 
-test('chainCurrentExecutor 只认自报了用量的模型轮次，无模型巡检/正在跑未上报的轮次不冒充执行者', () => {
+test('chainNodeExecutors 每个节点只认 subject=节点 id 的轮次：服务端历史为底，首页更新的轮次覆盖，巡检与别的规则不冒充', () => {
   const rules = [{ name: 'v6-dev', cwd: '/p/v6' }, { name: 'v6-scan', cwd: '/p/v6' }, { name: 'other', cwd: '/p/x' }];
-  const chain = { sourceFile: 'v6-serial.json', project: '/p/v6' };
+  const chain = { sourceFile: 'v6-serial.json', project: '/p/v6', order: ['n1', 'n2', 'n3'], nodes: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }],
+    nodeRounds: { n1: { id: 3, agent: 'claude', state: 'done', usage: { input: 5, output: 7, cost: 0.02 } }, n2: { id: 4, agent: 'workbuddy', state: 'done', usage: null } } };
+  const ev = subject => [{ type: 'v6.dev', subject }];
   const runs = [
-    { id: 11, rule: 'v6-scan', agent: 'supervisor-scan', state: 'nothing', usage: null },
-    { id: 10, rule: 'v6-dev', agent: 'codex-full', state: 'claimed', usage: null },
-    { id: 9, rule: 'other', agent: 'workbuddy', state: 'done', usage: { input: 1, output: 1 } },
-    { id: 8, rule: 'v6-dev', agent: 'claude', state: 'done', usage: { input: 5, output: 7, cost: 0.02 } },
-    { id: 7, rule: 'v6-dev', agent: 'codex', state: 'done', usage: { input: 9, output: 9 } },
+    { id: 12, rule: 'v6-scan', agent: 'supervisor-scan', state: 'nothing', usage: { input: 1, output: 1 }, events: [{ type: 'schedule.tick', subject: '' }] },
+    { id: 11, rule: 'other', agent: 'codex', state: 'done', usage: { input: 1, output: 1 }, events: ev('n3') },
+    { id: 10, rule: 'v6-dev', agent: 'codex-full', state: 'claimed', usage: null, events: ev('n2') },
+    { id: 2, rule: 'v6-dev', agent: 'codex', state: 'done', usage: { input: 9, output: 9 }, events: ev('n1') },
   ];
-  assert.deepEqual(chainCurrentExecutor(chain, rules, runs, [], { claude: 'opus' }, { claude: 'Claude Code' }), { agent: 'Claude Code', model: 'opus', usage: { input: 5, output: 7, cost: 0.02 } });
-  assert.equal(chainCurrentExecutor(chain, rules, runs.slice(0, 3), [], {}), null);
+  const out = chainNodeExecutors(chain, rules, runs, [], { claude: 'opus' }, { claude: 'Claude Code', 'codex-full': 'Codex 可写调度' });
+  assert.deepEqual(out.n1, { agent: 'Claude Code', model: 'opus', usage: { input: 5, output: 7, cost: 0.02 }, running: false }, '服务端历史里更新的一轮胜过首页旧轮次');
+  assert.deepEqual(out.n2, { agent: 'Codex 可写调度', model: '未配置', usage: null, running: true }, '首页正在跑的轮次覆盖历史');
+  assert.equal(out.n3, undefined, '别的规则同名 subject 不算');
+  assert.deepEqual(chainNodeExecutors({ ...chain, nodeRounds: undefined }, rules, runs.slice(0, 2), [], {}), {});
 });

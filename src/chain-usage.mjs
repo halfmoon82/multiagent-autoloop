@@ -37,6 +37,7 @@ const UNSETTLED_MAX = 500;
 // 捞不完的留在册里下轮继续（不丢账）。
 const UNSETTLED_PROBE_MAX = 20;
 const FAILURE_BACKOFF_MS = 60000;
+const NODE_SUBJECTS_MAX = 100;   // 每条规则最多记多少个 subject 的最近一轮（单链节点数远小于此）
 
 const isNum = value => typeof value === 'number' && Number.isFinite(value);
 const cleaned = value => String(value ?? '').trim();
@@ -78,8 +79,23 @@ function validEntry(value) {
     && Array.isArray(value.counted) && value.counted.every(isNum);
 }
 
+function validNodes(value) {
+  const out = {};
+  if (!value || typeof value !== 'object') return out;
+  for (const [rule, byNode] of Object.entries(value)) {
+    if (!byNode || typeof byNode !== 'object') continue;
+    for (const [nodeId, round] of Object.entries(byNode)) {
+      if (!isNum(round?.id)) continue;
+      (out[rule] ||= {})[nodeId] = { id: round.id, agent: cleaned(round.agent), state: cleaned(round.state), usage: round.usage && typeof round.usage === 'object' && !Array.isArray(round.usage) ? round.usage : null };
+    }
+  }
+  return out;
+}
+
 export function readLedger(root) {
-  const blank = { version: LEDGER_VERSION, seen: [], rules: {}, complete: false, backfillCursor: null, updatedAt: null };
+  // nodes：{ [规则]: { [节点 id]: { id, agent, state, usage } } }——串行节点自己的最近一轮（触发事件 subject = 节点 id）。
+  // nodesTracked：台账从建账起就在记节点；老台账（建账时还没这个字段）需要额外补翻一遍历史，nodesCursor 是补翻断点。
+  const blank = { version: LEDGER_VERSION, seen: [], rules: {}, complete: false, backfillCursor: null, updatedAt: null, nodes: {}, nodesTracked: true, nodesCursor: null };
   if (!root) return blank;
   let data;
   try { data = JSON.parse(readFileSync(ledgerPath(root), 'utf8')); }
@@ -116,6 +132,9 @@ export function readLedger(root) {
     complete: droppedEntry ? false : (data.version === LEDGER_VERSION ? data.complete === true : false),
     backfillCursor: isNum(data.backfillCursor) ? data.backfillCursor : null,
     updatedAt,
+    nodes: validNodes(data.nodes),
+    nodesTracked: data.nodesTracked === true,
+    nodesCursor: isNum(data.nodesCursor) ? data.nodesCursor : null,
   };
 }
 
@@ -131,7 +150,7 @@ function persistLedger(root, ledger) {
 }
 
 // 链词干零命中时回退到项目归属规则（未被其他链词干认领），与 public/status-sections.mjs 同口径。
-function resolveChainRules(chain, rules, allChains) {
+export function resolveChainRules(chain, rules, allChains) {
   const names = chainRuleNames(chain?.sourceFile, rules);
   if (names.length) return names;
   const claimed = new Set();
@@ -145,6 +164,8 @@ function resolveChainRules(chain, rules, allChains) {
     .filter(rule => baseName(rule?.cwd) === project && !claimed.has(rule.name))
     .map(rule => rule.name);
 }
+
+const chainNodeIds = chain => new Set([...(chain?.order || []), ...(chain?.nodes || []).map(node => node?.id)].map(cleaned).filter(Boolean));
 
 const totalsOf = (acc, backfillPending) => {
   const totals = {
@@ -174,7 +195,7 @@ const resultCache = new WeakMap();  // config → { signature, result }
 const nextScanAt = new WeakMap();   // config → 下一次允许真实扫描的时刻（只由真实扫描推进）
 const inFlight = new WeakMap();     // config → { promise, signature }
 
-function buildResult({ rules, chains, entries, backfillPending }) {
+function buildResult({ rules, chains, entries, backfillPending, nodes = {} }) {
   const byRule = new Map();
   for (const name of Object.keys(entries)) byRule.set(name, totalsOf(entries[name], backfillPending));
   const byChain = new Map();
@@ -182,6 +203,18 @@ function buildResult({ rules, chains, entries, backfillPending }) {
     const names = resolveChainRules(chain, rules, chains);
     if (!names.length) continue;
     byChain.set(chain.sourceFile, sumEntries(names.map(name => entries[name] || emptyEntry()), backfillPending));
+  }
+  // 每条链的节点最近一轮：链的各规则里同一节点取轮次号最大的那轮。
+  const nodesByChain = new Map();
+  for (const chain of chains || []) {
+    const ids = chainNodeIds(chain);
+    const out = {};
+    for (const name of resolveChainRules(chain, rules, chains)) {
+      for (const [nodeId, round] of Object.entries(nodes[name] || {})) {
+        if (ids.has(nodeId) && (!out[nodeId] || out[nodeId].id < round.id)) out[nodeId] = { ...round };
+      }
+    }
+    nodesByChain.set(chain.sourceFile, out);
   }
   const byProject = new Map();
   const projectOf = new Map(rules.map(rule => [rule.name, baseName(rule?.cwd)]));
@@ -192,13 +225,13 @@ function buildResult({ rules, chains, entries, backfillPending }) {
     groups.get(key).push(entries[name]);
   }
   for (const [key, list] of groups) byProject.set(key, sumEntries(list, backfillPending));
-  return { byRule, byChain, byProject };
+  return { byRule, byChain, byProject, nodesByChain };
 }
 
 // 本地按台账重建当前签名下的结果：不打中台，也不推进扫描调度。
 function rebuildFromLedger({ config, rules, chains, signature }) {
   const ledger = readLedger(config.root);
-  const result = buildResult({ rules, chains, entries: ledger.rules, backfillPending: !ledger.complete });
+  const result = buildResult({ rules, chains, entries: ledger.rules, backfillPending: !ledger.complete, nodes: ledger.nodes });
   resultCache.set(config, { signature, result });
   return result;
 }
@@ -252,6 +285,27 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
     else entry.pending = fresh;
   }
   const known = new Set(rules.map(rule => cleaned(rule?.name)).filter(Boolean));
+  // 已知规则的轮次按触发事件 subject 逐个记"最近一轮"；展示时再按链规则与节点 id 过滤（buildResult），
+  // 这样不依赖扫描时链是否已加载（项目用量路由不带链）、链文件晚于轮次出现或节点后加，都不用重翻历史。
+  // 每条规则只留轮次号最大的 NODE_SUBJECTS_MAX 个 subject，台账体积有上限。
+  const noteNode = (name, id, run) => {
+    for (const event of run.events || []) {
+      const nodeId = cleaned(event?.subject);
+      if (!nodeId) continue;
+      const byNode = ledger.nodes[name] || (ledger.nodes[name] = {});
+      const prev = byNode[nodeId];
+      if (prev && prev.id > id) continue;
+      const next = { id, agent: cleaned(run.agent), state: cleaned(run.state), usage: run.usage && typeof run.usage === 'object' && !Array.isArray(run.usage) ? run.usage : null };
+      if (prev && JSON.stringify(prev) === JSON.stringify(next)) continue;
+      byNode[nodeId] = next;   // 同一轮次再次出现（跑完、被定向核实）时刷新状态与自报用量
+      const keys = Object.keys(byNode);
+      if (keys.length > NODE_SUBJECTS_MAX) {
+        keys.sort((a, b) => byNode[a].id - byNode[b].id);
+        for (const key of keys.slice(0, keys.length - NODE_SUBJECTS_MAX)) delete byNode[key];
+      }
+      dirty = true; wroteSinceChange = false;
+    }
+  };
   const seen = new Set(ledger.seen);
   const entries = ledger.rules;
   let dirty = false;   // 本轮是否有需要落盘的变化（入账、在册增删、断点推进）
@@ -318,6 +372,7 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
       }
       const name = cleaned(run.rule);
       if (!known.has(name)) continue;
+      noteNode(name, id, run);
       const view = viewFor(name);
       if (view.counted.has(id)) continue;
       if (!run.finishedAt) {
@@ -405,20 +460,38 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
     }
   }
 
+  // 阶段三：老台账补记节点轮次。建账时还没记节点的台账，费用早已到底，节点记录却是空的——
+  // 额外从首页往旧补翻一遍（counted 去重，费用不会重复入账），断点 nodesCursor 逐页落盘，翻到底后转为 nodesTracked。
+  if (!ledger.nodesTracked && known.size) {
+    let cursor = ledger.nodesCursor;
+    while (pages < maxPages) {
+      const state = await fetchState(cursor);
+      processPage(state);
+      pages += 1;
+      const next = nextCursor(state);
+      dirty = true; wroteSinceChange = false;
+      if (next == null) { ledger.nodesTracked = true; ledger.nodesCursor = null; break; }
+      cursor = next;
+      ledger.nodesCursor = next;
+      flush();
+    }
+  }
+
   const stateChanged = ledger.complete !== (reachedBottom || (alreadyComplete && frontierStopped))
     || (isNum(ledger.backfillCursor) ? ledger.backfillCursor : null) !== (reachedBottom || (alreadyComplete && frontierStopped) ? null : resumeCursor);
   ledger.seen = [...seen].sort((a, b) => a - b);
   // 稳态（已到底 + 前沿正常停止）保持到底；只有真的到底或本来就是到底态才不降级。
   ledger.complete = reachedBottom || (alreadyComplete && frontierStopped);
   ledger.backfillCursor = ledger.complete ? null : resumeCursor;
-  const result = buildResult({ rules, chains, entries, backfillPending: !ledger.complete });
+  const result = buildResult({ rules, chains, entries, backfillPending: !ledger.complete, nodes: ledger.nodes });
   if (dirty || stateChanged) try {
     await withStateLockAsync(config, async () => { persistLedger(config.root, ledger); });
   } catch (error) {
     if (!(error instanceof DetourError)) throw error;
     console.error(`[chain-usage] 收尾落盘遇到状态锁，保留逐页进度：${error.message}`);
   }
-  nextScanAt.set(config, Date.now() + (ledger.complete ? ttlMs : Math.min(ttlMs, BACKFILL_STEP_MS)));
+  const settled = ledger.complete && (ledger.nodesTracked || !known.size);   // 节点补翻没完也按回填节奏续翻
+  nextScanAt.set(config, Date.now() + (settled ? ttlMs : Math.min(ttlMs, BACKFILL_STEP_MS)));
   resultCache.set(config, { signature, result });
   return result;
 }

@@ -96,6 +96,10 @@ async function handleApi(config, req, res, url) {
     for (const chain of data.chains) {
       // loadChains 有 mtime 缓存：拿不到当前链的台账值就必须剥掉旧值，
       // 避免把上一轮（或别的签名下）残留当成当前服务端真累计。
+      // 节点自己的最近一轮（服务端台账翻遍 Hub 历史，按触发事件 subject=节点 id 归属）；拿不到就剥掉旧值，界面如实写未上报。
+      const rounds = usage?.nodesByChain?.get(chain.sourceFile);
+      if (rounds) chain.nodeRounds = rounds;
+      else delete chain.nodeRounds;
       const cumulative = usage?.byChain.get(chain.sourceFile);
       if (cumulative) chain.cumulativeUsage = cumulative;
       else delete chain.cumulativeUsage;

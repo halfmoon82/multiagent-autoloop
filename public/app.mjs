@@ -1,7 +1,7 @@
 import { openRuleForm } from './rule-form.mjs';
 import { renderSummary, renderAttention, renderEnvironment, renderTimers, renderRules, renderRuns, renderCards, renderWorkSections, renderSessionItems, renderSessionCard, renderArchivedSessions, renderArchivedEntries, renderProjectProgress, chainUsageText } from './views.mjs';
 import { projectName } from './format.mjs';
-import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject, chainUsage, chainCurrentExecutor } from './status-sections.mjs';
+import { projectForRun, projectForCard, matchesProject, collectProjects, scopedTotals, scopedSpending, timersForProject, chainUsage, chainNodeExecutors } from './status-sections.mjs';
 import { el } from './views.mjs';
 import { initDag } from './dag-app.mjs';
 import { stableReplace, hasLiveInteraction } from './dom-stable.mjs';
@@ -251,8 +251,8 @@ document.addEventListener('click', event => {
   const chain = (state.serial?.chains || []).find(item => item.sourceFile === hit.dataset.serialRun);
   if (!chain) return;
   const usage = chainUsageText(chainUsage(chain, state.rules, state.snapshot?.lines || [], state.serial?.chains || []));
-  const executor = chainCurrentExecutor(chain, state.rules, state.snapshot?.runs || [], state.serial?.chains || [], state.models || {}, agentNameMap());
-  dag.openSerialDetail(chain, hit.dataset.serialNode, usage, executor);
+  const executors = chainNodeExecutors(chain, state.rules, state.snapshot?.runs || [], state.serial?.chains || [], state.models || {}, agentNameMap());
+  dag.openSerialDetail(chain, hit.dataset.serialNode, usage, executors);
 });
 document.addEventListener('click', async event => {
   const button = event.target.closest('button[data-action]'); if (!button) return;

@@ -190,7 +190,7 @@ test('陈旧 pending 转入不阻塞记账：不再全量深翻，完成后靠�
   try {
     // 预置台账（旧形态：pending 是纯 id 数组 + 陈旧 updatedAt）：10/9/8 已计，run 7 三天前就看到还没完成。
     writeFileSync(path.join(root, 'chain-usage.json'), JSON.stringify({
-      version: 2, complete: true, updatedAt: isoDaysAgo(3),
+      version: 2, complete: true, updatedAt: isoDaysAgo(3), nodesTracked: true,   // 本例只测陈旧 pending，不触发老台账节点补翻
       seen: [8, 9, 10],
       rules: {
         'V6串行推进': { counted: [10, 9, 8], pending: [7], input: 3, output: 3, cost: 3, costReported: true, rounds: 3, missingCostRounds: 0 },
@@ -449,5 +449,49 @@ test('从未开跑的取消轮次清账必须落盘，不得每轮重复 settle 
     const ledger = readLedgerFile(root);
     assert.deepEqual(ledger.rules['V6串行推进'].pending, [], '清账必须落盘，不能每轮重复 settle');
     assert.deepEqual(ledger.rules['V6串行推进'].unsettled, [], '也不得被 sweep 挤进在册名额');
+  } finally { await close(server); await close(hub.server); }
+});
+
+const withSubject = (run, subject) => ({ ...run, events: [{ source: 'local', type: 'v6.dev', subject, summary: '' }] });
+
+test('节点最近一轮：只认触发事件 subject=节点 id 的轮次，取最大轮次号；正在跑的轮次跑完后刷新自报用量', async () => {
+  const { store, server, hub, progress } = await setup([['v6-serial.json', '/p/v6app']]);
+  try {
+    store.runs = [
+      finished(5, 'V6串行推进', { input: 1, output: 1, cost: 1 }),                     // 巡检：无节点编号
+      withSubject(finished(4, 'Other推进', { input: 9, output: 9, cost: 9 }), 'n1'),  // 别的项目规则：不算
+      withSubject({ ...finished(3, 'V6开发', { input: 5, output: 7, cost: 0.02 }), agent: 'workbuddy' }, 'n1'),
+      withSubject(finished(2, 'V6开发', { input: 1, output: 1, cost: 1 }), 'n1'),
+    ];
+    const ofNode = async () => (await progress()).chains.find(item => item.sourceFile === 'v6-serial.json').nodeRounds;
+    assert.deepEqual(await ofNode(), { n1: { id: 3, agent: 'workbuddy', state: 'done', usage: { input: 5, output: 7, cost: 0.02 } } });
+    store.runs.unshift(withSubject(open(6, 'V6开发'), 'n1'));
+    assert.deepEqual((await ofNode()).n1, { id: 6, agent: 'claude', state: 'claimed', usage: null }, '新派发的轮次立即成为该节点最近一轮');
+    store.runs[0] = withSubject(finished(6, 'V6开发', { input: 2, output: 3, cost: 0.5 }), 'n1');
+    assert.deepEqual((await ofNode()).n1, { id: 6, agent: 'claude', state: 'done', usage: { input: 2, output: 3, cost: 0.5 } }, '跑完后补上自报用量');
+    assert.equal((await progress()).chains[0].cumulativeUsage.cost, 2.52, '节点记录不影响费用累计（5+3+2+6 四轮，Other 规则不计）');
+    assert.ok(hub.requests.length > 0);
+  } finally { await close(server); await close(hub.server); }
+});
+
+test('老台账（建账时未记节点）只补翻一次历史补齐节点记录，费用不重复入账，之后回到稳态', async () => {
+  const { store, hub, server, root, progress } = await setup([['v6-serial.json', '/p/v6app']]);
+  try {
+    writeFileSync(path.join(root, 'chain-usage.json'), JSON.stringify({
+      version: 2, complete: true, backfillCursor: null, updatedAt: isoToday(), seen: [1, 2, 3],
+      rules: { 'V6开发': { counted: [3, 2, 1], pending: [], input: 3, output: 3, cost: 3, costReported: true, rounds: 3, missingCostRounds: 0 } },
+    }));
+    store.runs = [
+      finished(3, 'V6开发', { input: 1, output: 1, cost: 1 }),
+      finished(2, 'V6开发', { input: 1, output: 1, cost: 1 }),
+      withSubject(finished(1, 'V6开发', { input: 1, output: 1, cost: 1 }), 'n1'),
+    ];
+    const first = (await progress()).chains[0];
+    assert.equal(first.nodeRounds.n1.id, 1, '深处的历史轮次被补记');
+    assert.equal(first.cumulativeUsage.cost, 3, '补翻不重复计费');
+    assert.equal(readLedgerFile(root).nodesTracked, true, '补翻到底后转为持续记录');
+    const before = hub.requests.length;
+    await progress();
+    assert.ok(hub.requests.length - before <= 2, `补翻完成后回到稳态，实测 ${hub.requests.length - before} 页`);
   } finally { await close(server); await close(hub.server); }
 });
