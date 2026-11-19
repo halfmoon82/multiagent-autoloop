@@ -166,7 +166,7 @@ export function progressNodeCard(node, { cls = 'progress-node', selected = false
     const paint = (open) => {
       summary.classList.toggle('summary-collapsed', !open);
       summary.classList.toggle('summary-expanded', open);
-      summary.title = open ? '点击收起任务摘要' : `${node.summary}（点击展开）`;
+      summary.title = open ? '点击收起任务摘要' : '点击展开任务摘要';
     };
     summary.firstElementChild.append(el('span', 'node-summary-caret', '▾'));
     paint(expandedSummaries.has(summaryKey));

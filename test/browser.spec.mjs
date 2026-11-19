@@ -429,15 +429,19 @@ try {
   const summaryRow = progressRow.locator('.progress-node[data-serial-node="n2"] .node-field').filter({ hasText: '任务摘要' });
   const summaryValue = summaryRow.locator('.node-task-summary');
   assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-collapsed')), true, 'overview task summary defaults to collapsed');
-  assert.equal(await summaryValue.evaluate(node => getComputedStyle(node).webkitLineClamp), '1', 'collapsed summary is clamped to a single line');
-  assert.ok(await summaryValue.evaluate(node => node.scrollHeight > node.clientHeight + 1), 'collapsed summary actually clips the longer text');
+  assert.equal(await summaryValue.evaluate(node => getComputedStyle(node).whiteSpace), 'nowrap', 'collapsed summary is a single nowrap line');
+  assert.ok(await summaryValue.evaluate(node => node.scrollWidth > node.clientWidth + 1), 'collapsed summary actually clips the longer text');
   await summaryRow.click();
   assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-expanded')), true, 'clicking the summary expands it in place');
-  assert.ok(await summaryValue.evaluate(node => node.scrollHeight <= node.clientHeight + 1), 'expanded summary shows the full text');
+  assert.ok(await summaryValue.evaluate(node => node.scrollWidth <= node.clientWidth + 1), 'expanded summary shows the full text');
   assert.equal(await page.locator('#view-overview').isVisible(), true, 'expanding a summary must stay on the overview');
   assert.equal(await page.locator('#view-dag').isVisible(), false, 'expanding a summary must not open the detail view');
-  await page.waitForTimeout(2300); // 跨过一次 2s 轮询重建，展开状态不能被刷新吞掉
-  assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-expanded')), true, 'expanded state survives the polling re-render');
+  // 打标记后等一次真实轮询重建：证明展开状态是跨重建保留，而不是容器被冻结没刷新
+  await summaryRow.evaluate(node => { node.__revMark = 'pre-poll'; });
+  await page.waitForFunction(() => {
+    const row = document.querySelector('#progress-list .progress-node[data-serial-node="n2"] .node-field');
+    return Boolean(row) && row.__revMark !== 'pre-poll' && row.classList.contains('summary-expanded');
+  }, null, { timeout: 10000 });
   await summaryRow.click();
   assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-collapsed')), true, 'second click collapses it again');
   // 串行节点点击 → 与 DAG 同构的运行详情视图（不再是只有浮层）

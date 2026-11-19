@@ -40,8 +40,8 @@
 .node-field.summary-collapsed:hover .node-field-value.node-task-summary{color:var(--accent-dark)}
 .node-summary-caret{font-size:10px;line-height:1;color:var(--muted);transition:transform .15s ease}
 .node-field.summary-expanded .node-summary-caret{transform:rotate(180deg)}
-.node-field.summary-collapsed .node-task-summary{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:1;overflow:hidden}
-.node-field.summary-expanded .node-task-summary{display:block;overflow:visible}
+.node-field.summary-collapsed .node-task-summary{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node-field.summary-expanded .node-task-summary{display:block;white-space:normal;overflow:visible}
 .node-usage{color:var(--accent-dark)}
 .donut-legend{display:flex;flex-wrap:wrap;gap:4px 10px;justify-content:center;font-size:10px;color:var(--muted)}
 .donut-legend span{display:inline-flex;align-items:center;gap:4px}
