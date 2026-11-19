@@ -1,0 +1,71 @@
+PASS overview: renders without blank app
+PASS conversation: renders without blank app
+PASS artifacts: renders without blank app
+PASS artifact-preview: renders without blank app
+PASS sessions: renders without blank app
+PASS rules: renders without blank app
+PASS rule-form: renders without blank app
+PASS runs: renders without blank app
+PASS cards: renders without blank app
+PASS dag: renders without blank app
+PASS authorize: renders without blank app
+PASS new-session: renders without blank app
+PASS notifications: renders without blank app
+PASS biometric: renders without blank app
+PASS devices: renders without blank app
+PASS overview: global project filter is visible
+PASS rules: global project filter is visible
+PASS sessions: global project filter is visible
+PASS runs: global project filter is visible
+PASS cards: global project filter is visible
+PASS dag: global project filter is visible
+PASS artifacts: global project filter is visible
+PASS conversation: global project filter is visible
+PASS project filter: sheet opens
+PASS project filter: selecting a project filters overview cards
+PASS rules: selected project remains active
+PASS sessions: selected project remains active
+PASS runs: selected project remains active
+PASS cards: selected project remains active
+PASS project filter: all projects restores items
+PASS DAG overview: circular progress ring exists
+PASS DAG overview: wave/node legend exists
+PASS DAG overview: capacity and usage are shown
+PASS DAG detail: circular progress and wave stack exist
+PASS DAG detail: node contract facts exist
+PASS sessions: archived section is present and collapsed by default
+PASS sessions: archived entries expand
+PASS archived session: read-only view opens
+PASS archived session: restore creates a new session
+PASS rules: actions stay run/edit/pause/resume
+PASS cards: answer and resolve actions stay in-card
+PASS conversation: in-session artifact panel is visible
+PASS conversation artifact: reader shows session/task origin
+PASS conversation artifact: back returns to the session
+PASS artifact manager: opens from session and remains available
+PASS decision: option selection enables submit
+PASS decision: answered question remains in conversation
+PASS decision: moves to second question
+PASS voice: listening state visible
+PASS voice: transcript is editable and not auto-sent
+PASS decision: all answered state
+PASS notification: inline reply expands
+PASS notification: direct reply requires biometrics
+PASS biometric: success state
+PASS biometric: returns to conversation context
+PASS artifact: opens reader
+PASS artifact: source view
+PASS artifact: back returns to file browser
+PASS conversation: 160% font has no device-level horizontal overflow
+PASS artifacts: 160% font has no device-level horizontal overflow
+PASS artifact-preview: 160% font has no device-level horizontal overflow
+PASS overview: 160% font has no device-level horizontal overflow
+PASS devices: 160% font has no device-level horizontal overflow
+PASS overview: fold layout renders
+PASS conversation: fold layout renders
+PASS fold conversation: sidebar and main are both visible
+PASS artifacts: fold layout renders
+PASS fold artifacts: list and preview are both visible
+PASS no JavaScript errors
+
+69 checks passed. Browser errors: []

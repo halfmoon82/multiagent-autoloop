@@ -1,0 +1,298 @@
+{
+  "plan_id": "2026-11-18-mobile-device-admin",
+  "title": "移动端 App 与网页设备授权管理后台",
+  "nodes": [
+    {
+      "id": "device-binding",
+      "title": "设备绑定与网页管理后台",
+      "issue": 2,
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §6、现有控制台服务端与设备授权需求",
+        "output": "网页端设备绑定、一次性二维码、已绑定设备列表、解除授权与审计记录",
+        "error_behavior": "绑定或解除失败保留原状态并给出可读错误，不暴露密钥",
+        "acceptance_example": "生成二维码并完成绑定；解除授权后设备立即失去访问与通知资格；移动端不能解除其他设备",
+        "files": [
+          "public/",
+          "src/server.mjs",
+          "src/device-auth.mjs",
+          "test/device-auth.test.mjs",
+          "test/browser.spec.mjs"
+        ]
+      }
+    },
+    {
+      "id": "mobile-shell",
+      "title": "移动端 App 壳、Android APK 与安全连接",
+      "issue": 1,
+      "depends_on": [
+        "device-binding"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §5、设备绑定结果、现有控制台 API 与 Android APK 交付要求",
+        "output": "独立移动端前端壳、安全连接、生物识别与可安装 Android APK",
+        "error_behavior": "网络断开可重连；生物识别失败不进入主界面；APK 打包失败不阻塞其他节点",
+        "acceptance_example": "手机在任意移动网络或外部 Wi-Fi 下连接控制台；打开 App 需生物识别；APK 可安装并启动",
+        "files": [
+          "mobile/app/",
+          "src/server.mjs",
+          "test/mobile-shell.test.mjs",
+          "test/browser.spec.mjs"
+        ]
+      }
+    },
+    {
+      "id": "mobile-core",
+      "title": "移动端核心页面",
+      "issue": 4,
+      "depends_on": [
+        "mobile-shell"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-3",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §8、移动端壳、现有控制台 API 与设计稿",
+        "output": "总览、调度规则、执行轮次、待我处理与执行授权页面",
+        "error_behavior": "数据缺失显示明确空态，不编造状态",
+        "acceptance_example": "移动端可查看总览、规则、轮次、待办与执行授权，并与后端状态一致",
+        "files": [
+          "mobile/src/core/",
+          "src/projects.mjs",
+          "src/rules.mjs",
+          "src/dag-service.mjs",
+          "test/mobile-core.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "notifications",
+      "title": "系统通知与锁屏直复",
+      "issue": 3,
+      "depends_on": [
+        "mobile-core"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-4",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §7、移动端核心页面、待办与节点完成事件",
+        "output": "独立待办与节点完成系统通知、锁屏直复、角标与状态同步",
+        "error_behavior": "通知失败不影响主流程；已处理事项不重复提交",
+        "acceptance_example": "待办和节点完成分别独立通知；锁屏直复可用；角标与待办数量一致",
+        "files": [
+          "mobile/src/features/notifications/",
+          "src/notifier.mjs",
+          "test/notifications.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "project-filter",
+      "title": "全局项目筛选与主导航",
+      "issue": 5,
+      "depends_on": [
+        "mobile-core"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-4",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §8.2、移动端核心页面与现有项目模型",
+        "output": "全局一级项目筛选和主导航",
+        "error_behavior": "项目列表为空时显示明确空态；筛选不影响会话内上下文",
+        "acceptance_example": "所有主要 Tab 可切换项目并同步过滤；返回会话后上下文不变",
+        "files": [
+          "mobile/src/features/project-filter/",
+          "src/projects.mjs",
+          "test/mobile-project-filter.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "dag-ring",
+      "title": "项目 DAG 环形图与节点详情",
+      "issue": 6,
+      "depends_on": [
+        "project-filter"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-5",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §8.2、现有 DAG 服务、环形图设计稿",
+        "output": "环形进度图、波次节点、槽位、费用、证据与节点详情",
+        "error_behavior": "DAG 数据缺失显示空态，不用串行链条替代",
+        "acceptance_example": "环形图与现有 DAG 基线一一对应；点击节点可查看契约与证据",
+        "files": [
+          "mobile/src/features/dag-ring/",
+          "src/dag-model.mjs",
+          "src/dag-service.mjs",
+          "test/mobile-dag-ring.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "sessions",
+      "title": "会话列表、新建会话与已归档会话",
+      "issue": 7,
+      "depends_on": [
+        "project-filter"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-5",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §8.3、现有会话模型、项目筛选",
+        "output": "会话列表、新建会话、语义分类推荐、已归档与历史、只读查看与恢复",
+        "error_behavior": "会话数据缺失显示空态；恢复失败保留原记录",
+        "acceptance_example": "可新建会话；已归档会话可只读查看并恢复为新会话",
+        "files": [
+          "mobile/src/features/sessions/",
+          "src/scheduling-session.mjs",
+          "src/session-archive.mjs",
+          "test/mobile-sessions.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "voice-input",
+      "title": "语音输入",
+      "issue": 10,
+      "depends_on": [
+        "sessions"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-6",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §9、会话列表、语音输入需求",
+        "output": "所有会话输入框的语音转文字、可编辑、不自动发送",
+        "error_behavior": "无权限、识别失败或无网络时回退键盘输入",
+        "acceptance_example": "语音可转为可编辑文字；停顿不自动发送；失败可回退键盘",
+        "files": [
+          "mobile/src/features/voice-input/",
+          "test/mobile-voice-input.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "question-group",
+      "title": "会话内待回答组",
+      "issue": 8,
+      "depends_on": [
+        "sessions",
+        "voice-input"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-7",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §8.3、会话列表、语音输入、Agent 多问题场景",
+        "output": "会话内待回答组、进度轨、逐题作答、已答题折叠与上下文保持",
+        "error_behavior": "提交失败保留题目、选项与草稿；不重复提交已答事项",
+        "acceptance_example": "多问题逐项回答；已答题可回看；切页或旋转后状态不丢",
+        "files": [
+          "mobile/src/features/question-group/",
+          "test/mobile-question-group.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "artifacts",
+      "title": "产物双入口与会话内产物",
+      "issue": 9,
+      "depends_on": [
+        "question-group"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-8",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §8.4、会话内待回答组、现有产物服务",
+        "output": "全局产物管理页与会话内产物入口；返回会话恢复状态",
+        "error_behavior": "产物不存在或越界时给出可读错误；移动端只读",
+        "acceptance_example": "产物可从全局与会话内打开；返回会话后草稿与滚动位置保留",
+        "files": [
+          "mobile/src/features/artifacts/",
+          "src/artifacts.mjs",
+          "test/mobile-artifacts.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "font-touch",
+      "title": "系统字体与触控热区",
+      "issue": 11,
+      "depends_on": [
+        "artifacts"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-9",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §9、移动端所有页面、系统字体与触控要求",
+        "output": "字体随系统设置缩放、布局自然重排、触控热区与状态适配",
+        "error_behavior": "放大字体不截断、不遮挡、不强制横向滚动",
+        "acceptance_example": "系统字体 160% 时所有页面无横向溢出；触控热区约 44–48 dp",
+        "files": [
+          "mobile/src/features/font-touch/",
+          "test/mobile-font-touch.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "device-sync",
+      "title": "多设备状态同步与审计完善",
+      "issue": 12,
+      "depends_on": [
+        "notifications"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-5",
+      "status": "planned",
+      "contract": {
+        "input": "Spec §7、系统通知、设备授权管理后台",
+        "output": "多设备同步、审计完善、设备丢失后的授权解除",
+        "error_behavior": "同步失败保留最新一致状态并提示；解除授权立即生效",
+        "acceptance_example": "任意一台提交后其他设备同步；解除授权不影响其他设备",
+        "files": [
+          "mobile/src/features/device-sync/",
+          "src/device-auth.mjs",
+          "src/notifier.mjs",
+          "test/device-sync.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "final-acceptance",
+      "title": "综合验收与真机 smoke",
+      "issue": 13,
+      "depends_on": [
+        "dag-ring",
+        "font-touch",
+        "device-sync"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-10",
+      "status": "planned",
+      "contract": {
+        "input": "全部前置节点、PRD、Spec、设计稿与验证要求",
+        "output": "综合验收、Android APK 安装启动验证与真机 smoke",
+        "error_behavior": "未覆盖项明确披露，不自动触发部署或生产变更",
+        "acceptance_example": "PRD 成功标准全部满足；APK 安装并启动；真机 smoke 通过",
+        "files": [
+          "docs/2026-11-18-mobile-device-admin-prd.md",
+          "docs/2026-11-18-mobile-device-admin-spec.md",
+          "test/mobile-final-acceptance.test.mjs"
+        ]
+      }
+    }
+  ]
+}

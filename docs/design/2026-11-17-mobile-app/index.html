@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Autoloop Mobile · 高保真交互设计</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="prototype-panel" aria-label="设计稿导航">
+    <div class="prototype-brand"><span class="brand-gem">A</span><div><strong>Autoloop</strong><small>Mobile experience · v1</small></div></div>
+    <p class="prototype-kicker">PRODUCT DESIGN / 2026.11</p>
+    <h1>移动控制面，<br>不止于缩小。</h1>
+    <p class="prototype-intro">保留控制台的信息架构，以触屏、对话式决策、系统通知和折叠屏为基础重新组织交互。</p>
+    <div class="device-switch" role="group" aria-label="设备画板">
+      <button class="active" data-device="phone" type="button">直板手机</button>
+      <button data-device="fold" type="button">折叠展开</button>
+    </div>
+    <div class="prototype-font-switch"><span>系统字体</span><div><button class="active" data-font="1" type="button">100%</button><button data-font="1.3" type="button">130%</button><button data-font="1.6" type="button">160%</button></div></div>
+    <nav id="prototype-nav" class="prototype-nav"></nav>
+    <div class="prototype-note"><span></span> 所有关键控件均可点击<br><small>点击画面内选项、返回、标签与通知体验流程</small></div>
+  </aside>
+  <main class="prototype-stage">
+    <div class="stage-caption"><span id="screen-number">01</span><div><strong id="screen-title">总览</strong><small id="screen-subtitle">今日自动化 · 触屏首页</small></div></div>
+    <div id="device" class="device phone">
+      <div class="device-surface">
+        <div class="status-bar"><span>9:41</span><div><span class="status-signal">●</span><span>5G</span><span class="battery">88</span></div></div>
+        <div id="app" class="app"></div>
+        <div class="home-indicator"></div>
+      </div>
+    </div>
+    <p class="stage-hint">390 × 844 / 960 × 720 · 交互视觉稿，数据均为示例</p>
+  </main>
+  <div id="prototype-toast" class="prototype-toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
