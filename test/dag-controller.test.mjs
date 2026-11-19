@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkNode, setup } from './dag-fakes.mjs';
 import { designContractDigest } from '../src/design-baseline.mjs';
-import { evaluateAdvance } from '../src/dag-run.mjs';
+import { evaluateAdvance, isTerminal } from '../src/dag-run.mjs';
 
 const six = () => ['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(id => mkNode(id));
 // 驱动一个节点从开发回执到 accepted（两个 tick）。
@@ -443,4 +443,44 @@ test('派发提示的回执模板逐字可被状态机接受（dev 与 review）
   assert.equal(review.receipt.role, 'review');
   assert.equal(review.receipt.outcome, 'accepted');
   assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), review.receipt), { verdict: 'apply', failureCounted: false, nextStatus: 'done' });
+});
+
+test('验收后残留的非终态 run 会收敛并释放槽位（Hub 已终态但 store 停在 claimed）', async () => {
+  // 生产现场形态：节点已 accepted，但审阅 run 在 store 里停在 claimed，Hub 侧已 done。
+  const s = setup([mkNode('a'), mkNode('b')]);
+  await s.ctl.tick(); s.claimAll();
+  s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  const reviewRun = s.runOf('a', 'review');
+  const hubId = reviewRun.hub.hubRunId;
+  const root = s.store.getRun(s.root.runId);
+  root.publish.nodes.a.state = 'accepted'; // 验收已完成，run 没被推进（回执丢了/外部处置）
+  s.store.updateRun(s.root.runId, { publish: { nodes: root.publish.nodes } });
+  s.hub.set(hubId, { status: 'done' });
+  await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.a.slot, null, 'accepted 节点不得永久占槽');
+  const settled = s.store.getRun(reviewRun.runId);
+  assert.ok(isTerminal(settled.status), 'Hub 已终态却残留的 run 必须收敛为终态');
+  assert.equal(settled.cancelReason, 'hub-terminal-slot-release', '收敛要留原因，便于审计');
+  assert.ok(!s.store.listRuns().some(r => r.slot === 1 && !isTerminal(r.status)), '槽位 1 不得再被非终态 run 占着');
+  await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.a.lastError, null, '补释放幂等，不重复报错');
+});
+
+test('末节点验收时 Hub 未终态：root 不提前终结，补释放后下一 tick 才收尾', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick(); s.claimAll();
+  s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  const reviewRun = s.runOf('a', 'review');
+  const hubId = reviewRun.hub.hubRunId;
+  s.hub.set(hubId, { status: 'claimed' });
+  s.store.advance(reviewRun.runId, { advanceId: reviewRun.expectedAdvanceId, runId: reviewRun.runId, nodeId: 'a', role: 'review', generation: reviewRun.generation, attempt: reviewRun.attempt, outcome: 'accepted' });
+  await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.a.state, 'accepted');
+  assert.notEqual(s.ctl.snapshot().nodes.a.slot, null, 'Hub 未终态时释放被拒，槽位暂时仍占用');
+  assert.notEqual(s.store.getRun(s.root.runId).status, 'done', '槽位没还干净前不得把 root 收尾');
+  assert.match(s.ctl.snapshot().nodes.a.lastError, /待释放/, '释放被拒要留痕，否则卡住巡检看不到');
+  s.hub.set(hubId, { status: 'done' });
+  await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.a.slot, null);
+  assert.equal(s.store.getRun(s.root.runId).status, 'done', '槽位释放后本轮收尾');
 });
