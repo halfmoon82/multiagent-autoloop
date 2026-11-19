@@ -13,7 +13,7 @@
 <body>
   <header class="topbar">
     <a class="brand" href="#overview" aria-label="Autoloop 控制台首页"><span class="brand-mark" aria-hidden="true">A</span><span class="brand-text">Autoloop <strong>控制台</strong></span></a>
-    <div class="header-actions"><label class="project-filter">项目 <select id="project-filter" aria-label="按项目筛选"></select></label><button id="clear-project-filter" class="text-button" type="button" hidden>全部</button><span id="connection" class="connection" role="status"><span class="dot"></span>正在连接</span><button id="refresh" class="button secondary" type="button">刷新</button></div>
+    <div class="header-actions"><label class="project-filter">项目 <select id="project-filter" aria-label="按项目筛选"></select></label><button id="clear-project-filter" class="text-button" type="button" hidden>全部</button><span id="connection" class="connection" role="status"><span class="dot"></span>正在连接</span><button class="button secondary device-entry" data-go="devices" type="button" aria-label="设备授权"><span class="device-entry-text">设备授权</span><span id="device-count" class="count" hidden>0</span></button><button id="refresh" class="button secondary" type="button">刷新</button></div>
   </header>
   <nav class="navigation" aria-label="控制台工作区">
     <button class="nav-item active" data-view="overview" aria-current="page">总览</button>
@@ -91,6 +91,15 @@
         <nav class="admin-subnav" aria-label="后台分区"><div class="admin-subnav-group">配置</div><a href="#admin" class="active" aria-current="page">平台与模型</a></nav>
         <div id="admin-platform-models" class="admin-stack" aria-live="polite"><p class="subtle">正在读取平台与模型设置…</p></div>
       </div>
+    </section>
+    <section id="view-devices" class="view" hidden aria-labelledby="devices-title">
+      <div class="page-heading"><div><p class="eyebrow">DEVICE ACCESS</p><h1 id="devices-title">设备授权管理</h1><p class="subtle">在这个后台绑定、查看和解除移动设备授权；只有网页管理后台能解除任意设备。页面不保存也不显示设备凭证。</p></div><button id="device-refresh" class="button secondary" type="button">刷新</button></div>
+      <div id="device-state" class="state-banner" role="status" hidden></div>
+      <div class="work-grid">
+        <section class="panel"><div class="panel-heading"><h2>绑定新设备</h2><span class="subtle">一次性二维码 · 5 分钟内有效</span></div><button id="device-qr-create" class="button primary" type="button">生成一次性二维码</button><div id="device-qr" class="device-qr" hidden></div><div class="device-bind-form"><label class="form-field">设备名称<input id="device-bind-name" aria-label="设备名称" placeholder="例如：Pixel 8" maxlength="80" autocomplete="off"></label><label class="form-field">设备系统<input id="device-bind-platform" aria-label="设备系统" placeholder="例如：Android" maxlength="40" autocomplete="off"></label><button id="device-bind-submit" class="button" type="button" disabled>完成绑定</button></div></section>
+        <section class="panel"><div class="panel-heading"><h2>已绑定设备</h2><span class="subtle" id="device-count-label">共 0 台</span></div><div id="device-list" class="list"></div></section>
+      </div>
+      <section class="panel"><div class="panel-heading"><h2>审计记录</h2><span class="subtle">生成二维码、绑定、重命名、解除均可追溯</span></div><div id="device-audit" class="list"></div></section>
     </section>
   </main>
   <dialog id="new-session-dialog" class="new-session-dialog" aria-labelledby="new-session-title">
