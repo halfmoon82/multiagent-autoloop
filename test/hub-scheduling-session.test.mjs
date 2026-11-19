@@ -826,3 +826,18 @@ test('a stale reconcile of an older event never overwrites the newer turn (P2 ra
   assert.equal(view.hubRunId, 6590, '旧对账不得把 runId 改回旧轮');
   assert.equal(view.status, 'running', '新一轮仍在跑，不得被旧对账改成 idle');
 });
+
+test('after an executor switch the context file carries the previous turn question, not just its answer (drill gap)', async () => {
+  const { client, manager } = echoManager({
+    runs: finishedRun(), stdout: codexOut('第一轮的回答'),
+    stateRuns: [{ id: 6586, agent: 'codex-full', state: 'done', events: [] }],
+  });
+  const started = await manager.start({ project: fixtureProject(), prompt: '只凭记忆说出规则数' });
+  await manager.send(started.id, '换人之后的一问');
+  const text = JSON.parse(client.calls.filter(call => call[0] === 'postEvent').at(-1)[1].detail).text;
+  const file = text.match(/本轮完整资料[^：]*：(.+?)；动手前先读它/)[1];
+  const body = readFileSync(file, 'utf8');
+  assert.match(body, /## 上一轮用户原话（完整）\n+只凭记忆说出规则数/);
+  assert.match(body, /## 上一轮结论\n+第一轮的回答/);
+  assert.doesNotMatch(body.split('## 上一轮用户原话（完整）')[1].split('##')[0], /换人之后的一问/, '本轮消息不得混进上一轮');
+});

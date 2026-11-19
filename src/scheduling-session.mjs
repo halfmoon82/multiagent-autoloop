@@ -13,7 +13,7 @@ import { listArtifacts, readArtifact } from './artifacts.mjs';
 import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
 import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_LABEL, HUB_RECONCILE_INTERVAL_MS, schedulingSubject, schedulingEventId, mapHubStateToStatus, numericEventId, readHubRun } from './hub-scheduling-session.mjs';
-import { buildSchedulingContext, contextTrailer, composeTurnText, prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation } from './scheduling-context.mjs';
+import { buildSchedulingContext, contextTrailer, composeTurnText, prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation, exchangesFrom, HANDOVER_ROUNDS } from './scheduling-context.mjs';
 import { readFinalMessage } from './run-output.mjs';
 import { ROOT_NODE } from './dag-run.mjs';
 
@@ -441,6 +441,8 @@ export class SchedulingSessionManager {
     const file = await buildSchedulingContext({
       root: this.runtimeRoot, sessionId: record.id, turn, project: record.project, lastSummary, prevAgent,
       guide, userText: text, providers: this.#snapshotProviders(hubState, record.project),
+      // 交接段：本轮消息尚未写进转录，配出来的最后一轮就是「上一轮」。
+      exchanges: exchangesFrom(record.messages, { rounds: HANDOVER_ROUNDS }),
     }).catch(() => null);
     return composeTurnText({ text, trailer: contextTrailer(file), project: record.project });
   }
