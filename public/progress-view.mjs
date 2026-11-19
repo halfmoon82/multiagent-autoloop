@@ -141,8 +141,12 @@ export function progressDonut(view, { label = '', cls = '' } = {}) {
   return box;
 }
 
+// 总览卡片每 2s 轮询重建，展开状态放在模块级，跨渲染保留（键 = 卡片类型 + 运行 + 节点）。
+const expandedSummaries = new Set();
+
 // 四栏：任务摘要 / 执行 Agent / 模型 / 费用 Token；缺数据一律如实写未上报。
-export function progressNodeCard(node, { cls = 'progress-node', selected = false, runId = '', key = 'serialNode', selectedRun = '' } = {}) {
+// clampSummary：总览里任务摘要默认收起一行，点摘要行就地展开；点击不得触发卡片选中/跳转。
+export function progressNodeCard(node, { cls = 'progress-node', selected = false, runId = '', key = 'serialNode', selectedRun = '', clampSummary = false } = {}) {
   const button = el('button', `${cls} ${node.status.kind}${selected ? ' selected' : ''}`.trim());
   button.type = 'button';
   if (key === 'dagNode') { button.dataset.dagNode = node.id; button.dataset.dagRun = runId; }
@@ -156,8 +160,25 @@ export function progressNodeCard(node, { cls = 'progress-node', selected = false
     row.append(el('span', 'node-field-label', label), el('span', `node-field-value ${valueClass}`.trim(), value));
     return row;
   };
+  const summary = field('任务摘要', node.summary, 'node-task-summary');
+  if (clampSummary) {
+    const summaryKey = `${key}:${runId || ''}:${node.id}`;
+    const paint = (open) => {
+      summary.classList.toggle('summary-collapsed', !open);
+      summary.classList.toggle('summary-expanded', open);
+      summary.title = open ? '点击收起任务摘要' : '点击展开任务摘要';
+    };
+    summary.firstElementChild.append(el('span', 'node-summary-caret', '▾'));
+    paint(expandedSummaries.has(summaryKey));
+    summary.addEventListener('click', event => {
+      event.preventDefault(); event.stopPropagation(); // 只展开摘要，不选中节点、不跳详情
+      const open = !expandedSummaries.has(summaryKey);
+      if (open) expandedSummaries.add(summaryKey); else expandedSummaries.delete(summaryKey);
+      paint(open);
+    });
+  }
   fields.append(
-    field('任务摘要', node.summary, 'node-task-summary'),
+    summary,
     field('执行 Agent', node.agent, 'node-agent'),
     field('模型', node.model, 'node-model'),
     field('费用 Token', node.usageText, 'node-usage'),
@@ -167,21 +188,21 @@ export function progressNodeCard(node, { cls = 'progress-node', selected = false
   return button;
 }
 
-export function progressGroups(view, { cls = 'progress-node', key = 'serialNode', runId = '', selectedNode = '', selectedRun = '' } = {}) {
+export function progressGroups(view, { cls = 'progress-node', key = 'serialNode', runId = '', selectedNode = '', selectedRun = '', clampSummary = false } = {}) {
   const wrap = el('div', 'progress-waves');
   for (const group of view.groups || []) {
     const row = el('div', 'wave');
     const label = el('div', 'wave-label'); label.append(el('span', '', group.label), el('small', '', group.sublabel));
     const body = el('div', 'wave-nodes');
     for (const node of group.nodes) {
-      body.append(progressNodeCard(node, { cls, key, runId, selected: selectedNode === node.id && selectedRun === (runId || view.id), selectedRun: runId || view.id }));
+      body.append(progressNodeCard(node, { cls, key, runId, selected: selectedNode === node.id && selectedRun === (runId || view.id), selectedRun: runId || view.id, clampSummary }));
     }
     row.append(label, body); wrap.append(row);
   }
   return wrap;
 }
 
-export function progressVisual(view, { label = '', cls = 'progress-node', key = 'serialNode', runId = '', donutCls = '' } = {}) {
+export function progressVisual(view, { label = '', cls = 'progress-node', key = 'serialNode', runId = '', donutCls = '', clampSummary = false } = {}) {
   const visual = el('div', 'dag-visual');
   const donutWrap = el('div', 'donut-wrap');
   donutWrap.append(progressDonut(view, { label, cls: donutCls }), el('small', 'subtle', view.segmentNote));
@@ -194,7 +215,7 @@ export function progressVisual(view, { label = '', cls = 'progress-node', key = 
     }
     donutWrap.append(legend);
   }
-  visual.append(donutWrap, progressGroups(view, { cls, key, runId }));
+  visual.append(donutWrap, progressGroups(view, { cls, key, runId, clampSummary }));
   return visual;
 }
 

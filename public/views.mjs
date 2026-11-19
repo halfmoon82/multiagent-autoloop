@@ -399,7 +399,7 @@ function renderChainRow(chain, sessions, rules, openCards, lines, allChains = []
 
     // #75：串行链与 DAG 共用「分段环形总进度 + 分组四栏节点卡片」组件语言。
     const view = buildSerialView(chain, chainUsageText(chainUsage(chain, rules, lines, allChains)));
-    main.append(progressVisual(view, { label: `${name} `, cls: 'progress-node', key: 'serialNode', runId: chain.sourceFile, donutCls: 'serial-donut' }));
+    main.append(progressVisual(view, { label: `${name} `, cls: 'progress-node', key: 'serialNode', runId: chain.sourceFile, donutCls: 'serial-donut', clampSummary: true }));
 
     if (chain.current) {
       const line = el('div', 'current-line');

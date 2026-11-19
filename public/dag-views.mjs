@@ -69,7 +69,7 @@ export function renderDagOverview(details = []) {
     const open = el('button', 'text-button', '查看运行详情 →'); open.type = 'button'; open.dataset.dagOpen = detail.run.runId;
     head.append(title, open);
     const usage = el('div', 'dag-usage', view.usageText);
-    const visual = progressVisual(view, { label: 'DAG ', cls: 'progress-node', key: 'dagNode', runId: detail.run.runId });
+    const visual = progressVisual(view, { label: 'DAG ', cls: 'progress-node', key: 'dagNode', runId: detail.run.runId, clampSummary: true });
     const sum = view.extra.sum;
     const note = el('div', 'capacity-note', `${sum.slotsUsed}/5 路占用${sum.quarantined.length ? `（另有 ${sum.quarantined.length} 个隔离槽位仍占名额）` : ''} · 只有 PR 合并后下游才启动。`);
     card.append(head, usage, visual, note);
