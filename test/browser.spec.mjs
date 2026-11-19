@@ -492,7 +492,12 @@ try {
   // 选中长摘要节点（n2）：面板必然溢出，用来验证 sticky 入口与滚动保持
   await clickSector(progressRow, 'n2', 1, 3);
   const pane = progressRow.locator('.overview-node');
-  assert.ok(await pane.evaluate(node => node.scrollHeight > node.clientHeight + 4), 'long summary overflows inside the fixed panel');
+  // 等点击后的重绘落地（标题切到 n2 且面板确实溢出），再做滚动断言，避免和轮询/rAF 抢时序
+  await page.waitForFunction(() => {
+    const title = document.querySelector('#progress-list .overview-node-head strong')?.textContent;
+    const panel = document.querySelector('#progress-list .overview-node');
+    return title === '节点二' && panel && panel.scrollHeight > panel.clientHeight + 4;
+  }, null, { timeout: 8000 });
   await pane.evaluate(node => { node.scrollTop = 30; });
   await page.waitForTimeout(120);
   const entryInside = await progressRow.locator('.overview-node [data-serial-node]').first().evaluate(el => {

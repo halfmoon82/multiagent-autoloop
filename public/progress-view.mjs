@@ -312,9 +312,10 @@ export function progressOverview(view, { runId = '', open = '' } = {}) {
     const panel = overviewNodePanel(node, view, { open, runId });
     panel.addEventListener('scroll', () => overviewScroll.set(view.key, panel.scrollTop));
     root.replaceChildren(progressRing(view, { selectedId: node?.id || '', onPick: id => paint(id) }), panel);
-    // root 由调用方再挂进文档：等挂载后的下一帧再恢复滚动位置，否则赋值无效
+    // root 由调用方再挂进文档：等挂载后的下一帧再恢复滚动位置，否则赋值无效。
+    // saved=0（切节点/无记忆）时不再回写，避免覆盖用户在新面板上的即时滚动。
     const saved = overviewScroll.get(view.key) || 0;
-    requestAnimationFrame(() => { if (panel.isConnected) panel.scrollTop = saved; });
+    if (saved > 0) requestAnimationFrame(() => { if (panel.isConnected && saved > 0) panel.scrollTop = saved; });
     if (hadFocus && node) root.querySelector(`.ring-seg[data-ring-node="${CSS.escape(String(node.id))}"]`)?.focus({ preventScroll: true });
   };
   paint();
