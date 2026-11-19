@@ -9,7 +9,7 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "start": "node scripts/start.mjs",
-    "test:browser": "node test/browser.spec.mjs && node test/browser-dag.spec.mjs && node test/browser-design-verify.spec.mjs"
+    "test:browser": "node test/browser.spec.mjs && node test/browser-dag.spec.mjs && node test/browser-archive.spec.mjs && node test/browser-design-verify.spec.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.0"

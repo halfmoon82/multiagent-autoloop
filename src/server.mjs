@@ -12,6 +12,7 @@ import { discoverGitProjects } from './projects.mjs';
 import { readDetours, publicDetour } from './detour.mjs';
 import { loadChains } from './serial-progress.mjs';
 import { aggregateProjectUsage } from './project-usage.mjs';
+import { readArchive } from './archive.mjs';
 import { refreshUsage } from './chain-usage.mjs';
 import { readCloseouts } from './chain-closeout.mjs';
 import { createDagService, DagServiceError, withHubUsage } from './dag-service.mjs';
@@ -28,6 +29,7 @@ const FILES = new Map([
   ['/views.mjs', ['views.mjs', 'text/javascript; charset=utf-8']], ['/rule-form.mjs', ['rule-form.mjs', 'text/javascript; charset=utf-8']],
   ['/dag-model.mjs', ['dag-model.mjs', 'text/javascript; charset=utf-8']], ['/dag-views.mjs', ['dag-views.mjs', 'text/javascript; charset=utf-8']], ['/dag-authorize.mjs', ['dag-authorize.mjs', 'text/javascript; charset=utf-8']], ['/dag-app.mjs', ['dag-app.mjs', 'text/javascript; charset=utf-8']], ['/progress-view.mjs', ['progress-view.mjs', 'text/javascript; charset=utf-8']], ['/dag.css', ['dag.css', 'text/css; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
+  ['/archive-view.mjs', ['archive-view.mjs', 'text/javascript; charset=utf-8']], ['/archive.css', ['archive.css', 'text/css; charset=utf-8']],
 ]);
 export function securityHeaders() {
   return { 'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'", 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'cache-control': 'no-store' };
@@ -105,6 +107,14 @@ async function handleApi(config, req, res, url) {
       else delete chain.cumulativeUsage;
     }
     return jsonResponse(res, 200, data);
+  }
+  if (req.method === 'GET' && url.pathname === '/api/archive') {
+    // 只读：规则文件缺失/损坏时退回只用项目根发现，不影响归档读取。
+    let rules = [];
+    try { rules = readRuleOptions(config).rules || []; } catch { rules = []; }
+    let projects = [];
+    try { projects = discoverGitProjects({ roots: config.projectRoots || [], rules }).map(item => item.path); } catch { projects = []; }
+    return jsonResponse(res, 200, readArchive({ root: config.root, projects }));
   }
   if (req.method === 'GET' && url.pathname === '/api/project-usage') {
     const rules = readRuleOptions(config).rules || [];
