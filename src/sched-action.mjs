@@ -99,14 +99,21 @@ async function dagRevive({ params, consoleCall }) {
   return consoleCall(`/api/dag-runs/${encodeURIComponent(runId)}/revive`, { body: { nodeId, reason: String(params.reason || ''), evidence: String(params.evidence || '') } });
 }
 
-/** 规则级守卫：规则必须存在于 rules.json，不得是调度链自身，也不得是接调度事件的规则。 */
+/** 与 Hub kernel/rules.ts 的 typeMatch 同口径：'*' 全匹配、'x.*' 前缀匹配、其余精确匹配。 */
+export function typePatternMatches(pattern, type) {
+  const value = String(pattern ?? '');
+  return value === '*' || value === type || (value.endsWith('.*') && type.startsWith(value.slice(0, -1)));
+}
+
+/** 规则级守卫：规则必须存在于 rules.json，不得是调度链自身，也不得是接调度事件的规则（含通配）。 */
 export function assertRuleAllowed(name, rules = []) {
   if (!name) throw new SchedActionError('缺 rule');
   if (PROTECTED_RULES.has(name)) throw new SchedActionError(`规则「${name}」属于调度链自身，不允许由调度动作暂停或立即运行`);
   const rule = rules.find(item => item?.name === name);
   if (!rule) throw new SchedActionError(`没有这条规则：${name}`);
-  const types = Array.isArray(rule.when?.types) ? rule.when.types : [];
-  if (types.some(type => PROTECTED_EVENT_TYPES.has(type))) throw new SchedActionError(`规则「${name}」接调度事件，不允许由调度动作触发`);
+  const patterns = Array.isArray(rule.when?.types) ? rule.when.types : [];
+  const hit = [...PROTECTED_EVENT_TYPES].find(type => patterns.some(pattern => typePatternMatches(pattern, type)));
+  if (hit) throw new SchedActionError(`规则「${name}」会接调度事件 ${hit}，不允许由调度动作触发`);
   return rule;
 }
 

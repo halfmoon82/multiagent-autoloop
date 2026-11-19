@@ -433,7 +433,7 @@ export class SchedulingSessionManager {
     const guide = record.guide || buildSchedulingPrompt({ project: record.project, writableDir: this.writableDir });
     const file = await buildSchedulingContext({
       root: this.archive?.root, sessionId: record.id, turn, project: record.project, lastSummary, prevAgent,
-      guide, providers: this.#snapshotProviders(hubState),
+      guide, userText: text, providers: this.#snapshotProviders(hubState),
     }).catch(() => null);
     return composeTurnText({ text, trailer: contextTrailer(file), project: record.project });
   }

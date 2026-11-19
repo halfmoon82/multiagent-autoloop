@@ -72,7 +72,7 @@ export function buildSnapshotSection(providers = {}) {
  * prevAgent：上一轮执行者标注（如 'claude'），换执行者后首轮提示词据此自报身份；未知传 null。
  * guide：调度会话护栏/任务说明（首轮的调度提示词），放进资料文件而不是事件正文，避免挤掉用户原话。
  */
-export async function buildSchedulingContext({ root, sessionId, turn, project, lastSummary = '', openItems = '', prevAgent = null, providers = {}, guide = '' } = {}) {
+export async function buildSchedulingContext({ root, sessionId, turn, project, lastSummary = '', openItems = '', prevAgent = null, providers = {}, guide = '', userText = '' } = {}) {
   if (!root || !sessionId) return null;
   // project 允许不存在：AGENTS.md/契约找不到时按「（未找到）」占位，资料照常落盘——
   // 项目路径本身也是资料，缺路径不应阻断每轮上下文。
@@ -81,6 +81,8 @@ export async function buildSchedulingContext({ root, sessionId, turn, project, l
   const snapshot = await buildSnapshotSection(providers);
   const parts = [`# 调度会话本轮资料\n`, `- 项目：${project}`, `- 会话：${sessionId}`, `- 轮次：${turn}`];
   if (prevAgent) parts.push(`- 上一轮执行者：${prevAgent}（若本轮换了执行者，第一行必须自报：我是备用执行者，上一轮由 ${prevAgent} 执行；从本文件重建上下文，不得假装记得聊天历史）`);
+  // 用户原话全文：事件正文受 Hub 上限可能被截断，这里保留完整版本，worker 以此为准。
+  if (userText) parts.push('\n## 本轮用户原话（完整）\n', String(userText), '\n');
   if (guide) parts.push('\n## 调度会话护栏与任务\n', String(guide), '\n');
   parts.push('\n## 项目 AGENTS.md\n', agents || '（未找到 AGENTS.md）\n');
   if (contract) parts.push('\n## 调度契约（docs/scheduling-contract.md，截断版）\n', contract);
@@ -103,7 +105,7 @@ export function contextTrailer(file) {
   return file ? `\n\n本轮完整资料（项目规则、状态快照与上一轮结论）：${file}；动手前先读它。` : '';
 }
 
-const TRUNCATED_MARK = '\n[已截断]';
+const TRUNCATED_MARK = '\n[已截断：完整原话见本轮资料文件「本轮用户原话（完整）」]';
 // Hub 字段上限按 Unicode 码点计算（protocol.md「文字上限按 Unicode 码点计算」）。
 export const codePoints = text => [...String(text ?? '')].length;
 const detailSize = (project, text) => codePoints(JSON.stringify({ project, text }));

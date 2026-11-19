@@ -65,7 +65,7 @@ test('序列化后的 detail ≤3950 码点：中文长正文截断且提示完�
   const composed = composeTurnText({ text: '正'.repeat(6000), trailer, project });
   assert.ok(codePoints(detailOf(project, composed)) <= EVENT_DETAIL_BUDGET, `got ${codePoints(detailOf(project, composed))}`);
   assert.ok(composed.endsWith(trailer), '提示必须完整保留在末尾');
-  assert.match(composed, /\[已截断\]/);
+  assert.match(composed, /\[已截断：完整原话见本轮资料文件/);
 });
 
 test('JSON 转义计入预算：大量换行与引号的正文序列化后仍 ≤3950 码点（P1 回归）', () => {
@@ -153,4 +153,16 @@ test('缺参数返回 null；project 缺失时资料照常落盘（路径本身�
   const file = await buildSchedulingContext({ root, sessionId: 's', turn: 1, project: '/no/such/dir' });
   assert.ok(file && existsSync(file));
   assert.match(readFileSync(file, 'utf8'), /未找到 AGENTS\.md/);
+});
+
+test('超预算的用户原话完整写进资料文件，正文截断标记指向它（P2 回归）', async () => {
+  const { root, project } = fixture();
+  const userText = `${'需求'.repeat(3000)}末尾关键句`;
+  const file = await buildSchedulingContext({ root, sessionId: 'u1', turn: 1, project, userText });
+  const body = readFileSync(file, 'utf8');
+  assert.match(body, /## 本轮用户原话（完整）/);
+  assert.ok(body.includes(userText), '资料文件必须有完整原话，含被正文截掉的末尾');
+  const composed = composeTurnText({ text: userText, trailer: contextTrailer(file), project });
+  assert.ok(!composed.includes('末尾关键句'), '夹具确实被截断');
+  assert.match(composed, /完整原话见本轮资料文件/);
 });

@@ -157,3 +157,16 @@ test('main exits not-ok on transient failure so Hub retries (P1)', async () => {
   assert.equal(result.ok, false, 'Hub 在 127.0.0.1:9 不可达，是临时失败');
   assert.equal(result.transient, 1);
 });
+
+test('rules matching scheduling events through Hub wildcards are protected too (P3)', () => {
+  const rules = [
+    { name: '全接', when: { source: 'local', types: ['*'] } },
+    { name: '前缀接', when: { source: 'local', types: ['scheduling.*'] } },
+    { name: '动作前缀', when: { source: 'local', types: ['sched.*'] } },
+    { name: '无关前缀', when: { source: 'local', types: ['try.*'] } },
+  ];
+  assert.throws(() => assertRuleAllowed('全接', rules), /scheduling\.message/);
+  assert.throws(() => assertRuleAllowed('前缀接', rules), /scheduling\.message/);
+  assert.throws(() => assertRuleAllowed('动作前缀', rules), /sched\.command/);
+  assert.equal(assertRuleAllowed('无关前缀', rules).name, '无关前缀');
+});
