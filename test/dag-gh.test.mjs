@@ -52,6 +52,20 @@ test('适配器其余方法契约：findPr/createPr/prHead/mergePr', async () =>
   await assert.rejects(gh.mergePr(PR, { strategy: 'rebase' }), /squash/);
 });
 
+test('createPr：非交互式必须带非空 --body（gh 缺 body 会直接失败）', async () => {
+  const calls = [];
+  const runner = async (cmd, args) => { calls.push(args); return { stdout: PR }; };
+  const gh = createGhAdapter({ runner });
+  await gh.createPr({ branch: 'feat/a', title: 'a (run-1)' });
+  const args = calls[0];
+  const bodyAt = args.indexOf('--body');
+  assert.ok(bodyAt > 0, '必须传 --body');
+  assert.ok(args[bodyAt + 1].trim().length > 0, '--body 不能为空');
+  assert.equal(args[args.indexOf('--title') + 1], 'a (run-1)', '标题原样作为单参数传递');
+  await gh.createPr({ branch: 'feat/a', title: 'a', base: 'main', body: '自定义说明' });
+  assert.deepEqual(calls[1], ['pr', 'create', '--head', 'feat/a', '--title', 'a', '--body', '自定义说明', '--base', 'main']);
+});
+
 test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', async () => {
   const { project, remote } = makeRepo();
   const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-gh-pub-'));
@@ -62,10 +76,10 @@ test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', a
   await rt.ensureSlots();
   const { baseCommit } = await rt.prepare({ slot: 1, nodeId: 'a', branch: 'feat/a', base: 'refs/heads/main' });
   store.updateRun(root.runId, { publish: { nodes: { a: { prepareBase: baseCommit } } } });
-  const closed = []; let prNo = 0;
+  const closed = []; const created = []; let prNo = 0;
   const runner = async (cmd, args) => {
     if (args[1] === 'list') return { stdout: '[]' };
-    if (args[1] === 'create') return { stdout: `https://gh/pr/${++prNo}` };
+    if (args[1] === 'create') { created.push(args); return { stdout: `https://gh/pr/${++prNo}` }; }
     if (args[1] === 'close') { closed.push(args[2]); return { stdout: '' }; }
     return { stdout: '' };
   };
@@ -78,6 +92,8 @@ test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', a
   await pub.commitPr({ ...ctx, branch: 'feat/a-att2' });
   assert.equal(closed.length, 1, '旧 PR 被生产适配器关闭');
   assert.equal(prNo, 2);
+  // publisher 必须把冻结基底透传给 gh（缺省 --base 会落到仓库默认分支）。
+  assert.equal(created[0][created[0].indexOf('--base') + 1], 'main');
 });
 
 test('生产适配器 claimHolder：读 PR 评论里的有效审阅占位，无占位返回 null', async () => {

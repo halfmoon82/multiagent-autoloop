@@ -37,10 +37,13 @@ export function createGhAdapter({ runner = defaultRunner, cwd, gh = 'gh' } = {})
       const rows = JSON.parse(await run(listArgs(input)) || '[]');
       return rows.length ? urlOf(rows[0].url) : null;
     },
+    // gh 非交互式要求 --title 与 --body 同时存在；缺 --body 时 gh 直接报 usage 并失败，
+    // 因此没有调用方文案时也要给一段默认说明，不能省略该参数。
     async createPr({ branch, title, base, body } = {}) {
-      const args = ['pr', 'create', '--head', branchOf(branch), '--title', text(title) || branchOf(branch)];
+      const head = branchOf(branch);
+      const subject = text(title) || head;
+      const args = ['pr', 'create', '--head', head, '--title', subject, '--body', text(body) || `由 DAG 控制器自动发布：${subject}`];
       if (base) args.push('--base', branchOf(base));
-      if (body) args.push('--body', text(body));
       return urlOf((await run(args)).split('\n').pop().trim());
     },
     async prHead(url) {
