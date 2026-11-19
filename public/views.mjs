@@ -344,7 +344,7 @@ function projectUsageChips(project, projectUsage = [], loadError = false) {
 }
 
 // 项目任务进度：每行一个项目（串行链或有活动但无链文件）。节点段可点击，展开卡显示节点摘要。
-export function renderProjectProgress({ chains: rawChains = [], sessions = [], rules = [], snapshot = {}, loadError = false, projectUsage = [], usageLoadError = false, agentNames = {} } = {}) {
+export function renderProjectProgress({ chains: rawChains = [], sessions = [], rules = [], snapshot = {}, loadError = false, projectUsage = [], usageLoadError = false, agentNames = {}, agentAdapters = {} } = {}) {
   const chains = latestChainsByProject(rawChains); // 同一项目多条链只显示最近更新的一条
   const openCards = (snapshot.cards || []).filter(card => card.state === 'open');
   const lines = snapshot.lines || [];
@@ -353,7 +353,7 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
 
   // 有串行状态文件的项目：完整任务条
   for (const chain of chains) {
-    const executors = chainNodeExecutors(chain, rules, snapshot.runs || [], chains, snapshot.models || {}, agentNames);
+    const executors = chainNodeExecutors(chain, rules, snapshot.runs || [], chains, snapshot.models || {}, agentNames, agentAdapters);
     rows.push(renderChainRow(chain, sessions, rules, openCards, lines, chains, projectUsage, usageLoadError, executors));
   }
 

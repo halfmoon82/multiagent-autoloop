@@ -44,7 +44,14 @@ function optionalActionOptions(loaded) {
 
 // hubRunsById：/v1/state 的 runs（按 Hub 轮次号）。节点记录只存轮次号，执行 Agent 与自报 Token/费用
 // 只在 Hub 轮次上；按轮次号补到节点记录上供界面显示。查不到（翻页外、Hub 不可达）保持原样，界面如实写未上报。
-export function withHubUsage(detail, hubRuns = [], models = {}) {
+// 2026-11-19 实测（两次完整 ACP 抓包）：workbuddy 的 acp 协议帧无用量字段，连它自己的 /cost 也回 0；
+// command 对接程序（巡检/部署等脚本）不产出用量。这些通道的"未上报"是终态，标 usageUnreportable 让界面写
+// 「不上报」而不是「未上报」，避免用户当成暂时缺数据等它补上。
+// 口径：acp 仅对 workbuddy 宿主实测过，其他 ACP 宿主未逐一验证（宁保守、可能误标）；已知非 AI 通道
+// 见 platform-models.mjs 的 NON_AI_USES（delivery/desktop/dsh/feishu/github/gitlab/webhook 同样产不出用量，
+// 目前前端未覆盖，登记为后续收敛）。前端 status-sections.mjs 有一份同集合，改动时两边同步。
+export const NO_USAGE_ADAPTERS = new Set(['acp', 'command']);
+export function withHubUsage(detail, hubRuns = [], models = {}, adapters = {}) {
   const byId = new Map((Array.isArray(hubRuns) ? hubRuns : []).map(item => [Number(item?.id), item]));
   return {
     ...detail,
@@ -53,7 +60,8 @@ export function withHubUsage(detail, hubRuns = [], models = {}) {
       const agent = String(hubRun?.agent || '').trim();
       if (!agent) return nodeRun;
       const usage = hubRun.usage && typeof hubRun.usage === 'object' && !Array.isArray(hubRun.usage) ? hubRun.usage : null;
-      return { ...nodeRun, agent, model: models[agent] || '未配置', ...(usage ? { usage } : {}) };
+      const unreportable = usage ? false : NO_USAGE_ADAPTERS.has(String(adapters[agent] || ''));
+      return { ...nodeRun, agent, model: models[agent] || '未配置', ...(usage ? { usage } : {}), ...(unreportable ? { usageUnreportable: true } : {}) };
     }),
   };
 }

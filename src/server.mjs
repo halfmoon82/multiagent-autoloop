@@ -85,7 +85,9 @@ async function handleApi(config, req, res, url) {
     if (detail.nodeRuns.some(item => Number.isInteger(item?.hub?.hubRun))) {
       try { hubRuns = (await hubRequest(config, '/v1/state'))?.runs || []; } catch { hubRuns = []; }
     }
-    return jsonResponse(res, 200, withHubUsage(detail, hubRuns, modelLabels()));
+    let adapters = {};
+    try { adapters = Object.fromEntries(readRuleOptions(config).agents.map(agent => [agent.id, agent.adapter])); } catch { adapters = {}; }
+    return jsonResponse(res, 200, withHubUsage(detail, hubRuns, modelLabels(), adapters));
   }
   let sessionMatch;
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/artifacts$/))) return jsonResponse(res, 200, { files: await config.schedulingSessions.listSessionArtifacts(decodeURIComponent(sessionMatch[1])) });

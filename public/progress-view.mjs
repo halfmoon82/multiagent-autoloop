@@ -38,6 +38,7 @@ const reported = usage => usage && ['input', 'output', 'cost'].some(key => typeo
 function serialNodeUsage(round) {
   if (round && reported(round.usage)) return `${round.running ? '本轮' : '最近一轮'} · ${formatUsage(sumUsage([{ usage: round.usage }]))}`;
   if (round?.running) return '本轮进行中 · 费用未上报 · Token 未上报';
+  if (round?.unreportable) return '该执行者不上报用量';
   return UNKNOWN_USAGE;
 }
 export function buildSerialView(chain, usageText = UNKNOWN_USAGE, executors = {}) {

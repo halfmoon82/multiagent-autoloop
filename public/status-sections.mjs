@@ -213,7 +213,11 @@ export function chainRules(chain, rules = [], allChains = []) {
 // 底数来自服务端 chain.nodeRounds（翻过 Hub 全部历史）；再叠加首页 runs 里更新的轮次（含正在跑的），
 // 让刚派发的轮次不用等服务端刷新。查不到的节点不出现在结果里，界面如实写未上报。
 const usageObject = usage => (usage && typeof usage === 'object' && !Array.isArray(usage) ? usage : null);
-export function chainNodeExecutors(chain, rules = [], runs = [], allChains = [], models = {}, agentNames = {}) {
+// 2026-11-19 实测（两次完整 ACP 抓包）：workbuddy 的 acp 通道与 command 对接程序产不出用量。
+// 这些通道的"未上报"是终态，界面写「不上报」，区别于能上报但暂时没读到的「未上报」。
+// 与服务端 src/dag-service.mjs 的同名集合保持同步（浏览器侧无法 import 服务端模块）。
+const NO_USAGE_ADAPTERS = new Set(['acp', 'command']);
+export function chainNodeExecutors(chain, rules = [], runs = [], allChains = [], models = {}, agentNames = {}, adapters = {}) {
   const latest = {};
   for (const [nodeId, round] of Object.entries(chain?.nodeRounds || {})) {
     if (round && String(round.agent || '').trim()) latest[nodeId] = { id: Number(round.id), agent: String(round.agent).trim(), state: round.state, usage: usageObject(round.usage) };
@@ -232,7 +236,9 @@ export function chainNodeExecutors(chain, rules = [], runs = [], allChains = [],
   }
   const out = {};
   for (const [nodeId, round] of Object.entries(latest)) {
-    out[nodeId] = { agent: agentNames[round.agent] || round.agent, model: models[round.agent] || '未配置', usage: round.usage, running: round.state === 'claimed' };
+    const entry = { agent: agentNames[round.agent] || round.agent, model: models[round.agent] || '未配置', usage: round.usage, running: round.state === 'claimed' };
+    if (!round.usage && NO_USAGE_ADAPTERS.has(String(adapters[round.agent] || ''))) entry.unreportable = true;
+    out[nodeId] = entry;
   }
   return out;
 }

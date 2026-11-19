@@ -175,7 +175,7 @@ function render() {
   const spending = scopedSpending(view.snapshot, view.rules, filter);
   const summarySnapshot = scoped ? { ...view.snapshot, totals: scoped, spending: { today: spending } } : state.snapshot;
   replace('summary', renderSummary(summarySnapshot));
-  replace('progress-list', renderProjectProgress({ chains: (state.serial?.chains || []).filter(chain => matchesProject(chain.project, filter)), sessions: view.sessions, rules: view.rules, snapshot: view.snapshot, loadError: !!state.serialFailed, projectUsage: state.projectUsage || [], usageLoadError: !!state.projectUsageFailed, agentNames: agentNameMap() }));
+  replace('progress-list', renderProjectProgress({ chains: (state.serial?.chains || []).filter(chain => matchesProject(chain.project, filter)), sessions: view.sessions, rules: view.rules, snapshot: view.snapshot, loadError: !!state.serialFailed, projectUsage: state.projectUsage || [], usageLoadError: !!state.projectUsageFailed, agentNames: agentNameMap(), agentAdapters: agentAdapterMap() }));
   const progressState = $('progress-state');
   const progressStateText = state.serialFailed ? '加载失败：节点进度读取失败，已保留最后成功数据，请点击顶部“刷新”重试。'
     : !state.serial ? '加载中：正在读取节点进度…' : '';
@@ -256,6 +256,8 @@ async function perform(action, id, body = {}) {
 }
 // Agent id → 显示名：正在运行列表与串行节点执行者共用同一口径。
 function agentNameMap() { return Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)); }
+// Agent id → 对接程序（use）：判断该通道结构上产不产得出用量。
+function agentAdapterMap() { return Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.adapter]).filter(([, adapter]) => adapter)); }
 // #75：串行链节点点击 → 与 DAG 节点同构的运行详情视图（由 DAG 控制器统一承载）。
 document.addEventListener('click', event => {
   const hit = event.target.closest('[data-serial-node]');
@@ -263,7 +265,7 @@ document.addEventListener('click', event => {
   const chain = (state.serial?.chains || []).find(item => item.sourceFile === hit.dataset.serialRun);
   if (!chain) return;
   const usage = chainUsageText(chainUsage(chain, state.rules, state.snapshot?.lines || [], state.serial?.chains || []));
-  const executors = chainNodeExecutors(chain, state.rules, state.snapshot?.runs || [], state.serial?.chains || [], state.models || {}, agentNameMap());
+  const executors = chainNodeExecutors(chain, state.rules, state.snapshot?.runs || [], state.serial?.chains || [], state.models || {}, agentNameMap(), agentAdapterMap());
   dag.openSerialDetail(chain, hit.dataset.serialNode, usage, executors);
 });
 document.addEventListener('click', async event => {
