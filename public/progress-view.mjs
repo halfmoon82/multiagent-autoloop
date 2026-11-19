@@ -239,7 +239,12 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
   };
   view.nodes.forEach((node, index) => {
     const selected = node.id === selectedId;
-    const seg = arc(radius, index * share, share, RING_STROKE, `ring-seg ${node.status.kind}${selected ? ' selected' : ''}`);
+    // 选中的节点整块变大：内沿不动（不挤内圈进度弧），外沿向外长厚 RING_BULGE。
+    // 半径变大后同一角度对应的弧长按 r/radius 等比放大，起止角度才与原位置对齐。
+    const grow = selected ? RING_BULGE : 0;
+    const segRadius = radius + grow / 2;
+    const k = segRadius / radius;
+    const seg = arc(segRadius, index * share * k, share * k, RING_STROKE + grow, `ring-seg ${node.status.kind}${selected ? ' selected' : ''}`);
     seg.setAttribute('stroke', node.color);
     seg.dataset.ringNode = node.id;
     seg.setAttribute('role', 'button');
@@ -259,12 +264,6 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
     };
     if (onPick) { seg.addEventListener('click', pick); seg.addEventListener('keydown', pick); }
     group.append(seg);
-    // 选中扇区向外膨出一圈同色弧带：比整圈等宽加粗更明显，也不挤压内圈进度弧。
-    if (selected) {
-      const bulge = arc(radius + RING_STROKE / 2 + RING_BULGE / 2, index * share, share, RING_BULGE, 'ring-bulge');
-      bulge.setAttribute('stroke', node.color);
-      group.append(bulge);
-    }
     // 内圈进度弧：扇区底色轨道 + 按节点内进度填充的深色弧；并行节点各自成段。
     const track = arc(innerRadius, index * innerShare, innerShare, RING_INNER_STROKE, 'ring-inner-seg');
     innerTrack.append(track);
@@ -289,10 +288,11 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
       const waveBoundary = node.groupOrder !== view.nodes[index - 1].groupOrder;
       const angle = (-90 + index * step) * Math.PI / 180;
       const line = document.createElementNS(NS, 'line');
+      const outer = radius + RING_STROKE / 2 + (selected || view.nodes[index - 1].id === selectedId ? RING_BULGE : 0);
       line.setAttribute('x1', String(center + (radius - RING_STROKE / 2) * Math.cos(angle)));
       line.setAttribute('y1', String(center + (radius - RING_STROKE / 2) * Math.sin(angle)));
-      line.setAttribute('x2', String(center + (radius + RING_STROKE / 2) * Math.cos(angle)));
-      line.setAttribute('y2', String(center + (radius + RING_STROKE / 2) * Math.sin(angle)));
+      line.setAttribute('x2', String(center + outer * Math.cos(angle)));
+      line.setAttribute('y2', String(center + outer * Math.sin(angle)));
       line.setAttribute('class', waveBoundary ? 'ring-divider wave' : 'ring-divider node');
       dividers.append(line);
     }
@@ -300,8 +300,9 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
     // 节点名：写在扇区色带中线，沿切线方向；左半圈翻转 180°，保证文字正向可读。
     const mid = -90 + (index + 0.5) * step;
     const rad = (mid * Math.PI) / 180;
-    const x = center + arcAt * Math.cos(rad);
-    const y = center + arcAt * Math.sin(rad);
+    const labelAt = selected ? arcAt + RING_BULGE / 2 : arcAt; // 选中节点的名字跟着扇区外移到变厚后的色带中线
+    const x = center + labelAt * Math.cos(rad);
+    const y = center + labelAt * Math.sin(rad);
     let rotation = mid + 90;
     if (rotation > 90 && rotation < 270) rotation -= 180;
     const label = document.createElementNS(NS, 'text');

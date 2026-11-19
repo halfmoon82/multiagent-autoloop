@@ -43,8 +43,6 @@
 .ring-seg:focus-visible{outline:none}
 .ring-seg.pending{opacity:.9}
 .ring-seg.selected{opacity:1}
-/* 选中扇区向外膨出的同色弧带（只往外扩，不压内圈进度弧） */
-.ring-bulge{opacity:.85;pointer-events:none}
 /* 内圈进度弧：节点内进度沿扇区弧长填充 */
 .ring-inner-seg{stroke:#22362e;stroke-opacity:.1;pointer-events:none}
 .ring-inner-fill{stroke:#22362e;stroke-opacity:.85;pointer-events:none}

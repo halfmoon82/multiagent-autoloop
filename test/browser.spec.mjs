@@ -544,11 +544,12 @@ try {
     const panel = document.querySelector('#progress-list .overview-node');
     return title === '节点二' && panel && panel.scrollHeight > panel.clientHeight + 4;
   }, null, { timeout: 8000 });
-  // 选中扇区向外膨出一圈同色弧带（只往外扩），选中态在环上一眼可辨
-  assert.equal(await progressRow.locator('.ring-bulge').count(), 1, '选中扇区向外膨出弧带');
-  const bulgeColor = await progressRow.locator('.ring-bulge').getAttribute('stroke');
-  const segColor = await progressRow.locator('.ring-seg[data-ring-node="n2"]').getAttribute('stroke');
-  assert.equal(bulgeColor, segColor, '膨出弧带与扇区同色');
+  // 选中的节点整块变大：该扇区比其余扇区更厚、半径更大（内沿不动，只向外长），不再有外挂弧带
+  assert.equal(await progressRow.locator('.ring-bulge').count(), 0, '不再有外挂弧带，选中节点本体变大');
+  const sizes = await progressRow.locator('.ring-seg').evaluateAll(list => list.map(node => ({ id: node.dataset.ringNode, w: parseFloat(node.getAttribute('stroke-width')), r: parseFloat(node.getAttribute('r')) })));
+  const selectedSize = sizes.find(item => item.id === 'n2'), otherSize = sizes.find(item => item.id === 'n1');
+  assert.ok(selectedSize.w > otherSize.w + 6, `选中扇区明显更厚（${selectedSize.w} vs ${otherSize.w}）`);
+  assert.equal(selectedSize.r - selectedSize.w / 2, otherSize.r - otherSize.w / 2, '内沿不动，只向外长');
   await inProgressRow('scroll30');
   await page.waitForTimeout(120);
   const entryInside = await inProgressRow('entryInside');
