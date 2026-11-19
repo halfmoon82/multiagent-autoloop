@@ -397,61 +397,82 @@ try {
   assert.equal(await page.locator('#view-authorize').isVisible(), true, 'the overview DAG entry must open the authorization screen');
   assert.equal(await page.locator('#authorize-load').isVisible(), true, 'authorization screen must offer 读取计划与预检');
   await page.getByRole('button', { name: '总览', exact: true }).click();
-  // 项目任务进度：写入假串行状态文件，验证统一「环形总进度 + 四栏节点卡片 + 同构详情」
-  writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify({
+  // 项目任务进度：写入假串行状态文件，验证「环形扇区 + 单节点详情 + 固定高度」
+  const chainFixture = (nodes, plan) => ({
     project: demoRepo,
-    plan: ['n1', 'n2', 'n3'],
+    plan,
     lastNode: 'n2',
     lastEventAt: '2026-11-15T07:00:00Z',
-    nodes: {
-      n1: { status: 'done', title: '节点一', label: '一', summary: '交付了第一块功能' },
-      n2: { status: 'dev_dispatched', title: '节点二', label: '二', part: '联调', percent: 50, summary: '正在实现第二块功能：补齐导出链路的异常分支并补充回归测试，完成后进入联调', pr_url: 'https://github.com/example-org/x/pull/9' },
-      n3: { status: 'pending', title: '节点三', label: '三' },
-    },
-  }));
+    nodes: Object.fromEntries(nodes),
+  });
+  const threeNodes = [
+    ['n1', { status: 'done', title: '节点一', label: '一', summary: '交付了第一块功能' }],
+    ['n2', { status: 'dev_dispatched', title: '节点二', label: '二', part: '联调', percent: 50, summary: '正在实现第二块功能：补齐导出链路的异常分支并补充回归测试，完成后进入联调', pr_url: 'https://github.com/example-org/x/pull/9' }],
+    ['n3', { status: 'pending', title: '节点三', label: '三' }],
+  ];
+  writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify(chainFixture(threeNodes, ['n1', 'n2', 'n3'])));
   await page.waitForTimeout(2600);
   const progressRow = page.locator('#progress-list .list-row').filter({ hasText: 'demo-repo' });
   await progressRow.waitFor();
   const progressText = await progressRow.innerText();
   assert.ok(progressText.includes('50%'), 'chain percent must be (done + current part) / total');
-  assert.ok(progressText.includes('当前：节点二 · 联调 50%'), 'current line uses the node title');
   assert.ok(progressText.includes('串行链'), 'serial chain uses the same badge language as DAG');
-  assert.ok(progressText.includes('同一色相 · 深浅 = 状态'), 'serial ring uses the unified segment language');
-  // 环形总进度：每节点一段；串行环用同一色相，阻塞用琥珀色
-  assert.equal(await progressRow.locator('.dag-donut').getAttribute('data-segments'), '3', 'one ring segment per node');
-  assert.equal(await progressRow.locator('.serial-donut').count(), 1, 'serial ring is the same component as DAG');
-  // 四栏节点卡片：任务摘要 / 执行 Agent / 模型 / 费用 Token
-  assert.equal(await progressRow.locator('.progress-node').count(), 3, 'one four-column node card per node');
-  for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node card must carry ${label}`);
-  assert.ok(progressText.includes('正在实现第二块功能'), 'node card shows the real task summary');
+  assert.ok(progressText.includes('同一色相 · 深浅 = 状态'), 'serial ring keeps the unified segment language');
+  // 环形扇区 = 节点；右侧只显示一个节点详情，默认当前活跃节点
+  assert.equal(await progressRow.locator('.overview-ring').getAttribute('data-segments'), '3', 'one ring sector per node');
+  assert.equal(await progressRow.locator('.ring-seg').count(), 3, 'every node is a clickable sector');
+  const detailTitle = progressRow.locator('.overview-node-head strong');
+  assert.equal(await detailTitle.innerText(), '节点二', 'default detail shows the current active node');
+  for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node detail must carry ${label}`);
+  assert.ok(progressText.includes('正在实现第二块功能'), 'detail shows the real task summary');
+  assert.ok(progressText.includes('联调'), 'detail keeps the node part');
   assert.ok(progressText.includes('未上报'), 'serial agent/model/cost without data must be marked unreported, never fabricated');
   assert.ok(progressText.includes('待您处理') && progressText.includes('今日完成'), 'counts chips must stay');
   assert.ok(progressText.includes('链累计') && progressText.includes('1,666 Token') && progressText.includes('$0.21'), 'chain usage stays truthful');
   assert.ok(progressText.includes('项目今日 · 费用 $0.07 · Token 100（入 60 / 出 40）'), 'project today usage must come from runs finished today');
   assert.ok(progressText.includes('项目累计 · 费用 $0.21 · Token 1,666（入 1,234 / 出 432）'), 'project cumulative usage must come from the runs ledger across pages, not the today-window rule lines');
-  assert.ok(progressText.includes('项目累计 · 费用 $0.21 · Token 1,666（入 1,234 / 出 432）'), 'project cumulative usage must come from the runs ledger across pages, not the today-window rule lines');
   assert.equal(await progressRow.locator('.node-pop').count(), 0, 'node-only popover is retired');
-  // 任务摘要默认收起一行，点摘要行就地展开；点击不得把用户带离总览
-  const summaryRow = progressRow.locator('.progress-node[data-serial-node="n2"] .node-field').filter({ hasText: '任务摘要' });
-  const summaryValue = summaryRow.locator('.node-task-summary');
-  assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-collapsed')), true, 'overview task summary defaults to collapsed');
-  assert.equal(await summaryValue.evaluate(node => getComputedStyle(node).whiteSpace), 'nowrap', 'collapsed summary is a single nowrap line');
-  assert.ok(await summaryValue.evaluate(node => node.scrollWidth > node.clientWidth + 1), 'collapsed summary actually clips the longer text');
-  await summaryRow.click();
-  assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-expanded')), true, 'clicking the summary expands it in place');
-  assert.ok(await summaryValue.evaluate(node => node.scrollWidth <= node.clientWidth + 1), 'expanded summary shows the full text');
-  assert.equal(await page.locator('#view-overview').isVisible(), true, 'expanding a summary must stay on the overview');
-  assert.equal(await page.locator('#view-dag').isVisible(), false, 'expanding a summary must not open the detail view');
-  // 打标记后等一次真实轮询重建：证明展开状态是跨重建保留，而不是容器被冻结没刷新
-  await summaryRow.evaluate(node => { node.__revMark = 'pre-poll'; });
-  await page.waitForFunction(() => {
-    const row = document.querySelector('#progress-list .progress-node[data-serial-node="n2"] .node-field');
-    return Boolean(row) && row.__revMark !== 'pre-poll' && row.classList.contains('summary-expanded');
-  }, null, { timeout: 10000 });
-  await summaryRow.click();
-  assert.equal(await summaryRow.evaluate(node => node.classList.contains('summary-collapsed')), true, 'second click collapses it again');
-  // 串行节点点击 → 与 DAG 同构的运行详情视图（不再是只有浮层）
-  await progressRow.locator('.progress-node[data-serial-node="n2"] strong').click(); // 点标题进详情；点任务摘要行只就地展开
+  // 固定高度：节点数量与切换都不改变卡片高度
+  // 扇区是圆环描边（中空），按下标算出该扇区中角在描边上的绝对坐标再点
+  const clickSector = async (row, id, index, count) => {
+    const seg = row.locator(`.ring-seg[data-ring-node="${id}"]`);
+    await seg.scrollIntoViewIfNeeded();
+    const angle = (-90 + (index + 0.5) * (360 / count)) * Math.PI / 180;
+    const point = await seg.evaluate((el, radians) => {
+      const box = el.getBoundingClientRect();
+      const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
+      const scale = box.width / (104 + stroke); // viewBox：r=52，直径 104
+      return { x: box.x + box.width / 2 + 52 * scale * Math.cos(radians), y: box.y + box.height / 2 + 52 * scale * Math.sin(radians) };
+    }, angle);
+    await page.mouse.click(point.x, point.y);
+  };
+  const fixedHeight = await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height);
+  assert.ok([200, 380].includes(Math.round(fixedHeight)), `overview progress uses a fixed design height (got ${fixedHeight})`);
+  await clickSector(progressRow, 'n1', 0, 3);
+  assert.equal(await detailTitle.innerText(), '节点一', 'clicking a ring sector switches the node detail');
+  assert.ok((await progressRow.locator('.overview-node').innerText()).includes('交付了第一块功能'), 'switched detail shows that node summary');
+  assert.equal(await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height), fixedHeight, 'switching nodes must not change the fixed height');
+  assert.equal(await page.locator('#view-overview').isVisible(), true, 'ring click must stay on the overview');
+  assert.equal(await page.locator('#view-dag').isVisible(), false, 'ring click must not open the detail view');
+  // 键盘可达：Tab 到扇区按 Enter 同样切换
+  await progressRow.locator('.ring-seg[data-ring-node="n2"]').focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await detailTitle.innerText(), '节点二', 'keyboard selection switches the detail too');
+  // 无摘要节点必须有兜底文案
+  await clickSector(progressRow, 'n3', 2, 3);
+  assert.ok((await progressRow.locator('.overview-node').innerText()).includes('暂无任务摘要'), 'pending node summary falls back truthfully');
+  // 节点数增加时高度不变：扩到 12 个节点再对比
+  const manyNodes = [...threeNodes, ...Array.from({ length: 9 }, (_, index) => [`n${index + 4}`, { status: 'pending', title: `节点${index + 4}`, label: String(index + 4) }])];
+  writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify(chainFixture(manyNodes, manyNodes.map(([id]) => id))));
+  await page.waitForTimeout(2600);
+  assert.equal(await progressRow.locator('.ring-seg').count(), 12, 'every node becomes a ring sector');
+  assert.equal(await progressRow.locator('.overview-progress').evaluate(node => node.getBoundingClientRect().height), fixedHeight, 'height stays fixed with more nodes');
+  // 恢复三节点夹具供后续断言
+  writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify(chainFixture(threeNodes, ['n1', 'n2', 'n3'])));
+  await page.waitForTimeout(2600);
+  // 打开运行详情：走面板里的入口按钮（环形点击只在总览内切换，不跳页）
+  await clickSector(progressRow, 'n2', 1, 3);
+  await progressRow.locator('.overview-node [data-serial-node="n2"]').click();
   await page.locator('#view-dag').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#dag-detail .dag-detail').count(), 1);
   assert.equal(await page.locator('#dag-detail .dag-node[data-serial-node]').count(), 3, 'detail uses the same node-card component');
@@ -463,7 +484,8 @@ try {
   assert.ok((await detail.innerText()).includes('费用 / Token'), 'detail shows cost/token column');
   // 无摘要节点（pending）详情必须有兜底文案，不能是空面板
   await page.getByRole('button', { name: '总览', exact: true }).click();
-  await page.locator('#progress-list .progress-node[data-serial-node="n3"] strong').click();
+  await clickSector(progressRow, 'n3', 2, 3);
+  await progressRow.locator('.overview-node [data-serial-node="n3"]').click();
   await page.locator('#dag-node-detail').waitFor();
   assert.ok((await page.locator('#dag-node-detail').innerText()).includes('暂无任务摘要'), 'pending node without summary must show a truthful fallback');
   await page.getByRole('button', { name: '总览', exact: true }).click();
