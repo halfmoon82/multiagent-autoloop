@@ -1,0 +1,29 @@
+/* 底部归档区：折叠 + 按项目分组，跟随顶部项目筛选 */
+.arch-section{border-top:1px solid var(--line);background:var(--surface)}
+.arch-summary{cursor:pointer;padding:13px 20px;list-style:none;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.arch-summary::-webkit-details-marker{display:none}
+.arch-summary::before{content:'▸';color:var(--muted);font-size:12px;display:inline-block;transition:transform .12s}
+.arch-section[open] .arch-summary::before{transform:rotate(90deg)}
+.arch-title{font-size:13px;font-weight:650}
+.arch-sub{font-size:11px;color:var(--muted)}
+.arch-scope{font-size:11px;color:var(--accent-dark);background:var(--accent-soft);border-radius:14px;padding:2px 9px}
+.arch-spacer{flex:1}
+.arch-body{padding:0 0 10px}
+.arch-group{border-top:1px solid var(--line);padding:6px 20px 2px}
+.arch-group-name{font-size:11px;color:var(--muted);letter-spacing:.04em;padding:6px 0 2px}
+.arch-row{display:grid;grid-template-columns:minmax(0,1fr) 68px 92px 92px;gap:12px;align-items:center;padding:9px 0;border-bottom:1px dashed var(--line)}
+.arch-body>.arch-row{padding-left:20px;padding-right:20px;border-top:1px solid var(--line)}
+.arch-row:last-child{border-bottom:0}
+.arch-task-name{font-size:13px;font-weight:600;overflow-wrap:anywhere}
+.arch-task-meta{font-size:11px;color:var(--muted);margin-top:2px}
+.arch-pct{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.arch-reason{justify-self:start}
+.arch-date{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.arch-empty{padding:14px 20px;color:var(--muted);font-size:12px}
+@media(max-width:560px){
+  .arch-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:'t r' 'p d';gap:4px 10px;padding:10px 12px}
+  .arch-task{grid-area:t}.arch-pct{grid-area:p}.arch-reason{grid-area:r;justify-self:end}.arch-date{grid-area:d}
+  .arch-group{padding:6px 12px 2px}
+  .arch-body>.arch-row{padding-left:12px;padding-right:12px}
+  .arch-summary{padding:12px}
+}

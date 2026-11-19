@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设计稿 · 项目任务进度按环展示（一个项目多个环）</title>
+<link rel="stylesheet" href="../../../public/styles.css">
+<link rel="stylesheet" href="../../../public/dag.css">
+<style>
+  body{background:var(--bg)}
+  .demo-note{max-width:1240px;margin:0 auto;padding:14px 24px 0;color:var(--muted);font-size:12px;line-height:1.7}
+  .project-group{padding:6px 20px 18px;border-bottom:1px solid var(--line)}
+  .project-group:last-child{border-bottom:0}
+  .project-head{display:flex;align-items:center;gap:10px;padding:14px 0 10px;flex-wrap:wrap}
+  .project-head strong{font-size:15px}
+  .project-head .spacer{flex:1}
+  .ring-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;align-items:start}
+  .ring-card{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:10px 8px 12px;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;min-width:0}
+  .ring-card:hover{border-color:#c6d6cf}
+  .ring-card.selected{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+  .ring-card svg{width:132px;height:132px;display:block}
+  .ring-card .rc-name{font-size:12px;font-weight:600;text-align:center;line-height:1.35;overflow-wrap:anywhere;padding:0 4px}
+  .ring-card .rc-meta{font-size:11px;color:var(--muted)}
+  .ring-detail{margin-top:12px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:16px;border-top:1px dashed var(--line);padding-top:12px}
+  .ring-detail .overview-node{border-left:0;padding:0;overflow:visible}
+  .rd-wave-title{font-size:11px;color:var(--muted);margin:0 0 6px;letter-spacing:.04em}
+  .rd-waves{display:flex;flex-direction:column;gap:8px}
+  .rd-wave{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .rd-node{font-size:11px;border-radius:14px;padding:3px 9px;background:#eef2f0;color:var(--muted);white-space:nowrap}
+  .rd-node.done{background:var(--accent-soft);color:var(--accent-dark)}
+  .rd-node.dev{background:#fff3df;color:var(--warning)}
+  .rd-node.cancel{background:#fbeaea;color:var(--danger)}
+  .legend{display:flex;gap:12px;align-items:center;color:var(--muted);font-size:11px;padding:2px 0 10px;flex-wrap:wrap}
+  .legend i{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px}
+  details.archived{margin:0 20px 18px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+  details.archived summary{cursor:pointer;padding:12px 16px;font-size:13px;font-weight:600;list-style:none}
+  details.archived summary::-webkit-details-marker{display:none}
+  details.archived summary::before{content:'▸ ';color:var(--muted)}
+  details.archived[open] summary::before{content:'▾ '}
+  .arch-row{display:flex;gap:10px;flex-wrap:wrap;padding:0 16px 14px}
+  .arch-item{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:10px;padding:6px 10px}
+  .arch-item svg{width:44px;height:44px}
+  .arch-item .ai-name{font-size:12px;font-weight:600}
+  .arch-item .ai-meta{font-size:11px;color:var(--muted)}
+  @media(max-width:560px){
+    .ring-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .ring-detail{grid-template-columns:minmax(0,1fr)}
+    .project-group{padding:4px 12px 16px}
+    details.archived{margin:0 12px 16px}
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a class="brand" href="#"><span class="brand-mark">A</span><span>Agent <strong>Autoloop</strong></span></a>
+  <div class="header-actions">
+    <label class="project-filter">项目 <select><option>全部项目</option></select></label>
+    <span class="connection online"><span class="dot"></span>已连接</span>
+    <button class="button secondary" type="button">刷新</button>
+  </div>
+</div>
+<nav class="navigation">
+  <button class="nav-item active">总览</button>
+  <button class="nav-item">调度会话</button>
+  <button class="nav-item">规则</button>
+</nav>
+
+<div class="demo-note">设计稿（静态演示，非真实数据）：项目分组 → 每个项目若干「任务环」→ 环内是该任务的 DAG 节点（串行/并行）。100% 完成或已取消的任务环移入下方「已归档」。全部环都已归档的项目整块不显示。</div>
+
+<main>
+  <div class="page-heading">
+    <div><p class="eyebrow">PILOT OVERVIEW</p><h1>今天的自动化</h1><p class="subtle">看见进展，只处理真正需要你的事。</p></div>
+    <button class="button primary" type="button"><span class="button-icon">＋</span>新建会话</button>
+  </div>
+
+  <section class="panel" aria-labelledby="progress-title">
+    <div class="panel-heading">
+      <div><h2 id="progress-title">项目任务进度</h2><span class="subtle">按项目分组 · 一个项目可有多条任务环 · 环内是任务节点 · 已完成/已取消的环归档</span></div>
+      <button id="overview-dag-new" class="button secondary" type="button">新建 DAG（执行授权）</button>
+    </div>
+    <div class="legend">
+      <span><i style="background:#157a65"></i>已完成</span>
+      <span><i style="background:#d3993c"></i>进行中</span>
+      <span><i style="background:#dfe7e3"></i>待开始</span>
+      <span>环心 = 该任务完成比例</span>
+    </div>
+    <div id="groups"></div>
+    <details class="archived">
+      <summary>已归档的任务环 <span class="status">3</span></summary>
+      <div class="arch-row" id="archived"></div>
+    </details>
+  </section>
+</main>
+
+<script>
+const PROJECTS = [
+  { name:'auto调度', rings:[
+    { id:'mobile', name:'移动端设备授权管理', nodes:'dddoopppppppp', waves:[['device-binding'],['mobile-shell','mobile-core','notifications'],['project-filter','dag-ring','sessions','voice-input','question-group','artifacts','font-touch','device-sync'],['final-acceptance']], status:'进行中', current:'notifications', summary:'网页端设备绑定、一次性二维码、已绑定设备列表、解除授权与审计记录；当前节点已派给 WorkBuddy。' },
+    { id:'publish', name:'DAG 发布器加固', nodes:'ddopp', status:'进行中', current:'tree-filter', summary:'发布器 push 改用临时 askpass 凭据；树构造跳过根外依赖软链。' },
+  ]},
+  { name:'health-service-core', rings:[
+    { id:'mtexec', name:'mtexec 多租户执行', nodes:'ddddddddddddddpppp', status:'进行中', current:'d1-mem-sampling', summary:'执行波串行推进：14/18 节点完成，当前 d1-mem-sampling。' },
+  ]},
+];
+const ARCHIVE = [
+  { name:'并行 DAG 改造', meta:'7/7 · 100% · 2026-11-18 归档' },
+  { name:'console-hub-native-and-card-routing', meta:'0/6 · 已取消 · 2026-11-18 归档' },
+  { name:'Phase1 多租户推进', meta:'12/12 · 100% · 2026-11-17 归档' },
+];
+const COLOR = { d:'#157a65', o:'#d3993c', p:'#dfe7e3' };
+function ringSvg(pattern, size, stroke, radius){
+  const n = pattern.length, per = 360 / n, C = 2 * Math.PI * radius;
+  const segs = pattern.split('').map((s, i) => {
+    const portion = (per / 360) * C;
+    const gap = Math.min(3, portion * 0.12);
+    const dash = `${Math.max(0.6, portion - gap)} ${C}`;
+    return `<circle class="seg" cx="${size/2}" cy="${size/2}" r="${radius}" fill="none" stroke="${COLOR[s]}" stroke-width="${stroke}" stroke-dasharray="${dash}" stroke-dashoffset="${-portion * i}" transform="rotate(-90 ${size/2} ${size/2})" stroke-linecap="butt"></circle>`;
+  }).join('');
+  const done = pattern.split('').filter(c => c === 'd').length;
+  const pct = Math.round(done / n * 100);
+  return `<svg viewBox="0 0 ${size} ${size}" role="img" aria-label="完成 ${pct}%">
+    <circle cx="${size/2}" cy="${size/2}" r="${radius}" fill="none" stroke="#eef2f0" stroke-width="${stroke}"></circle>
+    ${segs}
+    <text x="50%" y="49%" text-anchor="middle" font-size="${size*0.17}" font-weight="700" fill="#172521">${pct}%</text>
+    <text x="50%" y="59%" text-anchor="middle" font-size="${size*0.075}" fill="#68756f">${done}/${n} 节点</text>
+  </svg>`;
+}
+let selected = 'mobile';
+function render(){
+  const g = document.getElementById('groups');
+  g.replaceChildren();
+  for (const p of PROJECTS){
+    const sec = document.createElement('div'); sec.className = 'project-group';
+    const head = document.createElement('div'); head.className = 'project-head';
+    head.innerHTML = `<strong>${p.name}</strong><span class="chip">进行中 ${p.rings.length} 个环</span><span class="chip">已归档 1</span>`;
+    const row = document.createElement('div'); row.className = 'ring-row';
+    for (const r of p.rings){
+      const card = document.createElement('article');
+      card.className = 'ring-card' + (r.id === selected ? ' selected' : '');
+      card.innerHTML = ringSvg(r.nodes, 132, 18, 52) + `<div class="rc-name">${r.name}</div><div class="rc-meta">${r.status}</div>`;
+      card.onclick = () => { selected = r.id; render(); };
+      row.append(card);
+    }
+    sec.append(head, row);
+    const cur = p.rings.find(r => r.id === selected);
+    if (cur){
+      const detail = document.createElement('div'); detail.className = 'ring-detail';
+      const facts = document.createElement('div'); facts.className = 'overview-node';
+      const done = cur.nodes.split('').filter(c => c === 'd').length;
+      facts.innerHTML = `<div class="overview-node-head"><strong>${cur.name}</strong><span class="status good">进行中</span></div>
+        <div class="overview-node-facts">
+          <div class="node-field"><span class="node-field-label">节点</span><span class="node-field-value">${done}/${cur.nodes.length} 完成</span></div>
+          <div class="node-field"><span class="node-field-label">当前节点</span><span class="node-field-value">${cur.current || '—'}</span></div>
+          <div class="node-field"><span class="node-field-label">任务摘要</span><span class="node-field-value node-task-summary">${cur.summary}</span></div>
+        </div>`;
+      detail.append(facts);
+      if (cur.waves){
+        const w = document.createElement('div');
+        w.innerHTML = `<p class="rd-wave-title">按任务的 DAG 设计分波（并行组）</p><div class="rd-waves">` +
+          (() => { let k = 0; return cur.waves.map((wave, i) => `<div class="rd-wave"><span class="rd-wave-title" style="margin:0;min-width:44px">第 ${i+1} 波</span>${wave.map(id => { const st = cur.nodes[k++] || 'p'; const cls = st === 'd' ? 'done' : st === 'o' ? 'dev' : ''; return `<span class="rd-node ${cls}">${id}</span>`; }).join('')}</div>`).join(''); })() + `</div>`;
+        detail.append(w);
+      }
+      sec.append(detail);
+    }
+    g.append(sec);
+  }
+  const a = document.getElementById('archived');
+  a.replaceChildren();
+  for (const item of ARCHIVE){
+    const el = document.createElement('div'); el.className = 'arch-item';
+    el.innerHTML = ringSvg(item.meta.startsWith('0/6') ? 'pppppp' : 'ddddddd', 44, 8, 18) + `<div><div class="ai-name">${item.name}</div><div class="ai-meta">${item.meta}</div></div>`;
+    a.append(el);
+  }
+}
+render();
+</script>
+</body>
+</html>
