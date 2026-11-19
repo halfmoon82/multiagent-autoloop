@@ -10,6 +10,7 @@ import { checkCapabilities, checkInitialization } from './vibe-adapter.mjs';
 import { createPlanDigest, loadVibePlan } from './vibe-plan.mjs';
 import { defaultGit } from './git-safe.mjs';
 import { ensureMirror } from './dag-mirror.mjs';
+import { buildDagRing } from './dag-model.mjs';
 
 export class DagServiceError extends Error {
   constructor(message, status = 400) { super(message); this.name = 'DagServiceError'; this.status = status; }
@@ -99,8 +100,10 @@ export function withHubUsage(detail, hubRuns = [], models = {}, adapters = {}) {
 // 移动端只读摘要（Spec §8.2）：从根 run 真实字段投影项目 DAG 进度与执行授权范围。
 // 只读、不重算 digest、不改写 schema 1/2 授权快照；缺失字段留 null/空数组，不编造进度、模型或费用。
 // 旧 run 的 schema 1 授权记录一律原样读取，避免任何摘要公式变动影响既有 run。
-export function mobileDagSummaries(runs = []) {
+// nodeRuns 仅用于投影移动端环形图（ring），绝不参与授权/摘要计算；缺项目/计划归属的旧轮次也可归入。
+export function mobileDagSummaries(runs = [], nodeRuns = []) {
   const list = Array.isArray(runs) ? runs : [];
+  const allNodeRuns = Array.isArray(nodeRuns) ? nodeRuns : [];
   return list.map(run => {
     const raw = run && typeof run === 'object' && !Array.isArray(run) ? run : {};
     const grant = raw.authorizationSnapshot && typeof raw.authorizationSnapshot === 'object' && !Array.isArray(raw.authorizationSnapshot)
@@ -108,6 +111,9 @@ export function mobileDagSummaries(runs = []) {
     const nodes = Array.isArray(raw.nodes) ? raw.nodes : [];
     const runId = String(raw.runId ?? '').trim();
     if (!runId) return null;
+    const mine = allNodeRuns.filter(item => item && item.nodeId !== ROOT_NODE
+      && (!item.project || item.project === raw.project)
+      && (!item.planId || item.planId === raw.planId));
     return {
       runId,
       project: String(raw.project ?? '').trim() || null,
@@ -121,6 +127,7 @@ export function mobileDagSummaries(runs = []) {
       allowedActions: Array.isArray(grant?.allowedActions) ? [...grant.allowedActions].map(String).sort() : [],
       deniedActions: [...DENIED_ACTIONS],
       authorizationPresent: Boolean(grant),
+      ring: buildDagRing(raw, mine),
     };
   }).filter(Boolean);
 }
@@ -139,8 +146,9 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
   };
   return {
     list: () => {
-      const runs = store.listRuns().filter(run => run.nodeId === ROOT_NODE);
-      const summaries = new Map(mobileDagSummaries(runs).map(summary => [summary.runId, summary]));
+      const all = store.listRuns();
+      const runs = all.filter(run => run.nodeId === ROOT_NODE);
+      const summaries = new Map(mobileDagSummaries(runs, all).map(summary => [summary.runId, summary]));
       return runs.map(run => ({ ...run, mobileSummary: summaries.get(String(run.runId)) || null }));
     },
     get(id) {
