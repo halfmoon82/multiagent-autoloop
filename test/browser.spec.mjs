@@ -831,23 +831,29 @@ try {
   await archivedEntry.getByRole('button', { name: '查看', exact: true }).click();
   const archiveLog = page.locator('#session-workspace .run-card.archived .chat-log').first();
   await archiveLog.waitFor();
-  // 取一个明确不在底部的滚动位置（固定 40 在短转录里会贴底，被"停在最新"逻辑合法重置）
-  const scrollTarget = await archiveLog.evaluate(node => {
+  // 读写转录框必须在页面内一次同步完成：后台每 2 秒整张替换归档卡（再写回滚动位置），
+  // locator.evaluate 先定位、后执行，两步之间撞上替换就会读到已摘除的旧框（scrollTop 恒为 0）或写进旧框（丢失）。
+  // op：'read' 读位置；'quarter' 滚到明确不贴底的 1/4 处（短转录贴底会被「停在最新」合法重置）；'bottom' 滚到底；'atBottom' 是否贴底
+  const archiveScroll = op => page.evaluate(op => {
+    const node = document.querySelector('#session-workspace .run-card.archived .chat-log');
+    if (!node) throw new Error('归档转录框不存在');
     const max = node.scrollHeight - node.clientHeight;
-    const top = Math.min(Math.max(1, Math.floor(max * 0.25)), Math.max(0, max - 1));
-    node.scrollTop = top;
-    return { top, max };
-  });
+    if (op === 'quarter') { const top = Math.min(Math.max(1, Math.floor(max * 0.25)), Math.max(0, max - 1)); node.scrollTop = top; return { top, max }; }
+    if (op === 'bottom') { node.scrollTop = node.scrollHeight; return node.scrollTop; }
+    if (op === 'atBottom') return node.scrollHeight - node.scrollTop - node.clientHeight < 40;
+    return node.scrollTop;
+  }, op);
+  const scrollTarget = await archiveScroll('quarter');
   assert.ok(scrollTarget.max > 4, 'archived transcript must be scrollable to verify scroll survival');
   await page.waitForTimeout(4500); // 跨过后台刷新周期
-  assert.equal(await archiveLog.evaluate(node => node.scrollTop), scrollTarget.top, 'archived transcript scroll position must survive background refreshes');
+  assert.equal(await archiveScroll('read'), scrollTarget.top, 'archived transcript scroll position must survive background refreshes');
   // 视图切换：离开再回来后转录框必须停在最新消息（隐藏视图零尺寸不能被误判为底部而重置）
-  await archiveLog.evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await archiveScroll('bottom');
   await page.getByRole('button', { name: '总览', exact: true }).click();
   await page.waitForTimeout(4500); // 隐藏期间跨多次后台刷新
   await page.getByRole('button', { name: '会话管理', exact: false }).click();
   await page.waitForTimeout(400);
-  const atBottom = await archiveLog.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight < 40);
+  const atBottom = await archiveScroll('atBottom');
   assert.equal(atBottom, true, 'returning to the sessions view must land the transcript at the latest message, not the top');
   // 已归档视图只读、没有关闭入口：先选中「继续调度」生成的活动会话，再关闭它
   await page.locator('#session-items .session-select').first().click();
