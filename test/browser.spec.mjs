@@ -573,7 +573,8 @@ try {
   const originalStart = schedulingSessions.start;
   const callOrder = [];
   schedulingSessions.close = async function (id) { (this.closeCalls ||= []).push(id); callOrder.push(`close:${id}`); return originalClose.call(this, id); };
-  schedulingSessions.start = async function (input) { callOrder.push('start'); return originalStart.call(this, input); };
+  // 真实服务端会回传 kind；假管理器默认不回传（既有用例依赖此行为），本段包装里补上，新会话才会落在设计 tab。
+  schedulingSessions.start = async function (input) { callOrder.push('start'); const session = await originalStart.call(this, input); if (input?.kind) session.kind = input.kind; return session; };
   const openDesignConflict = async (request, designCount) => {
     await page.getByRole('button', { name: '会话管理', exact: false }).click();
     await page.locator('#refresh').click();
@@ -627,7 +628,8 @@ try {
   assert.deepEqual(callOrder, ['close:design-old', 'start'], 'replace must close the old session before creating the new one');
   assert.equal(schedulingSessions.records.some(session => session.id === 'design-old'), false, 'the old session must be gone from the live list');
   await page.waitForFunction(() => document.querySelector('form[data-action="session-message"][data-id="design-new"]'), null, { timeout: 5000 });
-  assert.equal(await page.locator('#session-items .session-item[data-session="design-decoy"]').count(), 1, 'the decoy must be listed ahead of the new session for the selection check to mean anything');
+  assert.equal(await page.locator('.session-kind-tabs [data-kind="design"]').getAttribute('aria-selected'), 'true', 'a new design session must land in the design tab');
+  assert.deepEqual(await page.locator('#session-items .session-item').evaluateAll(items => items.map(item => item.dataset.session)), ['design-decoy', 'design-new'], 'the decoy must be listed ahead of the new session for the selection check to mean anything');
   assert.equal(await page.locator('#session-items .session-item.active').getAttribute('data-session'), 'design-new', 'the newly created session must be the selected one');
   // 清场：移除本段造的设计会话，切回调度会话，后续步骤照旧使用 browser-session。
   schedulingSessions.records = schedulingSessions.records.filter(session => !['design-new', 'design-decoy'].includes(session.id));
