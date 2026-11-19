@@ -138,6 +138,11 @@ try {
   await page.locator('#dag-overview-list .dag-project').waitFor();
   assert.equal(await page.locator('#dag-overview-list .overview-ring').getAttribute('data-segments'), '4');
   assert.equal(await page.locator('#dag-overview-list .ring-seg').count(), 4);
+  // 环上颜色语义：同波次同色相，不同波次不同色相（a=第1波，b/c=第2波，整合=第3波）
+  const ringStrokes = await page.locator('#dag-overview-list .ring-seg').evaluateAll(list => list.map(node => node.getAttribute('stroke')));
+  const hueOf = stroke => Number(/hsl\((\d+)/.exec(stroke)?.[1]);
+  assert.equal(hueOf(ringStrokes[1]), hueOf(ringStrokes[2]), 'same wave shares one hue');
+  assert.notEqual(hueOf(ringStrokes[0]), hueOf(ringStrokes[1]), 'different waves use different hues');
   assert.match(await page.locator('#dag-overview-list .dag-project').innerText(), /待派发/);
   assert.match(await page.locator('#dag-overview-list .dag-project').innerText(), /费用未上报 · Token 未上报/);
   // DAG 总览与串行总览同构：环形扇区切换右侧单个节点详情，不离开总览

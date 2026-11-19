@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSerialView, buildDagView, serialStatus } from '../public/progress-view.mjs';
+import { waveHue } from '../public/dag-model.mjs';
 
 const serialChain = {
   sourceFile: 'demo-serial.json', project: '/p/demo', percent: 50, updatedAt: '2026-11-17T00:00:00Z',
@@ -63,6 +64,31 @@ test('分段环=每节点一段：串行百分比来自编排器，DAG 百分比
   assert.equal(d.percent, 33, '1/3 accepted 四舍五入');
   assert.equal(d.nodes.length, 3);
   assert.match(d.segmentNote, /波次/);
+});
+
+test('DAG 环：一个波次一个色相，同波次内深浅表达节点完成度', () => {
+  const detail = {
+    run: { runId: 'r2', planId: 'p2', project: '/p/demo', status: 'claimed',
+      nodes: [
+        { id: 'a', title: 'A', depends_on: [], contract: {} },
+        { id: 'b', title: 'B', depends_on: ['a'], contract: {} },
+        { id: 'c', title: 'C', depends_on: ['a'], contract: {} },
+        { id: 'ir', title: '整合', depends_on: ['b', 'c'], integration_review: true, contract: {} },
+      ],
+      publish: { nodes: { a: { state: 'accepted' }, b: { state: 'dev' }, c: { state: 'pending' }, ir: { state: 'pending' } } } },
+    nodeRuns: [],
+  };
+  const view = buildDagView(detail);
+  const parse = color => { const match = /hsl\((\d+), 52%, (\d+)%\)/.exec(color); return match ? { hue: Number(match[1]), light: Number(match[2]) } : null; };
+  const byId = id => parse(view.nodes.find(node => node.id === id).color);
+  const a = byId('a'), b = byId('b'), c = byId('c');
+  assert.ok(a && b && c, 'DAG 节点色是波次色相 + 完成度明度');
+  assert.equal(b.hue, c.hue, '同一波次共用一个色相');
+  assert.notEqual(a.hue, b.hue, '不同波次用不同色相');
+  assert.ok(a.light < b.light && b.light < c.light, '已完成最深、开发中其次、未开始最浅');
+  assert.equal(a.light, 27, '全深固定为完成档');
+  const hues = new Set(Array.from({ length: 10 }, (_, index) => waveHue(index + 1)));
+  assert.equal(hues.size, 10, '前 10 个波次色相互不相同');
 });
 
 test('串行状态映射未知状态不崩、不当成完成', () => {

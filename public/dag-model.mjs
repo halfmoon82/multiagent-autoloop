@@ -77,12 +77,14 @@ export function groupWaves(nodes) {
   for (const node of nodes) { if (!waves.has(node.wave)) waves.set(node.wave, []); waves.get(node.wave).push(node); }
   return [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([wave, list]) => ({ wave, nodes: list }));
 }
-const WAVE_COLORS = { 1: { done: '#157a65' }, 2: { done: '#157a65', active: '#4f8fb9', review: '#8ab2ce' }, 3: { done: '#157a65', active: '#7c6bb8', review: '#a99bd0' } };
+// 波次配色：一个波次一个色相；同波次内节点用同色相不同明度表达完成度，全深 = 该节点已完成。
+// 完成度档位只来自可核实的状态，不按时间或猜测编造中间百分比。
+const COMPLETION = { done: 1, review: 0.75, active: 0.5, blocked: 0.2, pending: 0, unknown: 0 };
+export function waveHue(wave) { return (168 + (Math.max(1, Math.round(wave || 1)) - 1) * 47) % 360; }
+export function completionOf(status) { return COMPLETION[status?.kind] ?? 0; }
 export function segmentColor(node) {
-  if (node.status.kind === 'blocked') return '#d59a37';
-  if (node.status.kind === 'done') return '#157a65';
-  if (node.status.kind === 'pending' || node.status.kind === 'unknown') return '#d8d2e7';
-  return (WAVE_COLORS[Math.min(node.wave, 3)] || {})[node.status.kind] || '#4f8fb9';
+  const lightness = Math.round(72 - 45 * completionOf(node.status));
+  return `hsl(${waveHue(node.wave)}, 52%, ${lightness}%)`;
 }
 export function donutModel(nodes) {
   if (!nodes.length) return { segments: 0, percent: 0, gradient: '' };

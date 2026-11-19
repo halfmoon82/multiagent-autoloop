@@ -57,7 +57,6 @@ export function buildSerialView(chain, usageText = UNKNOWN_USAGE) {
     key: `serial:${chain?.sourceFile || ''}`, kind: 'serial', id: chain?.sourceFile || '', project: chain?.project || '',
     title: projectName(chain?.project || ''), subtitle: `${nodes.length} 个节点 · 按执行顺序排列${current ? ` · 当前 ${current.title}` : ''}`,
     percent: Math.round(chain?.percent || 0), segmentNote: '同一色相 · 深浅 = 状态',
-    legend: [{ label: '串行序列', color: SERIAL_COLORS.active }],
     nodes, groups, usageText,
     metrics: [['总进度', `${Math.round(chain?.percent || 0)}%`], ['节点', `${nodes.length} 个`], ['当前节点', current?.title || '—'], ['节点内', current ? `${current.percent}%` : '—'], ['状态', current?.status.label || '—']],
     detailFacts(node) {
@@ -94,12 +93,10 @@ export function buildDagView(detail) {
     nodes: nodes.filter(node => node.wave === wave.wave),
   }));
   const done = nodesRaw.filter(node => node.status.kind === 'done').length;
-  const colors = [1, 2, 3].map(wave => segmentColor({ wave, status: { kind: 'done' } }));
   return {
     key: `dag:${detail?.run?.runId || ''}`, kind: 'dag', id: detail?.run?.runId || '', runId: detail?.run?.runId || '', project: detail?.run?.project || '',
     title: projectName(detail?.run?.project || ''), subtitle: `${detail?.run?.planId || detail?.run?.runId || ''} · ${nodes.length} 个节点 · 第 ${sum.currentWave}/${sum.totalWaves} 波`,
-    percent: nodes.length ? Math.round(done / nodes.length * 100) : 0, segmentNote: '颜色 = 波次 · 深浅 = 状态',
-    legend: colors.map((color, index) => ({ label: `第 ${index + 1} 波`, color })),
+    percent: nodes.length ? Math.round(done / nodes.length * 100) : 0, segmentNote: '颜色 = 波次 · 深浅 = 完成度',
     nodes, groups, usageText: `本次运行 · ${formatUsage(sum.usage)}`,
     metrics: [['当前波次', `${sum.currentWave} / ${sum.totalWaves}`], ['业务槽位', `${sum.slotsUsed} / 5`], ['已完成', `${sum.doneCount} / ${sum.nodeCount}`], ['换打法', `${(detail?.run?.publish?.approachChanges || []).length} 次`], ['隔离槽位', `${sum.quarantined.length} 个`]],
     detailFacts(node) {
@@ -158,18 +155,25 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
   svg.setAttribute('class', 'overview-ring-svg');
-  const share = view.nodes.length ? circumference / view.nodes.length : 0;
-  const gap = view.nodes.length > 1 ? Math.min(2.4, share / 3) : 0;
+  const count = view.nodes.length;
+  // 波次/分组边界多留一点缺口：同波次节点在环上连续成组，一眼能看出“波次=色相”。
+  const boundaries = view.nodes.filter((node, index) => index > 0 && node.groupOrder !== view.nodes[index - 1].groupOrder).length;
+  const provisional = count ? circumference / count : 0;
+  const boundaryGap = boundaries ? Math.min(5, provisional * 0.6) : 0;
+  const share = count ? (circumference - boundaries * boundaryGap) / count : 0;
+  const gap = count > 1 ? Math.min(2.4, share / 3) : 0;
   const frame = el('div', 'overview-ring-frame');
+  let offset = 0;
   view.nodes.forEach((node, index) => {
+    if (index > 0 && node.groupOrder !== view.nodes[index - 1].groupOrder) offset += boundaryGap;
     const length = Math.max(share - gap, 0.6);
     const seg = document.createElementNS(NS, 'circle');
     seg.setAttribute('cx', String(center)); seg.setAttribute('cy', String(center)); seg.setAttribute('r', String(radius));
     seg.setAttribute('fill', 'none');
     seg.setAttribute('stroke', node.color);
-    seg.setAttribute('stroke-width', node.id === selectedId ? '20' : '14');
+    seg.setAttribute('stroke-width', node.id === selectedId ? '20' : '15');
     seg.setAttribute('stroke-dasharray', `${length} ${circumference - length}`);
-    seg.setAttribute('stroke-dashoffset', String(-(index * share + gap / 2)));
+    seg.setAttribute('stroke-dashoffset', String(-(offset + gap / 2)));
     seg.setAttribute('transform', `rotate(-90 ${center} ${center})`);
     seg.setAttribute('class', `ring-seg ${node.status.kind}${node.id === selectedId ? ' selected' : ''}`);
     seg.dataset.ringNode = node.id;
@@ -190,6 +194,7 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
       seg.addEventListener('keydown', pick);
     }
     svg.append(seg);
+    offset += share;
   });
   frame.append(svg, overviewRingCenter(view));
   wrap.append(frame, el('small', 'overview-ring-note', view.segmentNote || ''), el('small', 'overview-ring-note', '点扇区切换节点'));

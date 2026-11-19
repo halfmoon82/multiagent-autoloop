@@ -33,8 +33,6 @@ progress.progress-bar::-moz-progress-bar{background:var(--accent);border-radius:
 .node-pop-title{font-weight:650;margin-bottom:4px}
 .node-pop-meta{font-size:11px;color:var(--muted);margin-bottom:8px}
 .node-pop-summary{color:var(--ink);overflow-wrap:anywhere;white-space:pre-wrap}
-.current-line{font-size:13px;margin-top:10px;overflow-wrap:anywhere}
-.current-line strong{font-weight:650}
 .pr-link{color:var(--accent);font-size:12px;text-decoration:none;margin-left:8px}
 .chips-line{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
 .list-row{position:relative}
