@@ -190,3 +190,14 @@ test('超预算的用户原话完整写进资料文件，正文截断标记指�
   assert.ok(!composed.includes('末尾关键句'), '夹具确实被截断');
   assert.match(composed, /完整原话见本轮资料文件/);
 });
+
+test('上一轮结论超过上限时注明截断，不静默丢尾（P2）', async () => {
+  const { root, project } = fixture();
+  const longSummary = `${'汇'.repeat(9000)}尾巴`;
+  const file = await buildSchedulingContext({ root, sessionId: 'l1', turn: 2, project, lastSummary: longSummary });
+  const body = readFileSync(file, 'utf8');
+  assert.match(body, /\[已截断：上一轮结论超过 8000 字，完整内容见会话转录\]/);
+  const medium = '汇'.repeat(3000);
+  const file2 = await buildSchedulingContext({ root, sessionId: 'l2', turn: 2, project, lastSummary: medium });
+  assert.ok(readFileSync(file2, 'utf8').includes(medium), '3000 字的结论完整保留（旧上限 1200 会截掉）');
+});

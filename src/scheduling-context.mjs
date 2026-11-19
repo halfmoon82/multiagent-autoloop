@@ -11,7 +11,8 @@ export const EVENT_DETAIL_BUDGET = 3950;
 const MAX_AGENTS_MD_BYTES = 60 * 1024;
 const MAX_CONTRACT_BYTES = 12 * 1024;
 const MAX_SNAPSHOT_BYTES = 16 * 1024;
-const MAX_SUMMARY_CHARS = 1200;
+// 上一轮结论上限与会话转录回显上限一致（run-output.mjs 的 MAX_FINAL_MESSAGE_CHARS），超出时注明，不静默截断。
+const MAX_SUMMARY_CHARS = 8000;
 // 每节列多少条：规则多给一些（本项目规则已排前），其余按最近在前。超出时注明总数，绝不静默截断。
 export const SECTION_LIMITS = Object.freeze({ rules: 20, runs: 10, cards: 10, dag: 10 });
 const TRUNCATED_NOTE = cap => `[已截断：原文超过 ${cap} 字节，完整内容见原文路径]`;
@@ -90,7 +91,11 @@ export async function buildSchedulingContext({ root, sessionId, turn, project, l
   parts.push('\n## 项目 AGENTS.md\n', agents || '（未找到 AGENTS.md）\n');
   if (contract) parts.push('\n## 调度契约（docs/scheduling-contract.md，截断版）\n', contract);
   parts.push('\n', snapshot);
-  if (lastSummary) parts.push('\n## 上一轮结论\n', String(lastSummary).slice(0, MAX_SUMMARY_CHARS), '\n');
+  if (lastSummary) {
+    const chars = [...String(lastSummary)];
+    const cut = chars.length > MAX_SUMMARY_CHARS;
+    parts.push('\n## 上一轮结论\n', chars.slice(0, MAX_SUMMARY_CHARS).join(''), cut ? `\n[已截断：上一轮结论超过 ${MAX_SUMMARY_CHARS} 字，完整内容见会话转录]` : '', '\n');
+  }
   if (openItems) parts.push('\n## 未收尾事项\n', String(openItems), '\n');
   const dir = path.join(root, CONTEXT_DIR);
   const file = path.join(dir, `${sessionId}-turn${turn}.md`);

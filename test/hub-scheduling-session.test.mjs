@@ -784,3 +784,45 @@ test('context file lives under <runtime>/scheduling-context and the DAG section 
   assert.match(body, /### DAG 运行[^\n]*（共 1 条）\n- dagrun-a｜p1｜running/);
   assert.doesNotMatch(body, /dagrun-other|dagrun-a-n1/, '只列本项目根 run');
 });
+
+test('a turn whose executor cannot be found clears lastAgent instead of keeping a stale one (P2)', async () => {
+  const { home, client, manager } = echoManager({
+    runs: finishedRun(), stdout: codexOut('第一轮'),
+    stateRuns: [{ id: 6586, agent: 'claude', state: 'done', events: [] }],
+  });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const sidecar = () => JSON.parse(readFileSync(path.join(home, 'console-sessions', `${started.id}.hub.json`), 'utf8'));
+  assert.equal(sidecar().lastAgent, 'claude');
+  // 第二轮结束，但 /v1/state 读不到它（读失败或已翻页）。
+  client.readEvent = async (config, eventId) => ({ event: eventId, runs: [{ run: 6587, rule: '调度会话执行', state: 'done', summary: '第二轮' }] });
+  client.readState = async () => { throw new Error('hub down'); };
+  await manager.send(started.id, '第二轮');
+  assert.equal(sidecar().lastAgent, null, '旧值不得冒充上一轮');
+  // 第三轮：退回现场查找，按事项 subject 找到真实执行者。
+  client.readState = async () => ({ cards: [], lines: [], runs: [{ id: 6587, agent: 'codex-full', state: 'done', events: [{ subject: started.hubSubject }] }] });
+  await manager.send(started.id, '第三轮');
+  const text = JSON.parse(client.calls.filter(call => call[0] === 'postEvent').at(-1)[1].detail).text;
+  const file = text.match(/本轮完整资料[^：]*：(.+?)；动手前先读它/)[1];
+  assert.match(readFileSync(file, 'utf8'), /上一轮执行者：codex-full/);
+});
+
+test('a stale reconcile of an older event never overwrites the newer turn (P2 race)', async () => {
+  const { client, manager } = echoManager({ runs: [{ run: 6586, rule: '调度会话执行', state: 'claimed', summary: '' }] });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const firstEvent = 7184;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  client.readState = async () => { calls += 1; if (calls === 1) await gate; return { runs: [], cards: [], lines: [] }; };
+  client.readEvent = async (config, eventId) => (eventId === firstEvent
+    ? { event: eventId, runs: [{ run: 6586, rule: '调度会话执行', state: 'done', summary: '旧轮结束' }] }
+    : { event: eventId, runs: [{ run: 6590, rule: '调度会话执行', state: 'claimed', summary: '' }] });
+  manager.list(); // 后台对账旧事件：轮次已结束，卡在查执行者那一步
+  await new Promise(resolve => setImmediate(resolve));
+  await manager.send(started.id, '新一轮');
+  release();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const view = manager.list().find(s => s.id === started.id);
+  assert.equal(view.hubRunId, 6590, '旧对账不得把 runId 改回旧轮');
+  assert.equal(view.status, 'running', '新一轮仍在跑，不得被旧对账改成 idle');
+});

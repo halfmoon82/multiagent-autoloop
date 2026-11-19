@@ -473,7 +473,12 @@ export class SchedulingSessionManager {
         if (!root) return [];
         const dir = path.join(root, 'dag-runs');
         let names = [];
-        try { names = readdirSync(dir).filter(n => n.endsWith('.json')); } catch { return []; }
+        // 只看最近修改的 50 份记录：dag-runs 随时间增长，每轮全量同步解析会越来越慢。
+        try {
+          names = readdirSync(dir).filter(n => n.endsWith('.json'))
+            .map(name => { try { return { name, at: statSync(path.join(dir, name)).mtimeMs }; } catch { return null; } })
+            .filter(Boolean).sort((a, b) => b.at - a.at).slice(0, 50).map(item => item.name);
+        } catch { return []; }
         const rows = [];
         for (const name of names) {
           try {
@@ -943,6 +948,7 @@ export class SchedulingSessionManager {
     // worker 结论回显到会话转录：同一事件只追加一次，重启/重复对账不重复。
     // 中台 summary 只是最后一条消息的第一行；轮次结束后优先从本机执行目录读回完整回复，读不到才退回 summary。
     const finished = run.state === 'done' || run.state === 'nothing';
+    const terminal = finished || run.state === 'cancelled';
     if (finished && record.hub.summaryEventId !== Number(eventId)) {
       const full = run.runId ? readFinalMessage({ root: this.runtimeRoot, runId: run.runId }) : null;
       const reply = full || (run.summary ? String(run.summary) : '');
@@ -950,11 +956,20 @@ export class SchedulingSessionManager {
         record.hub.summaryEventId = Number(eventId);
         this.#pushMessage(record, 'agent', reply);
       }
-      // 记下本轮执行者（/v1/events 不带 agent，刚结束的轮次一定在 /v1/state 当前页），换执行者时据此交接。
-      const state = await this.#readHubSnapshot();
-      const agent = (Array.isArray(state?.runs) ? state.runs : []).find(item => Number(item?.id) === Number(run.runId))?.agent;
-      if (agent) record.hub.lastAgent = agent;
     }
+    // 本轮执行者：/v1/events 不带 agent，刚结束的轮次在 /v1/state 当前页里找。找不到（读失败、已翻页）就清空，
+    // 让下一轮退回现场查找，绝不让上上一轮的旧值冒充上一轮。只在本事件仍是会话最新事件时才记。
+    let agent = null;
+    if (terminal && record.hub.lastEventId === Number(eventId)) {
+      const state = await this.#readHubSnapshot();
+      agent = (Array.isArray(state?.runs) ? state.runs : []).find(item => Number(item?.id) === Number(run.runId))?.agent || null;
+    }
+    // 等待期间用户可能已发出下一轮：旧事件的对账不得覆盖新一轮的 runId/状态（否则新一轮不再被轮询、打断也会打错轮）。
+    if (record.hub.lastEventId !== Number(eventId)) {
+      this.#persist(record);
+      return run;
+    }
+    if (terminal) record.hub.lastAgent = agent;
     if (run.runId) record.hub.runId = run.runId;
     record.hub.lastState = run.state ?? null;
     record.status = mapHubStateToStatus(run.state);

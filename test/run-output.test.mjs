@@ -62,6 +62,37 @@ test('readFinalMessage falls back to an earlier stdout when the latest one has n
   assert.equal(readFinalMessage({ root, runId: 9 }), '业务回复');
 });
 
+test('an unfinished Codex repair turn (agent_message then turn.failed, no turn.completed) does not override the business turn (P2)', () => {
+  const failedRepair = [
+    JSON.stringify({ type: 'thread.started', thread_id: 't1' }),
+    JSON.stringify({ type: 'turn.started' }),
+    JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '[对齐门] 模式：light' } }),
+    JSON.stringify({ type: 'turn.failed', error: { message: '429 rate limit' } }),
+  ].join('\n');
+  assert.equal(finalMessageFromStdout(failedRepair), null, '没跑完的一轮不算结论');
+  const root = runsRoot({ '5721-1/stdout-1.log': codexStdout('真正的业务结论'), '5721-1/stdout-2.log': failedRepair });
+  assert.equal(readFinalMessage({ root, runId: 5721 }), '真正的业务结论');
+});
+
+test('a Claude error result is not taken as the reply', () => {
+  const errored = [JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, result: '半截' })].join('\n');
+  assert.equal(finalMessageFromStdout(errored), null);
+  const flagged = [JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: '出错了' })].join('\n');
+  assert.equal(finalMessageFromStdout(flagged), null);
+  const root = runsRoot({ '12-1/stdout-1.log': claudeStdout('业务结论'), '12-1/stdout-2.log': errored });
+  assert.equal(readFinalMessage({ root, runId: 12 }), '业务结论');
+});
+
+test('Claude lines that are JSON arrays are flattened like the upstream plugin does', () => {
+  const line = JSON.stringify([{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success', result: '数组行结论' }]);
+  assert.equal(finalMessageFromStdout(line), '数组行结论');
+});
+
+test('receipt stripping is anchored to line starts like upstream, so inline mentions survive', () => {
+  const text = '结论：说明里提到 ```agent-autoloop 这个词也没关系\n\n```agent-autoloop\n{"events":[]}\n```';
+  assert.equal(cleanFinalMessage(text), '结论：说明里提到 ```agent-autoloop 这个词也没关系');
+});
+
 test('readFinalMessage returns null for unknown runs and rejects non-integer ids (no path traversal)', () => {
   const root = runsRoot({ '5-1/stdout-1.log': codexStdout('x') });
   assert.equal(readFinalMessage({ root, runId: 6 }), null);

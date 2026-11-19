@@ -6,7 +6,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 export const MAX_FINAL_MESSAGE_CHARS = 8000;
-const RECEIPT_BLOCK = /```agent-autoloop[\s\S]*?```/g;
+// 与上游 worker/contract.ts 的 BLOCK 同口径：只认行首的 ```agent-autoloop 代码块，正文里顺带提到的不误删。
+const RECEIPT_BLOCK = /(?<=^|\n)[ \t]*```agent-autoloop[ \t]*\r?\n(?:[^\n]*\n)*?[ \t]*```[ \t]*(?=\r?\n|$)/g;
 const RUN_DIR = /^(\d+)-(\d+)$/;
 const STDOUT = /^stdout-(\d+)\.log$/;
 
@@ -14,19 +15,28 @@ function parseLines(text) {
   const out = [];
   for (const line of String(text).split('\n')) {
     if (!line.trim()) continue;
-    try { const value = JSON.parse(line); if (value && typeof value === 'object') out.push(value); } catch { /* 登录 shell 的杂行等非 JSON 行跳过 */ }
+    // Claude 插件按 [JSON.parse(line)].flat() 读：同一行可能是事件数组。
+    try { for (const value of [JSON.parse(line)].flat()) if (value && typeof value === 'object') out.push(value); } catch { /* 登录 shell 的杂行等非 JSON 行跳过 */ }
   }
   return out;
 }
 
-/** 从一份 stdout 里取最终回复：Codex 取最后一条 agent_message，Claude 取最后一条 result。 */
+/**
+ * 从一份 stdout 里取「这一轮真正交出的」最终回复，口径对齐上游插件 read()：
+ * - Codex：必须出现 turn.completed，才取最后一条 agent_message（没跑完的只是半截，不算结论）；
+ * - Claude：取最后一条 result，且必须 subtype === 'success' 且不是 is_error。
+ * 不满足返回 null，调用方据此退回更早的一份输出（回执重写失败时接单程序同样退回原业务输出）。
+ */
 export function finalMessageFromStdout(text) {
   const events = parseLines(text);
-  const codex = events.filter(event => event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string');
-  if (codex.length) return codex.at(-1).item.text;
-  const claude = events.filter(event => event.type === 'result' && typeof event.result === 'string');
-  if (claude.length) return claude.at(-1).result;
-  return null;
+  if (events.some(event => event.type === 'thread.started' || event.type === 'turn.started' || event.type === 'item.completed')) {
+    if (!events.some(event => event.type === 'turn.completed')) return null;
+    const messages = events.filter(event => event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string');
+    return messages.length ? messages.at(-1).item.text : null;
+  }
+  const result = events.filter(event => event.type === 'result').at(-1);
+  if (!result || result.is_error || result.subtype !== 'success' || typeof result.result !== 'string') return null;
+  return result.result;
 }
 
 /** 去掉回执代码块（结构化动作给中台用，不是给人看的），并收敛空行与长度。 */
