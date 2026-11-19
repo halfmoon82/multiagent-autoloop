@@ -2,6 +2,7 @@
 // 同一 agent+model 连续 N 次命中即按路由政策表自动登记绕行（带来源标记与证据原文）。
 // 只做侦测与裁定；登记/改派/回滚/留痕复用 src/detour.mjs 的原子事务与状态锁。
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { classifyKind, loadPolicy, resolveFallback } from './detour-policy.mjs';
 import { findActiveDetour, recordDetour } from './detour.mjs';
@@ -10,6 +11,15 @@ export class QuotaScanError extends Error {}
 
 /** 默认额度拒绝模式；CLI --patterns 可整体替换。英文模式不区分大小写。 */
 export const DEFAULT_PATTERNS = ['429', 'refusal', '配额', 'quota', '额度', 'rate.?limit', 'exhausted', 'too many requests'];
+
+// 凭证/密钥/token/URL 凭据去敏：与 dag-stall.mjs 同口径，证据写入 detours.json 与控制台响应前先抹掉。
+export function redactEvidence(text) {
+  return String(text ?? '')
+    .replace(/(https?:\/\/)[^\s/@]+@/gi, '$1***@')
+    .replace(/\b(gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})/g, '***')
+    .replace(/\b(sk-[A-Za-z0-9]{10,})/g, '***')
+    .slice(0, 600);
+}
 
 const AGENT_HINTS = [
   [/codex-full/i, 'codex-full'],
@@ -125,6 +135,34 @@ export function readRunFailures({ root, runsDir, window = 200, patterns = DEFAUL
 
 const idStamp = (now) => now.toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-');
 
+/** 只读：从 hub.db 的 runs 视图取最近失败轮次（含成功，用于打断连续计数）。
+ * Hub 侧的额度拒绝不落在 worker/runs 文件里（比如调度会话回合 / scheduling.message），
+ * 只存于 Hub 的 runs 表（state/error/summary）。失败以 error/summary 命中额度模式判定；
+ * done/nothing/failed/refusal 为终态，queued/claimed 会还继续排队重试，也按未终结算命中（它们也是失败）。
+ * 与 worker 侧同口径：同一 agent+model 连续 N 次命中即登记绕行。 */
+export function readHubRunFailures({ dbFile, window = 200, patterns = DEFAULT_PATTERNS } = {}) {
+  if (!dbFile || !existsSync(dbFile)) return [];
+  let rows;
+  try {
+    const out = execFileSync('/usr/bin/sqlite3', ['-json', dbFile, `select id,rule,agent,state,attempts,error,summary,created_at from runs order by id desc limit ${Math.max(1, window)}`], { timeout: 8000, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 4 * 1024 * 1024 }).toString();
+    rows = JSON.parse(out);
+    if (!Array.isArray(rows)) rows = [];
+  } catch { return []; }
+  // 从新到旧返回；主流程与 worker 侧同口径：同 agent+model 连续命中累计，被成功打断的清零。
+  return rows.reverse().map(row => {
+    const errorText = [row.error, row.summary].filter(Boolean).join('\n');
+    const quota = matchesPattern(errorText, patterns);
+    // done/nothing 的回合是成功的，不算失败——summary 里即使出现"429"也只是叙述；
+    // queued/claimed 且命中模式的按失败算（还在排队重试）。
+    const failed = !['done', 'nothing'].includes(row.state) && quota;
+    return {
+      id: String(row.id), run: Number(row.id), attempt: 1, agent: String(row.agent || ''), model: '',
+      kind: classifyKind(row.rule), ruleName: String(row.rule || ''),
+      failed: failed && quota, quota, evidence: redactEvidence(errorText) || '(无错误原文)', at: row.created_at || '',
+    };
+  });
+}
+
 /** 主流程：扫描→连续计数→按政策登记。任何单条登记失败只记 skip，不中断整轮。 */
 export function scanForQuotaDetours(config, options = {}) {
   const patterns = Array.isArray(options.patterns) && options.patterns.length ? options.patterns : DEFAULT_PATTERNS;
@@ -135,30 +173,32 @@ export function scanForQuotaDetours(config, options = {}) {
   const probeCommand = Array.isArray(options.probeCommand) && options.probeCommand.length
     ? options.probeCommand.map(String) : null;
   const now = options.now instanceof Date ? options.now : new Date();
-  const failures = readRunFailures({ root: config.root, runsDir: options.runsDir, window: options.window, patterns });
+  const failures = [
+    ...readRunFailures({ root: config.root, runsDir: options.runsDir, window: options.window, patterns }),
+    ...readHubRunFailures({ dbFile: options.hubDbFile ?? path.join(config.root, 'hub.db'), window: options.window, patterns }),
+  ];
 
   const states = new Map();
-  const candidates = [];
   for (const failure of failures) {
     if (!failure.agent) continue; // 认不出 agent 的轮次不参与计数
     const key = `${failure.agent}|${failure.model}`;
     if (failure.failed && failure.quota) {
       const state = states.get(key) || { count: 0, samples: [], kind: failure.kind, at: failure.at };
+      state.agent = failure.agent; state.model = failure.model;
       state.count += 1;
       state.samples.push(`run ${failure.id}「${failure.evidence}」`);
       state.kind = state.kind || failure.kind;
       state.at = failure.at;
       states.set(key, state);
-      if (state.count === threshold) {
-        candidates.push({
-          agent: failure.agent, model: failure.model, kind: state.kind,
-          at: state.at, hits: state.count, evidence: state.samples.join('；'),
-        });
-      }
     } else {
       states.delete(key); // 成功或非额度失败都打断同 agent+model 的连续命中
     }
   }
+  // 只有窗口末尾仍在连续命中且达到阈值的 streak 才登记：历史 streak 被后来的成功打断的不误绕。
+  // 用 >=：连续命中超过阈值（更该绕行）不能漏掉。
+  const candidates = [...states.values()]
+    .filter(state => state.count >= threshold)
+    .map(state => ({ agent: state.agent, model: state.model, kind: state.kind, at: state.at, hits: state.count, evidence: state.samples.join('；') }));
 
   const detours = [];
   const skipped = [];

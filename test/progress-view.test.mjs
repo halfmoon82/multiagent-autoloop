@@ -51,7 +51,7 @@ test('四栏字段如实标注：串行无 Agent/模型/节点费用不编造，
   assert.equal(pending.usageText, '费用未上报 · Token 未上报');
 });
 
-test('分段环=每节点一段：串行百分比来自编排器，DAG 百分比来自 accepted 占比', () => {
+test('分段环=每节点一段：串行百分比来自编排器，DAG 百分比计入节点内完成度', () => {
   const s = buildSerialView(serialChain, '链累计 · 120 Token · $0.21');
   assert.equal(s.percent, 50);
   assert.equal(s.nodes.length, 3);
@@ -61,7 +61,7 @@ test('分段环=每节点一段：串行百分比来自编排器，DAG 百分比
   assert.equal(serialColors.size, 2, '串行节点同色相不同深浅（done/active 两档，阻塞另色）');
   assert.notEqual(s.nodes[2].color, s.nodes[0].color, '阻塞节点用琥珀色，不只靠深浅区分');
   const d = buildDagView(dagDetail);
-  assert.equal(d.percent, 33, '1/3 accepted 四舍五入');
+  assert.equal(d.percent, 50, '(1+0.5+0)/3 = 50%：已合并 + 开发中节点内进度');
   assert.equal(d.nodes.length, 3);
   assert.match(d.segmentNote, /波次/);
 });

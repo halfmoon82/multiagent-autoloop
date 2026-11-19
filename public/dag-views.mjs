@@ -2,7 +2,7 @@
 // #75：节点/波次/环形/详情统一走 progress-view.mjs 的同一套组件语言，与串行链同构。
 import { el } from './views.mjs';
 import { projectName } from './format.mjs';
-import { buildDagNodes, formatUsage, segmentColor, sumUsage } from './dag-model.mjs';
+import { buildDagNodes, donutModel, formatUsage, segmentColor, sumUsage } from './dag-model.mjs';
 import { buildDagView, progressDonut, progressNodeCard, progressOverview, renderProgressDetail } from './progress-view.mjs';
 
 const TERMINAL = new Set(['done', 'cancelled', 'abandoned', 'blocked_unknown']);
@@ -50,7 +50,7 @@ function planTitle(detail) { return detail.run.planId || detail.run.runId; }
 export function donut(nodes, label) {
   const view = {
     nodes: nodes.map(node => ({ ...node, color: segmentColor(node) })),
-    percent: nodes.length ? Math.round(nodes.filter(node => node.status.kind === 'done').length / nodes.length * 100) : 0,
+    percent: donutModel(nodes).percent,
   };
   return progressDonut(view, { label });
 }

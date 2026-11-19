@@ -199,9 +199,13 @@ Agent 或改写成只读提示词。否定豁免只认紧邻动词的禁止（�
 
 ### 12.2 自动侦测 `scripts/quota-scan.mjs`
 
-- 只读运行目录 `<AGENT_AUTOLOOP_HOME>/worker/runs/<轮次号>-<尝试号>/` 最近 `window` 个轮次（默认 200，可配），
+两条独立扫描通道共用同一连续计数与裁定：
+- **worker 轮次**：只读 `<AGENT_AUTOLOOP_HOME>/worker/runs/<轮次号>-<尝试号>/` 最近 `window` 个（默认 200），
   从 `stdout-*.log` / `stderr-1.log` 的 `error` 原文与退出码判定失败；Agent/模型取自 `entry.json` 的
   `job.agent.id` / `model`，缺失时按命令里的 `--model` 等特征推断；工作类型按规则名（开发/dev、审阅/review）判定。
+- **Hub 调度回合**（2026-11-19 主人定）：只读 `<AGENT_AUTOLOOP_HOME>/hub.db` 的 `runs` 视图（用系统 `sqlite3 -json`），
+  `error` 或 `summary` 命中额度模式的 run（含仍在 `queued`/`claimed` 排队重试的）也算失败轮次；
+  `done`/`nothing` 打断连续命中。工作类型按规则名（coord/调度会话、dev、review）判定；命中后按政策表绕行到**同一档**的备选平台执行者。
 - 额度拒绝模式可配：默认 `429, refusal, 配额, quota, 额度, rate.?limit, exhausted, too many requests`，
   `--patterns` 整体替换。编译失败、网络错误等**非额度失败不触发**，并打断同一 agent+model 的连续命中。
 - 同一 agent+model 连续 3 次额度命中（`--threshold` 可配）才自动登记：调 `recordDetour`，
@@ -264,6 +268,19 @@ cron 规则模板（每 30 分钟，提示词只调用 verify 并汇报，不手
 - 绕行登记与回归都有留痕和备份；恢复后按政策表回到主 Agent，不把备选沉淀为新的默认偏好。
 
 ## 13. DAG 节点卡住发现（无模型，2026-11-19）
+
+### 13.1 状态变化即唤醒（2026-11-19）
+
+卡住只能发现"出错了没人管"，发现不了"正常推进但没人接下一轮"。
+控制器每一轮 tick 记录本轮各节点状态变化（`dev / review / accepted / blocked / gated`），
+合并成一条 `scheduling.message`（subject=`scheduling:dag:<runId>`）投给调度会话；
+瞬时错误（中台超时等）仍归卡住巡检，不在此处叫醒。
+
+- **合并**：一轮内所有节点的变化合一条，不逐条发；同链复用同一事项。
+- **去重**：事件 ID `console:dag-progress:<runId>:<sha1(progress)[:12]>`——同一批变化重投幂等，换一批变化即新事件；进程内按 ID 去重，中台对重复 ID 不重复执行兜底。
+- **失败不阻断**：投递失败只记日志，不影响本轮推进与持久化。
+- **出口**：仍是中台原生 `POST /v1/events`（来源密钥），不加新规则、不改协议字段。
+- 调度会话收到的 `detail` 除 `project,text` 外还带 `progress` 明细，便于直接接手下一轮动作。
 
 背景：DAG 控制器把节点推进错误只写在 `dag-runs/*.json` 的 `publish.nodes.<id>.lastError`，每轮重试时覆盖；
 中台异常扫描只看卡片与 run，看不到这里。2026-11-19 device-binding 推送因凭据缺失连续失败，链停摆而无人发现。
