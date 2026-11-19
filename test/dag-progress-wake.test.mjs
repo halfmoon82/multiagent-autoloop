@@ -27,11 +27,17 @@ test('事件发往调度会话通道并去敏；通知方按事件 ID 去重', a
   const posted = []; const sent = new Set();
   const s = setup([mkNode('a')]);
   const snap = await s.ctl.tick();
-  const ev = buildProgressEvent(rootRuns(s)[0], snap, 1);
+  const ev = buildProgressEvent(rootRuns(s)[0], snap);
   assert.equal(ev.type, 'scheduling.message');
-  assert.equal(ev.id, `console:dag-progress:${s.root.runId}:1`);
+  assert.match(ev.id, /^console:dag-progress:/);
+  assert.notEqual(ev.id, `console:dag-progress:${s.root.runId}:1`, '不再用恒定 tickSeq');
   assert.equal(ev.subject, `scheduling:dag:${s.root.runId}`);
   assert.doesNotMatch(ev.id + ev.subject, /\s/);
+  // 同一批 progress 重复调用生成同一 ID（幂等）；不同批变化生成不同 ID（P1 回归）。
+  const ev2 = buildProgressEvent(rootRuns(s)[0], snap);
+  assert.equal(ev2.id, ev.id);
+  const other = buildProgressEvent(rootRuns(s)[0], { ...snap, progress: [{ nodeId: 'a', from: 'dev', to: 'review' }] });
+  assert.notEqual(other.id, ev.id, '状态变化不同则事件 ID 不同');
   const notify = createProgressNotifier({ post: async e => posted.push(e), sent });
   await notify(rootRuns(s)[0], snap);
   await notify(rootRuns(s)[0], snap);
