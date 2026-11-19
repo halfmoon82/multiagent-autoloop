@@ -2,6 +2,7 @@
 // 同一 agent+model 连续 N 次命中即按路由政策表自动登记绕行（带来源标记与证据原文）。
 // 只做侦测与裁定；登记/改派/回滚/留痕复用 src/detour.mjs 的原子事务与状态锁。
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { classifyKind, loadPolicy, resolveFallback } from './detour-policy.mjs';
 import { findActiveDetour, recordDetour } from './detour.mjs';
@@ -125,6 +126,33 @@ export function readRunFailures({ root, runsDir, window = 200, patterns = DEFAUL
 
 const idStamp = (now) => now.toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-');
 
+/** 只读：从 hub.db 的 runs 视图取最近失败轮次（含成功，用于打断连续计数）。
+ * Hub 侧的额度拒绝不落在 worker/runs 文件里（比如调度会话回合 / scheduling.message），
+ * 只存于 Hub 的 runs 表（state/error/summary）。失败以 error/summary 命中额度模式判定；
+ * done/nothing/failed/refusal 为终态，queued/claimed 会还继续排队重试，也按未终结算命中（它们也是失败）。
+ * 与 worker 侧同口径：同一 agent+model 连续 N 次命中即登记绕行。 */
+export function readHubRunFailures({ dbFile, window = 200, patterns = DEFAULT_PATTERNS } = {}) {
+  if (!dbFile || !existsSync(dbFile)) return [];
+  let rows;
+  try {
+    const out = execFileSync('/usr/bin/sqlite3', ['-json', dbFile, `select id,rule,agent,state,attempts,error,summary,created_at from runs order by id desc limit ${Math.max(1, window)}`], { timeout: 8000, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 4 * 1024 * 1024 }).toString();
+    rows = JSON.parse(out);
+    if (!Array.isArray(rows)) rows = [];
+  } catch { return []; }
+  return rows.map(row => {
+    const errorText = [row.error, row.summary].filter(Boolean).join('\n');
+    const quota = matchesPattern(errorText, patterns);
+    // done/nothing 的回合是成功的，不算失败——summary 里即使出现"429"也只是叙述；
+    // queued/claimed 且命中模式的按失败算（还在排队重试）。
+    const failed = !['done', 'nothing'].includes(row.state) && quota;
+    return {
+      id: String(row.id), run: Number(row.id), attempt: 1, agent: String(row.agent || ''), model: '',
+      kind: classifyKind(row.rule), ruleName: String(row.rule || ''),
+      failed: failed && quota, quota, evidence: errorText || '(无错误原文)', at: row.created_at || '',
+    };
+  });
+}
+
 /** 主流程：扫描→连续计数→按政策登记。任何单条登记失败只记 skip，不中断整轮。 */
 export function scanForQuotaDetours(config, options = {}) {
   const patterns = Array.isArray(options.patterns) && options.patterns.length ? options.patterns : DEFAULT_PATTERNS;
@@ -135,7 +163,10 @@ export function scanForQuotaDetours(config, options = {}) {
   const probeCommand = Array.isArray(options.probeCommand) && options.probeCommand.length
     ? options.probeCommand.map(String) : null;
   const now = options.now instanceof Date ? options.now : new Date();
-  const failures = readRunFailures({ root: config.root, runsDir: options.runsDir, window: options.window, patterns });
+  const failures = [
+    ...readRunFailures({ root: config.root, runsDir: options.runsDir, window: options.window, patterns }),
+    ...readHubRunFailures({ dbFile: options.hubDbFile ?? path.join(config.root, 'hub.db'), window: options.window, patterns }),
+  ];
 
   const states = new Map();
   const candidates = [];
