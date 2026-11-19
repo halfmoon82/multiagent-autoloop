@@ -10,6 +10,7 @@ import { createPublisher, PublishError } from '../src/dag-publish.mjs';
 import { designContractDigest } from '../src/design-baseline.mjs';
 import { ensureMirror } from '../src/dag-mirror.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
+import { dagReviewHolder } from '../src/review-claim.mjs';
 
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
 async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, aFiles = null } = {}) {
@@ -349,4 +350,27 @@ test('commitPr：凭据类永远拦；.env.example 与显式声明的受保护�
   scoped.write('src/a.mjs', 'ok\n'); scoped.write('.github/workflows/dag.yml', 'name: dag\n');
   const scopedOut = await scoped.pub.commitPr(scoped.ctx);
   assert.ok(scopedOut.commit, '显式写进节点范围的受保护路径放行');
+});
+
+test('merge：PR 被其他审阅方占位时暂缓合并（可重试错误），本节点 DAG 审阅占位或无占位才合并', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'export const a = 2;\n');
+  const pr = await t.pub.commitPr(t.ctx);
+  t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  t.gh.claimHolder = async () => 'codex-9f94e800';
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), err => err instanceof PublishError && err.code === 'REVIEW_CLAIMED' && /codex-9f94e800/.test(err.message));
+  assert.deepEqual(t.gh.merged, [], '他人占位时不得合并');
+  t.gh.claimHolder = async () => dagReviewHolder('a');
+  await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit });
+  assert.deepEqual(t.gh.merged, [pr.prUrl], '本节点 DAG 审阅自己的占位不挡合并');
+});
+
+test('merge：占位已释放（无有效占位）时照常合并', async () => {
+  const t = await boot();
+  t.write('src/a.mjs', 'export const a = 3;\n');
+  const pr = await t.pub.commitPr(t.ctx);
+  t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  t.gh.claimHolder = async () => null;
+  await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit });
+  assert.deepEqual(t.gh.merged, [pr.prUrl]);
 });
