@@ -17,7 +17,7 @@ import { aggregateProjectUsage } from './project-usage.mjs';
 import { readArchive } from './archive.mjs';
 import { refreshUsage } from './chain-usage.mjs';
 import { readCloseouts } from './chain-closeout.mjs';
-import { createDagService, DagServiceError, withHubUsage } from './dag-service.mjs';
+import { createDagService, DagServiceError, withHubUsage, collectHubRuns } from './dag-service.mjs';
 import { CardDelegateError, createCardDelegateStore, delegateOpenCard, settleDelegations } from './card-delegate.mjs';
 import { getCardRouting, CardFilterError } from './card-routing.mjs';
 import { createDeviceStore, DeviceAuthError } from './device-auth.mjs';
@@ -87,9 +87,15 @@ async function readJson(req) {
   catch { throw new RequestError(400, '请求内容不是有效的 JSON 对象'); }
 }
 function idOf(text) { const id = Number(text); if (!/^[1-9][0-9]*$/.test(text) || !Number.isSafeInteger(id)) throw new RequestError(400, '编号无效'); return id; }
+// 模型显示映射：每个执行者自己的模型（分档执行者命令里带 --model）优先，缺失才退回宿主默认标签。
+// /api/rules（总览、串行链）与 /api/dag-runs/:id（DAG 详情）共用这一个口径，避免两处各算各的。
+function modelMap(agents = []) {
+  return { ...modelLabels(), ...Object.fromEntries(agents.filter(agent => agent.model).map(agent => [agent.id, agent.model])) };
+}
+
 async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/state') return jsonResponse(res, 200, await hubRequest(config, '/v1/state'));
-  if (req.method === 'GET' && url.pathname === '/api/rules') return jsonResponse(res, 200, { ...readRuleOptions(config), models: modelLabels() });
+  if (req.method === 'GET' && url.pathname === '/api/rules') { const options = readRuleOptions(config); return jsonResponse(res, 200, { ...options, models: modelMap(options.agents) }); }
   if (req.method === 'GET' && url.pathname === '/api/admin/platform-models') {
     let policy = null; try { policy = loadPolicy(config); } catch { policy = null; }
     return jsonResponse(res, 200, readPlatformModels(config, { ...(config.platformCatalog ? { catalog: config.platformCatalog } : {}), policy }));
@@ -112,14 +118,14 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'GET' && (dagMatch = url.pathname.match(/^\/api\/dag-runs\/([^/]+)$/))) {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
     const detail = config.dagService.get(decodeURIComponent(dagMatch[1]));
-    // 节点执行 Agent / Token / 费用只在 Hub 轮次上：读不到 Hub 时原样返回，界面如实写未上报，不让详情页 502。
-    let hubRuns = [];
-    if (detail.nodeRuns.some(item => Number.isInteger(item?.hub?.hubRun))) {
-      try { hubRuns = (await hubRequest(config, '/v1/state'))?.runs || []; } catch { hubRuns = []; }
-    }
-    let adapters = {};
-    try { adapters = Object.fromEntries(readRuleOptions(config).agents.map(agent => [agent.id, agent.adapter])); } catch { adapters = {}; }
-    return jsonResponse(res, 200, withHubUsage(detail, hubRuns, modelLabels(), adapters));
+    // 节点执行 Agent / Token / 费用只在 Hub 轮次上：首页只有最近一小段，已完成节点的轮次要按轮次号定向取回；
+    // 读不到 Hub 时原样返回，界面如实写未上报，不让详情页 502。
+    const wanted = detail.nodeRuns.map(item => item?.hub?.hubRun).filter(Number.isInteger);
+    const hubRuns = wanted.length ? await collectHubRuns(before => hubRequest(config, '/v1/state' + (before == null ? '' : `?before=${before}`)), wanted) : [];
+    let agentMeta = [];
+    try { agentMeta = readRuleOptions(config).agents; } catch { agentMeta = []; }
+    const adapters = Object.fromEntries(agentMeta.map(agent => [agent.id, agent.adapter]));
+    return jsonResponse(res, 200, withHubUsage(detail, hubRuns, modelMap(agentMeta), adapters));
   }
   let sessionMatch;
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/artifacts$/))) return jsonResponse(res, 200, { files: await config.schedulingSessions.listSessionArtifacts(decodeURIComponent(sessionMatch[1])) });

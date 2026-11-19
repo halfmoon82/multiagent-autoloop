@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { DetourError, withStateLockAsync } from './detour.mjs';
+import { defaultModelOf } from './platform-models.mjs';
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -84,7 +85,7 @@ export function readRuleOptions(config) {
   const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
   const options = {
     rules: raw.rules.map(rule => ({ name: rule.name, when: rule.when, to: rule.to, cwd: rule.cwd, prompt: rule.prompt || '', parallel: rule.parallel, resume: !!rule.resume })),
-    agents: Object.entries(raw.agents || {}).map(([id, agent]) => ({ id, name: agent.name || id, access: agent.access || 'edit', adapter: agent.use || '' })),
+    agents: Object.entries(raw.agents || {}).map(([id, agent]) => ({ id, name: agent.name || id, access: agent.access || 'edit', adapter: agent.use || '', model: defaultModelOf(agent) || '' })),
     sources: Object.entries(raw.sources || {}).map(([id, source]) => ({ id, name: source.name || id })),
   };
   return { ...options, mobileRules: mobileRuleSummaries(options) };
