@@ -148,7 +148,7 @@ test('Hub 已终态但回执未消费：重启对账时补处理合法回执；�
   await restart(s).tick();
   assert.equal(s.runOf('a').status, 'done', '合法回执被补消费');
   assert.ok(s.publisher.calls.some(c => c[0] === 'commitPr'), '进入发布流程');
-  assert.ok(s.runOf('a').failures >= 1, '畸形回执计一次失败而非吞掉');
+  assert.equal(s.runOf('a').failures, 0, '畸形回执判 stale 不计失败（非结构化输出不是 worker 失败）');
 });
 
 const designBaseline = () => ({
