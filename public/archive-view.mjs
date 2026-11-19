@@ -89,6 +89,8 @@ if (typeof document !== 'undefined') {
     startArchiveView();
     const select = $('project-filter');
     if (select) select.addEventListener('change', render);
+    const clear = $('clear-project-filter');
+    if (clear) clear.addEventListener('click', () => setTimeout(render, 0));
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 }

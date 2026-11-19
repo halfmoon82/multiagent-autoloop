@@ -44,19 +44,22 @@
 | 条件 | 状态 | 主视图 |
 | --- | --- | --- |
 | 最新 run ∈ {`queued`, `claimed`} | `active` | 显示 |
-| 最新 run `done` 且该 run 全部节点 done | `completed` | 归档 |
+| 最新 run `done` 且该 run 全部节点 `accepted`（历史记录里可能是 `done`） | `completed` | 归档 |
 | 最新 run ∈ {`cancelled`, `abandoned`, `blocked_unknown`} 且无进行中 run | `cancelled` | 归档 |
 | 计划文件存在但从未运行 | `not_started` | 显示（0%） |
-| 最新 run `done` 但节点未齐（数据不一致） | `active` | 显示，并在详情标「状态不一致」 |
+| 最新 run `done` 但仍有节点未 `accepted` | 不归档 | 由环视图显示（不在本条归档范围内） |
 
 说明：先前完成过、之后又新开 run 的，按最新 run 判——重跑即重新开始。
 
 ## 4. 归档字段
 
-`{ taskId, kind: serial|dag, project, title, percent, nodes: {done,total}, reason: completed|cancelled|abandoned, archivedAt, link }`
+`{ taskId, kind: serial|dag, project, title, percent, nodes: {done,total}, reason: completed|cancelled|abandoned, archivedAt }`
+
+- `taskId` 带项目前缀（`serial:<project>:<stem>`、`dag:<project>:<planId>`），跨项目同名不会互相吞掉。
+- `link`（跳转原始记录）暂不在本 PR 范围，后续由环视图/详情页统一提供。
 
 - `archivedAt`：串行取文件名里的 `YYYYMMDD`；DAG 取最新终态 run 的 `finishedAt || updatedAt`。
-- 排序：项目内按 `archivedAt` 倒序。
+- 排序：项目内按 `archivedAt` 倒序；先去重后截断，同任务保留最新一条。
 - 归档区标题计数：`已归档的任务环 N`，副标题 `全部完成 x · 已取消 y`（`abandoned` 并入已取消）。
 
 ## 5. 与项目级筛选的一致性
@@ -74,6 +77,7 @@
 3. 计划文件被删除但仍有 run：仍按 `planId` 成环，标题回退到 `planId`。
 4. 节点数为 0 的任务：不归档、不显示（视为无效定义），并在日志记一条。
 5. 归档区数据只读，不写任何状态文件。
+6. DAG 节点终态以 `accepted` 为准（`done` 仅兼容历史数据）；`unknown` 不是终态，不当作取消。
 
 ## 7. 测试清单（实现时先写红）
 

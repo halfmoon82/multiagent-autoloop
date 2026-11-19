@@ -9,7 +9,8 @@ const SERIAL_RE = /^([A-Za-z0-9_-]+)-serial\.json(?:\.done-(\d{4})(\d{2})(\d{2})
 const DAG_RUN_RE = /^dagrun-[A-Za-z0-9-]+\.json$/;
 const MAX_BYTES = 256 * 1024;
 const MAX_ITEMS = 500;
-const TERMINAL_CANCEL = new Set(['cancelled', 'abandoned', 'blocked_unknown', 'unknown']);
+// unknown 不是终态（dag-run 状态机：unknown → abandoned/blocked_unknown），不能当取消。
+const TERMINAL_CANCEL = new Set(['cancelled', 'abandoned', 'blocked_unknown']);
 const ACTIVE = new Set(['queued', 'claimed']);
 
 const readJson = file => {
@@ -52,7 +53,7 @@ export function archiveSerial(entry, { now = new Date() } = {}) {
   if (!completed && !entry.archivedAt) return null;
   const stamp = entry.archivedAt || String(chain.lastEventAt || chain.updatedAt || now.toISOString()).slice(0, 10);
   return {
-    taskId: `serial:${entry.stem}`, kind: 'serial', source: entry.stem,
+    taskId: `serial:${String(chain.project || '')}:${entry.stem}`, kind: 'serial', source: entry.stem,
     project: String(chain.project || ''),
     title: String(chain.title || entry.stem),
     percent, nodes: { done, total: nodes.length },
@@ -79,11 +80,12 @@ export function archiveDag(runs, { titles = {}, now = new Date() } = {}) {
     const total = Array.isArray(run.nodes) ? run.nodes.length : 0;
     if (!total) continue;
     const states = Object.values(run.publish?.nodes || {}).map(node => String(node?.state || ''));
-    const done = states.length ? states.filter(state => state === 'done').length : (status === 'done' ? total : 0);
+    // 生产里节点终态是 accepted（dag-controller: n.state='accepted'）；done 只兼容历史记录。
+    const done = states.length ? states.filter(state => state === 'accepted' || state === 'done').length : (status === 'done' ? total : 0);
     const completed = status === 'done' && (done === total || !states.length);
     if (!completed && !TERMINAL_CANCEL.has(status)) continue;
     out.push({
-      taskId: `dag:${planId}`, kind: 'dag', source: planId,
+      taskId: `dag:${String(run.project || '')}:${planId}`, kind: 'dag', source: planId,
       project: String(run.project || ''),
       title: String(titles[planId] || planId),
       percent: Math.round((done / total) * 100), nodes: { done, total },
@@ -99,11 +101,9 @@ export function buildArchive({ serial = [], runs = [], titles = {}, now = new Da
     ...serial.map(entry => archiveSerial(entry, { now })),
     ...archiveDag(runs, { titles, now }),
   ].filter(Boolean);
+  const sorted = items.sort((a, b) => String(b.archivedAt).localeCompare(String(a.archivedAt)) || String(a.title).localeCompare(String(b.title)));
   const seen = new Set();
-  return items
-    .filter(item => (seen.has(item.taskId) ? false : seen.add(item.taskId)))
-    .sort((a, b) => String(b.archivedAt).localeCompare(String(a.archivedAt)) || String(a.title).localeCompare(String(b.title)))
-    .slice(0, MAX_ITEMS);
+  return sorted.filter(item => (seen.has(item.taskId) ? false : seen.add(item.taskId))).slice(0, MAX_ITEMS);
 }
 
 // 计划标题（可选）：<project>/docs/dag-plans/<planId>.json 的 title，读不到就用 planId。

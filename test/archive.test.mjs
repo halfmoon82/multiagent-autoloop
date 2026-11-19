@@ -18,7 +18,7 @@ test('串行 100% + .done → 归档为 completed，日期取文件名', () => {
   assert.equal(item.archivedAt, '2026-11-18');
   assert.deepEqual(item.nodes, { done: 3, total: 3 });
   assert.equal(item.project, '/p/demo');
-  assert.equal(item.taskId, 'serial:demo');
+  assert.equal(item.taskId, 'serial:/p/demo:demo');
 });
 
 test('串行已归档但没跑完 → abandoned', () => {
@@ -56,11 +56,27 @@ test('DAG 最新是 queued、旧 run 已取消 → 仍算进行中，不归档',
   assert.deepEqual(archiveDag(runs), []);
 });
 
-test('DAG 计划级 run done 且节点齐 → completed', () => {
-  const runs = [{ runId: 'r', planId: 'plan-c', nodeId: '__root__', status: 'done', createdAt: '2026-11-19T02:00:00Z', updatedAt: '2026-11-19T05:00:00Z', nodes: [{}, {}], publish: { nodes: { a: { state: 'done' }, b: { state: 'done' } } } }];
+test('DAG 计划级 run done 且节点齐（生产形状 accepted）→ completed', () => {
+  // 生产里节点终态是 accepted（dag-controller n.state='accepted'），done 只用于兼容历史记录。
+  const runs = [{ runId: 'r', planId: 'plan-c', nodeId: '__root__', status: 'done', createdAt: '2026-11-19T02:00:00Z', updatedAt: '2026-11-19T05:00:00Z', nodes: [{}, {}], publish: { nodes: { a: { state: 'accepted' }, b: { state: 'accepted' } } } }];
   const [item] = archiveDag(runs);
   assert.equal(item.reason, 'completed');
   assert.equal(item.percent, 100);
+});
+
+test('DAG 历史形状 done 仍兼容', () => {
+  const runs = [{ runId: 'r', planId: 'plan-d', nodeId: '__root__', status: 'done', createdAt: '2026-11-19T02:00:00Z', nodes: [{}], publish: { nodes: { a: { state: 'done' } } } }];
+  assert.equal(archiveDag(runs)[0]?.reason, 'completed');
+});
+
+test('DAG root done 但仍有节点未 accepted → 不当作完成', () => {
+  const runs = [{ runId: 'r', planId: 'plan-e', nodeId: '__root__', status: 'done', createdAt: '2026-11-19T02:00:00Z', nodes: [{}, {}], publish: { nodes: { a: { state: 'accepted' }, b: { state: 'dev' } } } }];
+  assert.deepEqual(archiveDag(runs), []);
+});
+
+test('DAG unknown 不是终态，不当取消归档', () => {
+  const runs = [{ runId: 'r', planId: 'plan-f', nodeId: '__root__', status: 'unknown', createdAt: '2026-11-19T02:00:00Z', nodes: [{}], publish: { nodes: { a: { state: 'pending' } } } }];
+  assert.deepEqual(archiveDag(runs), []);
 });
 
 test('备份/暂停副本与锁文件不产生重复条目', () => {
@@ -75,8 +91,8 @@ test('备份/暂停副本与锁文件不产生重复条目', () => {
     writeFileSync(path.join(root, 'dag-runs', 'dagrun-abc.controller.lock'), '1');
     const { archived } = readArchive({ root });
     assert.equal(archived.length, 2, JSON.stringify(archived));
-    assert.ok(archived.some(item => item.taskId === 'serial:dag'));
-    assert.ok(archived.some(item => item.taskId === 'dag:p'));
+    assert.ok(archived.some(item => item.taskId === 'serial:/p/demo:dag'));
+    assert.ok(archived.some(item => item.taskId === 'dag:/p/x:p'));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

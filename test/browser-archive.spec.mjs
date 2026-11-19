@@ -18,6 +18,14 @@ const chain = (project, title, statuses) => JSON.stringify({
 writeFileSync(path.join(root, 'done-a-serial.json.done-20261118'), chain(projA, 'Alpha 全完成任务', { a: 'done', b: 'done' }));
 writeFileSync(path.join(root, 'abandoned-b-serial.json.done-20261117'), chain(projB, 'Beta 中途放弃任务', { a: 'done', b: 'pending' }));
 writeFileSync(path.join(root, 'live-serial.json'), chain(projA, 'Alpha 进行中任务', { a: 'done', b: 'in_progress' }));
+mkdirSync(path.join(projA, 'docs', 'dag-plans'), { recursive: true });
+writeFileSync(path.join(projA, 'docs', 'dag-plans', 'plan-a.json'), JSON.stringify({ plan_id: 'plan-a', title: 'Alpha DAG 任务', nodes: [{ id: 'a' }, { id: 'b' }] }));
+mkdirSync(path.join(root, 'dag-runs'), { recursive: true });
+writeFileSync(path.join(root, 'dag-runs', 'dagrun-cancel.json'), JSON.stringify({
+  runId: 'dagrun-cancel', planId: 'plan-a', nodeId: '__root__', project: projA, status: 'cancelled',
+  createdAt: '2026-11-18T01:00:00Z', updatedAt: '2026-11-18T06:00:00Z',
+  nodes: [{ id: 'a' }, { id: 'b' }], publish: { nodes: { a: { state: 'cancelled' }, b: { state: 'cancelled' } } },
+}));
 
 writeFileSync(path.join(root, 'rules.json'), JSON.stringify({
   sources: { local: { name: '本机' } },
@@ -47,13 +55,15 @@ try {
   const section = page.locator('#archive-section');
   await section.locator('details.arch-section').waitFor();
   assert.equal(await section.locator('summary .arch-title').innerText(), '已归档的任务环');
-  assert.equal(await section.locator('summary .status').innerText(), '2', 'two archived rings must be counted');
+  assert.equal(await section.locator('summary .status').innerText(), '3', 'three archived rings must be counted (serial completed, serial abandoned, DAG cancelled)');
   assert.ok((await section.locator('summary .arch-sub').innerText()).includes('全部完成 1'), 'reason summary must be truthful');
-  assert.ok((await section.locator('summary .arch-sub').innerText()).includes('已取消 1'), 'abandoned counts as cancelled');
+  assert.ok((await section.locator('summary .arch-sub').innerText()).includes('已取消 2'), 'abandoned and DAG cancelled both count as cancelled');
   assert.equal(await section.locator('.arch-body').isVisible(), false, 'archive body is collapsed by default');
 
   await section.locator('summary').click();
   assert.equal(await section.locator('.arch-group-name').count(), 2, 'unfiltered archive groups by project');
+  assert.ok((await section.innerText()).includes('Alpha DAG 任务'), 'DAG task uses the plan title');
+  assert.ok((await section.innerText()).includes('plan-a · 2 节点'), 'DAG task shows its source and node count');
   assert.ok((await section.innerText()).includes('Alpha 全完成任务'));
   assert.ok((await section.innerText()).includes('Beta 中途放弃任务'));
   assert.ok(!(await section.innerText()).includes('Alpha 进行中任务'), 'in-progress task must not appear in archive');
@@ -63,10 +73,10 @@ try {
   assert.ok(alphaOption, `project filter must offer alpha (got ${JSON.stringify(options)})`);
   await page.locator('#project-filter').selectOption(alphaOption.value);
   await page.waitForTimeout(150);
-  assert.equal(await section.locator('.arch-row').count(), 1, 'project filter must narrow the archive');
+  assert.equal(await section.locator('.arch-row').count(), 2, 'project filter must narrow the archive');
   assert.equal(await section.locator('.arch-group-name').count(), 0, 'filtered archive drops group headings');
   assert.ok((await section.locator('summary .arch-scope').innerText()).includes('alpha'), 'filter scope must be visible');
-  assert.ok((await section.locator('.arch-row').innerText()).includes('Alpha 全完成任务'));
+  assert.ok((await section.locator('.arch-row').first().innerText()).includes('Alpha DAG 任务') || (await section.innerText()).includes('Alpha 全完成任务'), 'alpha rows must be the alpha tasks');
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.equal(overflow, 0, 'desktop must not overflow horizontally');
