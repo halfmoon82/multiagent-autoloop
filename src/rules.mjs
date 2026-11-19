@@ -59,7 +59,7 @@ export function readRuleOptions(config) {
   const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
   return {
     rules: raw.rules.map(rule => ({ name: rule.name, when: rule.when, to: rule.to, cwd: rule.cwd, prompt: rule.prompt || '', parallel: rule.parallel, resume: !!rule.resume })),
-    agents: Object.entries(raw.agents || {}).map(([id, agent]) => ({ id, name: agent.name || id, access: agent.access || 'edit' })),
+    agents: Object.entries(raw.agents || {}).map(([id, agent]) => ({ id, name: agent.name || id, access: agent.access || 'edit', adapter: agent.use || '' })),
     sources: Object.entries(raw.sources || {}).map(([id, source]) => ({ id, name: source.name || id })),
   };
 }

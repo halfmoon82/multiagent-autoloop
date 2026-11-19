@@ -410,3 +410,23 @@ test('withHubUsage 按 Hub 轮次号补节点执行 Agent/模型/自报用量；
   assert.equal(out.nodeRuns[2], detail.nodeRuns[2]);
   assert.equal(withHubUsage(detail, [{ id: 501, agent: 'codex-full', usage: null }], {}).nodeRuns[0].model, '未配置');
 });
+
+test('withHubUsage 标 usageUnreportable：acp/command 通道无用量是终态，界面写「不上报」而非「未上报」', () => {
+  const detail = { run: { runId: 'r' }, nodeRuns: [
+    { runId: 'a', nodeId: 'n1', hub: { hubRunId: 11, hubRun: 501 } }, // workbuddy，acp 通道
+    { runId: 'b', nodeId: 'n2', hub: { hubRunId: 12, hubRun: 502 } }, // codex，codex 通道可上报
+    { runId: 'c', nodeId: 'n3', hub: { hubRunId: 13, hubRun: 503 } }, // workbuddy 但有用量（防御：不标）
+  ] };
+  const hubRuns = [
+    { id: 501, agent: 'workbuddy', usage: null },
+    { id: 502, agent: 'codex-full', usage: null },
+    { id: 503, agent: 'workbuddy', usage: { input: 5, output: 1 } },
+  ];
+  const adapters = { workbuddy: 'acp', 'codex-full': 'codex' };
+  const out = withHubUsage(detail, hubRuns, {}, adapters);
+  assert.equal(out.nodeRuns[0].usageUnreportable, true, 'acp 无用量 → 终态不上报');
+  assert.equal(out.nodeRuns[1].usageUnreportable, undefined, 'codex 无用量 → 仍是「未上报」');
+  assert.equal(out.nodeRuns[2].usageUnreportable, undefined, '有用量则不标');
+  // adapters 缺数据时按未知处理，不误标
+  assert.equal(withHubUsage(detail, hubRuns).nodeRuns[0].usageUnreportable, undefined);
+});

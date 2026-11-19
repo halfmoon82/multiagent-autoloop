@@ -76,6 +76,24 @@ test('用量汇总：没有上报就写未上报，不输出 0 冒充', () => {
   assert.equal(formatUsage(sumUsage([{ usage: { input: 2, output: 1 } }])), '费用未上报 · Token 3（入 2 / 出 1）');
 });
 
+test('用量终态不上报：节点轮次标 usageUnreportable 时如实写「该执行者不上报用量」', () => {
+  assert.equal(formatUsage({ ...sumUsage([{}]), unreportable: true }), '该执行者不上报用量');
+  // 有轮次报过用量时不标（unreportable=false 或混合轮次仍显示已报部分）
+  const nodes = buildDagNodes({
+    run: { runId: 'r', nodes: [{ id: 'n1' }], publish: { nodes: { n1: { state: 'dev' } } } },
+    nodeRuns: [{ runId: 'a', nodeId: 'n1', agent: 'workbuddy', model: 'hy4', usageUnreportable: true }],
+  });
+  assert.equal(formatUsage(nodes[0].usage), '该执行者不上报用量');
+  const mixed = buildDagNodes({
+    run: { runId: 'r', nodes: [{ id: 'n1' }], publish: { nodes: { n1: { state: 'dev' } } } },
+    nodeRuns: [
+      { runId: 'a', nodeId: 'n1', agent: 'workbuddy', usageUnreportable: true },
+      { runId: 'b', nodeId: 'n1', agent: 'workbuddy', usage: { input: 10, output: 2 } },
+    ],
+  });
+  assert.equal(formatUsage(mixed[0].usage), '费用未上报 · Token 12（入 10 / 出 2）');
+});
+
 test('运行摘要：波次、槽位占用、完成数、隔离槽位', () => {
   const nodes = buildDagNodes(detail);
   const summary = dagRunSummary(detail, nodes);
