@@ -31,14 +31,16 @@ export function dagEventType(project, role) {
 
 // Hub 适配：hubRunId 即 Hub 事件号；事件 id 由 runId 决定，重复派发由 Hub 按 id 去重（幂等，不重复执行）。
 // getRun 从事件结果推导状态：没有 run=queued；有多个 run 取最新；Hub 不可达抛错（由控制器本轮记 lastError，不改状态）。
+// 授权按中台规则分治：/v1/events 的读与写用 source 密钥（中台要求事件「来源自己的密钥」），
+// /v1/runs/:id/cancel 与 /v1/state 仍走 hubRequest 的 owner 默认（cancel 用 source 会被中台以「要本人自己的密钥」拒）。
 export function createHubAdapter({ config, request = hubRequest, project } = {}) {
-  const outcome = eventNo => request(config, `/v1/events/${encodeURIComponent(eventNo)}`);
+  const outcome = eventNo => request(config, `/v1/events/${encodeURIComponent(eventNo)}`, { auth: 'source' });
   const newest = out => [...(out?.runs || [])].sort((a, b) => b.run - a.run)[0] || null;
   return {
     async dispatch({ run, slot, worktree, branch, expectedAdvanceId, model, prompt }) {
       const detail = JSON.stringify({ runId: run.runId, nodeId: run.nodeId, role: run.role, generation: run.generation, attempt: run.attempt, slot, worktree, branch, expectedAdvanceId, model: model ?? null, prompt });
       if (detail.length > 4000) throw new Error('派发事件正文超过 4000 字符，拒绝截断派发');
-      const res = await request(config, '/v1/events', { method: 'POST', body: {
+      const res = await request(config, '/v1/events', { method: 'POST', auth: 'source', body: {
         id: `dag:${run.runId}`, type: dagEventType(project || run.project, run.role), subject: `dag-${seg(run.nodeId)}`,
         summary: `DAG ${run.nodeId} ${run.role} g${run.generation}a${run.attempt}`.slice(0, 200), detail,
       } });
