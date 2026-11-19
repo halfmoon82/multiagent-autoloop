@@ -170,6 +170,32 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       return { prUrl, commit, outOfScope: outside, ...(warnings.length ? { warnings } : {}) };
     },
 
+    // 变基/强推后的 PR head 往往只存在于远端（worker 在自己仓库提交后强推），
+    // 控制器 mirror 没有这些对象。按分支取回到控制器自有 ref，再以精确 SHA 作为审阅基准。
+    async fetchHead({ nodeId, branch }) {
+      const root = store.getRun(rootRunId);
+      const name = String(branch || '').trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name)) throw new PublishError(`分支名无效（只允许 [A-Za-z0-9][A-Za-z0-9._/-]*）：${name}`, 'BAD_BRANCH');
+      if (!root.remoteUrl) throw new PublishError('根 run 未冻结可信 remote URL，拒绝 fetch', 'REMOTE_NOT_FROZEN');
+      let token;
+      try { token = await readToken(); }
+      catch { throw new PublishError(TOKEN_UNAVAILABLE, 'PUBLISH_TOKEN_UNAVAILABLE'); }
+      if (!token || typeof token !== 'string') throw new PublishError(TOKEN_UNAVAILABLE, 'PUBLISH_TOKEN_UNAVAILABLE');
+      const authDir = mkdtempSync(path.join(tmpdir(), 'dag-fetch-auth-'));
+      const askpass = path.join(authDir, 'askpass.sh');
+      const ref = `refs/dag-head/${String(nodeId).replace(/[^A-Za-z0-9._-]/g, '-')}`;
+      try {
+        chmodSync(authDir, 0o700);
+        const escaped = token.replace(/'/g, "'\\''");
+        writeFileSync(askpass, `#!/bin/sh\nprintf '%s' '${escaped}'\n`, { mode: 0o700 });
+        chmodSync(askpass, 0o700);
+        await rt.git(rt.project, ['fetch', '-q', root.remoteUrl, `+refs/heads/${name}:${ref}`], { env: { GIT_ASKPASS: askpass } });
+      } finally { rmSync(authDir, { recursive: true, force: true }); }
+      const head = String(await rt.git(rt.project, ['rev-parse', '--verify', `${ref}^{commit}`])).trim();
+      if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(head)) throw new PublishError('取回的 PR head 不是有效 commit，拒绝作为审阅基准', 'HEAD_INVALID');
+      return head;
+    },
+
     async verify({ nodeId, worktree, commit }) {
       const root = need(['run-tests'], 'verify');
       const before = (await changed(worktree)).sort().join('\n');
@@ -201,7 +227,12 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (!pr || pr.nodeId !== nodeId) throw new PublishError(`PR ${prUrl} 未登记或不属于节点 ${nodeId}，publish 拒绝`, 'PR_NOT_REGISTERED');
       if (pr.state === 'merged') return { mergeCommit: pr.mergeCommit };
       const head = await gh.prHead(prUrl);
-      if (head !== commit) throw new PublishError(`远端 PR head ${head} 与已审 SHA ${commit} 不一致（head 变化），拒绝合并`, 'HEAD_MISMATCH');
+      if (head !== commit) {
+        // 带上远端 head，交由控制器决定是否在新 head 上重审；publish 自身绝不合并未审提交。
+        const error = new PublishError(`远端 PR head ${head} 与已审 SHA ${commit} 不一致（head 变化），拒绝合并`, 'HEAD_MISMATCH');
+        error.head = head;
+        throw error;
+      }
       // 审阅占位：他人（非本节点 DAG 审阅）正在审时暂缓合并，抛错由控制器下一 tick 重试，节点状态不变。
       if (typeof gh.claimHolder === 'function') {
         const holder = await gh.claimHolder(prUrl);

@@ -189,7 +189,28 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       if (!ver.ok) return failure(root, st, id, dev, 'verify-failed');
       n.todo = { kind: 'review' }; return;
     }
-    const merged = await publisher.merge({ nodeId: id, prUrl: n.prUrl, commit: n.commit, runId: root.runId, evidence: n.designEvidence });
+    // PR 在审阅后被变基/强推：审阅基准已不等于远端 head。绝不合并未审提交——
+    // 在新 head 上补跑测试，下一阶段以新 attempt 重派独立审阅，通过后再合并同一 SHA。
+    if (n.rebasedTo && n.rebasedTo === n.commit) {
+      const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, commit: n.commit };
+      const ver = await publisher.verify({ ...ctx, commit: n.commit });
+      n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
+      if (ver.designEvidenceWarning) n.warnings = { ...(n.warnings || {}), designEvidence: ver.designEvidenceWarning };
+      if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
+      if (!ver.ok) { delete n.rebasedTo; return failure(root, st, id, latest(root, id, 'dev'), 'verify-failed'); }
+      delete n.rebasedTo;
+    }
+    let merged;
+    try { merged = await publisher.merge({ nodeId: id, prUrl: n.prUrl, commit: n.commit, runId: root.runId, evidence: n.designEvidence }); }
+    catch (error) {
+      const head = String(error?.head ?? '');
+      if (error?.code === 'HEAD_MISMATCH' && /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(head)) {
+        n.commit = head; n.rebasedTo = head; n.state = 'review'; n.todo = { kind: 'review', rebase: true };
+        n.warnings = { ...(n.warnings || {}), rebasedHead: head };
+        return;
+      }
+      throw error;
+    }
     if (merged.designWarning) n.warnings = { ...(n.warnings || {}), designEvidence: merged.designWarning };
     store.markPrMerged(root.runId, n.prUrl, { mergeCommit: merged.mergeCommit });
     await publisher.baseline({ nodeId: id, mergeCommit: merged.mergeCommit });
@@ -274,6 +295,26 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
   async function runTodo(root, st, id) {
     const n = st.nodes[id]; const todo = n.todo;
     if (todo.kind === 'review') {
+      if (todo.rebase) {
+        // 变基重审：槽位记录绑定的是开发期的 branch/base，直接复用会被 fail closed 拒绝；
+        // 先按既有纪律释放槽位（WIP 保全 + 清槽位状态），再从新 head prepare 一次性审阅分支。
+        // 派发不成功时保留待办，避免以旧审阅结论直接进入合并。
+        try {
+          const released = await releaseNodeSlot(root, st, id);
+          let prepared = false;
+          if (released) {
+            // 强推后的 head 往往只在远端：先取回控制器 mirror，再以取回的实际 head 作审阅基准。
+            const head = await publisher.fetchHead({ nodeId: id, branch: n.branch });
+            n.commit = head; n.rebasedTo = head;
+            prepared = await reattempt(root, st, id, 'review', 'rebase-review', true);
+          }
+          if (!prepared) n.todo = { kind: 'review', rebase: true };
+        } catch (error) {
+          n.todo = { kind: 'review', rebase: true };
+          throw error;
+        }
+        return;
+      }
       const prev = latest(root, id, 'review');
       const run = prev ? store.createAttempt(prev.runId, { reason: prev.attempt >= MAX_ATTEMPTS ? 'change-approach' : 'rework-cycle' }) : store.createNodeRun(root.runId, { nodeId: id, role: 'review' });
       n.todo = null; await start(root, st, id, run, n.slot, { prepare: false }); return;

@@ -24,11 +24,20 @@ export function fakeRt(project = '/proj') {
   return {
     project, runId: 'r', events, slotPath: slot => `${project}/.worktrees/dag-r-slot-${slot}`,
     loadState: () => JSON.parse(JSON.stringify(state)), saveState: next => { state = JSON.parse(JSON.stringify(next)); },
-    async prepare(a) { events.push(['prepare', a.slot, a.nodeId, a.base]); return { ...a, reused: false }; },
+    // 与真实槽位运行时同一 fail-closed 复用语义：同节点复用槽位必须 base/branch 完全一致。
+    async prepare(a) {
+      const prev = state[a.slot];
+      if (prev?.nodeId === a.nodeId && (prev.base !== a.base || prev.branch !== a.branch)) {
+        const error = new Error(`槽位 ${a.slot} 状态与请求的 base/branch 不一致，拒绝复用`); error.code = 'SLOT_STATE_MISMATCH'; throw error;
+      }
+      state[a.slot] = { nodeId: a.nodeId, base: a.base, branch: a.branch };
+      events.push(['prepare', a.slot, a.nodeId, a.base]);
+      return { ...a, reused: Boolean(prev) };
+    },
     async dirty() { return false; },
   };
 }
-export const fakeWip = () => { const calls = []; return { calls, async saveWip(rt, a) { calls.push(['save', a]); return `refs/dag-wip/${a.nodeId}/${a.attempt}`; }, async releaseSlotWorktree(rt, a) { calls.push(['release', a]); return { wipRef: `refs/dag-wip/${a.nodeId}/${a.attempt}` }; } }; };
+export const fakeWip = () => { const calls = []; return { calls, async saveWip(rt, a) { calls.push(['save', a]); return `refs/dag-wip/${a.nodeId}/${a.attempt}`; }, async releaseSlotWorktree(rt, a) { calls.push(['release', a]); const state = rt.loadState(); delete state[a.slot]; rt.saveState(state); return { wipRef: `refs/dag-wip/${a.nodeId}/${a.attempt}` }; } }; };
 export const fakePublisher = () => { const calls = []; return {
   calls,
   async commitPr(a) { calls.push(['commitPr', a.nodeId]); return { prUrl: `https://x/pr/${a.nodeId}`, commit: `sha-${a.nodeId}` }; },
