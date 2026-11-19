@@ -681,7 +681,11 @@ test('guard lets 继续 through when the matter has an open card', async () => {
 
 test('guard never reads Hub state for messages that are not bare continuations', async () => {
   let reads = 0;
-  const { manager } = guardManager({ readState: async () => { reads += 1; return { runs: [], cards: [], lines: [] }; } });
+  // run 保持进行中：对账不会为「记执行者」读 /v1/state，读数只来自本轮快照与守卫。
+  const { manager } = guardManager({
+    readState: async () => { reads += 1; return { runs: [], cards: [], lines: [] }; },
+    runs: [{ run: 1, rule: '调度会话执行', state: 'claimed', summary: '' }],
+  });
   const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
   const baseline = reads;
   await manager.send(started.id, '看看 DAG 进度');
@@ -709,4 +713,74 @@ test('first turn keeps the user request verbatim and moves the guardrails into t
   assert.doesNotMatch(first, /行为护栏/, '护栏不进事件正文');
   const file = first.match(/本轮完整资料[^：]*：(.+?)；动手前先读它/)[1];
   assert.match(readFileSync(file, 'utf8'), /行为护栏/);
+});
+
+// —— 回显完整回复、记录执行者、运行目录（冒烟发现的上下文丢失，回归）——
+const codexOut = text => [
+  JSON.stringify({ type: 'thread.started', thread_id: 't1' }),
+  JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text } }),
+  JSON.stringify({ type: 'turn.completed', usage: {} }),
+].join('\n');
+function echoManager({ runs, stateRuns = [], stdout = null, runId = 6586 } = {}) {
+  const home = mkdtempSync(path.join(tmpdir(), 'hub-echo-home-'));
+  if (stdout !== null) {
+    mkdirSync(path.join(home, 'worker', 'runs', `${runId}-1`), { recursive: true });
+    writeFileSync(path.join(home, 'worker', 'runs', `${runId}-1`, 'stdout-1.log'), stdout);
+  }
+  const client = fakeHubClient({ runs, runId });
+  client.readState = async () => ({ runs: stateRuns, cards: [], lines: [] });
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  return { home, client, manager: newManager(adapter, { archiveRoot: home, hubReconcileMs: 0 }) };
+}
+const finishedRun = (extra = {}) => [{ run: 6586, rule: '调度会话执行', state: 'done', summary: '[对齐门] 只有第一行', ...extra }];
+
+test('finished run echoes the full final reply from the worker run dir, not just the first line', async () => {
+  const full = '[对齐门] 卡片\n\n我是备用执行者，上一轮由 claude 执行。\n结论：只读汇报完成。\n\n```agent-autoloop\n{"events":[]}\n```';
+  const { manager } = echoManager({ runs: finishedRun(), stdout: codexOut(full) });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const reply = manager.list().find(s => s.id === started.id).messages.filter(m => m.role === 'agent');
+  assert.equal(reply.length, 1);
+  assert.match(reply[0].text, /我是备用执行者[\s\S]*只读汇报完成/);
+  assert.doesNotMatch(reply[0].text, /agent-autoloop/, '回执代码块不进转录');
+});
+
+test('falls back to the Hub summary when the run dir is unreadable, and never echoes a run still in progress', async () => {
+  const fallback = echoManager({ runs: finishedRun({ summary: '中台一行摘要' }) });
+  const a = await fallback.manager.start({ project: fixtureProject(), prompt: '首轮' });
+  assert.equal(fallback.manager.list().find(s => s.id === a.id).messages.at(-1).text, '中台一行摘要');
+  const running = echoManager({ runs: [{ run: 6586, rule: '调度会话执行', state: 'claimed', summary: '' }], stdout: codexOut('不该出现') });
+  const b = await running.manager.start({ project: fixtureProject(), prompt: '首轮' });
+  assert.equal(running.manager.list().find(s => s.id === b.id).messages.filter(m => m.role === 'agent').length, 0);
+});
+
+test('records the finishing executor in the sidecar so the next turn names it even after it pages out of /v1/state', async () => {
+  const { home, client, manager } = echoManager({
+    runs: finishedRun(), stdout: codexOut('第一轮结论'),
+    stateRuns: [{ id: 6586, agent: 'claude', state: 'done', events: [] }],
+  });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const sidecar = JSON.parse(readFileSync(path.join(home, 'console-sessions', `${started.id}.hub.json`), 'utf8'));
+  assert.equal(sidecar.lastAgent, 'claude');
+  client.readState = async () => ({ runs: [], cards: [], lines: [] }); // 旧轮次已翻出当前页
+  await manager.send(started.id, '第二轮');
+  const text = JSON.parse(client.calls.filter(call => call[0] === 'postEvent').at(-1)[1].detail).text;
+  const file = text.match(/本轮完整资料[^：]*：(.+?)；动手前先读它/)[1];
+  assert.match(readFileSync(file, 'utf8'), /上一轮执行者：claude/);
+  assert.match(readFileSync(file, 'utf8'), /## 上一轮结论\n+第一轮结论/, '上一轮结论是完整回复，不是第一行');
+});
+
+test('context file lives under <runtime>/scheduling-context and the DAG section reads <runtime>/dag-runs root runs of this project', async () => {
+  const project = fixtureProject();
+  const { home, client, manager } = echoManager({ runs: [{ run: 6586, rule: '调度会话执行', state: 'claimed', summary: '' }] });
+  mkdirSync(path.join(home, 'dag-runs'), { recursive: true });
+  writeFileSync(path.join(home, 'dag-runs', 'a.json'), JSON.stringify({ nodeId: '__root__', runId: 'dagrun-a', planId: 'p1', status: 'running', project, updatedAt: '2026-11-19T01:00:00Z' }));
+  writeFileSync(path.join(home, 'dag-runs', 'b.json'), JSON.stringify({ nodeId: 'n1', runId: 'dagrun-a-n1', planId: 'p1', status: 'running', project }));
+  writeFileSync(path.join(home, 'dag-runs', 'c.json'), JSON.stringify({ nodeId: '__root__', runId: 'dagrun-other', planId: 'p2', status: 'running', project: '/elsewhere' }));
+  await manager.start({ project, prompt: '首轮' });
+  const text = JSON.parse(client.calls.find(call => call[0] === 'postEvent')[1].detail).text;
+  const file = text.match(/本轮完整资料[^：]*：(.+?)；动手前先读它/)[1];
+  assert.equal(path.dirname(file), path.join(home, 'scheduling-context'), '资料文件在运行目录，不在 console-sessions 下');
+  const body = readFileSync(file, 'utf8');
+  assert.match(body, /### DAG 运行[^\n]*（共 1 条）\n- dagrun-a｜p1｜running/);
+  assert.doesNotMatch(body, /dagrun-other|dagrun-a-n1/, '只列本项目根 run');
 });
