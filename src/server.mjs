@@ -7,7 +7,6 @@ import { HubError, hubRequest } from './hub.mjs';
 import { readRuleOptions, saveRule, RuleError, defaultCheck } from './rules.mjs';
 import { readPlatformModels, applyPlatformModels, sessionLaunch, PlatformModelsError } from './platform-models.mjs';
 import { loadPolicy } from './detour-policy.mjs';
-import { seg } from './dag-slots.mjs';
 import { modelLabels } from './models.mjs';
 import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-session.mjs';
 import { HubSchedulingSessionAdapter } from './hub-scheduling-session.mjs';
@@ -178,9 +177,9 @@ async function handleApi(config, req, res, url) {
   }
   if (req.method === 'POST' && url.pathname === '/api/rules') return jsonResponse(res, 201, await saveRule(config, body, null));
   if (req.method === 'PUT' && url.pathname === '/api/admin/platform-models') {
-    // DAG 分档规则只为控制台已发现的 Git 项目生成（事件类型 dag.<项目>.<角色>.<档>）。
-    const dagSlugs = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).map(item => seg(path.basename(item.path)));
-    return jsonResponse(res, 200, await applyPlatformModels(config, body, { check: config.platformCheck || defaultCheck, dagSlugs }));
+    // DAG 分档规则只为控制台已发现的 Git 项目生成；事件类型由 dagEventType 统一计算（与派发方一致）。
+    const dagProjects = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).map(item => item.path);
+    return jsonResponse(res, 200, await applyPlatformModels(config, body, { check: config.platformCheck || defaultCheck, dagProjects }));
   }
   let match;
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/clear$/))) return jsonResponse(res, 200, await config.schedulingSessions.clearQueued(decodeURIComponent(match[1])));

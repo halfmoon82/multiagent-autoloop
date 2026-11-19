@@ -43,7 +43,7 @@ const settings = (over = {}) => ({
   sessions: { coord: { tier: 'light' }, design: { platform: 'codex-full', tier: 'standard' }, normal: { platform: 'codex-full', tier: 'light' } },
   ...over,
 });
-const opts = { check: async () => {}, catalog, dagSlugs: ['auto'] };
+const opts = { check: async () => {}, catalog, dagProjects: ['/p/auto'] };
 
 test('平台自动发现：只列 AI 执行者，排除脚本与生成的分档执行者；带默认模型与可选模型', () => {
   const raw = baseRules();
@@ -84,7 +84,7 @@ test('保存：生成平台×档位执行者、DAG 分档规则、调度会话�
   const policy = loadPolicy(config);
   assert.deepEqual(policy.defaults.review, { primary: 'claude', fallback: 'codex-full' });
   assert.ok(readdirSync(config.root).some(f => /^rules\.json\.bak-.*platform-models$/.test(f)), '保存前自动备份');
-  const saved = readPlatformModels(config, { catalog, dagSlugs: ['auto'] });
+  const saved = readPlatformModels(config, { catalog });
   assert.equal(saved.enabled, true);
   assert.ok(saved.lastSaved.backup);
 });
@@ -123,6 +123,31 @@ test('校验：开启时主/备必须是三档配齐的平台；会话平台须�
   ];
   for (const input of bad) await assert.rejects(() => applyPlatformModels(config, input, opts), PlatformModelsError);
   assert.deepEqual(rulesOf(config), baseRules(), '校验失败不写任何东西');
+});
+
+test('只读执行者不能选作开发/调度会话主备（审阅可以）', async () => {
+  const rules = baseRules(); rules.agents.claude.access = 'read';
+  const config = setup(rules);
+  await assert.rejects(() => applyPlatformModels(config, settings(), opts), /只读/, 'dev 备用是只读 claude → 拒绝');
+  const ok = settings({ roles: { dev: { primary: 'workbuddy', fallback: 'codex-full' }, review: { primary: 'claude', fallback: 'codex-full' }, coord: { primary: 'codex-full', fallback: 'workbuddy' } } });
+  await applyPlatformModels(config, ok, opts);
+});
+
+test('超长项目名：分档事件类型按 64 字符截短，与派发方一致', async () => {
+  const slug = 'x'.repeat(70);
+  const rules = baseRules();
+  const { dagEventType } = await import('../src/dag-runtime.mjs');
+  const base = dagEventType(`/p/${slug}`, 'dev');
+  rules.rules[0].when.types = [base];
+  const config = setup(rules);
+  await applyPlatformModels(config, settings(), { ...opts, dagProjects: [`/p/${slug}`] });
+  const generated = rulesOf(config).rules.filter(r => /·(light|standard|heavy)$/.test(r.name) && r.name.startsWith('DAG自动开发'));
+  assert.equal(generated.length, 3);
+  for (const rule of generated) {
+    assert.ok(rule.when.types[0].length <= 64, rule.when.types[0]);
+    const tier = rule.name.split('·')[1];
+    assert.equal(rule.when.types[0], dagEventType(`/p/${slug}`, `dev.${tier}`));
+  }
 });
 
 test('有进行中的频限绕行涉及分档规则或调度会话规则时拒绝保存', async () => {

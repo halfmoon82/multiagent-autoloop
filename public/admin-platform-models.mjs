@@ -23,7 +23,8 @@ export function initialDraft(data) {
   }
   const sessions = clone(data.sessions);
   for (const kind of ['design', 'normal']) if (!sessions[kind]?.platform) sessions[kind] = { ...data.suggested.sessions[kind] };
-  return { enabled: saved ? data.enabled : true, platforms, roles: clone(data.roles), sessions };
+  // 开关始终显示真实状态（首次进入为关闭）；表中预填建议值，人打开开关并保存才生效。
+  return { enabled: data.enabled === true, platforms, roles: clone(data.roles), sessions };
 }
 
 function select(options, value, { label, disabledValues = new Set(), onChange }) {
@@ -128,7 +129,9 @@ export function initAdmin({ api, toast }) {
         tr.append(cell, el('td', 'dim', '不适用：会话中途不换平台'));
       } else {
         for (const side of ['primary', 'fallback']) {
-          const cell = el('td'); cell.append(select(options, draft.roles[row.key][side], { label: `${row.title}${side === 'primary' ? '主平台' : '备用平台'}`, onChange: v => change(d => { d.roles[row.key][side] = v; }) }));
+          // 开发与调度会话需要写权限：只读执行者不出现在可选项里（审阅可以只读）。
+          const roleOptions = ['dev', 'coord'].includes(row.key) ? configured.filter(p => p.access !== 'read').map(p => [p.id, p.name]) : options;
+          const cell = el('td'); cell.append(select(roleOptions, draft.roles[row.key][side], { label: `${row.title}${side === 'primary' ? '主平台' : '备用平台'}`, onChange: v => change(d => { d.roles[row.key][side] = v; }) }));
           tr.append(cell);
         }
       }

@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readDetours, withStateLockAsync, DetourError } from './detour.mjs';
 import { TIERS } from './dag-tier.mjs';
+import { dagEventType } from './dag-runtime.mjs';
 
 export class PlatformModelsError extends Error { constructor(message, status = 400) { super(message); this.status = status; } }
 
@@ -18,7 +19,8 @@ const SESSION_KINDS = ['design', 'normal'];
 const TIER_RE = /^(.+)-tier-(light|standard|heavy)$/;
 const MODEL_RE = /^[A-Za-z0-9][\w.:/@+-]{0,99}$/;
 const GENERATED_RULE = /·(light|standard|heavy)$/;
-const DAG_BASE_TYPE = /^dag\.([a-z0-9-]+)\.(dev|review)$/;
+// 需要写权限的工作：开发与调度会话不能落到只读执行者上（审阅可以只读）。
+const WRITE_ROLES = new Set(['dev', 'coord']);
 // 会话能直接开的平台：只有 codex（内置 Codex ACP 适配器，带只读/工作区写沙箱与 Plan Mode 核验）。
 // WorkBuddy 的 ACP 会话模式没有只读/工作区写沙箱（实测 default/acceptEdits/plan/fullAccess…），
 // 会话安全护栏无法等价核验，暂不接入；claude 暂无 ACP 适配器。
@@ -164,6 +166,9 @@ function validate(input, platforms) {
     const primary = String(pair?.primary ?? '').trim(); const fallback = String(pair?.fallback ?? '').trim();
     if (!known.has(primary) || !known.has(fallback)) throw new PlatformModelsError(`${role} 的主/备平台必须是已登记的平台`);
     if (primary === fallback) throw new PlatformModelsError(`${role} 的主平台和备用平台不能相同`);
+    for (const id of [primary, fallback]) {
+      if (WRITE_ROLES.has(role) && known.get(id).access === 'read') throw new PlatformModelsError(`${known.get(id).name} 是只读执行者，不能承担${role === 'dev' ? '开发' : '调度会话'}`);
+    }
     if (enabled && (!tiersOf[primary] || !tiersOf[fallback])) throw new PlatformModelsError(`${role} 选的平台还没配齐三档模型`);
     roles[role] = { primary, fallback };
   }
@@ -196,7 +201,7 @@ function tierAgent(base, tier, model) {
   return agent;
 }
 
-function buildRules(raw, settings, { dagSlugs }) {
+function buildRules(raw, settings, { dagProjects }) {
   const next = JSON.parse(JSON.stringify(raw));
   for (const id of Object.keys(next.agents)) if (parseTierAgent(id)) delete next.agents[id];
   next.rules = next.rules.filter(rule => !(GENERATED_RULE.test(rule.name) && parseTierAgent(rule.to)));
@@ -208,16 +213,19 @@ function buildRules(raw, settings, { dagSlugs }) {
   for (const [platform, tiers] of Object.entries(settings.platforms)) {
     for (const tier of TIERS) next.agents[tierAgentId(platform, tier)] = tierAgent(raw.agents[platform], tier, tiers[tier]);
   }
-  const slugs = new Set(dagSlugs);
+  // 分档事件类型与派发方同一函数计算（含 64 字符截短），保证「生成的规则」=「派发的事件」。
   const generated = [];
-  for (const rule of next.rules) {
-    const types = rule.when?.types || [];
-    const base = types.length === 1 ? DAG_BASE_TYPE.exec(types[0]) : null;
-    if (!base || !slugs.has(base[1])) continue;
-    const role = base[2];
-    for (const tier of TIERS) {
-      if (role === 'review' && tier === 'light') continue; // 审阅底线 ≥ standard，便宜档审阅永不派发
-      generated.push({ ...JSON.parse(JSON.stringify(rule)), name: `${rule.name}·${tier}`, when: { ...rule.when, types: [`${types[0]}.${tier}`] }, to: tierAgentId(settings.roles[role].primary, tier) });
+  for (const project of new Set(dagProjects)) {
+    for (const role of ['dev', 'review']) {
+      const baseType = dagEventType(project, role);
+      for (const rule of next.rules) {
+        const types = rule.when?.types || [];
+        if (types.length !== 1 || types[0] !== baseType || GENERATED_RULE.test(rule.name)) continue;
+        for (const tier of TIERS) {
+          if (role === 'review' && tier === 'light') continue; // 审阅底线 ≥ standard，便宜档审阅永不派发
+          generated.push({ ...JSON.parse(JSON.stringify(rule)), name: `${rule.name}·${tier}`, when: { ...rule.when, types: [dagEventType(project, `${role}.${tier}`)] }, to: tierAgentId(settings.roles[role].primary, tier) });
+        }
+      }
     }
   }
   next.rules.push(...generated);
@@ -232,7 +240,7 @@ function atomicWrite(file, data) {
 }
 const stamp = now => now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '').replace('T', '-');
 
-export async function applyPlatformModels(config, input, { check, catalog = defaultCatalog, dagSlugs = [], now = () => new Date() } = {}) {
+export async function applyPlatformModels(config, input, { check, catalog = defaultCatalog, dagProjects = [], now = () => new Date() } = {}) {
   if (typeof check !== 'function') throw new PlatformModelsError('缺少中台配置校验', 500);
   try {
     return await withStateLockAsync(config, async () => {
@@ -242,7 +250,7 @@ export async function applyPlatformModels(config, input, { check, catalog = defa
       const coordNames = new Set(raw.rules.filter(rule => rule.when?.types?.includes('scheduling.message')).map(rule => rule.name));
       const busy = readDetours(config).find(item => item.status === 'detoured' && (parseTierAgent(item.blockedAgent) || item.rules.some(rule => GENERATED_RULE.test(rule.name) || coordNames.has(rule.name))));
       if (busy) throw new PlatformModelsError(`有进行中的频限绕行（${busy.id}）涉及分档或调度会话规则，等它恢复后再保存`, 409);
-      const next = buildRules(raw, settings, { dagSlugs });
+      const next = buildRules(raw, settings, { dagProjects });
       const policyDoc = readPolicyDoc(config);
       const nextPolicy = { ...policyDoc, defaults: { ...(policyDoc.defaults || {}), ...settings.roles } };
       const at = now();
