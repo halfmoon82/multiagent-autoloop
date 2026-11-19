@@ -107,12 +107,36 @@ test('prevAgentFrom 按真实 /v1/state 形状（id + events[].subject）找同�
   assert.equal(runsOfSubject(REAL_STATE, 'scheduling:s1').length, 3);
 });
 
-test('snapshotLinesFrom 用 id 与 usage.cost，不出现 undefined（P1）', () => {
+test('snapshotLinesFrom 用 id 与 usage.cost，最近在前，不出现 undefined（P1）', () => {
   const lines = snapshotLinesFrom(REAL_STATE);
-  assert.equal(lines.runs[0], '#12｜调度会话执行｜claude｜done｜$0.0123');
-  assert.match(lines.runs[1], /费用未上报/);
+  assert.deepEqual(lines.runs.map(line => line.split('｜')[0]), ['#15', '#14', '#12', '#9'], '按轮次号倒序');
+  assert.equal(lines.runs[2], '#12｜调度会话执行｜claude｜done｜$0.0123');
+  assert.match(lines.runs[0], /费用未上报/);
   assert.ok(lines.runs.every(line => !line.includes('undefined')));
   assert.equal(lines.cards[0], '#7｜是否重试｜调度会话执行');
+});
+
+test('规则快照本项目在前、暂停其次，并带本项目标记', () => {
+  const state = { lines: [
+    { name: '别的项目', types: ['x.*'], agent: 'claude', paused: null },
+    { name: '暂停的', types: [], every: '每 5 分钟', agent: 'scan', paused: { reason: '上游在修' } },
+    { name: '调度会话执行', types: ['scheduling.message'], agent: 'codex-full', paused: null },
+  ] };
+  const ruleCwds = new Map([['别的项目', '/other'], ['暂停的', '/other'], ['调度会话执行', '/Volumes/Storage/auto调度']]);
+  const { rules } = snapshotLinesFrom(state, { project: '/Volumes/Storage/auto调度', ruleCwds });
+  assert.deepEqual(rules.map(line => line.split('｜')[0]), ['调度会话执行', '暂停的', '别的项目']);
+  assert.match(rules[0], /本项目$/);
+  assert.equal(rules[1], '暂停的｜每 5 分钟｜scan｜已暂停:上游在修');
+});
+
+test('快照每节写出总数，超出上限时注明只列前 N 条（不再静默截断，P1 回归）', async () => {
+  const { root, project } = fixture();
+  const rules = Array.from({ length: 58 }, (_, i) => `规则${i}｜t｜a`);
+  const file = await buildSchedulingContext({ root, sessionId: 'n1', turn: 1, project, providers: { rules: () => rules, runs: () => [], cards: () => [], dag: () => [] } });
+  const body = readFileSync(file, 'utf8');
+  assert.match(body, /### 规则[^\n]*（共 58 条）/);
+  assert.match(body, /共 58 条，此处只列前 20 条；其余未列出，不代表不存在/);
+  assert.match(body, /### 待处理卡片[^\n]*（共 0 条）/);
 });
 
 test('hasOpenCardsFor 与 isBareContinuation', () => {
@@ -165,4 +189,15 @@ test('超预算的用户原话完整写进资料文件，正文截断标记指�
   const composed = composeTurnText({ text: userText, trailer: contextTrailer(file), project });
   assert.ok(!composed.includes('末尾关键句'), '夹具确实被截断');
   assert.match(composed, /完整原话见本轮资料文件/);
+});
+
+test('上一轮结论超过上限时注明截断，不静默丢尾（P2）', async () => {
+  const { root, project } = fixture();
+  const longSummary = `${'汇'.repeat(9000)}尾巴`;
+  const file = await buildSchedulingContext({ root, sessionId: 'l1', turn: 2, project, lastSummary: longSummary });
+  const body = readFileSync(file, 'utf8');
+  assert.match(body, /\[已截断：上一轮结论超过 8000 字，完整内容见会话转录\]/);
+  const medium = '汇'.repeat(3000);
+  const file2 = await buildSchedulingContext({ root, sessionId: 'l2', turn: 2, project, lastSummary: medium });
+  assert.ok(readFileSync(file2, 'utf8').includes(medium), '3000 字的结论完整保留（旧上限 1200 会截掉）');
 });

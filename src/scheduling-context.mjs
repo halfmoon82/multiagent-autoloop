@@ -11,8 +11,10 @@ export const EVENT_DETAIL_BUDGET = 3950;
 const MAX_AGENTS_MD_BYTES = 60 * 1024;
 const MAX_CONTRACT_BYTES = 12 * 1024;
 const MAX_SNAPSHOT_BYTES = 16 * 1024;
-const MAX_SUMMARY_CHARS = 1200;
-const MAX_SECTION_ITEMS = 5;
+// 上一轮结论上限与会话转录回显上限一致（run-output.mjs 的 MAX_FINAL_MESSAGE_CHARS），超出时注明，不静默截断。
+const MAX_SUMMARY_CHARS = 8000;
+// 每节列多少条：规则多给一些（本项目规则已排前），其余按最近在前。超出时注明总数，绝不静默截断。
+export const SECTION_LIMITS = Object.freeze({ rules: 20, runs: 10, cards: 10, dag: 10 });
 const TRUNCATED_NOTE = cap => `[已截断：原文超过 ${cap} 字节，完整内容见原文路径]`;
 
 function readCapped(file, cap) {
@@ -35,10 +37,12 @@ function readCapped(file, cap) {
 
 const line = text => `- ${String(text ?? '').replace(/[\r\n]+/g, ' ').trim()}`;
 
-function section(title, items, { empty = '（无）' } = {}) {
+function section(title, items, { empty = '（无）', limit = 10 } = {}) {
   const list = Array.isArray(items) ? items.filter(Boolean) : [];
-  const body = list.length ? list.slice(0, MAX_SECTION_ITEMS).map(line).join('\n') : empty;
-  return `### ${title}\n${body}`;
+  if (!list.length) return `### ${title}（共 0 条）\n${empty}`;
+  const shown = list.slice(0, limit);
+  const note = list.length > shown.length ? `\n（共 ${list.length} 条，此处只列前 ${shown.length} 条；其余未列出，不代表不存在）` : '';
+  return `### ${title}（共 ${list.length} 条）\n${shown.map(line).join('\n')}${note}`;
 }
 
 /** 状态快照：由调用方提供 provider（读 Hub/本地台账），本函数只排格式与截断；任一节异常降级为可读占位。 */
@@ -46,10 +50,10 @@ export function buildSnapshotSection(providers = {}) {
   const parts = [];
   const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
   return (async () => {
-    parts.push(section('规则（名称｜事件类型｜agent｜暂停）', await safe(providers.rules, [])));
-    parts.push(section('最近轮次（run｜规则｜状态｜失败原因｜费用）', await safe(providers.runs, [])));
-    parts.push(section('待处理卡片（编号｜标题｜等待谁）', await safe(providers.cards, [])));
-    parts.push(section('DAG 运行（runId｜计划｜节点状态/PR/阻塞）', await safe(providers.dag, [])));
+    parts.push(section('规则（名称｜事件类型｜agent｜暂停，本项目规则在前）', await safe(providers.rules, []), { limit: SECTION_LIMITS.rules }));
+    parts.push(section('最近轮次（run｜规则｜执行者｜状态｜失败原因｜费用，最近在前）', await safe(providers.runs, []), { limit: SECTION_LIMITS.runs }));
+    parts.push(section('待处理卡片（编号｜标题｜规则）', await safe(providers.cards, []), { limit: SECTION_LIMITS.cards }));
+    parts.push(section('DAG 运行（runId｜计划｜状态）', await safe(providers.dag, []), { limit: SECTION_LIMITS.dag }));
     let text = `## 状态快照\n${parts.join('\n')}`;
     if (Buffer.byteLength(text, 'utf8') > MAX_SNAPSHOT_BYTES) {
       let out = '';
@@ -87,7 +91,11 @@ export async function buildSchedulingContext({ root, sessionId, turn, project, l
   parts.push('\n## 项目 AGENTS.md\n', agents || '（未找到 AGENTS.md）\n');
   if (contract) parts.push('\n## 调度契约（docs/scheduling-contract.md，截断版）\n', contract);
   parts.push('\n', snapshot);
-  if (lastSummary) parts.push('\n## 上一轮结论\n', String(lastSummary).slice(0, MAX_SUMMARY_CHARS), '\n');
+  if (lastSummary) {
+    const chars = [...String(lastSummary)];
+    const cut = chars.length > MAX_SUMMARY_CHARS;
+    parts.push('\n## 上一轮结论\n', chars.slice(0, MAX_SUMMARY_CHARS).join(''), cut ? `\n[已截断：上一轮结论超过 ${MAX_SUMMARY_CHARS} 字，完整内容见会话转录]` : '', '\n');
+  }
   if (openItems) parts.push('\n## 未收尾事项\n', String(openItems), '\n');
   const dir = path.join(root, CONTEXT_DIR);
   const file = path.join(dir, `${sessionId}-turn${turn}.md`);
@@ -160,15 +168,22 @@ export function isBareContinuation(text) {
 }
 
 /** 快照行：按 /v1/state 真实字段（runs[].id、usage.cost、lines[].paused）排版。 */
-export function snapshotLinesFrom(state) {
+export function snapshotLinesFrom(state, { project = '', ruleCwds = new Map() } = {}) {
   const lines = Array.isArray(state?.lines) ? state.lines : [];
-  const runs = Array.isArray(state?.runs) ? state.runs : [];
+  const runs = Array.isArray(state?.runs) ? [...state.runs].sort((a, b) => Number(b.id) - Number(a.id)) : [];
   const cards = Array.isArray(state?.cards) ? state.cards.filter(card => card?.state === 'open') : [];
   const cost = usage => (typeof usage?.cost === 'number' ? `｜$${usage.cost.toFixed(4)}` : '｜费用未上报');
+  // /v1/state 的 lines 不带 cwd：规则名 → cwd 由调用方从 rules.json 对出；project 下的规则排最前，暂停的其次。
+  const inProject = name => {
+    const cwd = ruleCwds.get(name);
+    return Boolean(project && cwd && (cwd === project || cwd.startsWith(`${project}/`)));
+  };
+  const rank = line => (inProject(line.name) ? 0 : line.paused ? 1 : 2);
+  const ordered = lines.map((line, index) => ({ line, index })).sort((a, b) => rank(a.line) - rank(b.line) || a.index - b.index).map(item => item.line);
   return {
-    rules: lines.slice(0, 12).map(line => `${line.name}｜${Array.isArray(line.types) ? line.types.join(',') : line.cron || ''}｜${line.agent || '未配置'}${line.paused ? `｜已暂停:${line.paused.reason || ''}` : ''}`),
-    runs: runs.slice(0, 8).map(run => `#${run.id}｜${run.rule}｜${run.agent || '未知'}｜${run.state}${run.error ? `｜${String(run.error).slice(0, 80)}` : ''}${cost(run.usage)}`),
-    cards: cards.slice(0, 8).map(card => `#${card.id}｜${String(card.title || '').slice(0, 60)}｜${card.rule || '未关联'}`),
+    rules: ordered.map(line => `${line.name}｜${Array.isArray(line.types) && line.types.length ? line.types.join(',') : line.every || '定时'}｜${line.agent || '未配置'}${line.paused ? `｜已暂停:${line.paused.reason || ''}` : ''}${inProject(line.name) ? '｜本项目' : ''}`),
+    runs: runs.map(run => `#${run.id}｜${run.rule}｜${run.agent || '未知'}｜${run.state}${run.error ? `｜${String(run.error).slice(0, 80)}` : ''}${cost(run.usage)}`),
+    cards: cards.map(card => `#${card.id}｜${String(card.title || '').slice(0, 60)}｜${card.rule || '未关联'}`),
   };
 }
 

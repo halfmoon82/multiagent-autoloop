@@ -14,6 +14,8 @@ import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
 import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_LABEL, HUB_RECONCILE_INTERVAL_MS, schedulingSubject, schedulingEventId, mapHubStateToStatus, numericEventId, readHubRun } from './hub-scheduling-session.mjs';
 import { buildSchedulingContext, contextTrailer, composeTurnText, prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation } from './scheduling-context.mjs';
+import { readFinalMessage } from './run-output.mjs';
+import { ROOT_NODE } from './dag-run.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -154,6 +156,9 @@ export class SchedulingSessionManager {
     this.sessions = new Map();
     // 会话存档：写穿到运行目录，重启后留档可继续；不可用时降级为纯内存。
     this.archive = archiveRoot ? new SessionArchive(archiveRoot) : null;
+    // 运行目录（AGENT_AUTOLOOP_HOME）：资料文件、dag-runs、rules.json、worker/runs 都在这里；
+    // 不同于存档目录 archive.root（= <运行目录>/console-sessions，只放会话存档与旁车）。
+    this.runtimeRoot = archiveRoot ? path.resolve(archiveRoot) : null;
     this.archiveWarned = false;
     // 打断后轮次收尾的等待窗口：cancel 是通知无回执，稍等再续跑队列，避开适配器取消中状态
     this.settleMs = settleMs;
@@ -258,6 +263,7 @@ export class SchedulingSessionManager {
           lastEventId: hub.lastEventId,
           runId: hub.runId ?? null,
           summaryEventId: Number.isInteger(hub.summaryEventId) ? hub.summaryEventId : null,
+          lastAgent: typeof hub.lastAgent === 'string' && hub.lastAgent ? hub.lastAgent : null,
           lastState: null,
         },
       };
@@ -423,17 +429,18 @@ export class SchedulingSessionManager {
   // §6.3 start：生成 subject、投递首个事件，返回 Hub 支持的会话视图；失败保留输入且不派生进程。
   // #92 POST 只提供数字 event id；status/runId 一律经 GET /v1/events/<id> 的 runs[0] 派生。
   // Hub 事件 detail 上限 4000 码点：完整资料（护栏、项目 AGENTS.md、契约、状态快照、上一轮结论、未收尾）
-  // 落盘到运行目录，正文只放用户原话 + 一行「先读它」；以序列化后的 detail 为准截断。
+  // 落盘到运行目录 <AGENT_AUTOLOOP_HOME>/scheduling-context/，正文只放用户原话 + 一行「先读它」；以序列化后的 detail 为准截断。
   // hubState：本轮共享的一份 /v1/state（读一次给快照、上一轮执行者用），缺省时快照降级为空。
   async #hubTurnText(record, turn, text, { hubState = null } = {}) {
     const lastSummary = [...(record.messages || [])].reverse().find(message => message.role === 'agent')?.text || '';
     const subject = record.hub?.subject ?? schedulingSubject(record.id);
-    const prevAgent = hubState ? prevAgentFrom(hubState, subject) : null;
+    // 上一轮执行者以旁车记录为准（轮次结束时记下）；旧会话没有记录时再从 /v1/state 当前页找，找不到不编造。
+    const prevAgent = record.hub?.lastAgent || (hubState ? prevAgentFrom(hubState, subject) : null);
     // 护栏每轮都进资料文件：换执行者后新会话没有历史，只能靠资料重建；重启恢复的记录按项目重新生成。
     const guide = record.guide || buildSchedulingPrompt({ project: record.project, writableDir: this.writableDir });
     const file = await buildSchedulingContext({
-      root: this.archive?.root, sessionId: record.id, turn, project: record.project, lastSummary, prevAgent,
-      guide, userText: text, providers: this.#snapshotProviders(hubState),
+      root: this.runtimeRoot, sessionId: record.id, turn, project: record.project, lastSummary, prevAgent,
+      guide, userText: text, providers: this.#snapshotProviders(hubState, record.project),
     }).catch(() => null);
     return composeTurnText({ text, trailer: contextTrailer(file), project: record.project });
   }
@@ -444,11 +451,20 @@ export class SchedulingSessionManager {
     try { return await this.hubScheduling.readState(); } catch { return null; }
   }
 
-  // 状态快照的四个 provider：规则/轮次/卡片来自本轮共享的 /v1/state，DAG 读运行目录 dag-runs/*.json。
+  // 规则名 → cwd：/v1/state 的 lines 不带 cwd，从运行目录 rules.json 对出（读不到返回空表，只影响排序）。
+  #ruleCwds() {
+    if (!this.runtimeRoot) return new Map();
+    try {
+      const rules = JSON.parse(readFileSync(path.join(this.runtimeRoot, 'rules.json'), 'utf8'))?.rules || [];
+      return new Map(rules.filter(rule => rule?.name).map(rule => [rule.name, String(rule.cwd || '')]));
+    } catch { return new Map(); }
+  }
+
+  // 状态快照的四个 provider：规则/轮次/卡片来自本轮共享的 /v1/state，DAG 读运行目录 dag-runs/*.json 的根 run（本项目）。
   // 任何一节失败只影响该行，不阻断资料落盘。
-  #snapshotProviders(hubState) {
-    const root = this.archive?.root;
-    const lines = hubState ? snapshotLinesFrom(hubState) : { rules: [], runs: [], cards: [] };
+  #snapshotProviders(hubState, project = '') {
+    const root = this.runtimeRoot;
+    const lines = hubState ? snapshotLinesFrom(hubState, { project, ruleCwds: this.#ruleCwds() }) : { rules: [], runs: [], cards: [] };
     return {
       rules: () => lines.rules,
       runs: () => lines.runs,
@@ -457,16 +473,22 @@ export class SchedulingSessionManager {
         if (!root) return [];
         const dir = path.join(root, 'dag-runs');
         let names = [];
-        try { names = readdirSync(dir).filter(n => n.endsWith('.json')).slice(-20); } catch { return []; }
+        // 只看最近修改的 50 份记录：dag-runs 随时间增长，每轮全量同步解析会越来越慢。
+        try {
+          names = readdirSync(dir).filter(n => n.endsWith('.json'))
+            .map(name => { try { return { name, at: statSync(path.join(dir, name)).mtimeMs }; } catch { return null; } })
+            .filter(Boolean).sort((a, b) => b.at - a.at).slice(0, 50).map(item => item.name);
+        } catch { return []; }
         const rows = [];
         for (const name of names) {
           try {
             const raw = JSON.parse(readFileSync(path.join(dir, name), 'utf8'));
-            if (raw.nodeId !== 'root' || !raw.runId) continue;
-            rows.push(`${raw.runId}｜${raw.planId || ''}｜${raw.status || ''}`);
+            if (raw.nodeId !== ROOT_NODE || !raw.runId) continue;
+            if (project && raw.project && raw.project !== project) continue;
+            rows.push({ at: String(raw.updatedAt || raw.createdAt || ''), text: `${raw.runId}｜${raw.planId || ''}｜${raw.status || ''}` });
           } catch { /* 单条损坏不影响其余 */ }
         }
-        return rows.slice(0, 8);
+        return rows.sort((a, b) => b.at.localeCompare(a.at)).map(row => row.text);
       },
     };
   }
@@ -880,6 +902,7 @@ export class SchedulingSessionManager {
       lastEventId: record.hub.lastEventId,
       runId: record.hub.runId ?? null,
       summaryEventId: record.hub.summaryEventId ?? null,
+      lastAgent: record.hub.lastAgent ?? null,
     };
     if (existing?.closed === true || isHubTerminal(record)) payload.closed = true;
     try {
@@ -923,10 +946,30 @@ export class SchedulingSessionManager {
       return null;
     }
     // worker 结论回显到会话转录：同一事件只追加一次，重启/重复对账不重复。
-    if (run.summary && record.hub.summaryEventId !== Number(eventId)) {
-      record.hub.summaryEventId = Number(eventId);
-      this.#pushMessage(record, 'agent', String(run.summary));
+    // 中台 summary 只是最后一条消息的第一行；轮次结束后优先从本机执行目录读回完整回复，读不到才退回 summary。
+    const finished = run.state === 'done' || run.state === 'nothing';
+    const terminal = finished || run.state === 'cancelled';
+    if (finished && record.hub.summaryEventId !== Number(eventId)) {
+      const full = run.runId ? readFinalMessage({ root: this.runtimeRoot, runId: run.runId }) : null;
+      const reply = full || (run.summary ? String(run.summary) : '');
+      if (reply) {
+        record.hub.summaryEventId = Number(eventId);
+        this.#pushMessage(record, 'agent', reply);
+      }
     }
+    // 本轮执行者：/v1/events 不带 agent，刚结束的轮次在 /v1/state 当前页里找。找不到（读失败、已翻页）就清空，
+    // 让下一轮退回现场查找，绝不让上上一轮的旧值冒充上一轮。只在本事件仍是会话最新事件时才记。
+    let agent = null;
+    if (terminal && record.hub.lastEventId === Number(eventId)) {
+      const state = await this.#readHubSnapshot();
+      agent = (Array.isArray(state?.runs) ? state.runs : []).find(item => Number(item?.id) === Number(run.runId))?.agent || null;
+    }
+    // 等待期间用户可能已发出下一轮：旧事件的对账不得覆盖新一轮的 runId/状态（否则新一轮不再被轮询、打断也会打错轮）。
+    if (record.hub.lastEventId !== Number(eventId)) {
+      this.#persist(record);
+      return run;
+    }
+    if (terminal) record.hub.lastAgent = agent;
     if (run.runId) record.hub.runId = run.runId;
     record.hub.lastState = run.state ?? null;
     record.status = mapHubStateToStatus(run.state);
