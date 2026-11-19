@@ -257,3 +257,12 @@ test('claimed crash window without a server-frozen base does not redispatch', as
   assert.equal(s.hub.last('a'), undefined);
   assert.match(s.ctl.snapshot().nodes.a.lastError, /冻结 prepare base/);
 });
+
+test('轮询在途节点时记下 Hub 轮次号，供界面查执行 Agent 与用量', async () => {
+  const s = setup([mkNode('n1')]);
+  await s.ctl.tick();
+  const sent = s.hub.last('n1');
+  s.hub.set(sent.id, { status: 'claimed', hubRun: 4242 });
+  await s.ctl.tick();
+  assert.equal(s.runOf('n1').hub.hubRun, 4242);
+});

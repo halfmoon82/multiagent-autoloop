@@ -193,12 +193,8 @@ export function chainRuleNames(sourceFile, rules = []) {
   }).map((rule) => rule.name));
 }
 
-// 整条调度链从头到尾的累计 Token 与计费：优先用服务端 chain-usage.mjs 台账
-// （翻遍 Hub runs 历史逐轮累加，真·自首次运行）；台账缺失时回退 lines 今日窗口并如实偏低。
-// 只信 Hub 上报值，费用缺失如实标注。词干零命中（链文件名与规则名不同源，
-// 如 mtexec 链配 MT* 规则）时回退：该项目归属、且未被其他已加载链词干认领的规则。
-export function chainUsage(chain, rules = [], lines = [], allChains = []) {
-  if (chain?.cumulativeUsage && typeof chain.cumulativeUsage === 'object') return chain.cumulativeUsage;
+// 链归属规则：词干命中优先；零命中（如 mtexec 链配 MT* 规则）回退到该项目归属、且未被其他已加载链词干认领的规则。
+export function chainRules(chain, rules = [], allChains = []) {
   let names = chainRuleNames(chain?.sourceFile, rules);
   if (!names.size) {
     const claimed = new Set();
@@ -209,6 +205,30 @@ export function chainUsage(chain, rules = [], lines = [], allChains = []) {
     const project = String(chain?.project || '').trim();
     names = new Set(rules.filter((rule) => project && matchesProject(rule.cwd, project) && !claimed.has(rule.name)).map((rule) => rule.name));
   }
+  return names;
+}
+
+// 串行链当前节点的执行者：状态文件不记 Agent，只能取该链规则在 Hub 上最近一轮"真正用了模型"的轮次。
+// 判据 = 轮次自报了 Token 或费用；巡检/轮询/控制器这类无模型轮次从不上报，不能冒充节点执行者。
+// 找不到如实返回 null（界面写未上报）。agentNames 与"正在运行"列表同一显示名口径。
+const reportedUsage = usage => usage && typeof usage === 'object' && !Array.isArray(usage)
+  && ['input', 'output', 'cost'].some(key => typeof usage[key] === 'number' && Number.isFinite(usage[key]));
+export function chainCurrentExecutor(chain, rules = [], runs = [], allChains = [], models = {}, agentNames = {}) {
+  const names = chainRules(chain, rules, allChains);
+  const latest = (runs || [])
+    .filter(run => names.has(run?.rule) && String(run?.agent || '').trim() && reportedUsage(run.usage))
+    .sort((a, b) => Number(b.id) - Number(a.id))[0];
+  if (!latest) return null;
+  const agent = String(latest.agent).trim();
+  return { agent: agentNames[agent] || agent, model: models[agent] || '未配置', usage: latest.usage };
+}
+
+// 整条调度链从头到尾的累计 Token 与计费：优先用服务端 chain-usage.mjs 台账
+// （翻遍 Hub runs 历史逐轮累加，真·自首次运行）；台账缺失时回退 lines 今日窗口并如实偏低。
+// 只信 Hub 上报值，费用缺失如实标注；规则归属见 chainRules。
+export function chainUsage(chain, rules = [], lines = [], allChains = []) {
+  if (chain?.cumulativeUsage && typeof chain.cumulativeUsage === 'object') return chain.cumulativeUsage;
+  const names = chainRules(chain, rules, allChains);
   let tokens = 0, cost = 0, hasCost = false, rounds = 0, missingCostRounds = 0;
   for (const line of lines || []) {
     if (!names.has(line.name)) continue;

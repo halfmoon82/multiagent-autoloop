@@ -420,7 +420,13 @@ try {
   for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node detail must carry ${label}`);
   assert.ok(progressText.includes('正在实现第二块功能'), 'detail shows the real task summary');
   assert.ok(progressText.includes('联调'), 'detail keeps the node part');
-  assert.ok(progressText.includes('未上报'), 'serial agent/model/cost without data must be marked unreported, never fabricated');
+  // 当前节点的执行者/用量来自该链规则在 Hub 上最近一轮自报了用量的轮次（假 Hub：demo 巡检 #5 · fake · $0.07），不编造
+  assert.equal(await progressRow.locator('.overview-node .node-agent').innerText(), '无模型 Agent', 'current node agent comes from the latest Hub round that reported usage');
+  assert.match(await progressRow.locator('.overview-node .node-usage').innerText(), /^最近一轮 · 费用 \$0\.07 · Token 100/, 'current node usage is the latest round self-report');
+  await progressRow.locator('.ring-seg[data-ring-node="n3"]').focus(); await page.keyboard.press('Enter');
+  assert.equal(await progressRow.locator('.overview-node .node-agent').innerText(), '未上报', 'non-current nodes without data stay unreported, never fabricated');
+  assert.equal(await progressRow.locator('.overview-node .node-usage').innerText(), '费用未上报 · Token 未上报');
+  await progressRow.locator('.ring-seg[data-ring-node="n2"]').focus(); await page.keyboard.press('Enter');
   assert.ok(progressText.includes('待您处理') && progressText.includes('今日完成'), 'counts chips must stay');
   assert.ok(progressText.includes('链累计') && progressText.includes('1,666 Token') && progressText.includes('$0.21'), 'chain usage stays truthful');
   assert.ok(progressText.includes('项目今日 · 费用 $0.07 · Token 100（入 60 / 出 40）'), 'project today usage must come from runs finished today');

@@ -22,7 +22,7 @@ export function initDag({ api, notify, showView, getProjects }) {
     stableReplace('dag-overview-list', [...renderDagOverview(s.details)]);
     if (s.serialDetail) {
       // 串行链节点点击 → 与 DAG 同构的运行详情视图（不再是只有浮层）
-      stableReplace('dag-detail', [renderSerialDetail(s.serialDetail.chain, { selectedNode: s.selectedNode, usageText: s.serialDetail.usageText || '' })]);
+      stableReplace('dag-detail', [renderSerialDetail(s.serialDetail.chain, { selectedNode: s.selectedNode, usageText: s.serialDetail.usageText || '', executor: s.serialDetail.executor || null })]);
     } else {
       const current = s.details.find(d => d.run.runId === s.selectedRun) || active[0] || s.details[0];
       if (current) s.selectedRun = current.run.runId;
@@ -33,8 +33,8 @@ export function initDag({ api, notify, showView, getProjects }) {
     banner();
   }
   // 总览的串行节点点击目标：由控制台传入已按真实 Hub 计费口径算好的 usageText。
-  function openSerialDetail(chain, nodeId = '', usageText = '') {
-    s.serialDetail = { chain, usageText };
+  function openSerialDetail(chain, nodeId = '', usageText = '', executor = null) {
+    s.serialDetail = { chain, usageText, executor };
     s.selectedNode = nodeId;
     renderAll();
     showView('dag');

@@ -195,6 +195,8 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         return send(root, id, run, n);
       }
       const h = await hub.getRun(run.hub.hubRunId);
+      // 记下 Hub 轮次号：/v1/events 不带执行者与用量，界面要按轮次号到 /v1/state 查执行 Agent 与 Token/费用。
+      if (Number.isInteger(h.hubRun) && run.hub.hubRun !== h.hubRun) store.updateRun(run.runId, { hub: { hubRun: h.hubRun } });
       // Hub 侧带回的 DAG 回执（重启后补消费）：逐条交给状态机裁决，旧/重复/畸形回执由 advance 判 stale/duplicate/invalid，
       // 绝不在这里自行改状态；裁决后 run 已变化则按新状态重走一遍（至多一次，避免递归空转）。
       if (!replayed && Array.isArray(h.receipts) && h.receipts.length) {
