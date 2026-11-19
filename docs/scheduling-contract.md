@@ -213,19 +213,20 @@ Agent 或改写成只读提示词。否定豁免只认紧邻动词的禁止（�
   控制台 `/api/detours` 可见（展示经 `publicDetour` 剥掉探测命令）。已有同 agent+model 在途绕行则幂等跳过。
 - §12 必填字段全部由证据自动写入：`origin: auto-scan`、被拦 agent/model、`blockedAt` 时间、
   `evidence`（命中模式 + 各轮 `run <id>「证据原文」` + 最近命中时间）、被改派规则及原派发。
-- 探测命令按 Agent 而异，由 `--probe` 或部署配置提供；未配置时登记仍成功但不带探测命令，
-  定时核实时该项会跳过并要求人工回归——生产部署必须先配好探测命令再启用 cron。
+- 探测命令按 Agent 而异：显式 `--probe` 优先；未传时按 `scripts/detour-probe.mjs` 的
+  `probeCommand(agent)` 自动拼接——`acp`（去掉 `--acp` 追加 `-p <ping>`）、`claude`/`codex`（追加 `-p`/`exec` ping 与 `--model`）。
+  拼不出（无 command/program 或未知 use）时登记仍成功但不带探测命令，定时核实时该项会跳过并要求人工回归。
 - `--dry-run` 只报候选不写文件；`--json` 输出机器可读摘要。
 
-cron 规则模板 JSON（`to` 用只读或低风险通道，提示词只调用脚本并汇报，不自行改规则）：
+cron 规则模板 JSON（`to` 用 `command` 类无模型执行者，prompt 只汇报，不自行改规则）：
 
 ```json
 {
   "name": "额度拒绝自动侦测",
   "when": { "cron": "*/15 * * * *" },
-  "to": "claude",
+  "to": "quota-scan",
   "cwd": "<AGENT_AUTOLOOP_HOME>",
-  "prompt": "只运行本机命令：cd <REPO> && AGENT_AUTOLOOP_HOME=<AGENT_AUTOLOOP_HOME> node scripts/quota-scan.mjs --json。把登记了几条绕行、跳过了什么如实汇报；除该脚本外不改 rules.json、不改 detours.json、不手工 revert。非额度失败不要登记。",
+  "prompt": "无模型扫描：连续额度拒绝自动按政策绕行，只汇报；除该脚本外不改 rules.json、不改 detours.json、不手工 revert。非额度失败不要登记。",
   "resume": false
 }
 ```
@@ -247,9 +248,9 @@ cron 规则模板（每 30 分钟，提示词只调用 verify 并汇报，不手
 {
   "name": "绕行定时核实",
   "when": { "cron": "*/30 * * * *" },
-  "to": "claude",
+  "to": "detour-verify",
   "cwd": "<AGENT_AUTOLOOP_HOME>",
-  "prompt": "只运行本机命令：cd <REPO> && AGENT_AUTOLOOP_HOME=<AGENT_AUTOLOOP_HOME> node scripts/detour.mjs verify-all --json。按退出码汇报：0=全部核实完成或无到期项，1=仍有未恢复（列出 agent/model 与证据），2=配置错误。不要手工改 rules.json 或 detours.json，也不要跳过探测直接 revert。",
+  "prompt": "无模型核实：只运行 detour.mjs verify-all，按退出码汇报（0=全部核实完成，1=仍有未恢复，2=配置错误）；不要手工改 rules.json 或 detours.json，也不要跳过探测直接 revert。",
   "resume": false
 }
 ```
