@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设计稿 v3 · 管理后台 / 平台与模型</title>
+<link rel="stylesheet" href="../../../public/styles.css">
+<style>
+  .admin{display:grid;grid-template-columns:200px 1fr;gap:24px;align-items:start}
+  .subnav{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px;display:grid;gap:2px}
+  .subnav a{display:block;padding:9px 12px;border-radius:8px;color:var(--ink);text-decoration:none;font-size:13px;font-weight:550}
+  .subnav a.active{background:var(--accent-soft);color:var(--accent-dark)}
+  .subnav .group{font-size:11px;color:var(--muted);letter-spacing:.1em;padding:8px 12px 4px}
+  .tier-switch{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 20px}
+  .tier-switch strong{font-size:15px}
+  .toggle{position:relative;width:46px;height:26px;border-radius:13px;background:var(--accent);flex:none}
+  .toggle::after{content:"";position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:#fff}
+  .pill{display:inline-block;border-radius:20px;padding:2px 9px;font-size:12px;font-weight:650}
+  .pill.on{background:var(--accent-soft);color:var(--accent-dark)}
+  .pill.free{background:#eef6ff;color:#2a5d9a;font-size:11px;padding:1px 7px}
+  .pill.auto{background:#f0f3f2;color:#46544e;font-size:12px}
+  table.grid{width:100%;border-collapse:collapse;font-size:13px}
+  .grid th,.grid td{padding:12px 16px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+  .grid th{font-size:12px;color:var(--muted);font-weight:650;background:#fafbfb;vertical-align:top}
+  .grid th small{display:block;font-weight:400;margin-top:2px}
+  .grid tr:last-child td{border-bottom:0}
+  .name{font-weight:700;font-size:14px}
+  .name small{display:block;font-weight:400;color:var(--muted);font-size:12px;margin-top:3px}
+  select{border:1px solid var(--line);border-radius:7px;padding:7px 9px;background:#fff;font-size:13px;min-width:150px}
+  select:disabled{color:var(--muted);background:#f6f7f7}
+  .dim{color:var(--muted);font-size:12px}
+  .floors{padding:12px 20px 14px 38px;margin:0;display:grid;gap:6px;font-size:13px;line-height:1.6}
+  .lock{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:2px 6px}
+  .stack{display:grid;gap:16px}
+  .note{background:#fff8ec;border:1px solid #f0dcb8;color:#7a4a10;border-radius:10px;padding:12px 16px;font-size:13px}
+  .actions{display:flex;gap:10px;justify-content:flex-end;align-items:center}
+  .actions .subtle{margin-right:auto}
+  .example{padding:12px 20px;font-size:13px;line-height:1.9}
+  .example b{color:var(--accent-dark)}
+  .ann{outline:2px dashed #c58b2b;outline-offset:3px;position:relative}
+  .ann-tag{position:absolute;top:-11px;right:8px;background:#c58b2b;color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;z-index:1}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#"><span class="brand-mark">A</span><span class="brand-text">Autoloop <strong>控制台</strong></span></a>
+  <div class="header-actions"><span class="connection online"><span class="dot"></span>已连接</span><button class="button secondary">刷新</button></div>
+</header>
+<nav class="navigation ann"><span class="ann-tag">① 新增顶部 tab「管理后台」</span>
+  <button class="nav-item">总览</button>
+  <button class="nav-item">调度规则</button>
+  <button class="nav-item">会话管理</button>
+  <button class="nav-item">执行轮次</button>
+  <button class="nav-item">待我处理</button>
+  <button class="nav-item active">管理后台</button>
+</nav>
+<main>
+  <div class="page-heading">
+    <div><p class="eyebrow">ADMIN</p><h1>管理后台</h1>
+    <p class="subtle">控制台的长期配置。这里的改动会写入真实调度配置，保存前自动备份。</p></div>
+  </div>
+
+  <div class="admin">
+    <aside class="subnav ann"><span class="ann-tag">② 后台分区</span>
+      <div class="group">配置</div>
+      <a href="#" class="active">平台与模型</a>
+    </aside>
+
+    <div class="stack">
+      <section class="panel ann"><span class="ann-tag">③ 总开关</span>
+        <div class="tier-switch">
+          <div><strong>按档位选模型</strong> <span class="pill on">已开启</span>
+          <p class="subtle">关闭后立即恢复：每个平台用自己的默认模型，无需重启。</p></div>
+          <span class="toggle" role="switch" aria-checked="true" aria-label="按档位选模型"></span>
+        </div>
+      </section>
+
+      <section class="panel ann"><span class="ann-tag">④ 每个平台的三档模型（平台自动发现，可编辑）</span>
+        <div class="panel-heading"><h2>平台分档模型</h2><span class="subtle">平台列表来自运行环境中已登记的 AI 执行者，新平台自动出现 · 上次发现：15:02</span></div>
+        <table class="grid">
+          <thead><tr><th>平台</th><th>便宜档</th><th>中档</th><th>高档</th></tr></thead>
+          <tbody>
+            <tr><td><div class="name">WorkBuddy<small>默认：hy4flash-free · 16 个可选模型</small></div></td>
+              <td><select><option>hy4flash-free</option></select> <span class="pill free">免费</span></td>
+              <td><select><option>hy4std</option></select></td>
+              <td><select><option>deepseek-v4-pro</option></select></td></tr>
+            <tr><td><div class="name">Codex<small>默认：deepseek-v4.1-flash · 6 个可选模型</small></div></td>
+              <td><select><option>deepseek-v4.1-flash</option></select></td>
+              <td><select><option>kimi-for-coding</option></select></td>
+              <td><select><option>k3.1-pro</option></select></td></tr>
+            <tr><td><div class="name">Claude Code<small>默认：claude-sonnet-5-5</small></div></td>
+              <td><select><option>haiku</option></select></td>
+              <td><select><option>claude-sonnet-5-5</option></select></td>
+              <td><select><option>opus</option></select></td></tr>
+            <tr style="background:#fbfdfc"><td><div class="name">Gemini CLI <span class="pill on" style="font-size:11px">新发现</span><small>示例行 · 读不到模型清单，请手填模型名</small></div></td>
+              <td><input placeholder="未配置 = 平台默认" style="border:1px solid var(--line);border-radius:7px;padding:7px 9px;width:150px"></td>
+              <td><input placeholder="未配置 = 平台默认" style="border:1px solid var(--line);border-radius:7px;padding:7px 9px;width:150px"></td>
+              <td><input placeholder="未配置 = 平台默认" style="border:1px solid var(--line);border-radius:7px;padding:7px 9px;width:150px"></td></tr>
+          </tbody>
+        </table>
+        <p class="subtle" style="padding:0 20px 14px">新平台在三档配好之前，只用它自己的默认模型；配好后才会出现在下方「工作分配」的可选平台里。</p>
+      </section>
+
+      <section class="panel ann"><span class="ann-tag">⑤ 每类工作由谁做、用哪档（可编辑）</span>
+        <div class="panel-heading"><h2>工作分配</h2><span class="subtle">主平台被频限拦住时自动切备用平台，档位不变</span></div>
+        <table class="grid">
+          <thead><tr><th>工作类型</th><th>主平台</th><th>备用平台</th><th>档位</th></tr></thead>
+          <tbody>
+            <tr><td><div class="name">开发<small>DAG 节点开发</small></div></td>
+              <td><select><option>WorkBuddy</option></select></td>
+              <td><select><option>Claude Code</option></select></td>
+              <td><span class="pill auto">按节点自动</span></td></tr>
+            <tr><td><div class="name">审阅<small>DAG 节点独立审阅</small></div></td>
+              <td><select><option>Claude Code</option></select></td>
+              <td><select><option>Codex</option></select></td>
+              <td><span class="pill auto">按节点自动 · 最低中档</span></td></tr>
+            <tr><td><div class="name">调度会话<small>诊断、协调、派发</small></div></td>
+              <td><select><option>Codex</option></select></td>
+              <td><select><option>Claude Code</option></select></td>
+              <td><select><option>便宜档</option><option>中档</option><option>高档</option></select></td></tr>
+            <tr><td><div class="name">设计会话<small>PRD / Spec / DAG 规划</small></div></td>
+              <td><select><option>Codex</option><option>WorkBuddy</option><option disabled>Claude Code（未接入）</option></select></td>
+              <td><span class="dim">不适用：会话中途不换平台</span></td>
+              <td><select><option>便宜档</option><option>中档</option><option>高档</option></select></td></tr>
+            <tr><td><div class="name">普通会话<small>问答、分析、普通开发</small></div></td>
+              <td><select><option>Codex</option><option>WorkBuddy</option><option disabled>Claude Code（未接入）</option></select></td>
+              <td><span class="dim">不适用：会话中途不换平台</span></td>
+              <td><select><option>便宜档</option><option>中档</option><option>高档</option></select></td></tr>
+          </tbody>
+        </table>
+        <p class="subtle" style="padding:0 20px 14px">会话类改动只影响<b>之后新建</b>的会话，已打开的会话保持原平台和模型。</p>
+      </section>
+
+      <section class="panel ann"><span class="ann-tag">⑥ 固定底线（只读）</span>
+        <div class="panel-heading"><h2>不会降档的情况</h2><span class="lock">主人 11-14 定</span></div>
+        <ul class="floors">
+          <li>审阅至少<b>中档</b>；<b>资金、数据、安全</b>类节点开发至少中档、审阅<b>高档</b>；整合审阅固定<b>高档</b>。</li>
+          <li>同一节点失败 3 次自动升一档；计划里可为单个节点指定档位（底线仍生效）。</li>
+        </ul>
+      </section>
+
+      <section class="panel ann"><span class="ann-tag">⑦ 派发预览（只读，随编辑实时变）</span>
+        <div class="panel-heading"><h2>派发预览</h2><span class="subtle">保存前核对</span></div>
+        <div class="example">
+          小节点开发 → <b>WorkBuddy · hy4flash-free</b>　|　WorkBuddy 被频限时 → <b>Claude Code · haiku</b><br>
+          普通审阅 → <b>Claude Code · claude-sonnet-5-5</b>　|　支付相关节点审阅 → <b>Claude Code · opus</b><br>
+          调度会话 → <b>Codex · deepseek-v4.1-flash</b>　|　新建设计会话 → <b>Codex · deepseek-v4.1-flash</b>
+        </div>
+      </section>
+
+      <div class="note ann"><span class="ann-tag">⑧ 保存前提示</span>保存会改动真实调度配置：先自动备份，再更新执行者与分档规则；原有规则保留作兜底。正在运行的节点和已打开的会话不受影响。</div>
+
+      <div class="actions ann"><span class="ann-tag">⑨ 操作</span>
+        <span class="subtle">最近保存：2026-11-19 15:02 · 备份 rules.json.bak-20261119-1502-tier</span>
+        <button class="button secondary">恢复建议值</button>
+        <button class="button primary">保存</button>
+      </div>
+    </div>
+  </div>
+</main>
+</body>
+</html>

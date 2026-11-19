@@ -20,6 +20,7 @@
     <button class="nav-item" data-view="sessions">会话管理 <span id="session-nav-count" class="count info" hidden>0</span></button>
     <button class="nav-item" data-view="runs">执行轮次</button>
     <button class="nav-item" data-view="cards">待我处理 <span id="card-count" class="count" hidden>0</span></button>
+    <button class="nav-item" data-view="admin">管理后台</button>
   </nav>
   <main>
     <div id="notice" class="notice" role="status" hidden></div>
@@ -82,6 +83,13 @@
     <section id="view-cards" class="view" hidden aria-labelledby="cards-title">
       <div class="page-heading"><div><p class="eyebrow">HUMAN DECISIONS</p><h1 id="cards-title">待我处理</h1><p class="subtle">只有 AGENTS.md 约定的最小门禁才会出现在这里：产品功能、个人隐私、财务、对外影响、只有您掌握的凭据授权。回答后，任务会接回原会话继续。</p></div></div>
       <div id="cards-list" class="card-list"></div>
+    </section>
+    <section id="view-admin" class="view" hidden aria-labelledby="admin-title">
+      <div class="page-heading"><div><p class="eyebrow">ADMIN</p><h1 id="admin-title">管理后台</h1><p class="subtle">控制台的长期配置。这里的改动会写入真实调度配置，保存前自动备份。</p></div></div>
+      <div class="admin-layout">
+        <nav class="admin-subnav" aria-label="后台分区"><div class="admin-subnav-group">配置</div><a href="#admin" class="active" aria-current="page">平台与模型</a></nav>
+        <div id="admin-platform-models" class="admin-stack" aria-live="polite"><p class="subtle">正在读取平台与模型设置…</p></div>
+      </div>
     </section>
   </main>
   <dialog id="new-session-dialog" class="new-session-dialog" aria-labelledby="new-session-title">
