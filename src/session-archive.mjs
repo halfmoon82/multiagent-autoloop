@@ -16,6 +16,9 @@ const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const SESSION_KINDS = ['normal', 'scheduling', 'design'];
 const iso = value => (typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : null);
 const text = (value, max) => String(value ?? '').slice(0, max);
+const collectionOf = (items, emptyReason) => ({
+  items, empty: items.length === 0, reason: items.length ? null : emptyReason,
+});
 
 function normalizeRecord(input) {
   if (!input || typeof input !== 'object') throw new ArchiveError('存档内容不是对象');
@@ -127,4 +130,81 @@ export class SessionArchive {
       transcript ? `【最近转录】\n${transcript}` : '',
     ].filter(Boolean).join('\n\n');
   }
+}
+
+// 移动端已归档会话视图模型（DAG 节点 sessions）：纯投影 helper，只读、不写存档、不创建会话。
+// 缺失值留空、不编造转录或停止原因；上游文本全程是纯字符串，由调用方安全渲染。
+const ARCHIVE_KIND_LABELS = { normal: '普通会话', scheduling: '调度会话', design: '设计会话' };
+export const ARCHIVE_END_STATUS_LABELS = Object.freeze({
+  active: '进行中', closed: '已停止', error: '异常中断', interrupted: '异常中断',
+});
+const archiveEndStatusLabel = value => ARCHIVE_END_STATUS_LABELS[value] || '未知';
+const archiveProjectLabel = value => {
+  const text = String(value ?? '').trim().replace(/[/\\]+$/, '');
+  if (!text) return '';
+  return text.split(/[/\\]/).filter(Boolean).pop() || text;
+};
+const validArchive = record => record && typeof record === 'object' && !Array.isArray(record)
+  && ID_PATTERN.test(String(record.id || ''));
+
+export function mobileArchiveSummaries(records = []) {
+  return (Array.isArray(records) ? records : []).filter(validArchive).map(record => {
+    const project = String(record.project ?? '').trim();
+    const messages = Array.isArray(record.messages) ? record.messages : [];
+    return {
+      id: record.id,
+      shortId: record.id.slice(0, 8),
+      kind: SESSION_KINDS.includes(record.kind) ? record.kind : 'scheduling',
+      kindLabel: ARCHIVE_KIND_LABELS[record.kind] || ARCHIVE_KIND_LABELS.scheduling,
+      project,
+      projectLabel: archiveProjectLabel(project),
+      transcriptCount: messages.length,
+      endStatus: String(record.endStatus ?? '').trim() || null,
+      endStatusLabel: archiveEndStatusLabel(record.endStatus),
+      closedAt: iso(record.closedAt),
+      continuedFrom: ID_PATTERN.test(record.continuedFrom || '') ? record.continuedFrom : null,
+      truncated: record.truncated === true,
+    };
+  });
+}
+
+// 只读转录：role 只映射成展示名，文本逐字保留，调用方用 textContent 渲染。
+export function mobileArchiveTranscript(record) {
+  if (!validArchive(record)) return {
+    id: null, empty: true, reason: '会话存档不存在或数据缺失', readOnly: true,
+    messages: collectionOf([], '会话存档不存在或数据缺失'),
+  };
+  const project = String(record.project ?? '').trim();
+  const messages = (Array.isArray(record.messages) ? record.messages : []).map(message => ({
+    role: message?.role === 'user' ? '主人' : '会话',
+    text: String(message?.text ?? ''),
+    at: iso(message?.at) || '',
+  }));
+  return {
+    id: record.id,
+    shortId: record.id.slice(0, 8),
+    project,
+    projectLabel: archiveProjectLabel(project),
+    kindLabel: ARCHIVE_KIND_LABELS[record.kind] || ARCHIVE_KIND_LABELS.scheduling,
+    endStatus: String(record.endStatus ?? '').trim() || null,
+    endStatusLabel: archiveEndStatusLabel(record.endStatus),
+    transcriptCount: messages.length,
+    readOnly: true,
+    messages: collectionOf(messages, '暂无转录记录'),
+  };
+}
+
+// 恢复上下文：通过既有 continue 端点「新建会话 + 注入最近 N 轮」，原存档记录始终保留。
+export function mobileRestoreContext(record) {
+  if (!validArchive(record)) return { originalId: null, keepsOriginal: true, injectedTurns: 0, command: null };
+  const turns = Array.isArray(record.messages) ? record.messages.length : 0;
+  return {
+    originalId: record.id,
+    continuedFrom: record.id,
+    kind: SESSION_KINDS.includes(record.kind) ? record.kind : 'scheduling',
+    project: String(record.project ?? '').trim(),
+    keepsOriginal: true,
+    injectedTurns: Math.min(CONTINUATION_TURNS, turns),
+    command: `POST /api/scheduling-sessions/${record.id}/continue`,
+  };
 }

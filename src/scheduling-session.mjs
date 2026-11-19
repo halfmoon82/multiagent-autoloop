@@ -28,6 +28,45 @@ export const HUB_TOOLS_PATH = path.join(REPOSITORY_ROOT, 'src', 'mcp', 'hub-tool
 export const SESSION_KIND_LABELS = { normal: '普通会话', scheduling: '调度会话', design: '设计会话' };
 const SESSION_KINDS = Object.keys(SESSION_KIND_LABELS);
 
+// 移动端会话视图模型（DAG 节点 sessions）：纯投影 helper，不启动/不写会话、不碰浏览器。
+// 只暴露可安全渲染的字段；缺失值留空，绝不编造状态、模型、项目或转录。
+export function mobileSessionKindOptions() {
+  return SESSION_KINDS.map(id => ({ id, label: SESSION_KIND_LABELS[id] }));
+}
+
+const shortProjectLabel = value => {
+  const text = String(value ?? '').trim().replace(/[/\\]+$/, '');
+  if (!text) return '';
+  return text.split(/[/\\]/).filter(Boolean).pop() || text;
+};
+
+export function mobileSessionSummaries(sessions = []) {
+  return (Array.isArray(sessions) ? sessions : [])
+    .filter(session => session && typeof session === 'object' && !Array.isArray(session)
+      && typeof session.id === 'string' && session.id.length > 0)
+    .map(session => {
+      const kind = SESSION_KINDS.includes(session.kind) ? session.kind : 'scheduling';
+      const project = String(session.project ?? '').trim();
+      return {
+        id: session.id,
+        kind,
+        kindLabel: SESSION_KIND_LABELS[kind],
+        title: String(session.prompt ?? '').trim().slice(0, 120) || '会话',
+        project,
+        projectLabel: shortProjectLabel(project),
+        status: String(session.status ?? '').trim() || null,
+        statusLabel: statusLabel(session.status),
+        agent: String(session.agent ?? '').trim() || null,
+        model: session.model ?? null,
+        continuedFrom: session.continuedFrom ?? null,
+        createdAt: String(session.createdAt ?? '').trim() || null,
+        updatedAt: String(session.updatedAt ?? '').trim() || null,
+        queuedCount: Number.isInteger(session.queuedCount) ? session.queuedCount : 0,
+        busy: session.busy === true,
+      };
+    });
+}
+
 // 设计会话专用引导提示词：收敛 PRD/Spec/DAG，不复用调度会话的派发 worker 文案。
 export function buildDesignPrompt({ project } = {}) {
   return [
