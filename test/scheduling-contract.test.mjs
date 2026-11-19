@@ -51,16 +51,33 @@ test('§12 documents the automated quota-detour mechanism with policy, threshold
 // 调度会话给用户的控制台操作指引必须指向真实、任何状态下都能到达的入口（11-19 事故：指引里的入口只在有运行中 DAG 时才出现）。
 test('scheduling prompt console entry labels all exist in the console UI, and the DAG entry is always reachable from the overview', async () => {
   const { CONSOLE_DAG_ENTRY_LABELS, CONSOLE_DAG_ENTRY_TEXT, buildSchedulingPrompt } = await import('../src/scheduling-session.mjs');
-  const { readdirSync } = await import('node:fs');
-  const publicDir = new URL('../public/', import.meta.url);
-  const ui = readdirSync(publicDir).filter(name => /\.(html|mjs)$/.test(name)).map(name => readFileSync(new URL(name, publicDir), 'utf8')).join('\n');
+  assert.match(buildSchedulingPrompt({ project: '/p' }), /【控制台入口】.*新建 DAG（执行授权）.*不要编造其他界面路径/);
+  // 每一步都要在它声称的位置上，而不只是「界面某处有这几个字」：按钮挪了位置测试必须变红。
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const section = (startId, endId) => {
+    const start = html.indexOf(`id="${startId}"`); const end = html.indexOf(`id="${endId}"`, start);
+    assert.ok(start >= 0 && end > start, `index.html 里找不到区块 ${startId}`);
+    return html.slice(start, end);
+  };
+  const overview = section('view-overview', 'view-rules');
+  const progressPanel = overview.slice(overview.indexOf('aria-labelledby="progress-title"'), overview.indexOf('</section>', overview.indexOf('aria-labelledby="progress-title"')));
+  const authorize = section('view-authorize', 'view-cards');
+  const authorizeRenderer = readFileSync(new URL('../public/dag-authorize.mjs', import.meta.url), 'utf8');
+  const where = {
+    '总览': [/data-view="overview"[^>]*>总览</, readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'), '顶部导航'],
+    '项目任务进度': [/id="progress-title">项目任务进度</, overview, '总览视图'],
+    '新建 DAG（执行授权）': [/id="overview-dag-new"[^>]*>新建 DAG（执行授权）</, progressPanel, '总览「项目任务进度」面板（常驻，不依赖运行中的 DAG）'],
+    '读取计划与预检': [/id="authorize-load"[^>]*>读取计划与预检</, authorize, '执行授权页'],
+    '确认并进入事件链': [/'确认并进入事件链'[^\n]*go\.id = 'authorize-button'/, authorizeRenderer, '执行授权页渲染（dag-authorize.mjs）'],
+  };
+  assert.deepEqual(Object.keys(where), [...CONSOLE_DAG_ENTRY_LABELS], '入口步骤清单变了：先同步这里的位置断言');
   for (const label of CONSOLE_DAG_ENTRY_LABELS) {
-    assert.ok(ui.includes(label), `界面里找不到入口文字「${label}」`);
+    const [pattern, scope, place] = where[label];
+    assert.match(scope, pattern, `「${label}」不在${place}`);
     assert.ok(CONSOLE_DAG_ENTRY_TEXT.includes(label), `提示词入口说明漏了「${label}」`);
   }
-  assert.match(buildSchedulingPrompt({ project: '/p' }), /【控制台入口】.*新建 DAG（执行授权）.*不要编造其他界面路径/);
-  // 常驻入口：总览视图里直接有按钮，不依赖是否存在运行中的 DAG。
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
-  const overview = html.slice(html.indexOf('id="view-overview"'), html.indexOf('id="view-rules"'));
-  assert.match(overview, /id="overview-dag-new"[^>]*>新建 DAG（执行授权）</);
+  // 提示词里的步骤顺序必须和用户实际点击顺序一致。
+  const positions = CONSOLE_DAG_ENTRY_LABELS.map(label => CONSOLE_DAG_ENTRY_TEXT.indexOf(`「${label}」`));
+  assert.ok(positions.every(position => position >= 0), '提示词入口说明里每一步都要用「」标出');
+  assert.deepEqual(positions, [...positions].sort((a, b) => a - b), '提示词入口说明的步骤顺序与点击顺序不一致');
 });

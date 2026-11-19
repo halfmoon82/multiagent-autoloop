@@ -40,7 +40,10 @@ const schedulingSessions = {
   async list() { return this.records; },
   async start({ prompt, project, kind } = {}) {
     (this.startCalls ||= []).push({ prompt, project, kind });
-    const session = { id: 'browser-session', sessionId: 'acp-browser', agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
+    // 测试开关（一次性）：failNextStart 让下一次新建失败；nextStartId 给下一次新建指定 id（默认沿用 browser-session）。
+    if (this.failNextStart) { const message = this.failNextStart; this.failNextStart = null; throw new Error(message); }
+    const id = this.nextStartId || 'browser-session'; this.nextStartId = null;
+    const session = { id, sessionId: id === 'browser-session' ? 'acp-browser' : `acp-${id}`, agent: 'Codex ACP', cwd: root, project: project || '未识别', status: 'idle', statusText: '待命', prompt: prompt || '默认调度说明', messages: [{ role: 'user', text: '默认调度说明', at: '2026-11-14T00:00:00Z' }], liveText: '', busy: false, queue: [], queued: [], queuedCount: 0, createdAt: '2026-11-14T00:00:00Z', updatedAt: '2026-11-14T00:00:00Z' };
     this.records.push(session); return session;
   },
   async listSessionArtifacts(id) {
@@ -562,6 +565,65 @@ try {
   }
   assert.equal(schedulingSessions.startCalls.length, startsBeforeDuplicate, 'continuing the old session must not create a new one');
   await page.getByLabel('发消息给会话 browser-session').fill('');
+  // 「关闭旧会话并新建」：用同项目的一个设计会话当旧会话（browser-session 后续步骤还要用，不能关）。
+  const designOld = { ...schedulingSessions.records[0], id: 'design-old', sessionId: 'acp-design-old', kind: 'design', prompt: '旧的设计会话', messages: [], queue: [], queued: [], queuedCount: 0 };
+  schedulingSessions.records.push(designOld);
+  const closeCallsOf = id => (schedulingSessions.closeCalls || []).filter(call => call === id).length;
+  const originalClose = schedulingSessions.close;
+  schedulingSessions.close = async function (id) { (this.closeCalls ||= []).push(id); return originalClose.call(this, id); };
+  const openDesignConflict = async request => {
+    await page.locator('#refresh').click();
+    await page.waitForTimeout(300);
+    await page.getByRole('button', { name: '会话管理', exact: false }).click();
+    await page.locator('#session-new').click();
+    await page.locator('#new-session-dialog').waitFor({ state: 'visible' });
+    await page.locator('#new-session-project').selectOption(demoRepo);
+    await page.locator('#new-session-request').fill(request);
+    await page.locator('[data-type-override="design"]').click();
+    await page.locator('#create-session').click();
+    await page.locator('#new-session-conflict').waitFor({ state: 'visible', timeout: 3000 });
+    assert.ok((await page.locator('#new-session-conflict-text').innerText()).includes('设计会话'), 'design conflict must name the session type');
+  };
+  // ① 关闭成功、新建失败：旧会话确实被关掉，对话框明说「旧会话已关闭」并保留输入，可重试。
+  await openDesignConflict('重新设计一遍计费方案');
+  const startsBeforeReplace = schedulingSessions.startCalls.length;
+  schedulingSessions.failNextStart = '模拟：Codex 启动失败';
+  await page.locator('#conflict-replace').click();
+  await page.locator('#new-session-error').waitFor({ state: 'visible', timeout: 5000 });
+  const replaceError = await page.locator('#new-session-error').innerText();
+  assert.ok(replaceError.includes('旧会话已关闭') && replaceError.includes('模拟：Codex 启动失败'), 'close-ok/create-failed must say the old session is already closed and why creation failed');
+  assert.equal(closeCallsOf('design-old'), 1, 'replace must close the old session exactly once');
+  assert.equal(schedulingSessions.startCalls.length, startsBeforeReplace + 1, 'replace must attempt exactly one create after closing');
+  assert.equal(await page.locator('#new-session-dialog').isVisible(), true, 'a failed create must keep the dialog open');
+  assert.equal(await page.locator('#new-session-request').inputValue(), '重新设计一遍计费方案', 'a failed create must keep what the user wrote');
+  assert.equal(await page.locator('#new-session-conflict').isHidden(), true, 'the stale conflict must not reappear once the old session is closed');
+  await page.locator('#new-session-dialog .js-close-new-session').first().click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'hidden' });
+  // ② 正常路径：先关旧会话、再新建，新会话被选中，旧会话不再出现在进行中列表。
+  schedulingSessions.records.push({ ...designOld });
+  await openDesignConflict('再设计一遍计费方案');
+  acceptDialogs = false;
+  await page.locator('#conflict-replace').click();
+  await page.waitForTimeout(300);
+  assert.equal(closeCallsOf('design-old'), 1, 'cancelling the confirmation must not close the old session');
+  assert.equal(await page.locator('#new-session-conflict').isVisible(), true, 'cancelling the confirmation must leave the choice in place');
+  acceptDialogs = true;
+  const startsBeforeOk = schedulingSessions.startCalls.length;
+  schedulingSessions.nextStartId = 'design-new';
+  await page.locator('#conflict-replace').click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'hidden', timeout: 5000 });
+  assert.equal(closeCallsOf('design-old'), 2, 'confirmed replace must close the old session');
+  assert.equal(schedulingSessions.startCalls.length, startsBeforeOk + 1, 'confirmed replace must create exactly one new session');
+  assert.deepEqual(schedulingSessions.startCalls.at(-1), { prompt: '再设计一遍计费方案', project: demoRepo, kind: 'design' }, 'the new session must carry the dialog request, project and kind');
+  const closeIndex = schedulingSessions.closeCalls.lastIndexOf('design-old');
+  assert.ok(closeIndex >= 0 && !schedulingSessions.records.some(session => session.id === 'design-old'), 'the old session must be gone from the live list');
+  await page.waitForFunction(() => document.querySelector('form[data-action="session-message"][data-id="design-new"]'), null, { timeout: 5000 });
+  // 清场：移除本段造的设计会话，切回调度会话，后续步骤照旧使用 browser-session。
+  schedulingSessions.records = schedulingSessions.records.filter(session => session.id !== 'design-new');
+  schedulingSessions.close = originalClose;
+  await page.locator('[data-kind="scheduling"]').first().click();
+  await page.locator('#refresh').click();
+  await page.waitForFunction(() => document.querySelector('form[data-action="session-message"][data-id="browser-session"]'), null, { timeout: 5000 });
   await page.getByRole('button', { name: '会话管理', exact: false }).click();
   await page.locator('#session-new').click();
   await page.locator('#new-session-dialog').waitFor({ state: 'visible' });
