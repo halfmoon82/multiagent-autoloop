@@ -197,7 +197,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
       if (ver.designEvidenceWarning) n.warnings = { ...(n.warnings || {}), designEvidence: ver.designEvidenceWarning };
       if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
-      if (!ver.ok) return failure(root, st, id, latest(root, id, 'dev'), 'verify-failed');
+      if (!ver.ok) { delete n.rebasedTo; return failure(root, st, id, latest(root, id, 'dev'), 'verify-failed'); }
       delete n.rebasedTo;
     }
     let merged;
@@ -296,9 +296,16 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     const n = st.nodes[id]; const todo = n.todo;
     if (todo.kind === 'review') {
       if (todo.rebase) {
-        // 变基重审：从新 head 起步 prepare 一次性审阅分支；派发不到槽位时保留待办下轮再试。
-        n.todo = null;
-        if (!await reattempt(root, st, id, 'review', 'rebase-review', false)) n.todo = { kind: 'review', rebase: true };
+        // 变基重审：槽位记录绑定的是开发期的 branch/base，直接复用会被 fail closed 拒绝；
+        // 先按既有纪律释放槽位（WIP 保全 + 清槽位状态），再从新 head prepare 一次性审阅分支。
+        // 派发不成功时保留待办，避免以旧审阅结论直接进入合并。
+        try {
+          const released = await releaseNodeSlot(root, st, id);
+          if (!released || !await reattempt(root, st, id, 'review', 'rebase-review', true)) n.todo = { kind: 'review', rebase: true };
+        } catch (error) {
+          n.todo = { kind: 'review', rebase: true };
+          throw error;
+        }
         return;
       }
       const prev = latest(root, id, 'review');
