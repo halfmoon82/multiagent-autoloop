@@ -103,15 +103,19 @@ const PREFERENCE = [
   ['hy4std', 'kimi-for-coding', 'claude-sonnet-5-5', 'sonnet', 'glm-5.3'],
   ['deepseek-v4-pro', 'k3.1-pro', 'opus', 'kimi-k3.1-pro'],
 ];
-export function suggestedSettings(platforms) {
+export function suggestedSettings(platforms, roles = {}) {
   const out = { enabled: true, platforms: {}, sessions: { coord: { tier: 'light' }, design: { platform: null, tier: 'light' }, normal: { platform: null, tier: 'light' } } };
   for (const platform of platforms) {
     const pool = new Set([...(platform.models || []), ...(platform.defaultModel ? [platform.defaultModel] : [])]);
     const pick = index => PREFERENCE[index].find(name => pool.has(name)) || platform.defaultModel || '';
     out.platforms[platform.id] = { light: pick(0), standard: pick(1), heavy: pick(2) };
   }
-  const codex = platforms.find(p => p.use === 'codex' && p.access === 'full') || platforms.find(p => p.use === 'codex');
-  if (codex) { out.sessions.design.platform = codex.id; out.sessions.normal.platform = codex.id; }
+  // 会话平台：优先工作分配里正在用的通用平台（调度会话主平台优先），避免选中排在前面的项目专用执行者；
+  // 都不能开会话时才退回第一个可写的 Codex 类平台。
+  const usable = platforms.filter(p => p.sessionCapable && p.access !== 'read');
+  const assigned = ['coord', 'dev', 'review'].flatMap(role => [roles[role]?.primary, roles[role]?.fallback]).filter(Boolean);
+  const session = assigned.map(id => usable.find(p => p.id === id)).find(Boolean) || usable[0] || platforms.find(p => p.sessionCapable);
+  if (session) { out.sessions.design.platform = session.id; out.sessions.normal.platform = session.id; }
   return out;
 }
 
@@ -127,10 +131,10 @@ export function readPlatformModels(config, { catalog = defaultCatalog, policy } 
   const raw = JSON.parse(readFileSync(config.rulesFile, 'utf8'));
   const platforms = discoverPlatforms(raw, { catalog });
   const saved = loadSettings(config);
-  const suggested = suggestedSettings(platforms);
   const effective = policy?.defaults || {};
   const fallbackRoles = { dev: { primary: 'workbuddy', fallback: 'claude' }, review: { primary: 'claude', fallback: 'codex-full' }, coord: { primary: 'codex-full', fallback: 'claude' } };
   const roles = Object.fromEntries(ROLES.map(role => [role, effective[role] || readPolicyDoc(config).defaults?.[role] || fallbackRoles[role]]));
+  const suggested = suggestedSettings(platforms, roles);
   return {
     enabled: saved?.enabled === true,
     platforms: platforms.map(platform => ({ ...platform, tiers: saved?.platforms?.[platform.id] || null })),
