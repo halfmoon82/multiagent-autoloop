@@ -80,7 +80,8 @@ export function createBiometricGate({ verifier = null, bridge = null } = {}) {
 }
 
 // 壳状态机：生物识别门禁与连接状态互相独立。主界面只在 phase === 'unlocked' 时可显示；
-// 授权失效（401/403）立即清除凭证、回锁定并要求重新绑定。
+// 只有 401（设备授权失效）才清除凭证、回锁定并要求重新绑定。
+// 403 可能是转发层误传 x-forwarded-proto 的传输问题，不是授权失效，不能逼已授权设备重绑。
 export class ShellState {
   constructor({ backoffMs = [1000, 2000, 4000, 8000, 15000] } = {}) {
     this.backoffMs = backoffMs;
@@ -108,8 +109,8 @@ export class ShellState {
     if (device) this.device = device;
   }
   connectFailure(message = '连接失败，请重试', status = null) {
-    if (status === 401 || status === 403) { this.revokeDetected(message); return; }
-    this.connection = 'error'; this.error = message; this.retryAttempt += 1;
+    if (status === 401) { this.revokeDetected(message); return; }
+    this.connection = 'error'; this.error = message;
   }
   revokeDetected(message = '设备授权已失效，请重新绑定') {
     this.clearToken();
@@ -118,11 +119,24 @@ export class ShellState {
   }
   networkLost() { this.connection = 'offline'; this.error = '网络已断开，等待网络恢复后自动重连'; }
   networkRestored() { this.error = null; this.retryAttempt = 0; return 0; }
-  retry() { this.connection = 'connecting'; this.error = null; this.retryAttempt += 1; return this.nextRetryDelay(); }
+  retry() {
+    this.connection = 'connecting'; this.error = null;
+    const delay = this.nextRetryDelay(); // 先按当前档位取退避，再推进计数，首次重连才用得到第一档。
+    this.retryAttempt += 1;
+    return delay;
+  }
   nextRetryDelay() {
     const index = Math.min(Math.max(this.retryAttempt, 0), this.backoffMs.length - 1);
     return this.backoffMs[index];
   }
+}
+
+// 断线重连只对可自愈的临时错误排重试。地址非法/不安全是永久配置错误，自动重试只会空转；
+// 授权失效（needsBind）、未绑定或离线态也都不排重试，由用户改地址/重绑与 online 事件接手。
+export function shouldAutoRetry(error, state) {
+  if (error instanceof MobileShellError && (error.code === 'INVALID_BASE' || error.code === 'INSECURE_BASE')) return false;
+  if (state.needsBind) return false;
+  return state.connection === 'error';
 }
 
 // 移动端客户端：所有请求都钉在固定路径上，设备凭证只放在 x-device-token 头里。
@@ -169,7 +183,7 @@ export function createMobileClient({ base, state = new ShellState(), tokenStore 
         return result;
       } catch (error) {
         state.connectFailure(error.message, error.status ?? null);
-        if (error.status === 401 || error.status === 403) await tokenStore.clear();
+        if (error.status === 401) await tokenStore.clear();
         throw error;
       }
     },

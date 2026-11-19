@@ -34,6 +34,10 @@ const run = (command, args) => {
     process.exit(5);
   }
 };
+// 全新 checkout 没有 android/ 平台目录，直接 cap sync 会失败；先生成平台再同步。
+if (!existsSync(path.join(here, 'android'))) {
+  run('npx', ['cap', 'add', 'android']);
+}
 run('npx', ['cap', 'sync', 'android']);
 run(path.join(here, 'android', 'gradlew'), ['assembleRelease']);
 console.log('[apk] Release 包已生成；签名与真机安装仍需按单独授权执行。');

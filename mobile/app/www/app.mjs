@@ -1,6 +1,6 @@
 // 移动端壳的 DOM 装配：把 shell.mjs 的状态机接到页面上。
 // 只更新已有节点的 textContent / hidden / dataset，不整块重建 DOM（避免触控与刷新竞态）。
-import { ShellState, createTokenStore, createMobileClient, createBiometricGate } from './shell.mjs';
+import { ShellState, createTokenStore, createMobileClient, createBiometricGate, shouldAutoRetry } from './shell.mjs';
 
 function boot() {
   const $ = id => document.getElementById(id);
@@ -58,7 +58,7 @@ function boot() {
 
   async function reconnect() {
     cancelRetry();
-    state.retry();
+    const retryDelay = state.retry();
     render();
     try {
       await getClient().session();
@@ -67,9 +67,9 @@ function boot() {
       // 客户端构建（地址校验）在 session 之前失败时，也要给出可读错误而不是停在「正在连接」。
       if (state.connection === 'connecting') state.connectFailure(error?.message || '连接失败，请重试');
       render();
-      // 授权失效/未绑定时不自动重试；网络恢复与手动按钮才是重连入口。
-      if (state.needsBind || state.connection !== 'error') return;
-      scheduleRetry(state.nextRetryDelay());
+      // 地址非法/不安全属于永久配置错误，自动重试只会空转；授权失效与未绑定同样不排重试。
+      if (!shouldAutoRetry(error, state)) return;
+      scheduleRetry(retryDelay);
     }
   }
 

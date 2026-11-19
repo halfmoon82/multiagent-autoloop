@@ -3,7 +3,7 @@
 // 不调用真实模型、不操作真实规则；移动端资源、API 与打包配置都由本文件定义行为。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,7 @@ import { createDeviceStore } from '../src/device-auth.mjs';
 import { listen, close, fakeHub, json } from './helpers.mjs';
 import {
   MobileShellError, normalizeBaseUrl, MOBILE_API_KEYS, mobileSessionUrl, mobileBindUrl, mobileApiUrl,
-  parseBindPayload, ShellState, createTokenStore, createBiometricGate, createMobileClient,
+  parseBindPayload, ShellState, createTokenStore, createBiometricGate, createMobileClient, shouldAutoRetry,
 } from '../mobile/app/www/shell.mjs';
 
 const MOBILE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'mobile', 'app');
@@ -103,10 +103,13 @@ test('连接状态机：连接/断线/重连退避/恢复，授权 401 立即回
   state.connectFailure('上游暂时不可用');
   assert.equal(state.connection, 'error');
   assert.equal(state.error, '上游暂时不可用');
+  assert.equal(state.retryAttempt, 0, '失败本身不推进档位，由下一次 retry() 推进');
+  assert.equal(state.nextRetryDelay(), 10);
+  assert.equal(state.retry(), 10, '首次重连用第一档退避');
+  assert.equal(state.connection, 'connecting');
   assert.equal(state.retryAttempt, 1);
   assert.equal(state.nextRetryDelay(), 20);
-  state.retry();
-  assert.equal(state.connection, 'connecting');
+  assert.equal(state.retry(), 20);
   assert.equal(state.retryAttempt, 2);
   assert.equal(state.nextRetryDelay(), 40, '退避封顶');
 
@@ -398,4 +401,130 @@ test('Android 打包工程配置自洽：webDir 指向壳资源，minSdk 覆盖�
   const guard = spawnSync(process.execPath, [path.join(MOBILE_DIR, 'build-apk.mjs')], { env: { ...process.env, AUTOLOOP_APK_BUILD_AUTHORIZED: '' }, encoding: 'utf8' });
   assert.notEqual(guard.status, 0, '未单独授权时不得打包');
   assert.match(guard.stderr + guard.stdout, /授权|authoriz/i);
+});
+
+// ---------------------------------------------------------------------------
+// RED 7：独立审阅（review g1a1）提出的 4 条 P3 已知后续——attempt 2 逐条修并留回归测试。
+// 只改本节点写域内的壳与打包工程；不改 src/device-auth.mjs（越界）。
+// ---------------------------------------------------------------------------
+test('P3-1 ShellState.connectFailure 只把 401 当授权失效，403 保留凭据与主界面', () => {
+  const state = new ShellState();
+  state.setToken('device-secret');
+  state.unlockSuccess({ id: 'dev_1' });
+
+  state.connectFailure('远程访问必须使用 HTTPS', 403);
+  assert.equal(state.connection, 'error');
+  assert.match(state.error, /HTTPS/);
+  assert.equal(state.token, 'device-secret', '偶发 403 不得清除设备凭据');
+  assert.equal(state.needsBind, false, '偶发 403 不得强制重新绑定');
+  assert.equal(state.phase, 'unlocked', '偶发 403 不得把已授权设备踢回锁定页');
+  assert.equal(state.canShowMain(), true);
+
+  state.connectFailure('设备未授权或授权已失效，请重新绑定', 401);
+  assert.equal(state.token, null, '401 仍然立即清除凭据');
+  assert.equal(state.needsBind, true);
+  assert.equal(state.canShowMain(), false, '401 仍然回锁定页');
+});
+
+test('P3-1 session 遇到 403 不清除持久化设备凭据', async () => {
+  const state = new ShellState();
+  const tokenStore = createTokenStore();
+  await tokenStore.set('device-secret');
+  state.setToken('device-secret');
+  state.unlockSuccess({ id: 'dev_1' });
+  const ff = fakeFetch(() => errResponse(403, { error: '远程访问必须使用 HTTPS' }));
+  const client = createMobileClient({ base: 'https://console.example.com', state, tokenStore, fetchImpl: ff.impl });
+
+  await assert.rejects(() => client.session(), error => error instanceof MobileShellError && error.status === 403);
+  assert.equal(await tokenStore.get(), 'device-secret', '403 不得清除持久化的设备凭据');
+  assert.equal(state.token, 'device-secret');
+  assert.equal(state.needsBind, false);
+  assert.equal(state.phase, 'unlocked');
+});
+
+test('P3-1 转发层误传 x-forwarded-proto:http 触发服务端 403 时，已授权设备不被迫重绑', async t => {
+  const { url, store } = await setup(t);
+  const { deviceToken } = await issueDevice(url, store);
+  const state = new ShellState();
+  const tokenStore = createTokenStore();
+  await tokenStore.set(deviceToken);
+  state.setToken(deviceToken);
+  state.unlockSuccess({ id: 'dev_1' });
+  // 模拟代理误把转发协议声明成 http：服务端返回 403，但这不是设备授权失效。
+  const ff = fakeFetch((u, init) => fetch(u, { ...init, headers: { ...init.headers, 'x-forwarded-proto': 'http' } }));
+  const client = createMobileClient({ base: url, state, tokenStore, fetchImpl: ff.impl });
+
+  await assert.rejects(() => client.session(), error => error instanceof MobileShellError && error.status === 403);
+  assert.equal(await tokenStore.get(), deviceToken, '服务端 403 不得清除设备凭据');
+  assert.equal(state.needsBind, false);
+  assert.equal(state.phase, 'unlocked');
+  assert.equal(state.connection, 'error');
+});
+
+test('P3-2 shouldAutoRetry：地址配置错误/未绑定/非 error 态不自动重连，临时错误才重连', () => {
+  const capture = fn => { try { fn(); return null; } catch (error) { return error; } };
+  const invalid = capture(() => normalizeBaseUrl(''));
+  const insecure = capture(() => normalizeBaseUrl('http://console.example.com'));
+  assert.equal(invalid?.code, 'INVALID_BASE');
+  assert.equal(insecure?.code, 'INSECURE_BASE');
+
+  const bound = new ShellState();
+  bound.setToken('device-secret');
+  bound.connectFailure('上游暂时不可用');
+  assert.equal(shouldAutoRetry(invalid, bound), false, '地址为空是永久配置错误，不空转重试');
+  assert.equal(shouldAutoRetry(insecure, bound), false, '远程明文 http 不空转重试');
+  assert.equal(shouldAutoRetry(new MobileShellError('NETWORK', '无法连接控制台'), bound), true, '临时网络错误可自动重连');
+  assert.equal(shouldAutoRetry(new MobileShellError('HTTP_403', '远程访问必须使用 HTTPS'), bound), true, '偶发 403 可自动重连且不清凭据');
+
+  const unbound = new ShellState();
+  unbound.connectFailure('尚未绑定设备，请先扫码绑定');
+  assert.equal(shouldAutoRetry(new MobileShellError('DEVICE_NOT_BOUND', 'x'), unbound), false, '未绑定不自动重连');
+
+  const revoked = new ShellState();
+  revoked.setToken('device-secret');
+  revoked.connectFailure('设备未授权或授权已失效', 401);
+  assert.equal(shouldAutoRetry(new MobileShellError('HTTP_401', 'x'), revoked), false, '授权失效回锁定重绑，不自动重连');
+
+  const offline = new ShellState();
+  offline.setToken('device-secret');
+  offline.networkLost();
+  assert.equal(shouldAutoRetry(new MobileShellError('NETWORK', 'x'), offline), false, '离线态由 online 事件触发重连，不排重试');
+});
+
+test('P3-3 ShellState.retry 首次重连使用 backoffMs[0]，不跳档', () => {
+  const state = new ShellState({ backoffMs: [10, 20, 40] });
+  assert.equal(state.retry(), 10, '首次重连必须用第一档退避，不能先自增再取导致跳过第一档');
+  assert.equal(state.connection, 'connecting');
+  assert.equal(state.retryAttempt, 1);
+  assert.equal(state.retry(), 20);
+  assert.equal(state.retryAttempt, 2);
+  assert.equal(state.retry(), 40, '退避封顶');
+  assert.equal(state.retry(), 40, '封顶后保持最后一档');
+});
+
+test('P3-4 build-apk 全新环境先 cap add android 再 cap sync，不因缺少平台失败', () => {
+  // 真机打包需单独授权 + Android SDK，单测无法真跑；用临时 npx 假壳记录脚本实际发出的命令。
+  const dir = mkdtempSync(path.join(tmpdir(), 'apk-build-'));
+  const log = path.join(dir, 'commands.log');
+  writeFileSync(path.join(dir, 'npx'), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\n`, { mode: 0o755 });
+  try {
+    const result = spawnSync(process.execPath, [path.join(MOBILE_DIR, 'build-apk.mjs')], {
+      env: {
+        ...process.env,
+        AUTOLOOP_APK_BUILD_AUTHORIZED: '1',
+        ANDROID_HOME: dir,
+        ANDROID_SDK_ROOT: dir,
+        PATH: `${dir}${path.delimiter}${process.env.PATH || ''}`,
+      },
+      encoding: 'utf8',
+    });
+    assert.equal(result.error, undefined, `打包脚本应能启动：${result.error?.message || ''}`);
+    const commands = existsSync(log) ? readFileSync(log, 'utf8') : '';
+    const addAt = commands.indexOf('cap add android');
+    const syncAt = commands.indexOf('cap sync android');
+    assert.ok(addAt >= 0, '全新 checkout 没有 android/ 平台时，必须先用 cap add android 生成平台');
+    assert.ok(syncAt > addAt, 'cap add android 必须在 cap sync android 之前');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
