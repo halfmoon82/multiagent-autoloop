@@ -201,7 +201,12 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (!pr || pr.nodeId !== nodeId) throw new PublishError(`PR ${prUrl} 未登记或不属于节点 ${nodeId}，publish 拒绝`, 'PR_NOT_REGISTERED');
       if (pr.state === 'merged') return { mergeCommit: pr.mergeCommit };
       const head = await gh.prHead(prUrl);
-      if (head !== commit) throw new PublishError(`远端 PR head ${head} 与已审 SHA ${commit} 不一致（head 变化），拒绝合并`, 'HEAD_MISMATCH');
+      if (head !== commit) {
+        // 带上远端 head，交由控制器决定是否在新 head 上重审；publish 自身绝不合并未审提交。
+        const error = new PublishError(`远端 PR head ${head} 与已审 SHA ${commit} 不一致（head 变化），拒绝合并`, 'HEAD_MISMATCH');
+        error.head = head;
+        throw error;
+      }
       // 审阅占位：他人（非本节点 DAG 审阅）正在审时暂缓合并，抛错由控制器下一 tick 重试，节点状态不变。
       if (typeof gh.claimHolder === 'function') {
         const holder = await gh.claimHolder(prUrl);
