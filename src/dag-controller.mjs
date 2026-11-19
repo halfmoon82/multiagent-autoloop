@@ -466,7 +466,11 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
           // accepted 节点之后不再走 advanceNode，没有这一步就会永久占着槽位（2026-11-19 device-binding）。
           for (const [id, n] of Object.entries(st.nodes)) {
             if (n.state !== 'accepted' || n.slot == null) continue;
-            try { await releaseNodeSlot(root, st, id); } catch (error) { n.lastError = msg(error); }
+            try {
+              // 释放被拒（Hub 还没终态）不能静默：写进 lastError 让卡住巡检在阈值后唤醒调度方，
+              // 否则 root 因为「槽位没还干净」一直不收尾，却没有任何告警源看得见。
+              if (!(await releaseNodeSlot(root, st, id)) && n.slot != null) n.lastError = `已验收节点 ${id} 槽位 ${n.slot} 待释放：Hub run 尚未终态，下一轮重试`;
+            } catch (error) { n.lastError = msg(error); }
           }
           try { await dispatchReady(root, st); } catch (error) { st.lastError = msg(error); }
           // 收尾要等槽位都还干净：最后一个节点验收时若补释放被拒，root 一终结就再没有 tick 来补。

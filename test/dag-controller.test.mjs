@@ -478,6 +478,7 @@ test('末节点验收时 Hub 未终态：root 不提前终结，补释放后下�
   assert.equal(s.ctl.snapshot().nodes.a.state, 'accepted');
   assert.notEqual(s.ctl.snapshot().nodes.a.slot, null, 'Hub 未终态时释放被拒，槽位暂时仍占用');
   assert.notEqual(s.store.getRun(s.root.runId).status, 'done', '槽位没还干净前不得把 root 收尾');
+  assert.match(s.ctl.snapshot().nodes.a.lastError, /待释放/, '释放被拒要留痕，否则卡住巡检看不到');
   s.hub.set(hubId, { status: 'done' });
   await s.ctl.tick();
   assert.equal(s.ctl.snapshot().nodes.a.slot, null);
