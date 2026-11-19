@@ -74,8 +74,9 @@ export function buildSnapshotSection(providers = {}) {
 }
 
 /**
- * 从会话转录配出最近几轮「用户原话 → 回答」。一轮 = 连续的 user 消息（排队可能多条）+ 其后的第一条 agent 回答；
- * 结尾还没回答的 user 消息（本轮正在发的）不算。最新的在最后。
+ * 从会话转录配出最近几轮「用户原话 → 回答」。一轮 = 连续的 user 消息（排队可能多条）+ 其后的第一条 agent 回答。
+ * 调用时本轮消息还没写进转录，所以结尾没有回答的 user 消息属于「上一轮」——它失败、被打断或仍在执行；
+ * 保留为 { user, agent: null }，绝不丢弃（否则更早一轮会冒充上一轮）。最新的在最后。
  */
 export function exchangesFrom(messages = [], { rounds = 3 } = {}) {
   const out = [];
@@ -87,6 +88,7 @@ export function exchangesFrom(messages = [], { rounds = 3 } = {}) {
       pending = [];
     }
   }
+  if (pending.length) out.push({ user: pending.join('\n\n'), agent: null });
   return out.slice(-rounds);
 }
 
@@ -95,20 +97,26 @@ const capChars = (text, max, note) => {
   return chars.length > max ? `${chars.slice(0, max).join('')}\n${note(max, chars.length)}` : chars.join('');
 };
 
+/** 上一轮是否没得到回答（失败、被打断或仍在执行）。 */
+export const previousUnanswered = exchanges => exchanges.length > 0 && exchanges.at(-1).agent === null;
+
 /** 交接段：上一轮用户原话全文 + 更早几轮的问答摘要。换执行者后新会话没有聊天记忆，只能靠它知道「问了什么」。 */
 export function handoverSection(exchanges = []) {
   if (!exchanges.length) return '';
   const previous = exchanges.at(-1);
   const parts = [];
-  if (previous.user) {
-    parts.push('## 上一轮用户原话（完整）\n', capChars(previous.user, MAX_SUMMARY_CHARS, (max, total) => `[已截断：上一轮用户原话共 ${total} 字，此处只列前 ${max} 字，完整内容见会话转录]`), '\n');
-  }
+  const status = previous.agent === null ? '，未得到回答：失败、被打断或仍在执行' : '';
+  parts.push(`## 上一轮用户原话（完整${status}）\n`);
+  // 原话为空：多是迟到回答（旧事件对账晚于下一问）把两问合并了；如实写出，不整节省略。
+  parts.push(previous.user
+    ? capChars(previous.user, MAX_SUMMARY_CHARS, (max, total) => `[已截断：上一轮用户原话共 ${total} 字，此处只列前 ${max} 字，完整内容见会话转录]`)
+    : '（转录里上一轮没有对应的用户消息，可能是迟到的回答；以会话转录为准）', '\n');
   const earlier = exchanges.slice(0, -1);
   if (earlier.length) {
     const cut = (max, total) => `[已截断：原文 ${total} 字，此处只列前 ${max} 字]`;
     parts.push(`## 更早的对话（最近 ${earlier.length} 轮，旧的在前，每条最多 ${MAX_EARLIER_CHARS} 字）\n`);
     earlier.forEach((exchange, index) => {
-      parts.push(`### 往前第 ${earlier.length - index + 1} 轮`, `- 用户：${capChars(exchange.user || '（无）', MAX_EARLIER_CHARS, cut)}`, `- 回答：${capChars(exchange.agent, MAX_EARLIER_CHARS, cut)}`, '');
+      parts.push(`### 往前第 ${earlier.length - index + 1} 轮`, `- 用户：${capChars(exchange.user || '（无）', MAX_EARLIER_CHARS, cut)}`, `- 回答：${exchange.agent === null ? '（未得到回答）' : capChars(exchange.agent, MAX_EARLIER_CHARS, cut)}`, '');
     });
   }
   return parts.join('\n');
@@ -141,7 +149,9 @@ export async function buildSchedulingContext({ root, sessionId, turn, project, l
   if (lastSummary) {
     const chars = [...String(lastSummary)];
     const cut = chars.length > MAX_SUMMARY_CHARS;
-    parts.push('\n## 上一轮结论\n', chars.slice(0, MAX_SUMMARY_CHARS).join(''), cut ? `\n[已截断：上一轮结论超过 ${MAX_SUMMARY_CHARS} 字，完整内容见会话转录]` : '', '\n');
+    // 上一轮没得到回答时，这条回答属于更早一轮：标题如实写明，不让它冒充「上一问的结论」。
+    const heading = previousUnanswered(exchanges) ? '## 最近一次得到的回答（属于更早一轮；上一轮未得到回答）' : '## 上一轮结论';
+    parts.push(`\n${heading}\n`, chars.slice(0, MAX_SUMMARY_CHARS).join(''), cut ? `\n[已截断：超过 ${MAX_SUMMARY_CHARS} 字，完整内容见会话转录]` : '', '\n');
   }
   if (openItems) parts.push('\n## 未收尾事项\n', String(openItems), '\n');
   const dir = path.join(root, CONTEXT_DIR);

@@ -841,3 +841,20 @@ test('after an executor switch the context file carries the previous turn questi
   assert.match(body, /## 上一轮结论\n+第一轮的回答/);
   assert.doesNotMatch(body.split('## 上一轮用户原话（完整）')[1].split('##')[0], /换人之后的一问/, '本轮消息不得混进上一轮');
 });
+
+test('after an interrupted turn, or a send while the previous turn still runs, that unanswered question is handed over as the previous round (P2)', async () => {
+  const { client, manager } = echoManager({ runs: finishedRun(), stdout: codexOut('第一轮的回答') });
+  const started = await manager.start({ project: fixtureProject(), prompt: '第一问' });
+  // 第二轮：发出后一直在跑（例如频限重试中），用户打断——转录里没有回答，会话回到待命。
+  client.readEvent = async (config, eventId) => ({ event: eventId, runs: [{ run: 6590, rule: '调度会话执行', state: 'claimed', summary: '' }] });
+  await manager.send(started.id, '第二问（被打断）');
+  await manager.send(started.id, '', { interrupt: true });
+  // 第三轮：可能已换执行者接手，必须看到第二问。
+  await manager.send(started.id, '再试一次');
+  const text = JSON.parse(client.calls.filter(call => call[0] === 'postEvent').at(-1)[1].detail).text;
+  const file = text.match(/本轮完整资料[^：]*：(.+?)；动手前先读它/)[1];
+  const body = readFileSync(file, 'utf8');
+  assert.match(body, /## 上一轮用户原话（完整，未得到回答：失败、被打断或仍在执行）\n+第二问（被打断）/);
+  assert.match(body, /## 最近一次得到的回答（属于更早一轮；上一轮未得到回答）\n+第一轮的回答/);
+  assert.doesNotMatch(body.split('## 上一轮用户原话')[1].split('\n## ')[0], /再试一次/, '本轮消息不得混进上一轮');
+});

@@ -6,7 +6,7 @@ import path from 'node:path';
 import {
   buildSchedulingContext, composeTurnText, contextTrailer, truncateToBytes, codePoints,
   prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation, runsOfSubject,
-  exchangesFrom, handoverSection,
+  exchangesFrom, handoverSection, previousUnanswered,
   EVENT_DETAIL_BUDGET, CONTEXT_DIR,
 } from '../src/scheduling-context.mjs';
 
@@ -197,7 +197,7 @@ test('上一轮结论超过上限时注明截断，不静默丢尾（P2）', asy
   const longSummary = `${'汇'.repeat(9000)}尾巴`;
   const file = await buildSchedulingContext({ root, sessionId: 'l1', turn: 2, project, lastSummary: longSummary });
   const body = readFileSync(file, 'utf8');
-  assert.match(body, /\[已截断：上一轮结论超过 8000 字，完整内容见会话转录\]/);
+  assert.match(body, /\[已截断：超过 8000 字，完整内容见会话转录\]/);
   const medium = '汇'.repeat(3000);
   const file2 = await buildSchedulingContext({ root, sessionId: 'l2', turn: 2, project, lastSummary: medium });
   assert.ok(readFileSync(file2, 'utf8').includes(medium), '3000 字的结论完整保留（旧上限 1200 会截掉）');
@@ -218,11 +218,33 @@ test('exchangesFrom pairs user messages with the next reply, merges queued messa
   assert.equal(rounds.at(-1).user, '第四问');
 });
 
-test('exchangesFrom ignores a trailing user message that has no reply yet', () => {
-  const rounds = exchangesFrom([...transcript, { role: 'user', text: '还没回答的' }], { rounds: 1 });
+test('exchangesFrom keeps a trailing unanswered user message as the previous round (P2: failed/interrupted turn)', () => {
+  const rounds = exchangesFrom([...transcript, { role: 'user', text: '没得到回答的上一问' }], { rounds: 2 });
+  assert.deepEqual(rounds.at(-1), { user: '没得到回答的上一问', agent: null }, '结尾没回答的是上一轮，不得丢弃');
   assert.equal(rounds[0].user, '第四问');
-  assert.deepEqual(exchangesFrom([{ role: 'user', text: '只有问' }]), []);
+  assert.deepEqual(exchangesFrom([{ role: 'user', text: '只有问' }]), [{ user: '只有问', agent: null }]);
   assert.deepEqual(exchangesFrom(undefined), []);
+});
+
+test('handoverSection marks an unanswered previous round and the context file relabels the older answer (P2)', async () => {
+  const exchanges = exchangesFrom([...transcript, { role: 'user', text: '频限失败的那一问' }]);
+  const text = handoverSection(exchanges);
+  assert.match(text, /## 上一轮用户原话（完整，未得到回答：失败、被打断或仍在执行）\n+频限失败的那一问/);
+  assert.match(text, /### 往前第 2 轮\n- 用户：第四问\n- 回答：第四答/);
+  const { root, project } = fixture();
+  const file = await buildSchedulingContext({ root, sessionId: 'u9', turn: 6, project, lastSummary: '第四答', exchanges });
+  const body = readFileSync(file, 'utf8');
+  assert.match(body, /## 最近一次得到的回答（属于更早一轮；上一轮未得到回答）\n+第四答/);
+  assert.doesNotMatch(body, /## 上一轮结论/, '更早一轮的回答不得冒充上一问的结论');
+});
+
+test('an empty previous question (late answer merged two rounds) is stated, not silently dropped (P3)', () => {
+  const late = exchangesFrom([
+    { role: 'user', text: 'Q1' }, { role: 'agent', text: 'A1' },
+    { role: 'user', text: 'Q2' }, { role: 'user', text: 'Q3' }, { role: 'agent', text: 'A2 迟到' }, { role: 'agent', text: 'A3' },
+  ]);
+  const text = handoverSection(late);
+  assert.match(text, /## 上一轮用户原话（完整）\n+（转录里上一轮没有对应的用户消息，可能是迟到的回答；以会话转录为准）/);
 });
 
 test('handoverSection writes the previous question in full and earlier rounds as capped summaries', () => {
