@@ -301,7 +301,14 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         // 派发不成功时保留待办，避免以旧审阅结论直接进入合并。
         try {
           const released = await releaseNodeSlot(root, st, id);
-          if (!released || !await reattempt(root, st, id, 'review', 'rebase-review', true)) n.todo = { kind: 'review', rebase: true };
+          let prepared = false;
+          if (released) {
+            // 强推后的 head 往往只在远端：先取回控制器 mirror，再以取回的实际 head 作审阅基准。
+            const head = await publisher.fetchHead({ nodeId: id, branch: n.branch });
+            n.commit = head; n.rebasedTo = head;
+            prepared = await reattempt(root, st, id, 'review', 'rebase-review', true);
+          }
+          if (!prepared) n.todo = { kind: 'review', rebase: true };
         } catch (error) {
           n.todo = { kind: 'review', rebase: true };
           throw error;

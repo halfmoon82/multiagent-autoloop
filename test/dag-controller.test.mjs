@@ -292,6 +292,7 @@ test('审阅通过后 PR 被变基（head 变化）：不合并旧 SHA，改在�
   const s = setup([mkNode('a')]);
   const devSha = 'a'.repeat(40), rebased = 'b'.repeat(40);
   s.publisher.commitPr = async a => { s.publisher.calls.push(['commitPr', a.nodeId]); return { prUrl: 'https://x/pr/a', commit: devSha }; };
+  s.publisher.fetchHead = async a => { s.publisher.calls.push(['fetchHead', a.nodeId]); return rebased; };
   let firstMerge = true;
   s.publisher.merge = async a => {
     s.publisher.calls.push(['merge', a.nodeId, a.commit]);
@@ -308,6 +309,7 @@ test('审阅通过后 PR 被变基（head 变化）：不合并旧 SHA，改在�
   const prepares = s.rt.events.filter(e => e[0] === 'prepare' && e[2] === 'a');
   assert.equal(prepares.at(-1)[3], rebased, '重审槽位从新 head 起步');
   assert.equal(s.runOf('a', 'review').attempt, 2, '重审以新 attempt 进行');
+  assert.ok(s.publisher.calls.some(c => c[0] === 'fetchHead'), '重审前先从远端取回变基后的 head');
   // 新 head 上必须补跑测试，再交给独立审阅裁决。
   s.claimAll(); s.receipt('a', 'review', 'accepted'); await s.ctl.tick();
   node = s.ctl.snapshot().nodes.a;
