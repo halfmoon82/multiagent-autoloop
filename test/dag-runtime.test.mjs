@@ -14,7 +14,7 @@ import { mkNode } from './dag-fakes.mjs';
 const recorder = (responses = {}) => {
   const calls = [];
   const request = async (config, p, opts = {}) => {
-    calls.push({ p, method: opts.method || 'GET', body: opts.body });
+    calls.push({ p, method: opts.method || 'GET', body: opts.body, auth: opts.auth });
     const r = responses[`${opts.method || 'GET'} ${p}`];
     if (r instanceof Error) throw r;
     return typeof r === 'function' ? r(opts) : r ?? {};
@@ -59,6 +59,36 @@ test('hub.cancel 只取消未终态 run', async () => {
   const { calls, request } = recorder({ 'GET /v1/events/1': { event: 1, runs: [{ run: 3, state: 'done', events: [] }, { run: 4, state: 'queued', events: [] }, { run: 5, state: 'unknown', events: [] }] } });
   await createHubAdapter({ config: {}, request }).cancel(1);
   assert.deepEqual(calls.filter(c => c.method === 'POST').map(c => c.p), ['/v1/runs/4/cancel']);
+});
+
+// 中台授权规则（不改 hub.mjs 的前提下由调用点选密钥）：
+//   /v1/events 读与写 → source；/v1/runs/:id/cancel、/v1/state → owner（默认）。
+test('hub 适配器按中台授权规则选密钥：事件读写用 source，cancel/state 保持 owner 默认', async () => {
+  {
+    const { calls, request } = recorder({ 'POST /v1/events': { event: 42 } });
+    await createHubAdapter({ config: {}, request }).dispatch({ run, slot: 2, worktree: '/w', branch: 'b', expectedAdvanceId: 'e1', model: null, prompt: 'p' });
+    const post = calls.find(c => c.p === '/v1/events' && c.method === 'POST');
+    assert.equal(post.auth, 'source', '派发事件必须带 source 密钥，否则中台回「要来源自己的密钥」401');
+  }
+  {
+    const { calls, request } = recorder({ 'GET /v1/events/1': { event: 1, runs: [] } });
+    await createHubAdapter({ config: {}, request }).getRun(1);
+    const get = calls.find(c => c.p === '/v1/events/1' && c.method === 'GET');
+    assert.equal(get.auth, 'source', '读取事件结果必须带 source 密钥，否则中台回 401');
+  }
+  {
+    const { calls, request } = recorder({ 'GET /v1/events/1': { event: 1, runs: [{ run: 4, state: 'queued', events: [] }] } });
+    await createHubAdapter({ config: {}, request }).cancel(1);
+    const cancelPost = calls.find(c => c.p === '/v1/runs/4/cancel' && c.method === 'POST');
+    assert.ok(cancelPost, '应发出 run cancel POST');
+    assert.equal(cancelPost.auth, undefined, 'run cancel 必须走 owner 默认，不能带 source（否则中台回「要本人自己的密钥」401）');
+  }
+  {
+    const { calls, request } = recorder({ 'GET /v1/state': {} });
+    await createBlockedEvidence({ config: {}, request })({ run: {} });
+    const state = calls.find(c => c.p === '/v1/state' && c.method === 'GET');
+    assert.equal(state.auth, undefined, 'state 读取保持 owner 默认');
+  }
 });
 
 test('blocked 证据：已派发的保持阻塞；从未派发且 Hub 可达才自动复活；Hub 不可达抛错', async () => {
