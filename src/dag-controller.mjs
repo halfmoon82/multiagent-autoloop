@@ -4,11 +4,13 @@ import { readyNodes, validateDag } from './dag.mjs';
 import { assertNodeDesignSnapshot, designContractDigest } from './design-baseline.mjs';
 import { MAX_SLOTS, MAX_ATTEMPTS, QUARANTINE_AFTER_MS, isTerminal, ROOT_NODE, DagRunError } from './dag-run.mjs';
 import { seg } from './dag-slots.mjs';
+import { nodeTier } from './dag-tier.mjs';
 
 export const HUB_TERMINAL = new Set(['done', 'cancelled', 'failed', 'nothing']);
 const SUCCESS = new Set(['done', 'accepted', 'merged']);
 const msg = error => String(error?.message || error).replace(/[\r\n]+/g, ' ');
-const defaultApproach = ({ run }) => ({ reason: `第 ${run.attempt} 次失败，换模型重派`, model: 'fallback' });
+// 成本优先：首派用节点最便宜可行档，换打法默认升一档（light→standard→heavy），不直接上最贵模型。
+const defaultApproach = ({ run }) => ({ reason: `第 ${run.attempt} 次失败，升一档模型重派`, tierBump: 1 });
 
 // blockedEvidence({ root, nodeId, run, node }) → { blocked:boolean, detail? }（或 Boolean）。
 // 注入式：默认保守（始终仍阻塞），由运行时接线提供真实证据源（Hub 卡片/授权卡/前置节点/PR 状态）。
@@ -77,8 +79,18 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     return lines.join('\n');
   };
 
+  const tierOf = (root, id, role, n) => nodeTier(root.nodes.find(x => x.id === id) || {}, role, { bump: n.tierBump || 0 });
+  // 换打法留痕：记录本次换打法后开发角色将使用的档位。
+  const applyApproach = (root, st, id, approach, generation) => {
+    const n = st.nodes[id];
+    n.model = approach.model ?? n.model;
+    n.tierBump = (n.tierBump || 0) + Math.max(0, Number(approach.tierBump) || 0);
+    st.approachChanges.push({ nodeId: id, generation, reason: approach.reason, model: approach.model ?? null, tier: tierOf(root, id, 'dev', n) });
+  };
+
   async function send(root, id, run, n) {
-    const res = await hub.dispatch({ run, slot: n.slot, worktree: rt.slotPath(n.slot), branch: n.branch, expectedAdvanceId: run.expectedAdvanceId, model: n.model, prompt: prompt(root, id, run, n) });
+    n.tier = tierOf(root, id, run.role, n);
+    const res = await hub.dispatch({ run, slot: n.slot, worktree: rt.slotPath(n.slot), branch: n.branch, expectedAdvanceId: run.expectedAdvanceId, model: n.model, tier: n.tier, prompt: prompt(root, id, run, n) });
     store.updateRun(run.runId, { hub: { hubRunId: res.hubRunId } });
   }
   async function start(root, st, id, run, slot, { prepare }) {
@@ -118,8 +130,8 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     if (run.attempt >= MAX_ATTEMPTS) {
       const approach = await chooseApproach({ nodeId: id, run });
       if (n.slot != null) await wip.saveWip(rt, { slot: n.slot, nodeId: id, attempt: run.attempt });
-      st.approachChanges.push({ nodeId: id, generation: run.generation + 1, reason: approach.reason, model: approach.model ?? null });
-      n.model = approach.model ?? n.model; n.todo = { kind: 'retry', reason: 'change-approach', newSlot };
+      applyApproach(root, st, id, approach, run.generation + 1);
+      n.todo = { kind: 'retry', reason: 'change-approach', newSlot };
     } else n.todo = { kind: 'retry', reason, newSlot };
     n.state = 'dev';
   }
@@ -258,8 +270,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       const prev = latest(root, id, role);
       if (todo.reason === 'change-approach') {
         const approach = await chooseApproach({ nodeId: id, run: prev });
-        n.model = approach.model ?? n.model;
-        st.approachChanges.push({ nodeId: id, generation: prev.generation + (prev.attempt >= MAX_ATTEMPTS ? 1 : 0), reason: approach.reason, model: approach.model ?? null });
+        applyApproach(root, st, id, approach, prev.generation + (prev.attempt >= MAX_ATTEMPTS ? 1 : 0));
       }
       await reattempt(root, st, id, role, todo.reason, true); return;
     }
