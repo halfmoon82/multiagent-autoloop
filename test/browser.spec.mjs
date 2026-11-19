@@ -177,6 +177,8 @@ try {
     if (message.type() !== 'error') return;
     // 沙箱 iframe 里的 XSS 载荷被 Chrome 拦下时会打这条 console —— 这正是防护生效的证据，不是脚本错误。
     if (message.text().includes("Blocked script execution in 'about:srcdoc'")) return;
+    // 移动端壳「解除授权后立即失效」回归会主动触发一次 401；Chrome 把它记成资源加载错误，属预期噪音。
+    if (message.text().includes('401') && (message.location()?.url || '').includes('/api/mobile/session')) return;
     errors.push(`${message.text()} at ${JSON.stringify(message.location())}`);
   });
   let acceptDialogs = true;
@@ -943,6 +945,86 @@ try {
   const paths = hub.requests.map(request => request.url);
   for (const expected of ['/v1/rules/%E6%81%A2%E5%A4%8D%E6%B5%8B%E8%AF%95/pause', '/v1/rules/%E6%81%A2%E5%A4%8D%E6%B5%8B%E8%AF%95/resume', '/v1/rules/%E6%81%A2%E5%A4%8D%E6%B5%8B%E8%AF%95/run', '/v1/runs/3/cancel', '/v1/cards/9/answer', '/v1/cards/10/resolve']) assert.ok(paths.includes(expected), expected);
   console.log('PASS browser: overview, run/pause/resume, cancel, card answer, mobile rule form, no console errors');
+
+  // ===== 移动端 App 壳（wave-2）：绑定 → 生物识别门禁 → 安全连接 → 断线重连 → 授权失效重绑 =====
+  const qrResponse = await fetch(`${url}/api/devices/bindings`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-console-request': '1' }, body: '{}',
+  });
+  assert.equal(qrResponse.status, 201);
+  const qr = await qrResponse.json();
+  assert.match(qr.qrPayload, /^autoloop:\/\/bind\?token=[0-9a-f]{64}$/);
+
+  // 模拟 App 原生桥：生物识别结果可切换；设备凭证只放在安全存储桥里，不落 localStorage / DOM / 日志。
+  await page.addInitScript(() => {
+    let stored = null;
+    window.AutoloopSecureStorage = {
+      async get() { return stored; },
+      async set(value) { stored = value; },
+      async remove() { stored = null; },
+    };
+    window.__autoloopBiometricOutcome = 'fail';
+    window.AutoloopBiometric = { async verify() { return window.__autoloopBiometricOutcome === 'success'; } };
+  });
+
+  await page.goto(`${url}/mobile/`);
+  await page.locator('#lock-screen').waitFor();
+  assert.equal(await page.locator('#app-main').isVisible(), false, '生物识别前主界面必须隐藏');
+
+  // 远程地址必须 HTTPS：明文 http 的非本机地址在绑定阶段直接给出可读错误。
+  const shellOrigin = await page.evaluate(() => window.location.origin);
+  await page.locator('#base-url').fill('http://console.example.com');
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('HTTPS'));
+  assert.equal(await page.locator('#app-main').isVisible(), false, '不安全的地址不得建立连接');
+  await page.locator('#base-url').fill(shellOrigin);
+
+  await page.locator('#bind-name').fill('Mobile Shell 测试机');
+  await page.locator('#bind-payload').fill(qr.qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  assert.equal(await page.locator('#bind-payload').inputValue(), '', '一次性二维码内容绑定后即清空');
+
+  // 生物识别失败：不得进入主界面。
+  await page.locator('#unlock').click();
+  await page.waitForFunction(() => document.getElementById('lock-error')?.textContent?.includes('生物识别'));
+  assert.equal(await page.locator('#app-main').isVisible(), false, '生物识别失败不得进入主界面');
+
+  // 生物识别成功：进入主界面，读取自身绑定信息并建立安全连接。
+  await page.evaluate(() => { window.__autoloopBiometricOutcome = 'success'; });
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  assert.equal(await page.locator('#lock-screen').isVisible(), false);
+  assert.ok((await page.locator('#device-name').innerText()).includes('Mobile Shell 测试机'), '只显示自身绑定信息');
+
+  // 断线：标记离线；网络恢复：自动重连回安全连接。
+  await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('网络已断开'));
+  assert.equal(await page.locator('#app-main').isVisible(), true);
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+
+  // 网页管理后台解除授权：移动端同一凭据立即失效，回锁定/重绑，主界面隐藏。
+  const devices = await (await fetch(`${url}/api/devices`)).json();
+  const target = devices.devices.find(item => item.name === 'Mobile Shell 测试机');
+  assert.ok(target, '新设备出现在网页管理后台');
+  const revokeResponse = await fetch(`${url}/api/devices/${encodeURIComponent(target.id)}/revoke`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-console-request': '1' }, body: '{}',
+  });
+  assert.equal(revokeResponse.status, 200);
+  await page.locator('#reconnect').click();
+  await page.locator('#lock-screen').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.getElementById('lock-error')?.textContent?.includes('授权'));
+  assert.equal(await page.locator('#app-main').isVisible(), false, '解除授权后不得停留在主界面');
+
+  // 页面文本不得含一次性二维码令牌、设备凭证、哈希或密钥。
+  const mobileText = await page.locator('body').innerText();
+  assert.ok(!mobileText.includes(qr.token), '一次性二维码令牌不得留在页面');
+  assert.ok(!/deviceToken|tokenHash|server-secret|not-returned/.test(mobileText), '页面不得出现密钥或设备凭证');
+  await page.screenshot({ path: path.join(output, 'console-mobile-shell.png'), fullPage: true });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '移动端壳无横向溢出');
+  assert.deepEqual(errors, [], '移动端壳不得产生脚本错误');
+  console.log('PASS browser: mobile shell bind, biometric gate, secure connection, reconnect, revoke rebind');
 } finally {
   if (context) await context.close(); await close(consoleServer); await close(hub.server); rmSync(root, { recursive: true, force: true }); rmSync(profile, { recursive: true, force: true });
 }
