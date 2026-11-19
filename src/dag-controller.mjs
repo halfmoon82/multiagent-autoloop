@@ -455,6 +455,12 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
           for (const id of Object.keys(st.nodes)) { st.nodes[id].lastError = null; try { await advanceNode(root, st, id); } catch (error) { st.nodes[id].lastError = msg(error); } }
           try { await reviewBlocked(root, st); } catch (error) { st.lastError = msg(error); }
           for (const id of Object.keys(st.nodes)) if (st.nodes[id].todo) { try { await runTodo(root, st, id); } catch (error) { st.nodes[id].lastError = msg(error); } }
+          // 已验收节点在合并那一刻若 Hub run 还没落终态，onDone 里的 releaseNodeSlot 会被 fail-closed 拒绝；
+          // accepted 节点之后不再走 advanceNode，没有这一步就会永久占着槽位（2026-11-19 device-binding）。
+          for (const [id, n] of Object.entries(st.nodes)) {
+            if (n.state !== 'accepted' || n.slot == null) continue;
+            try { await releaseNodeSlot(root, st, id); } catch (error) { n.lastError = msg(error); }
+          }
           try { await dispatchReady(root, st); } catch (error) { st.lastError = msg(error); }
           if (Object.values(st.nodes).length && Object.values(st.nodes).every(n => n.state === 'accepted')) store.finishRoot(root.runId, 'done');
         }

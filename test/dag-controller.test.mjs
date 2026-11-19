@@ -444,3 +444,26 @@ test('派发提示的回执模板逐字可被状态机接受（dev 与 review）
   assert.equal(review.receipt.outcome, 'accepted');
   assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), review.receipt), { verdict: 'apply', failureCounted: false, nextStatus: 'done' });
 });
+
+test('验收时 Hub 尚未终态导致释放被拒：下一 tick 自动补释放，不永久占槽', async () => {
+  // 用两个节点，根 run 不会在 a 验收后立即终结，才能观察到后续 tick 的补释放。
+  const s = setup([mkNode('a'), mkNode('b')]);
+  await s.ctl.tick(); s.claimAll();
+  s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  const reviewRun = s.runOf('a', 'review');
+  const hubId = reviewRun.hub.hubRunId;
+  // 审阅回执先到、Hub run 还没落终态：合并能过，但 releaseNodeSlot 会被 fail closed 拒绝
+  s.hub.set(hubId, { status: 'claimed' });
+  s.store.advance(reviewRun.runId, { advanceId: reviewRun.expectedAdvanceId, runId: reviewRun.runId, nodeId: 'a', role: 'review', generation: reviewRun.generation, attempt: reviewRun.attempt, outcome: 'accepted' });
+  await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.a.state, 'accepted');
+  assert.notEqual(s.ctl.snapshot().nodes.a.slot, null, 'Hub 未终态时释放被拒，槽位暂时仍占用');
+  // Hub 落终态后，下一 tick 必须补释放
+  s.hub.set(hubId, { status: 'done' });
+  await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.a.slot, null, 'accepted 节点不得永久占槽');
+  assert.ok(!Object.values(s.ctl.snapshot().slots).includes('a'), '槽位表里不再有 a');
+  assert.ok(s.wip.calls.some(c => c[0] === 'release' && c[1].nodeId === 'a'), '补释放走 WIP 保全 + 清槽位');
+  await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.a.lastError, null, '补释放幂等，不重复报错');
+});
