@@ -187,6 +187,7 @@ try {
   const probeCompositionAcrossRefresh = async (locator, commitText) => {
     await locator.click(); // 真实鼠标点击（而非程序化 focus），更贴近用户实际交互
     await locator.fill('占位'); // 非空草稿让卡片钉住，避免 click 与组词之间的刷新重建句柄（竞态）
+    // atomic-ok: 上一行 fill 让输入框有内容、卡片被钉住不重建；本意是跨刷新校验同一节点上的输入法事件
     const handle = await locator.elementHandle();
     await page.evaluate(node => {
       window.__imeEvents = [];
@@ -273,6 +274,7 @@ try {
   assert.equal(await page.locator('form[data-action="answer-text"]').first().locator('textarea').inputValue(), '刷新后仍要保留追加输入', 'typing must continue seamlessly across background refreshes');
   const answerInput = page.locator('form[data-action="answer-text"]').first().locator('textarea');
   await answerInput.click(); // 真实鼠标点击（而非程序化 focus），更贴近用户实际交互
+  // atomic-ok: 答复框已有内容且获得焦点、卡片被钉住；本意就是校验同一节点跨刷新存活
   const answerNode = await answerInput.elementHandle();
   await page.waitForTimeout(4500);
   assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, answerNode), true, 'answer input DOM node must survive background refreshes so IME composition is not broken');
@@ -399,6 +401,7 @@ try {
   const chatInput = page.getByLabel('发消息给会话 browser-session');
   await chatInput.fill('草稿在，节点就要在'); // 有草稿才钉住卡片；空输入框按期重建不损失任何东西
   await chatInput.click(); // 真实鼠标点击（而非程序化 focus），更贴近用户实际交互
+  // atomic-ok: 会话输入框已有草稿且获得焦点、卡片被钉住；本意就是校验同一节点跨刷新存活
   const chatNode = await chatInput.elementHandle();
   await page.waitForTimeout(4500);
   assert.equal(await page.evaluate(node => node.isConnected && document.activeElement === node, chatNode), true, 'session chat input DOM node must survive background refreshes while it holds a draft');
@@ -756,6 +759,7 @@ try {
   await page.getByRole('button', { name: '补充：先看 NAS 部署', exact: true }).waitFor({ timeout: 5000 });
   schedulingSessions.delayMs = 2300; // 真实网络节奏：打断请求跨过一次 2s 后台刷新
   await msgInput.fill('方向变了，停下');
+  // atomic-ok: 有意持有旧节点——下面断言打断请求期间卡片确实重建（isConnected 为 false）
   const draftNode = await msgInput.elementHandle();
   await page.getByRole('button', { name: '打断', exact: true }).click();
   for (let i = 0; i < 50 && !record.sendCalls?.some(call => call.interrupt); i++) await page.waitForTimeout(200); // 等打断请求送达（含注入延迟）

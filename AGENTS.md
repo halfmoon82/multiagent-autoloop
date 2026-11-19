@@ -95,6 +95,7 @@ npm run test:browser
 - UI、交互或安全响应头修改同时运行浏览器回归。
 - CI 使用 Node.js 24 和 `npm ci`，不得依赖本机私有状态。
 - 修复重复缺陷必须留下回归测试；不得只贴代码或口头宣称完成。
+- 浏览器回归读写会被定时重建的元素时，用单个 `page.evaluate` 在页面内定位当前节点并完成操作；不用 locator 的 `boundingBox`/`evaluate`/`evaluateHandle`/`screenshot`/`scrollIntoViewIfNeeded`/`selectText`/`elementHandle(s)`（先定位、后执行，撞上 2 秒整块重建会读到已摘除节点）。确属有意时在同一行或上一行写 `// atomic-ok: <理由>`。`test/browser-atomic-lint.test.mjs` 在 `npm test` 中守门。
 - 完成汇报列出实际运行的命令、通过数量和仍未覆盖的边界。
 
 ## 8. Git、审阅与合并
