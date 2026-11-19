@@ -243,13 +243,18 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
     label.setAttribute('text-anchor', 'middle');
     label.setAttribute('dominant-baseline', 'middle');
     label.setAttribute('font-size', String(labelFont));
-    label.setAttribute('fill', colorIsLight(node.color) ? '#3f4d47' : '#ffffff');
+    const light = colorIsLight(node.color);
+    label.setAttribute('fill', light ? '#3f4d47' : '#ffffff');
+    // 描一圈反色细边，浅色/深色扇区上都能读；标签不吃指针，点击/悬停仍落在扇区。
+    label.setAttribute('stroke', light ? '#ffffff' : '#1f2a26');
+    label.setAttribute('stroke-opacity', light ? '0.6' : '0.35');
+    label.setAttribute('stroke-width', '1.6');
+    label.setAttribute('paint-order', 'stroke');
     label.textContent = shorten(node.title);
-    if (onPick) { label.addEventListener('click', pick); label.addEventListener('keydown', pick); }
     labels.append(label);
   });
   svg.append(group, dividers, labels); // 标签最后画，避免被色带盖住
-  frame.append(svg);
+  frame.append(svg, overviewRingCenter(view));
   wrap.append(frame);
   return wrap;
 }
@@ -293,7 +298,7 @@ export function progressOverview(view, { runId = '', open = '' } = {}) {
   const root = el('div', 'overview-progress');
   root.dataset.progressKind = view.kind;
   const paint = (pickedId = null) => {
-    if (pickedId) overviewSelection.set(view.key, pickedId);
+    if (pickedId) { overviewSelection.set(view.key, pickedId); overviewScroll.set(view.key, 0); } // 切节点从顶部读新内容
     const chosen = overviewSelection.get(view.key);
     const node = (chosen && view.nodes.find(item => item.id === chosen)) || overviewDefaultNode(view);
     const hadFocus = root.contains(document.activeElement) && document.activeElement !== document.body;
@@ -302,7 +307,9 @@ export function progressOverview(view, { runId = '', open = '' } = {}) {
     const panel = overviewNodePanel(node, view, { open, runId });
     panel.addEventListener('scroll', () => overviewScroll.set(view.key, panel.scrollTop));
     root.replaceChildren(progressRing(view, { selectedId: node?.id || '', onPick: id => paint(id) }), panel);
-    panel.scrollTop = overviewScroll.get(view.key) || 0; // 插入后再恢复，未挂载时设置无效
+    // root 由调用方再挂进文档：等挂载后的下一帧再恢复滚动位置，否则赋值无效
+    const saved = overviewScroll.get(view.key) || 0;
+    requestAnimationFrame(() => { if (panel.isConnected) panel.scrollTop = saved; });
     if (hadFocus && node) root.querySelector(`.ring-seg[data-ring-node="${CSS.escape(String(node.id))}"]`)?.focus({ preventScroll: true });
   };
   paint();

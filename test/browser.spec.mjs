@@ -477,21 +477,21 @@ try {
   // 恢复三节点夹具供后续断言
   writeFileSync(path.join(root, 'demo-serial.json'), JSON.stringify(chainFixture(threeNodes, ['n1', 'n2', 'n3'])));
   await page.waitForTimeout(2600);
-  // 详情入口常驻：不依赖面板内滚动即可见
-  const entryGeom = await progressRow.locator('.overview-node [data-serial-node]').first().evaluate(el => {
-    const pane = el.closest('.overview-node');
-    return { bottom: el.getBoundingClientRect().bottom, paneBottom: pane.getBoundingClientRect().bottom };
-  });
-  assert.ok(entryGeom.bottom <= entryGeom.paneBottom + 1, 'detail entry stays visible inside the fixed panel');
-  // 面板内滚动位置跨 2s 轮询重建保留
+  // 选中长摘要节点（n2）：面板必然溢出，用来验证 sticky 入口与滚动保持
+  await clickSector(progressRow, 'n2', 1, 3);
   const pane = progressRow.locator('.overview-node');
-  const canScroll = await pane.evaluate(node => node.scrollHeight > node.clientHeight + 4);
-  if (canScroll) {
-    await pane.evaluate(node => { node.scrollTop = 12; });
-    await page.waitForTimeout(2600);
-    assert.ok(await pane.evaluate(node => node.scrollTop) > 0, 'panel scroll survives the polling re-render');
-    await pane.evaluate(node => { node.scrollTop = 0; });
-  }
+  assert.ok(await pane.evaluate(node => node.scrollHeight > node.clientHeight + 4), 'long summary overflows inside the fixed panel');
+  await pane.evaluate(node => { node.scrollTop = 30; });
+  await page.waitForTimeout(120);
+  const entryInside = await progressRow.locator('.overview-node [data-serial-node]').first().evaluate(el => {
+    const paneEl = el.closest('.overview-node');
+    const a = el.getBoundingClientRect(), b = paneEl.getBoundingClientRect();
+    return a.bottom <= b.bottom + 1 && a.top >= b.top - 1;
+  });
+  assert.equal(entryInside, true, 'detail entry stays visible while the panel is scrolled');
+  await page.waitForTimeout(2600);
+  assert.ok(await pane.evaluate(node => node.scrollTop) > 0, 'panel scroll survives the polling re-render');
+  await pane.evaluate(node => { node.scrollTop = 0; });
   // 打开运行详情：走面板里的入口按钮（环形点击只在总览内切换，不跳页）
   await clickSector(progressRow, 'n2', 1, 3);
   await progressRow.locator('.overview-node [data-serial-node="n2"]').click();

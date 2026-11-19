@@ -138,6 +138,7 @@ try {
   await page.locator('#dag-overview-list .dag-project').waitFor();
   assert.equal(await page.locator('#dag-overview-list .overview-ring').getAttribute('data-segments'), '4');
   assert.equal(await page.locator('#dag-overview-list .ring-seg').count(), 4);
+  assert.match(await page.locator('#dag-overview-list .overview-ring-center').innerText(), /%/, 'DAG ring keeps the total percent center');
   // 环上颜色语义：同波次同色相，不同波次不同色相（a=第1波，b/c=第2波，整合=第3波）
   const ringStrokes = await page.locator('#dag-overview-list .ring-seg').evaluateAll(list => list.map(node => node.getAttribute('stroke')));
   const hueOf = stroke => Number(/hsl\((\d+)/.exec(stroke)?.[1]);

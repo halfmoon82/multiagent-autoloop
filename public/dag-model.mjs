@@ -80,7 +80,7 @@ export function groupWaves(nodes) {
 // 波次配色：一个波次一个色相；同波次内节点用同色相不同明度表达完成度，全深 = 该节点已完成。
 // 完成度档位只来自可核实的状态，不按时间或猜测编造中间百分比。
 const COMPLETION = { done: 1, review: 0.75, active: 0.5, blocked: 0.2, pending: 0, unknown: 0 };
-export function waveHue(wave) { return (168 + (Math.max(1, Math.round(wave || 1)) - 1) * 47) % 360; }
+export function waveHue(wave) { return Math.round((168 + (Math.max(1, Math.round(wave || 1)) - 1) * 137.5) % 360); }
 export function completionOf(status) { return COMPLETION[status?.kind] ?? 0; }
 export function segmentColor(node) {
   const lightness = Math.round(72 - 45 * completionOf(node.status));
