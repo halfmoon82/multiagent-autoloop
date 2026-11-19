@@ -79,3 +79,17 @@ test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', a
   assert.equal(closed.length, 1, '旧 PR 被生产适配器关闭');
   assert.equal(prNo, 2);
 });
+
+test('生产适配器 claimHolder：读 PR 评论里的有效审阅占位，无占位返回 null', async () => {
+  const { claimMarker } = await import('../src/review-claim.mjs');
+  let comments = [];
+  const runner = async (cmd, args) => {
+    if (args[1] === 'view') return { stdout: JSON.stringify({ comments }) };
+    return { stdout: '' };
+  };
+  const gh = createGhAdapter({ runner });
+  assert.equal(await gh.claimHolder(PR), null);
+  comments = [{ body: claimMarker({ holder: 'codex-a', head: 'aaa1111', state: 'active' }), createdAt: new Date().toISOString() }];
+  assert.equal(await gh.claimHolder(PR), 'codex-a');
+  await assert.rejects(gh.claimHolder('not-a-url'), /PR 链接/);
+});

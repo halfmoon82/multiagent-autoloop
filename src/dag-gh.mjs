@@ -3,6 +3,7 @@
 // 必须实现 closePr：publish 换 attempt 发新 PR 时关闭被替代的旧 PR，缺此方法会 TypeError。
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { parseClaims } from './review-claim.mjs';
 
 const execFileAsync = promisify(execFile);
 const defaultRunner = (command, args, options = {}) => execFileAsync(command, args, options);
@@ -44,6 +45,11 @@ export function createGhAdapter({ runner = defaultRunner, cwd, gh = 'gh' } = {})
     },
     async prHead(url) {
       return text(JSON.parse(await run(['pr', 'view', urlOf(url), '--json', 'headRefOid'])).headRefOid);
+    },
+    // 当前有效的审阅占位持有者（无占位为 null）；合并前由 publisher 判断是否他人正在审阅。
+    async claimHolder(url) {
+      const pr = JSON.parse(await run(['pr', 'view', urlOf(url), '--json', 'comments']) || '{}');
+      return parseClaims(pr.comments, Date.now()).active?.holder ?? null;
     },
     async mergePr(url, { strategy = 'squash' } = {}) {
       if (strategy !== 'squash') throw new Error(`DAG publish 只允许 squash 合并，拒绝 ${strategy}`);

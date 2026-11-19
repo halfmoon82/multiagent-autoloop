@@ -266,3 +266,24 @@ test('轮询在途节点时记下 Hub 轮次号，供界面查执行 Agent 与�
   await s.ctl.tick();
   assert.equal(s.runOf('n1').hub.hubRun, 4242);
 });
+
+test('审阅占位：他人占位时合并暂缓，节点保持待合并且记录原因；占位释放后下一 tick 自动合并', async () => {
+  const s = setup([mkNode('n1')]);
+  await s.ctl.tick();
+  let claimed = true;
+  const realMerge = s.publisher.merge.bind(s.publisher);
+  s.publisher.merge = async a => {
+    if (claimed) { const e = new Error('PR 正被 codex-9f94e800 审阅占位，暂缓合并'); e.code = 'REVIEW_CLAIMED'; throw e; }
+    return realMerge(a);
+  };
+  s.claimAll(); s.receipt('n1', 'dev', 'done'); await s.ctl.tick();
+  s.claimAll(); s.receipt('n1', 'review', 'accepted'); await s.ctl.tick();
+  const st = () => s.ctl.snapshot().nodes.n1;
+  assert.notEqual(st().state, 'accepted');
+  assert.match(st().lastError || '', /审阅占位/);
+  assert.notEqual(st().state, 'blocked', '占位不是失败，不能卡成 blocked');
+  claimed = false;
+  await s.ctl.tick();
+  assert.equal(st().state, 'accepted');
+  assert.equal(st().lastError, null);
+});
