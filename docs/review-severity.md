@@ -51,6 +51,6 @@
 2026-11-19 PR #116 事故：作者会话与另一会话同时给同一 PR 派 reviewer，先批准的一方直接合并，后到的有效 P2 结论无人处理。
 
 - 审阅前先占位：`node scripts/review-claim.mjs claim --pr <号> [--repo owner/name] --holder <审阅方标识>`。退出码 3 表示他人正在审，立即停止，不审、不合并、不再派 reviewer。
-- 合并只能用 `node scripts/review-claim.mjs merge --pr <号> --holder <标识> --head <审过的提交> [--delete-branch]`：非持有者或审完后又有新提交都会拒绝合并（退出码 3）。不得直接 `gh pr merge`。若因返工太久占位已过期，先重新 `claim`，成功后再 `merge`；claim 被他人占住才停止。
+- 合并只能用 `node scripts/review-claim.mjs merge --pr <号> --holder <标识> --head <审过的提交> [--delete-branch]`：非持有者、审完后又有新提交、CI 检查未跑完或失败都会拒绝合并（退出码 3；检查未跑完时等它跑完再 merge）。不得直接 `gh pr merge`。若因返工太久占位已过期，先重新 `claim`，成功后再 `merge`；claim 被他人占住才停止。
 - 返工后复审沿用同一持有者，重新 claim 即续期；放弃审阅用 `release`。占位 3 小时未续期视为放弃，他人可接手。
 - 占位记在 PR 评论里，以 GitHub 服务器时间判先后，Codex、Claude、Hub 规则共用；持有者标识只能用 ASCII 字母、数字和 `._:-`（最长 64），且每个审阅会话或每次规则触发唯一：`<平台>-<会话 ID 或触发 ID>`，如 `codex-9f94e800`、`claude-8932a769`、`hub-pr-review-7712`。同一规则两次触发不得共用一个标识，否则会被当成续期。

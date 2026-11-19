@@ -42,6 +42,19 @@ export function parseClaims(comments, now, ttlMs = DEFAULT_TTL_MS) {
   return { active: live[0] || null, live };
 }
 
+// CI 门：任一检查未跑完 → pending；任一失败/取消/超时 → failed；全部成功/跳过/中性或没有检查 → null（放行）。
+const OK = new Set(['SUCCESS', 'SKIPPED', 'NEUTRAL']);
+export function checksVerdict(rollup) {
+  let pending = false;
+  for (const c of rollup || []) {
+    const done = c.status ? c.status === 'COMPLETED' : !['PENDING', 'EXPECTED'].includes(c.state);
+    const result = c.status ? c.conclusion : c.state;
+    if (!done) pending = true;
+    else if (!OK.has(String(result || '').toUpperCase())) return 'checks-failed';
+  }
+  return pending ? 'checks-pending' : null;
+}
+
 export function createReviewClaims({ runner = defaultRunner, gh = 'gh', now = () => Date.now(), ttlMs = DEFAULT_TTL_MS } = {}) {
   const target = ({ pr, repo }) => {
     const args = [check(PR, pr, 'PR 号')];
@@ -49,7 +62,7 @@ export function createReviewClaims({ runner = defaultRunner, gh = 'gh', now = ()
     return args;
   };
   const view = async input => {
-    const { stdout } = await runner(gh, ['pr', 'view', ...target(input), '--json', 'headRefOid,state,comments']);
+    const { stdout } = await runner(gh, ['pr', 'view', ...target(input), '--json', 'headRefOid,state,comments,statusCheckRollup']);
     return JSON.parse(String(stdout || '{}'));
   };
   const comment = (input, body) => runner(gh, ['pr', 'comment', ...target(input), '--body', body]);
@@ -87,6 +100,8 @@ export function createReviewClaims({ runner = defaultRunner, gh = 'gh', now = ()
     const current = parseClaims(pr.comments, now(), ttlMs).active;
     if (!current || current.holder !== holder) return { ok: false, reason: 'not-holder', holder: current?.holder ?? null };
     if (!String(pr.headRefOid || '').startsWith(head)) return { ok: false, reason: 'head-moved', head: pr.headRefOid };
+    const checks = checksVerdict(pr.statusCheckRollup);
+    if (checks) return { ok: false, reason: checks };
     const args = ['pr', 'merge', ...target(input), '--squash', '--match-head-commit', pr.headRefOid];
     if (input.deleteBranch) args.push('--delete-branch');
     let warning;

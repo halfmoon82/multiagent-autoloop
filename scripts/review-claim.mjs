@@ -3,7 +3,7 @@
 //   node scripts/review-claim.mjs claim   --pr 116 [--repo owner/name] --holder <审阅方标识>
 //   node scripts/review-claim.mjs merge   --pr 116 [--repo owner/name] --holder <标识> --head <审过的提交> [--delete-branch]
 //   node scripts/review-claim.mjs release --pr 116 [--repo owner/name] --holder <标识>
-// 退出码：0 成功；3 被他人占位/非持有者/提交已变（应停止，不审不合并）；1 参数或 gh 错误。
+// 退出码：0 成功；3 被他人占位/非持有者/提交已变/CI 未绿（不审或不合并；CI 未跑完可稍后重试 merge）；1 参数或 gh 错误。
 import { createReviewClaims } from '../src/review-claim.mjs';
 
 const [action, ...rest] = process.argv.slice(2);
