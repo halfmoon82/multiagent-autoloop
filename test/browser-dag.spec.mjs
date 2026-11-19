@@ -34,7 +34,7 @@ const profile = mkdtempSync(path.join(tmpdir(), 'dag-ui-profile-'));
 const project = path.join(root, 'demo-repo'); mkdirSync(path.join(project, '.git'), { recursive: true });
 const XSS = '<img src=x onerror="window.__xss=1">恶意标题';
 const nodes = [
-  { id: 'a', title: '账户模型', depends_on: [], contract: { input: 'i', output: '租户账户表：覆盖开户、冻结、销户与跨租户查询的完整字段与错误码映射', error_behavior: 'e', acceptance_example: 'x', files: ['src/a.mjs'] } },
+  { id: 'a', title: '账户模型', depends_on: [], contract: { input: 'i', output: '租户账户表', error_behavior: 'e', acceptance_example: 'x', files: ['src/a.mjs'] } },
   { id: 'b', title: XSS, depends_on: ['a'], contract: { input: 'i', output: '计费规则', error_behavior: 'e', acceptance_example: 'x', files: ['src/b.mjs'] } },
   { id: 'c', title: '审计日志', depends_on: ['a'], contract: { input: 'i', output: '审计', error_behavior: 'e', acceptance_example: 'x', files: ['src/c.mjs'] } },
   { id: 'integration-review', title: '整合审查', depends_on: ['b', 'c'], contract: { input: 'i', output: '只读审查', error_behavior: 'e', acceptance_example: 'x', files: [] } },
@@ -136,19 +136,26 @@ try {
   // 总览分组：新 DAG 出现，旧区域保留
   await page.getByRole('button', { name: '总览', exact: true }).click();
   await page.locator('#dag-overview-list .dag-project').waitFor();
-  assert.equal(await page.locator('#dag-overview-list .dag-donut').getAttribute('data-segments'), '4');
+  assert.equal(await page.locator('#dag-overview-list .overview-ring').getAttribute('data-segments'), '4');
+  assert.equal(await page.locator('#dag-overview-list .ring-seg').count(), 4);
   assert.match(await page.locator('#dag-overview-list .dag-project').innerText(), /待派发/);
   assert.match(await page.locator('#dag-overview-list .dag-project').innerText(), /费用未上报 · Token 未上报/);
-  // DAG 总览与串行总览共享收起语义：默认一行、点摘要行就地展开、不离开总览
-  const dagSummaryRow = page.locator('#dag-overview-list .dag-project .node-field').filter({ hasText: '任务摘要' }).first();
-  const dagSummaryValue = dagSummaryRow.locator('.node-task-summary');
-  assert.equal(await dagSummaryRow.evaluate(node => node.classList.contains('summary-collapsed')), true, 'DAG overview summary defaults to collapsed');
-  assert.ok(await dagSummaryValue.evaluate(node => node.scrollWidth > node.clientWidth + 1), 'DAG overview summary clips the longer contract text');
-  await dagSummaryRow.click();
-  assert.equal(await dagSummaryRow.evaluate(node => node.classList.contains('summary-expanded')), true, 'clicking DAG overview summary expands it in place');
-  assert.ok(await dagSummaryValue.evaluate(node => node.scrollWidth <= node.clientWidth + 1), 'expanded DAG summary shows the full text');
-  assert.equal(await page.locator('#view-overview').isVisible(), true, 'expanding DAG summary stays on the overview');
-  assert.equal(await page.locator('#view-dag').isVisible(), false, 'expanding DAG summary must not open the detail view');
+  // DAG 总览与串行总览同构：环形扇区切换右侧单个节点详情，不离开总览
+  const dagDetailTitle = page.locator('#dag-overview-list .overview-node-head strong');
+  assert.equal(await dagDetailTitle.innerText(), '账户模型', 'default DAG detail shows the current pending node');
+  const dagSeg = page.locator('#dag-overview-list .ring-seg[data-ring-node="b"]');
+  await dagSeg.scrollIntoViewIfNeeded();
+  const dagPoint = await dagSeg.evaluate((el, radians) => {
+    const box = el.getBoundingClientRect();
+    const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
+    const scale = box.width / (104 + stroke);
+    return { x: box.x + box.width / 2 + 52 * scale * Math.cos(radians), y: box.y + box.height / 2 + 52 * scale * Math.sin(radians) };
+  }, (-90 + 1.5 * 90) * Math.PI / 180); // 4 个扇区里第 2 个（b）的中角
+  await page.mouse.click(dagPoint.x, dagPoint.y);
+  assert.equal(await dagDetailTitle.innerText(), XSS, 'clicking a DAG sector switches the detail');
+  assert.equal(await page.locator('#dag-overview-list .overview-node img').count(), 0, 'node title renders as text in the overview detail');
+  assert.equal(await page.locator('#view-overview').isVisible(), true, 'DAG ring click stays on the overview');
+  assert.equal(await page.locator('#view-dag').isVisible(), false, 'DAG ring click must not open the detail view');
   assert.equal(await page.evaluate(() => window.__xss), undefined);
   await page.getByRole('heading', { name: '项目任务进度' }).waitFor();
   await noOverflow('overview-desktop');
@@ -158,10 +165,6 @@ try {
   await page.locator('#dag-overview-list [data-dag-open]').first().click();
   await page.locator('#dag-detail .dag-node').first().waitFor();
   assert.equal(await page.locator('#dag-detail .dag-node').count(), 4);
-  // 详情页不受收起影响：同一摘要字段不带折叠类，保持全文换行
-  const detailSummary = page.locator('#dag-detail .dag-node .node-field').filter({ hasText: '任务摘要' }).first();
-  assert.equal(await detailSummary.evaluate(node => node.classList.contains('summary-collapsed')), false, 'detail node card is never collapsed');
-  assert.equal(await detailSummary.locator('.node-task-summary').evaluate(node => getComputedStyle(node).whiteSpace), 'normal', 'detail summary keeps normal wrapping');
   await page.locator('#dag-detail [data-dag-node="b"]').click();
   assert.equal(await page.locator('#dag-node-detail h3').innerText(), XSS);
   assert.equal(await page.locator('#dag-node-detail img').count(), 0);
