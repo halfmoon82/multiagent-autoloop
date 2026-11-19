@@ -31,6 +31,7 @@
 | `src/session-permission.mjs` / `src/session-codex-home.mjs` | 按 kind 的权限裁定矩阵；会话专用 CODEX_HOME（强制 on-request） | 不继承用户全局 approval_policy，不信任提示词护栏 |
 | `src/session-archive.mjs` | 调度会话写穿存档（console-sessions/）与继续提示词拼装 | ACP 进程恢复、会话业务逻辑 |
 | `src/models.mjs` | 本机模型标签的只读发现与默认文案 | 模型计费推断、凭证采集 |
+| `src/dag-tier.mjs` | DAG 节点成本优先分档（light/standard/heavy）、审阅与敏感节点底线、换打法升档、`dag-tiers.json` 只读开关 | 具体模型名、执行者映射（属 Hub 规则）、rules.json 写入 |
 | `src/serial-progress.mjs` | 串行编排状态文件（`*-serial.json`）读取、项目映射与进度计算 | 编排状态写入、节点计划定义 |
 | `src/chain-closeout.mjs` | 串行链收口巡检（无模型）：完成链独占 cron 规则暂停（中台 pause）、链文件归档（`.done-<日期>` 后缀）与收口审计（`closeouts.jsonl`） | rules.json 编辑、编排状态写入、事件路由 |
 | `src/detour.mjs` | 频限绕行登记（`detours.json`）、冷却核实、rules.json 原子回归与状态锁（`withStateLock`，rules.mjs 表单保存共用） | 探测命令实现、Hub 事件、规则表单校验 |
@@ -39,9 +40,10 @@
 | `src/dag-mirror.mjs` | 控制器 owned mirror、可信 remote/base 快照与 remote URL 校验 | worker 可写项目 ref/config、任意 ext transport |
 | `src/design-verify.mjs` | 从精确 commit 建临时只读 worktree、校验 verifier sha256，在净化子进程执行并用专用 fd+nonce 回传有上限结果 | PRD 语义、执行授权、任意 shell 命令、控制器进程内导入项目代码 |
 | `src/design-publish.mjs` | product-spec 与设计摘要确认后在目标项目 `docs/<planId>` 分支提交 PRD、设计包并创建 PR（授权快照、幂等、临时 worktree） | HTTP 路由、merge、deploy/release、凭据 |
+| `src/review-claim.mjs` | PR 审阅占位（PR 评论记录、服务器时间判先后、持有者校验与按审过提交合并） | 审阅结论判定、PR 创建、分级口径 |
 | `src/server.mjs` | 本机 HTTP API、静态资源、安全校验和路由允许列表 | 调度业务状态存储 |
 | `public/` | 状态展示、表单和交互 | 密钥、直接 Hub 访问、业务文件写入 |
-| `scripts/` | 通用启动入口、`detour.mjs` 频限绕行 CLI | 真实试点绝对路径或项目部署逻辑 |
+| `scripts/` | 通用启动入口、`detour.mjs` 频限绕行 CLI、`review-claim.mjs` 审阅占位 CLI | 真实试点绝对路径或项目部署逻辑 |
 | `test/` | 单元、集成和假 Hub 浏览器回归 | 真实模型调用、真实项目数据依赖 |
 
 修改跨模块行为时，先写拥有该行为的边界测试。不要把目标项目的异常错误转移到控制台修补。
@@ -101,6 +103,7 @@ npm run test:browser
 - 派发必开 worktree（硬约束，2026-11-14 多起共享 checkout 碰撞事故后确立）：任何 worker 会话（AI 开发/改造任务）必须先 `git worktree add .worktrees/<任务名> -b feat/<topic>` 开局（任务名 kebab-case ASCII）、在 worktree 内开发与提交，禁止在共享 checkout（仓库主 checkout）直接开发；监工派发 prompt 必须显式写入该指令；主 checkout 常驻 main，只保留给控制台服务运行与文档级小修。会话收尾须回收 worktree（合并后 archive/remove）。违反此约束造成的碰撞（分支被切走、垃圾文件混入提交、服务部署被堵）由当事会话负责清理。
 - 提交前运行适用测试、`git diff --check`、敏感信息扫描，并审阅 staged diff。
 - PR 创建后自动派发独立、非作者视角 reviewer，按 [docs/review-severity.md](docs/review-severity.md) 分级：P0（真实丢钱/丢数据/泄露）、P1（主流程坏或结果错）、P2（常见场景回归）、P3（其余）。只有“会真实发生 + 本 PR 造成 + 后果够级”三条同时满足才算 P0–P2；对抗场景只在本 PR 改到外部输入、多租户、资金、隐私/凭据四类代码路径时按拦截审，且只防外部一方，worker 与作者 Agent 一律按合作方。
+- 审阅前先用 `scripts/review-claim.mjs claim` 占位，被他人占位（退出码 3）即停止；合并只能用 `review-claim.mjs merge`（校验持有者与审过的提交），不得直接 `gh pr merge`。详见 [docs/review-severity.md](docs/review-severity.md)「审阅占位」。
 - P0–P2 逐条核实并修复，重跑测试、推同一分支、复审；清零且验证绿后 squash 合并。P3 不拦合并，登记在 PR 描述“已知后续”。返工最多三轮，超限停止并报告分歧。
 - 不直推受保护主干，不强推共享分支。仓库首次 `main` 基线引导是唯一例外，不得借此推送功能代码。
 - PR 合并不授权部署、发布、生产数据变更或真实调度规则修改；这些动作需要独立授权。

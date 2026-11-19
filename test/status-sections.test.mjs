@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitRunSections, runLine, projectForRun, projectForCard, matchesProject, collectProjects, ruleProject, scopedTotals, scopedSpending, timersForProject, sessionProgress, projectActivity, latestChainsByProject, chainUsage } from '../public/status-sections.mjs';
+import { splitRunSections, runLine, projectForRun, projectForCard, matchesProject, collectProjects, ruleProject, scopedTotals, scopedSpending, timersForProject, sessionProgress, projectActivity, latestChainsByProject, chainUsage, chainCurrentExecutor } from '../public/status-sections.mjs';
 import { formatCost } from '../public/format.mjs';
 const snapshot = { models: { claude: '默认模型' }, runs: [
   { id: 1, rule: '开发', state: 'claimed', summary: '正在改' },
@@ -278,4 +278,18 @@ test('chainUsage fallback without sibling chains takes all project rules', () =>
   const lines = [{ name: '执行波开发', totals: { done: 1, nothing: 0, usage: { input: 50, output: 5, cost: 0.5 } } }];
   const usage = chainUsage({ sourceFile: 'mtexec-serial.json', project: '/workspace/health' }, rules, lines, []);
   assert.equal(usage.tokens, 55);
+});
+
+test('chainCurrentExecutor 只认自报了用量的模型轮次，无模型巡检/正在跑未上报的轮次不冒充执行者', () => {
+  const rules = [{ name: 'v6-dev', cwd: '/p/v6' }, { name: 'v6-scan', cwd: '/p/v6' }, { name: 'other', cwd: '/p/x' }];
+  const chain = { sourceFile: 'v6-serial.json', project: '/p/v6' };
+  const runs = [
+    { id: 11, rule: 'v6-scan', agent: 'supervisor-scan', state: 'nothing', usage: null },
+    { id: 10, rule: 'v6-dev', agent: 'codex-full', state: 'claimed', usage: null },
+    { id: 9, rule: 'other', agent: 'workbuddy', state: 'done', usage: { input: 1, output: 1 } },
+    { id: 8, rule: 'v6-dev', agent: 'claude', state: 'done', usage: { input: 5, output: 7, cost: 0.02 } },
+    { id: 7, rule: 'v6-dev', agent: 'codex', state: 'done', usage: { input: 9, output: 9 } },
+  ];
+  assert.deepEqual(chainCurrentExecutor(chain, rules, runs, [], { claude: 'opus' }, { claude: 'Claude Code' }), { agent: 'Claude Code', model: 'opus', usage: { input: 5, output: 7, cost: 0.02 } });
+  assert.equal(chainCurrentExecutor(chain, rules, runs.slice(0, 3), [], {}), null);
 });

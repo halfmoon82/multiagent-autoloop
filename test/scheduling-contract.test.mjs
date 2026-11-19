@@ -47,3 +47,20 @@ test('§12 documents the automated quota-detour mechanism with policy, threshold
   assert.match(normalized, /退出码/);
   assert.match(normalized, /证据原文/);
 });
+
+// 调度会话给用户的控制台操作指引必须指向真实、任何状态下都能到达的入口（11-19 事故：指引里的入口只在有运行中 DAG 时才出现）。
+test('scheduling prompt console entry labels all exist in the console UI, and the DAG entry is always reachable from the overview', async () => {
+  const { CONSOLE_DAG_ENTRY_LABELS, CONSOLE_DAG_ENTRY_TEXT, buildSchedulingPrompt } = await import('../src/scheduling-session.mjs');
+  const { readdirSync } = await import('node:fs');
+  const publicDir = new URL('../public/', import.meta.url);
+  const ui = readdirSync(publicDir).filter(name => /\.(html|mjs)$/.test(name)).map(name => readFileSync(new URL(name, publicDir), 'utf8')).join('\n');
+  for (const label of CONSOLE_DAG_ENTRY_LABELS) {
+    assert.ok(ui.includes(label), `界面里找不到入口文字「${label}」`);
+    assert.ok(CONSOLE_DAG_ENTRY_TEXT.includes(label), `提示词入口说明漏了「${label}」`);
+  }
+  assert.match(buildSchedulingPrompt({ project: '/p' }), /【控制台入口】.*新建 DAG（执行授权）.*不要编造其他界面路径/);
+  // 常驻入口：总览视图里直接有按钮，不依赖是否存在运行中的 DAG。
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const overview = html.slice(html.indexOf('id="view-overview"'), html.indexOf('id="view-rules"'));
+  assert.match(overview, /id="overview-dag-new"[^>]*>新建 DAG（执行授权）</);
+});

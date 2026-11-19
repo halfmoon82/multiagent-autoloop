@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, existsSync, readFil
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConsoleServer } from '../src/server.mjs';
-import { createDagService } from '../src/dag-service.mjs';
+import { createDagService, withHubUsage } from '../src/dag-service.mjs';
 import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
 import { createPlanDigest } from '../src/vibe-plan.mjs';
 import { loadNativePlan } from '../src/dag-plan.mjs';
@@ -395,4 +395,18 @@ test('预检不通过也照常创建 DAG（预检只报不拦）', async () => {
     const res = await post(url, '/api/dag-runs', t.payload());
     assert.equal(res.status, 201, '预检红不阻止创建');
   } finally { await close(t.server); }
+});
+
+test('withHubUsage 按 Hub 轮次号补节点执行 Agent/模型/自报用量；查不到或无执行者保持原样', () => {
+  const detail = { run: { runId: 'r' }, nodeRuns: [
+    { runId: 'a', nodeId: 'n1', hub: { hubRunId: 11, hubRun: 501 } },
+    { runId: 'b', nodeId: 'n2', hub: { hubRunId: 12, hubRun: 999 } },
+    { runId: 'c', nodeId: 'n3', hub: { hubRunId: 13 } },
+  ] };
+  const hubRuns = [{ id: 501, agent: 'claude', usage: { input: 3, output: 4, cost: 0.01 } }, { id: 999, agent: '' }];
+  const out = withHubUsage(detail, hubRuns, { claude: 'opus' });
+  assert.deepEqual([out.nodeRuns[0].agent, out.nodeRuns[0].model, out.nodeRuns[0].usage], ['claude', 'opus', { input: 3, output: 4, cost: 0.01 }]);
+  assert.equal(out.nodeRuns[1], detail.nodeRuns[1]);
+  assert.equal(out.nodeRuns[2], detail.nodeRuns[2]);
+  assert.equal(withHubUsage(detail, [{ id: 501, agent: 'codex-full', usage: null }], {}).nodeRuns[0].model, '未配置');
 });

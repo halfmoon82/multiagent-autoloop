@@ -14,7 +14,7 @@ import { loadChains } from './serial-progress.mjs';
 import { aggregateProjectUsage } from './project-usage.mjs';
 import { refreshUsage } from './chain-usage.mjs';
 import { readCloseouts } from './chain-closeout.mjs';
-import { createDagService, DagServiceError } from './dag-service.mjs';
+import { createDagService, DagServiceError, withHubUsage } from './dag-service.mjs';
 import { CardDelegateError, createCardDelegateStore, delegateOpenCard, settleDelegations } from './card-delegate.mjs';
 import { getCardRouting, CardFilterError } from './card-routing.mjs';
 
@@ -69,7 +69,13 @@ async function handleApi(config, req, res, url) {
   }
   if (req.method === 'GET' && (dagMatch = url.pathname.match(/^\/api\/dag-runs\/([^/]+)$/))) {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
-    return jsonResponse(res, 200, config.dagService.get(decodeURIComponent(dagMatch[1])));
+    const detail = config.dagService.get(decodeURIComponent(dagMatch[1]));
+    // 节点执行 Agent / Token / 费用只在 Hub 轮次上：读不到 Hub 时原样返回，界面如实写未上报，不让详情页 502。
+    let hubRuns = [];
+    if (detail.nodeRuns.some(item => Number.isInteger(item?.hub?.hubRun))) {
+      try { hubRuns = (await hubRequest(config, '/v1/state'))?.runs || []; } catch { hubRuns = []; }
+    }
+    return jsonResponse(res, 200, withHubUsage(detail, hubRuns, modelLabels()));
   }
   let sessionMatch;
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/artifacts$/))) return jsonResponse(res, 200, { files: await config.schedulingSessions.listSessionArtifacts(decodeURIComponent(sessionMatch[1])) });
@@ -219,7 +225,7 @@ export function createConsoleServer(config, schedulingSessions) {
     try { if (url.pathname.startsWith('/api/') && await handleApi(config, req, res, url) !== false) return; }
     catch (error) {
       const status = error instanceof RequestError || error instanceof RuleError || error instanceof SchedulingSessionError || error instanceof DagServiceError || error instanceof CardDelegateError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
-      return jsonResponse(res, status, { error: error.message });
+      return jsonResponse(res, status, { error: error.message, ...(error instanceof SchedulingSessionError && error.conflict ? { conflict: error.conflict } : {}) });
     }
     const asset = FILES.get(url.pathname);
     if (asset && req.method === 'GET') {

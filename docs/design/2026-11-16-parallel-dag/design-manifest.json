@@ -36,7 +36,7 @@
     },
     {
       "path": "docs/design/2026-11-16-parallel-dag/verify-production.mjs",
-      "sha256": "59352394cece8361bc8a8ac853393115eef78490bfd132aa30c08f76a0be15ce"
+      "sha256": "44614ba36be52a76e1d272ad94b54e85cdf097aeb35fad7877924816ac641c24"
     }
   ],
   "surfaces": [

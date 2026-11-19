@@ -170,6 +170,8 @@ form.session-message .button{white-space:nowrap}
 .classification-override button.active{background:var(--accent-soft);border-color:#afd4c6;color:var(--accent-dark);font-weight:650}
 .classification-contract{margin:0 22px 14px;padding:9px 11px;background:var(--accent-soft);border-radius:7px;color:var(--accent-dark);font-size:10px;line-height:1.55}
 .new-session-dialog .dialog-actions{padding:13px 22px;border-top:1px solid var(--line);gap:8px}
+.dialog-error{margin:0 22px 14px;padding:10px 12px;background:#fbeaea;border:1px solid #e8caca;border-radius:7px;color:var(--danger);font-size:12px;line-height:1.55}.dialog-error[hidden],.dialog-conflict[hidden]{display:none}.dialog-conflict{margin:0 22px 14px;padding:12px;background:#fff3df;border:1px solid #edd5ae;border-radius:7px;color:#74430e;font-size:12px;line-height:1.6}.dialog-conflict p{margin:0 0 10px}.dialog-conflict-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+#overview-dag-new{white-space:nowrap;flex-shrink:0}section[aria-labelledby="progress-title"] > .panel-heading{flex-wrap:wrap;gap:10px 16px}
 @media(max-width:600px){.dialog-heading{padding:16px}.form-field,.session-classification{margin-left:16px;margin-right:16px}.classification-contract{margin:0 16px 12px}.new-session-dialog .dialog-actions{padding:12px 16px}}
 .toast{position:fixed;right:24px;bottom:24px;max-width:340px;background:#172521;color:#fff;padding:12px 16px;border-radius:9px;box-shadow:0 12px 32px rgba(0,0,0,.18);font-size:12px;z-index:10}
 .toast[hidden]{display:none}

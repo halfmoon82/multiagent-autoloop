@@ -33,7 +33,8 @@ const SERIAL_COLORS = { done: '#157a65', active: '#2f8d76', review: '#6fae9d', r
 const UNKNOWN_USAGE = '费用未上报 · Token 未上报';
 
 // 串行链 → 统一视图模型。usageText 由调用方按整条链的真实 Hub 计费口径提供，不编造节点级费用。
-export function buildSerialView(chain, usageText = UNKNOWN_USAGE) {
+// executor：{ agent, model, usage }，调用方取该链规则在 Hub 上最近一轮的实际执行者与自报用量，只挂到当前节点。
+export function buildSerialView(chain, usageText = UNKNOWN_USAGE, executor = null) {
   const nodesRaw = (chain?.order || []).map(id => (chain.nodes || []).find(node => node.id === id)).filter(Boolean);
   const currentId = chain?.current?.id;
   const nodes = nodesRaw.map(node => {
@@ -42,8 +43,10 @@ export function buildSerialView(chain, usageText = UNKNOWN_USAGE) {
     return {
       id: node.id, title: node.title || node.id, status, group, groupOrder: group === '已完成' ? 1 : group === '当前' ? 2 : 3,
       summary: node.summary || '暂无任务摘要：节点推进后由开发/审阅上报一句话进展。',
-      // 串行状态文件不含执行 Agent/模型/节点费用，必须如实标注，不能编造。
-      agent: '未上报', model: node.id === currentId ? '模型待选择' : '未上报', usageText: UNKNOWN_USAGE,
+      // 串行状态文件不含执行 Agent/模型/节点费用：当前节点取该链 Hub 最近一轮的实际执行者与自报用量，其余节点如实标注。
+      agent: node.id === currentId && executor?.agent ? executor.agent : '未上报',
+      model: node.id === currentId ? (executor?.model || '模型待选择') : '未上报',
+      usageText: node.id === currentId && executor?.usage ? `最近一轮 · ${formatUsage(sumUsage([{ usage: executor.usage }]))}` : UNKNOWN_USAGE,
       part: node.part || '', percent: node.percent || 0, prUrl: node.prUrl || '', color: SERIAL_COLORS[status.kind] || SERIAL_COLORS.unknown,
       contract: {},
     };
@@ -305,7 +308,7 @@ export function progressOverview(view, { runId = '', open = '' } = {}) {
     const node = (chosen && view.nodes.find(item => item.id === chosen)) || overviewDefaultNode(view);
     const hadFocus = root.contains(document.activeElement) && document.activeElement !== document.body;
     const previous = root.querySelector('.overview-node');
-    if (previous) overviewScroll.set(view.key, previous.scrollTop);
+    if (previous && !pickedId) overviewScroll.set(view.key, previous.scrollTop); // 切节点时不带走旧滚动位置
     const panel = overviewNodePanel(node, view, { open, runId });
     panel.addEventListener('scroll', () => overviewScroll.set(view.key, panel.scrollTop));
     root.replaceChildren(progressRing(view, { selectedId: node?.id || '', onPick: id => paint(id) }), panel);
@@ -398,8 +401,8 @@ function nodeDetailPanel(view, node) {
 }
 
 // 串行链运行详情：与 DAG 完全同构的结构，只是数据来自串行状态文件。
-export function renderSerialDetail(chain, { selectedNode = '', usageText = '' } = {}) {
-  return renderProgressDetail(buildSerialView(chain, usageText), { selectedNode });
+export function renderSerialDetail(chain, { selectedNode = '', usageText = '', executor = null } = {}) {
+  return renderProgressDetail(buildSerialView(chain, usageText, executor), { selectedNode });
 }
 
 // opts: { selectedNode, slotNote, active, cancelRequested, titleOverride, statusText, statusKind }

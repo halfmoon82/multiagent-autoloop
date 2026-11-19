@@ -385,3 +385,37 @@ test('#102 after close and restart the console does not resurrect a Hub session 
     assert.equal(recreated.status, 201, 'a closed session must not block a new one for the same project');
   } finally { await close(secondServer); secondManager.dispose(); }
 });
+
+// 新建会话被拒时界面要能给出「继续旧会话 / 关闭旧会话并新建」：重复创建返回 409 + 已有会话标识。
+test('creating a duplicate session for the same project and kind returns 409 with the existing session id', async () => {
+  const hubClient = {
+    async postEvent() { return { event: 7400, duplicate: false, routed: true, paused: false }; },
+    async readEvent(hubConfig, eventId) { return { event: eventId, runs: [{ run: 6700, rule: '调度会话执行', state: 'claimed', summary: '' }] }; },
+    async cancelRun() { return { ok: true }; },
+  };
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'dup-projects-'));
+  const repo = path.join(projectRoot, 'demo-repo');
+  mkdirSync(path.join(repo, '.git'), { recursive: true });
+  writeFileSync(path.join(repo, 'AGENTS.md'), '# demo');
+  const rulesFile = path.join(projectRoot, 'rules.json');
+  writeFileSync(rulesFile, JSON.stringify({ sources: {}, agents: {}, rules: [], elsewhere: [] }));
+  const manager = new SchedulingSessionManager({
+    cwd: '/x', adapterPath: '/a.js', spawnFn: () => { throw new Error('no spawn'); }, archiveRoot: projectRoot,
+    hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: { hubUrl: 'http://127.0.0.1:9', ownerKey: 'o', sourceKey: 's' }, hubClient }),
+  });
+  const server = createConsoleServer({ ...config, root: projectRoot, rulesFile, projectRoots: [projectRoot] }, manager);
+  const url = await listen(server);
+  try {
+    const first = await fetch(`${url}/api/scheduling-sessions`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ kind: 'scheduling', project: repo, prompt: '第一个' }) });
+    assert.equal(first.status, 201);
+    const created = await first.json();
+    const second = await fetch(`${url}/api/scheduling-sessions`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ kind: 'scheduling', project: repo, prompt: '第二个' }) });
+    assert.equal(second.status, 409);
+    const body = await second.json();
+    assert.match(body.error, /已有进行中的调度会话/);
+    assert.deepEqual(body.conflict, { sessionId: created.id, kind: 'scheduling', project: repo });
+    // 其它原因的拒绝（这里是项目不在发现列表）不带 conflict 字段，界面按普通错误显示。
+    const other = await fetch(`${url}/api/scheduling-sessions`, { method: 'POST', headers: writeHeaders, body: JSON.stringify({ kind: 'scheduling', project: '/not/discovered', prompt: 'x' }) });
+    assert.equal((await other.json()).conflict, undefined, '非冲突错误不带 conflict 字段');
+  } finally { await close(server); manager.dispose?.(); }
+});

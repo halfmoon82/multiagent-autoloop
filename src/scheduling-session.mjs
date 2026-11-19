@@ -56,6 +56,11 @@ export function buildHubMcpServer() {
 }
 
 
+// 调度会话指引用户在控制台操作时用的入口文字：只写界面上真实存在、任何状态下都能到达的路径。
+// CONSOLE_DAG_ENTRY_LABELS 由契约测试逐个对照 public/ 里的真实按钮文字，界面改名时测试会红。
+export const CONSOLE_DAG_ENTRY_LABELS = Object.freeze(['总览', '项目任务进度', '新建 DAG（执行授权）', '读取计划与预检', '确认并进入事件链']);
+export const CONSOLE_DAG_ENTRY_TEXT = '需要用户在控制台创建 DAG（执行授权）时，只按这条路径指引：「总览」→「项目任务进度」面板右上角「新建 DAG（执行授权）」→ 选项目、填计划编号 →「读取计划与预检」→ 勾选确认框 →「确认并进入事件链」。不要编造其他界面路径；不确定某个按钮在哪时如实说不确定，不要猜。';
+
 export function buildSchedulingPrompt({ project, writableDir } = {}) {
   return [
     `你是 Multiagent Autoloop 的调度会话，负责项目 ${project} 的调度诊断与协调。你的会话工作目录就是该项目仓库。`,
@@ -68,6 +73,7 @@ export function buildSchedulingPrompt({ project, writableDir } = {}) {
     `4. 派发 worker 必须在项目仓库内先开独立 worktree 与分支（git worktree add .worktrees/<任务名> -b feat/<topic>，任务名 kebab-case ASCII），禁止在共享 checkout 直接开发。`,
     `5. 事件 subject 使用无空格的稳定 ASCII 标识；自然语言说明放 summary/detail。`,
     `6. 实现边界：琐碎自愈（本地调度脚本、配置、状态、规则的小修，见任务 2）由本会话直接做，不必派发；项目代码的实现一律通过独立 worker 会话执行（每个 worker 独立 worktree/分支/交付边界，模型选择见 docs/scheduling-contract.md 的模型派发规则）。禁止本会话亲自写项目代码，也禁止在本会话内派生子智能体/子会话代劳——那等同于本会话直接实施，同样违反本护栏。判别标准：worker 指按第 4 条开独立 worktree、有独立交付边界的正式派发；除此之外的一切子会话均属代劳。收到实现类需求时的标准动作：拆解任务 → 选择模型 → 按第 4 条开 worktree → 派发 worker → 审阅交付并合并结果。`,
+    `【控制台入口】${CONSOLE_DAG_ENTRY_TEXT}`,
     `【工具】autoloop-hub MCP 工具：list_rules（规则与暂停状态）、list_runs（最近轮次与失败原因）、list_cards（待处理卡片）、resume_rule / pause_rule / run_rule（受控写：自愈恢复与重触发；run_rule 同规则 10 分钟冷却）；read_console_doc（按白名单路径读取控制台文档全文）。`,
     `【控制台文档索引】需要调度契约/架构细节时用 read_console_doc 按需读取（提示词不内联全文，以工具读到的磁盘内容为准）：`,
     `- AGENTS.md —— 控制台仓库总规则`,
@@ -79,10 +85,12 @@ export function buildSchedulingPrompt({ project, writableDir } = {}) {
 }
 
 export class SchedulingSessionError extends Error {
-  constructor(message, { status = 400 } = {}) {
+  constructor(message, { status = 400, conflict = null } = {}) {
     super(message);
     this.name = 'SchedulingSessionError';
     this.status = status;
+    // 同项目同类型已有会话：带上已有会话的标识，界面据此给出「继续旧会话 / 关闭旧会话并新建」。
+    this.conflict = conflict;
   }
 }
 
@@ -307,7 +315,7 @@ export class SchedulingSessionManager {
       : prompt ? `${base}\n\n【本次附加说明】\n${prompt}` : base;
     const text = this.#validatePrompt(composed, 64000);
     const duplicate = [...this.sessions.values()].find(session => session.project === projectId && (session.kind || 'scheduling') === sessionKind);
-    if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的${SESSION_KIND_LABELS[sessionKind]}（${duplicate.id.slice(0, 8)}），请先关闭再开启`);
+    if (duplicate) throw new SchedulingSessionError(`项目 ${projectId} 已有进行中的${SESSION_KIND_LABELS[sessionKind]}（${duplicate.id.slice(0, 8)}），请先关闭再开启`, { status: 409, conflict: { sessionId: duplicate.id, kind: sessionKind, project: projectId } });
     if (this.sessions.size >= this.maxSessions) throw new SchedulingSessionError(`最多同时开启 ${this.maxSessions} 个会话`);
     // §6：调度会话从首轮起进入 Hub，绝不派生私有 ACP 进程；normal/design 保持既有 ACP 语义。
     // Hub 路径：护栏/任务说明（base）进本轮资料文件，事件正文只放用户原话，避免 4000 码点预算截掉用户需求。
@@ -750,7 +758,8 @@ export class SchedulingSessionManager {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
     try {
-      return listArtifacts(record.cwd);
+      // 只列本会话开始后新建/修改的文件：同项目的会话共用一个工作目录，不按时间界会把整个仓库的旧文档当成本会话产物。
+      return listArtifacts(record.cwd, { since: record.createdAt });
     } catch (error) {
       throw new SchedulingSessionError(`产物目录不可读：${safeMessage(error)}`, { status: 404 });
     }

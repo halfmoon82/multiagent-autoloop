@@ -42,6 +42,22 @@ function optionalActionOptions(loaded) {
   return pool.map(id => ({ id, ...HIGH_RISK_ACTION_INFO[id], selectedByDefault: false }));
 }
 
+// hubRunsById：/v1/state 的 runs（按 Hub 轮次号）。节点记录只存轮次号，执行 Agent 与自报 Token/费用
+// 只在 Hub 轮次上；按轮次号补到节点记录上供界面显示。查不到（翻页外、Hub 不可达）保持原样，界面如实写未上报。
+export function withHubUsage(detail, hubRuns = [], models = {}) {
+  const byId = new Map((Array.isArray(hubRuns) ? hubRuns : []).map(item => [Number(item?.id), item]));
+  return {
+    ...detail,
+    nodeRuns: (detail?.nodeRuns || []).map(nodeRun => {
+      const hubRun = Number.isInteger(nodeRun?.hub?.hubRun) ? byId.get(nodeRun.hub.hubRun) : null;
+      const agent = String(hubRun?.agent || '').trim();
+      if (!agent) return nodeRun;
+      const usage = hubRun.usage && typeof hubRun.usage === 'object' && !Array.isArray(hubRun.usage) ? hubRun.usage : null;
+      return { ...nodeRun, agent, model: models[agent] || '未配置', ...(usage ? { usage } : {}) };
+    }),
+  };
+}
+
 // hubEvidence({ run }) → { workerOnline?, offlineSince? }：来自 Hub“接单程序没连上”卡片；默认无证据即 fail closed。
 export function createDagService({ root, store: injected, storeDirectory, hubEvidence = async () => ({}), now = Date.now,
   log = console.error, writeAudit = (dir, name, content) => writeFileSync(path.join(dir, name), content) } = {}) {

@@ -391,6 +391,12 @@ try {
   assert.equal(await page.locator('#project-filter').inputValue(), 'demo-repo', 'starting a session must switch the project filter to the new session so the card stays visible');
   assert.equal(await page.locator('#clear-project-filter').getAttribute('hidden'), null, 'a clear-filter button must be shown while a filter is active');
   await page.getByRole('button', { name: '总览', exact: true }).click();
+  // 总览常驻 DAG 入口：当前没有运行中的 DAG 也能进入执行授权页（11-19：入口只藏在运行详情里，到不了）。
+  assert.equal(await page.locator('#overview-dag-new').isVisible(), true, 'overview must always offer the new-DAG entry');
+  await page.locator('#overview-dag-new').click();
+  assert.equal(await page.locator('#view-authorize').isVisible(), true, 'the overview DAG entry must open the authorization screen');
+  assert.equal(await page.locator('#authorize-load').isVisible(), true, 'authorization screen must offer 读取计划与预检');
+  await page.getByRole('button', { name: '总览', exact: true }).click();
   // 项目任务进度：写入假串行状态文件，验证「环形扇区 + 单节点详情 + 固定高度」
   const chainFixture = (nodes, plan) => ({
     project: demoRepo,
@@ -423,7 +429,13 @@ try {
   for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node detail must carry ${label}`);
   assert.ok(progressText.includes('正在实现第二块功能'), 'detail shows the real task summary');
   assert.ok(progressText.includes('联调'), 'detail keeps the node part');
-  assert.ok(progressText.includes('未上报'), 'serial agent/model/cost without data must be marked unreported, never fabricated');
+  // 当前节点的执行者/用量来自该链规则在 Hub 上最近一轮自报了用量的轮次（假 Hub：demo 巡检 #5 · fake · $0.07），不编造
+  assert.equal(await progressRow.locator('.overview-node .node-agent').innerText(), '无模型 Agent', 'current node agent comes from the latest Hub round that reported usage');
+  assert.match(await progressRow.locator('.overview-node .node-usage').innerText(), /^最近一轮 · 费用 \$0\.07 · Token 100/, 'current node usage is the latest round self-report');
+  await progressRow.locator('.ring-seg[data-ring-node="n3"]').focus(); await page.keyboard.press('Enter');
+  assert.equal(await progressRow.locator('.overview-node .node-agent').innerText(), '未上报', 'non-current nodes without data stay unreported, never fabricated');
+  assert.equal(await progressRow.locator('.overview-node .node-usage').innerText(), '费用未上报 · Token 未上报');
+  await progressRow.locator('.ring-seg[data-ring-node="n2"]').focus(); await page.keyboard.press('Enter');
   assert.ok(progressText.includes('待您处理') && progressText.includes('今日完成'), 'counts chips must stay');
   assert.ok(progressText.includes('链累计') && progressText.includes('1,666 Token') && progressText.includes('$0.21'), 'chain usage stays truthful');
   assert.ok(progressText.includes('项目今日 · 费用 $0.07 · Token 100（入 60 / 出 40）'), 'project today usage must come from runs finished today');
@@ -541,8 +553,47 @@ try {
   await page.locator('#new-session-request').fill('占位项目测试');
   await page.locator('#create-session').click();
   await page.waitForTimeout(300);
-  assert.ok((await page.locator('#notice').innerText()).includes('请先从列表选择'), 'placeholder selection must be rejected before starting a session');
+  // 对话框是模态窗：错误必须显示在对话框里、对用户真的可见（页面顶部提示条会被遮住）。
+  assert.equal(await page.locator('#new-session-error').isVisible(), true, 'placeholder rejection must be visible inside the modal dialog');
+  assert.ok((await page.locator('#new-session-error').innerText()).includes('请先从列表选择'), 'placeholder selection must be rejected before starting a session');
   assert.equal(await page.locator('#session-workspace .run-card.session-card').count(), 1, 'no session must be created for placeholder selection');
+  // 同项目同类型已有会话：确认框之前就在对话框里说明冲突，并给出「继续旧会话 / 关闭旧会话并新建」。
+  const startsBeforeDuplicate = schedulingSessions.startCalls.length;
+  const priorDraft = await page.evaluate(() => document.querySelector('form[data-action="session-message"][data-id="browser-session"] [name="message"]')?.value || '');
+  await page.locator('#new-session-project').selectOption(demoRepo);
+  await page.locator('#new-session-request').fill('再开一个调度会话看看');
+  await page.locator('[data-type-override="scheduling"]').click();
+  await page.locator('#create-session').click();
+  await page.locator('#new-session-conflict').waitFor({ state: 'visible', timeout: 3000 });
+  assert.ok((await page.locator('#new-session-conflict-text').innerText()).includes('已有一个进行中的调度会话'), 'conflict must explain the existing session inside the dialog');
+  assert.equal(await page.locator('#conflict-continue').isVisible(), true, 'continue-old-session action must be offered');
+  assert.equal(await page.locator('#conflict-replace').isVisible(), true, 'close-and-create action must be offered');
+  assert.equal(schedulingSessions.startCalls.length, startsBeforeDuplicate, 'a conflicting request must not start a session or send a first turn');
+  await page.locator('#new-session-request').fill('再开一个调度会话看看，改了一个字');
+  assert.equal(await page.locator('#new-session-conflict').isHidden(), true, 'editing the request must clear a stale conflict');
+  await page.locator('#create-session').click();
+  await page.locator('#new-session-conflict').waitFor({ state: 'visible', timeout: 3000 });
+  await page.locator('#conflict-continue').click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'hidden' });
+  // 旧会话输入框里原有的草稿不被覆盖，新写的内容追加在后面。
+  const expectedDraft = priorDraft.trim() ? `${priorDraft.trimEnd()}\n\n再开一个调度会话看看，改了一个字` : '再开一个调度会话看看，改了一个字';
+  try {
+    await page.waitForFunction(expected => document.querySelector('form[data-action="session-message"][data-id="browser-session"] [name="message"]')?.value === expected, expectedDraft, { timeout: 5000 });
+  } catch (error) {
+    console.log('CONTINUE DIAGNOSTIC:', JSON.stringify(await page.evaluate(() => ({
+      view: [...document.querySelectorAll('.view')].find(v => !v.hidden)?.id,
+      forms: [...document.querySelectorAll('form[data-action="session-message"]')].map(f => ({ id: f.dataset.id, value: f.elements.message?.value })),
+      toast: document.querySelector('#toast')?.textContent,
+      notice: document.querySelector('#notice')?.textContent,
+    }))));
+    throw error;
+  }
+  assert.equal(schedulingSessions.startCalls.length, startsBeforeDuplicate, 'continuing the old session must not create a new one');
+  await page.getByLabel('发消息给会话 browser-session').fill('');
+  await page.getByRole('button', { name: '会话管理', exact: false }).click();
+  await page.locator('#session-new').click();
+  await page.locator('#new-session-dialog').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#new-session-conflict').isHidden(), true, 'reopening the dialog must start without stale feedback');
   await page.locator('#new-session-dialog .js-close-new-session').first().click();
   await page.locator('#new-session-dialog').waitFor({ state: 'hidden' });
   await page.getByLabel('发消息给会话 browser-session').fill('重点看执行轮次');
