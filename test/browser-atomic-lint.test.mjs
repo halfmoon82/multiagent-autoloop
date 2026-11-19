@@ -30,7 +30,7 @@ export function stripCommentsAndStrings(source) {
     if (ch === '\'' || ch === '"' || ch === '`') {
       const quote = ch; out += ' '; i++;
       while (i < source.length && source[i] !== quote) {
-        if (source[i] === '\\') { out += '  '; i += 2; continue; }
+        if (source[i] === '\\') { out += source[i + 1] === '\n' ? ' \n' : '  '; i += 2; continue; } // 反斜杠续行保留换行，行号不偏
         if (source[i] === '\n' && quote !== '`') break; // 单/双引号字符串不跨行：正则字面量里的单个引号最多影响本行
         out += source[i] === '\n' ? '\n' : ' '; i++;
       }
@@ -52,15 +52,16 @@ export function findTwoStepCalls(source) {
     const lineOf = offset => code.slice(0, offset).split('\n').length;
     const receiverLine = lineOf(match.index);
     const line = lineOf(match.index + whole.lastIndexOf(method)); // 报 .method( 所在行，跨行链式调用也能直接定位
+    const codeLines = code.split('\n');
     const justified = target => {
-      if (MARKER.test(lines[target - 1] || '')) return true;
+      if (MARKER.test(lines[target - 1] || '')) return true; // 同一行（含行尾注释）
       let prev = target - 2;
       while (prev >= 0 && !lines[prev].trim()) prev--;
-      return prev >= 0 && MARKER.test(lines[prev]);
+      // 紧邻上一行必须是整行注释：上一条语句行尾的 atomic-ok 只管它自己，不连带放行本行
+      return prev >= 0 && !codeLines[prev].trim() && MARKER.test(lines[prev]);
     };
-    const codeLines = code.split('\n');
     let head = line; // 跨行链式调用的首行：自方法行向上越过以 . / ?. 开头的续行
-    while (head > 1 && /^\s*\??\./.test(codeLines[head - 1] || '')) head--;
+    while (head > 1 && /^\s*\??\.(?!\.)/.test(codeLines[head - 1] || '')) head--; // ... 展开不是链式续行
     if (justified(line) || justified(receiverLine) || justified(head)) continue;
     findings.push({ line, method, text: (lines[line - 1] || '').trim().slice(0, 120) });
   }
@@ -101,6 +102,12 @@ test('two-step lint: flags locator two-step calls, allows page-level calls and j
   assert.equal(findTwoStepCalls("// atomic-ok:\nconst h = await input.elementHandle();").length, 1, '空理由的 atomic-ok 不放行');
   // 放行只管紧邻的下一行，隔一段代码不算
   assert.equal(findTwoStepCalls("// atomic-ok: 理由\nconst a = 1;\nconst h = await input.elementHandle();").length, 1, 'atomic-ok 只放行同一行或紧邻上一行');
+  // 上一行是带行尾放行注释的「代码行」时，不能连带放行本行（只有整行注释才算紧邻上一行的放行）
+  assert.equal(findTwoStepCalls("const a = await x.elementHandle(); // atomic-ok: pinned\nawait row.evaluate(y => y);").length, 1, '行尾 atomic-ok 不连带放行下一行');
+  // 展开运算符 ... 开头的行不是链式续行，不能借数组首行的放行注释
+  assert.equal(findTwoStepCalls("// atomic-ok: 只放行这一行\nconst list = [\n  ...(await row.evaluate(y => y)),\n];").length, 1, '... 开头不算链式续行');
+  // 反斜杠续行的字符串不改变后续行号
+  assert.equal(findTwoStepCalls("const s = 'a\\\nb';\nawait row.evaluate(y => y);")[0]?.line, 3, '反斜杠续行后行号不偏');
   // 行号准确（报错信息要能直接定位）：报方法所在行
   assert.equal(findTwoStepCalls("const a = 1;\n\nawait row.evaluate(x => x);")[0].line, 3);
   assert.equal(findTwoStepCalls("await page.locator('#x')\n  .first()\n  .evaluate(x => x);")[0].line, 3, '跨行链式调用报 .evaluate( 所在行');
