@@ -38,17 +38,25 @@ export function loadNodeStates(root) {
   return { nodes, approachChanges: root.publish?.approachChanges || [] };
 }
 
-// blocked 复活唯一通道：reason 仅接受 blocked-resolved / change-approach；
-// evidence 写入 node todo 留痕（根 run publish.nodes 持久化），授权快照逐字继承由 createAttempt 保证。
+// 节点状态视图与 revive 请求共用：控制台 API 只写待办（不直接迁移节点状态），
+// 控制器下一 tick 的 runTodo 才真正 createAttempt 重派。
+// blocked / gated 都可被调度会话复活：gated 节点必然已尝试满次（change-approach 是唯一出口），
+// revive reason 映射规则——blocked 用 blocked-resolved/change-approach；gated 用 gated-resolved/change-approach，
+// 且 gated-resolved 内部也映射为 change-approach（换新代重派，与审阅底线的失败留痕一致）。
+const REVIVE_REASONS = { blocked: ['blocked-resolved', 'change-approach'], gated: ['gated-resolved', 'change-approach'] };
 export function reviveNode(store, root, nodeId, reason, { evidence = '', at = Date.now() } = {}) {
-  if (!['blocked-resolved', 'change-approach'].includes(reason)) {
-    throw new DagRunError('REVIVE_REASON_REQUIRED', 'revive reason 只能是 blocked-resolved 或 change-approach');
-  }
   const st = loadNodeStates(root);
   const n = st.nodes[String(nodeId)];
-  if (!n || n.state !== 'blocked') throw new DagRunError('NODE_NOT_BLOCKED', `节点 ${nodeId} 不在 blocked 状态，无法复活`);
+  const allowed = n ? REVIVE_REASONS[n.state] || [] : [];
+  if (!allowed.includes(reason)) {
+    throw new DagRunError('REVIVE_REASON_REQUIRED',
+      `节点 ${nodeId} 当前状态 ${n?.state ?? '不存在'}，revive reason 只能是：${allowed.join('、') || '（此状态不可复活）'}`);
+  }
   if (root.publish?.cancelRequested || isTerminal(root.status)) throw new DagRunError('DAG_TERMINAL', 'DAG 已取消/终结，不得复活节点');
-  n.todo = { kind: 'revive', reason, role: n.blockedRole || 'dev', evidence: String(evidence).slice(0, 500), at };
+  // gated 节点尝试必已满次，只有换打法才能出新 attempt；外部传的 gated-resolved 语义等价于换打法，内部统一记 change-approach。
+  const effectiveReason = n.state === 'gated' ? 'change-approach' : reason;
+  const role = n.state === 'gated' ? (n.gatedRole || 'dev') : (n.blockedRole || 'dev');
+  n.todo = { kind: 'revive', reason: effectiveReason, role, evidence: String(evidence).slice(0, 500), at };
   store.updateRun(root.runId, { publish: { nodes: st.nodes, approachChanges: st.approachChanges } });
   return { nodeId: String(nodeId), reason };
 }
@@ -142,7 +150,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     n.slot = null; return true;
   }
 
-  async function gate(root, st, id, reason) { const n = st.nodes[id]; n.state = 'gated'; n.todo = null; n.gateReason = reason; await releaseNodeSlot(root, st, id); }
+  async function gate(root, st, id, reason) { const n = st.nodes[id]; n.gatedRole = n.state === 'review' ? 'review' : 'dev'; n.state = 'gated'; n.todo = null; n.gateReason = reason; n.gateAt = now(); await releaseNodeSlot(root, st, id); }
 
   // 失败计数：累计 3 次先换打法（保存 WIP、换模型），换打法后仍满 3 次才 gate。
   async function failure(root, st, id, run, reason, { newSlot = false } = {}) {

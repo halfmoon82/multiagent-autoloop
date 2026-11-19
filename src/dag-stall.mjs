@@ -31,6 +31,25 @@ export function findDagStalls(runs, { now = Date.now(), thresholdMs = STALL_THRE
   return stalls;
 }
 
+// 「等待人工决策」（gated）节点：控制器已停住并释放槽位，但既不唤醒调度会话也不发卡——
+// 没人接手就成为孤儿状态。这里把它也交给调度会话：以 gateAt（无则 now）为起点超过阈值即报，
+// 同一节点同一 gateAt 只报一次（事件 id 含 since，中台按 id 去重）。
+export function findDagGated(runs, { now = Date.now(), thresholdMs = STALL_THRESHOLD_MS } = {}) {
+  const gated = [];
+  for (const run of runs || []) {
+    if (!run || run.nodeId !== ROOT_NODE || isTerminal(run.status) || run.publish?.cancelRequested) continue;
+    for (const [nodeId, node] of Object.entries(run.publish?.nodes || {})) {
+      if (node?.state !== 'gated' || node.todo) continue;
+      // 兼容旧 run（没有 gateAt）：这类节点一律按已达阈值处理，避免新功能漏报。
+      const since = Number.isFinite(node.gateAt) ? node.gateAt : 0;
+      if (now - since < thresholdMs) continue;
+      gated.push({ runId: run.runId, planId: run.planId, project: run.project, nodeId, state: 'gated',
+        since, count: 1, error: node.gateReason || '等待人工决策' });
+    }
+  }
+  return gated;
+}
+
 const seg = value => String(value).replace(/[^A-Za-z0-9._-]/g, '_');
 
 export function buildStallEvent(stall, now = Date.now()) {
@@ -40,7 +59,9 @@ export function buildStallEvent(stall, now = Date.now()) {
     `自 ${new Date(stall.since).toISOString()} 起同一错误已连续出现 ${stall.count} 次（约 ${minutes} 分钟），控制器每轮自动重试但没有进展。`,
     `错误原文：${redactError(stall.error)}`,
     '请按调度契约处理：先定位根因（读控制台 dag-runs 状态与相关源码/配置），工程问题自行修复或派 worker 修复并做最小验证；',
-    '修好后控制器下一轮会自动重试，无需手工重派。只有用户掌握的凭据/授权才向用户提问。核实后本轮结束。',
+    stall.state === 'gated'
+      ? '修好后调用 POST /api/dag-runs/<runId>/revive（body 带 nodeId、reason=gated-resolved）让控制器换打法重派；只有用户掌握的凭据/授权才向用户提问。核实后本轮结束。'
+      : '修好后控制器下一轮会自动重试，无需手工重派。只有用户掌握的凭据/授权才向用户提问。核实后本轮结束。',
   ].join('\n');
   return {
     id: `console:dag-stall:${seg(stall.runId)}:${seg(stall.nodeId)}:${stall.since}`,
@@ -59,6 +80,12 @@ export async function sweepDagStalls({ runs, post, sent = new Set(), now = Date.
     if (sent.has(event.id)) continue;
     try { await post(event); sent.add(event.id); result.posted.push(event.id); }
     catch (error) { result.errors.push(`${stall.runId}/${stall.nodeId}：${error.message}`); }
+  }
+  for (const node of findDagGated(runs, { now, thresholdMs })) {
+    const event = buildStallEvent(node, now);
+    if (sent.has(event.id)) continue;
+    try { await post(event); sent.add(event.id); result.posted.push(event.id); }
+    catch (error) { result.errors.push(`${node.runId}/${node.nodeId}：${error.message}`); }
   }
   return result;
 }
