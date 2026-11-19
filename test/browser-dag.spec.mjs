@@ -159,6 +159,9 @@ try {
   assert.equal(await page.locator('#dag-overview-list .ring-label img').count(), 0, 'ring labels stay plain text');
   assert.equal(await page.locator('#dag-overview-list .ring-divider.wave').count(), 2, 'wave boundaries use solid dividers');
   assert.equal(await page.locator('#dag-overview-list .ring-divider.node').count(), 1, 'nodes inside a wave use dashed dividers');
+  // DAG 内圈进度弧：每节点一段轨道 + 状态完成度档填充（此时全 pending，无指针）
+  assert.equal(await page.locator('#dag-overview-list .ring-inner-seg').count(), 4, 'DAG 每节点一段内圈轨道');
+  assert.equal(await page.locator('#dag-overview-list .ring-pointer').count(), 0, '无活跃节点时不画指针');
   assert.match(await page.locator('#dag-overview-list .dag-project').innerText(), /待派发/);
   assert.match(await page.locator('#dag-overview-list .dag-project').innerText(), /费用未上报 · Token 未上报/);
   // DAG 总览与串行总览同构：环形扇区切换右侧单个节点详情，不离开总览

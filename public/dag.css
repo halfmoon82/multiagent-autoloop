@@ -43,6 +43,13 @@
 .ring-seg:focus-visible{outline:none}
 .ring-seg.pending{opacity:.9}
 .ring-seg.selected{opacity:1}
+/* 内圈进度弧：节点内进度沿扇区弧长填充 */
+.ring-inner-seg{stroke:#22362e;stroke-opacity:.1;pointer-events:none}
+.ring-inner-fill{stroke:#22362e;stroke-opacity:.85;pointer-events:none}
+.ring-inner-fill.pending{stroke-opacity:.3}
+/* 正在开发的节点：进度弧内侧一枚指向节点的三角指示（并行时每个活跃节点各一枚） */
+.ring-pointer{fill:#22362e;pointer-events:none}
+@media(prefers-color-scheme:dark){.ring-inner-seg{stroke:#dce8e2;stroke-opacity:.16}.ring-inner-fill{stroke:#dce8e2}.ring-pointer{fill:#dce8e2}}
 .ring-divider{pointer-events:none}
 .ring-divider.node{stroke:#3f4d47;stroke-opacity:.32;stroke-width:1;stroke-dasharray:2 3}
 .ring-divider.wave{stroke:#3f4d47;stroke-opacity:.7;stroke-width:1.6}

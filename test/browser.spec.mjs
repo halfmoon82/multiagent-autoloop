@@ -445,6 +445,17 @@ try {
   assert.deepEqual(await progressRow.locator('.ring-label').evaluateAll(list => list.map(node => node.textContent)), ['节点一', '节点二', '节点三'], 'each sector carries its node name');
   assert.equal(await progressRow.locator('.ring-divider.wave').count(), 2, 'node group boundaries use solid dividers');
   assert.equal(await progressRow.locator('.ring-divider.node').count(), 0, 'single-node groups need no dashed dividers');
+  // 内圈进度弧：每节点一段轨道 + 按节点内进度填充；正在开发的节点叠一枚指针（夹具 n2 dev_dispatched·percent 50）
+  assert.equal(await progressRow.locator('.ring-inner-seg').count(), 3, '每节点一段内圈进度轨道');
+  const innerFill = await progressRow.locator('.ring-inner-fill').evaluateAll(list => list.map(node => parseFloat(node.getAttribute('stroke-dasharray'))));
+  assert.equal(innerFill.length, 3, '每节点一段内圈进度弧');
+  assert.ok(innerFill[0] > innerFill[1] && innerFill[1] > innerFill[2], '内圈进度弧长：done > dev 50% > pending 0');
+  assert.equal(await progressRow.locator('.ring-pointer').count(), 1, '正在开发的节点有一枚指向它的指针');
+  // 实测 percent 才报「节点内进度」；档位只报「完成度档」，不把推导值说成实测
+  const ariaN2 = await progressRow.locator('.ring-seg[data-ring-node="n2"]').getAttribute('aria-label');
+  const ariaN3 = await progressRow.locator('.ring-seg[data-ring-node="n3"]').getAttribute('aria-label');
+  assert.match(ariaN2, /节点内进度 50%/, '自报 percent 的节点报实测进度');
+  assert.match(ariaN3, /完成度档 0%/, '无 percent 的节点报完成度档，不编造节点内进度');
   const detailTitle = progressRow.locator('.overview-node-head strong');
   assert.equal(await detailTitle.innerText(), '节点二', 'default detail shows the current active node');
   for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node detail must carry ${label}`);
@@ -533,6 +544,12 @@ try {
     const panel = document.querySelector('#progress-list .overview-node');
     return title === '节点二' && panel && panel.scrollHeight > panel.clientHeight + 4;
   }, null, { timeout: 8000 });
+  // 选中的节点整块变大：该扇区比其余扇区更厚、半径更大（内沿不动，只向外长），不再有外挂弧带
+  assert.equal(await progressRow.locator('.ring-bulge').count(), 0, '不再有外挂弧带，选中节点本体变大');
+  const sizes = await progressRow.locator('.ring-seg').evaluateAll(list => list.map(node => ({ id: node.dataset.ringNode, w: parseFloat(node.getAttribute('stroke-width')), r: parseFloat(node.getAttribute('r')) })));
+  const selectedSize = sizes.find(item => item.id === 'n2'), otherSize = sizes.find(item => item.id === 'n1');
+  assert.ok(selectedSize.w > otherSize.w + 6, `选中扇区明显更厚（${selectedSize.w} vs ${otherSize.w}）`);
+  assert.equal(selectedSize.r - selectedSize.w / 2, otherSize.r - otherSize.w / 2, '内沿不动，只向外长');
   await inProgressRow('scroll30');
   await page.waitForTimeout(120);
   const entryInside = await inProgressRow('entryInside');

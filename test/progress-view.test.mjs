@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSerialView, buildDagView, serialStatus } from '../public/progress-view.mjs';
+import { buildSerialView, buildDagView, serialStatus, nodeInnerProgress } from '../public/progress-view.mjs';
 import { waveHue } from '../public/dag-model.mjs';
 
 const serialChain = {
@@ -89,6 +89,25 @@ test('DAG 环：一个波次一个色相，同波次内深浅表达节点完成�
   assert.equal(a.light, 27, '全深固定为完成档');
   const hues = new Set(Array.from({ length: 10 }, (_, index) => waveHue(index + 1)));
   assert.equal(hues.size, 10, '前 10 个波次色相互不相同');
+});
+
+test('节点内进度：自报 percent 优先，缺失回落到状态完成度档，越界被夹到 0..1', () => {
+  const s = buildSerialView(serialChain, '');
+  const byId = id => s.nodes.find(node => node.id === id);
+  assert.deepEqual(nodeInnerProgress(byId('n1')), { value: 1, reported: true }, 'done 节点 percent=100 → 实测满弧');
+  assert.deepEqual(nodeInnerProgress(byId('n2')), { value: 0.5, reported: true }, 'dev 节点自报 percent=50');
+  assert.deepEqual(nodeInnerProgress(byId('n3')), { value: 0.2, reported: true }, '自报 percent=20 优先于 blocked 档');
+  assert.deepEqual(nodeInnerProgress({ percent: 30, status: { kind: 'done' } }), { value: 1, reported: true }, 'done 状态永远满弧，过期 percent 不拖回');
+  assert.deepEqual(nodeInnerProgress({ status: { kind: 'done' } }), { value: 1, reported: false }, 'done 无 percent → 满弧但标档位');
+  assert.deepEqual(nodeInnerProgress({ status: { kind: 'rework' } }), { value: 0.5, reported: false }, 'rework 有完成度档，不落 0');
+  assert.deepEqual(nodeInnerProgress({ status: { kind: 'active' } }), { value: 0.5, reported: false }, '无 percent 回落完成度档且标 reported=false');
+  assert.deepEqual(nodeInnerProgress({ status: { kind: 'pending' } }), { value: 0, reported: false }, '未开始为空弧');
+  assert.deepEqual(nodeInnerProgress({ percent: 0, status: { kind: 'active' } }), { value: 0.5, reported: false }, 'percent=0 的活跃节点回落档位，不报实测');
+  assert.deepEqual(nodeInnerProgress({ percent: 140, status: { kind: 'active' } }), { value: 1, reported: true }, 'percent 越界夹到 1');
+  const d = buildDagView(dagDetail);
+  const dagById = id => d.nodes.find(node => node.id === id);
+  assert.deepEqual(nodeInnerProgress(dagById('a')), { value: 1, reported: false }, 'DAG accepted → 满弧（档位，非实测）');
+  assert.deepEqual(nodeInnerProgress(dagById('b')), { value: 0.5, reported: false }, 'DAG dev → 状态档 0.5');
 });
 
 test('串行状态映射未知状态不崩、不当成完成', () => {
