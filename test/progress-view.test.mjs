@@ -112,29 +112,32 @@ test('串行每个节点显示自己最近一轮的执行者与自报用量，�
   assert.equal(buildSerialView(serialChain, '').nodes.find(node => node.id === 'n2').model, '模型待选择', '当前节点无记录仍显示模型待选择');
 });
 
-test('串行节点：acp/command 通道执行者无用量时写「该执行者不上报用量」', () => {
+test('串行节点：无用量分两类——跑模型的写不上报，不跑模型的写不需要', () => {
   const s = buildSerialView(serialChain, '链累计 · 0', {
     n1: { agent: 'workbuddy', model: 'hy4', usage: null, running: false, unreportable: true },
-    n3: { agent: 'remote-watch', model: '—', usage: null, running: false, unreportable: true },
+    n3: { agent: 'remote-watch', model: '—', usage: null, running: false, noModel: true },
   });
   const byId = id => s.nodes.find(node => node.id === id);
   assert.equal(byId('n1').usageText, '该执行者不上报用量');
-  assert.equal(byId('n3').usageText, '该执行者不上报用量');
+  assert.equal(byId('n3').usageText, '不需要模型');
   assert.equal(byId('n2').usageText, '费用未上报 · Token 未上报', '无记录节点不受影响');
 });
 
-test('chainNodeExecutors：按对接程序标 unreportable，缺 adapters 时不误标', async () => {
+test('chainNodeExecutors：acp 标 unreportable、command 标 noModel，缺 adapters 不误标', async () => {
   const { chainNodeExecutors } = await import('../public/status-sections.mjs');
-  const chain = { project: '/p', sourceFile: 'x-serial.json', order: ['n1', 'n2', 'n3'], nodes: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }],
+  const chain = { project: '/p', sourceFile: 'x-serial.json', order: ['n1', 'n2', 'n3', 'n4'], nodes: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }, { id: 'n4' }],
     nodeRounds: {
       n1: { id: 10, agent: 'workbuddy', state: 'done', usage: null },
       n2: { id: 11, agent: 'claude', state: 'done', usage: null },
       n3: { id: 12, agent: 'workbuddy', state: 'done', usage: { input: 4 } },
+      n4: { id: 13, agent: 'remote-watch', state: 'done', usage: null },
     } };
-  const adapters = { workbuddy: 'acp', claude: 'claude' };
+  const adapters = { workbuddy: 'acp', claude: 'claude', 'remote-watch': 'command' };
   const out = chainNodeExecutors(chain, [], [], [], {}, {}, adapters);
-  assert.equal(out.n1.unreportable, true);
+  assert.equal(out.n1.unreportable, true); assert.equal(out.n1.noModel, undefined);
   assert.equal(out.n2.unreportable, undefined, 'claude 通道能上报，无用量仍是「未上报」');
   assert.equal(out.n3.unreportable, undefined, '报过用量不标');
-  assert.equal(chainNodeExecutors(chain, [], [], [], {}, {}).n1.unreportable, undefined, '无 adapters 数据不误标');
+  assert.equal(out.n4.noModel, true); assert.equal(out.n4.unreportable, undefined);
+  const bare = chainNodeExecutors(chain, [], [], [], {}, {});
+  assert.equal(bare.n1.unreportable, undefined); assert.equal(bare.n4.noModel, undefined);
 });
