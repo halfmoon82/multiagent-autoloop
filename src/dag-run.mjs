@@ -166,6 +166,11 @@ function detailMalformed(detail) {
 
 // advance 回执判定（纯函数）：逐字校验 advanceId、runId/nodeId/role、generation/attempt 与 detail 形态。
 export function evaluateAdvance(run, receipt) {
+  // 非结构化回执（malformed）不是恶意伪造：worker 把回执写成纯文本/空 detail 时，
+  // 按 stale 处理不计失败，避免同一次审阅被格式问题误计（2026-11-19 device-binding 事故）。
+  if (receipt && receipt.malformed === true) {
+    return { verdict: 'stale', reason: 'malformed-receipt', failureCounted: false };
+  }
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
     return { verdict: 'invalid', reason: 'receipt-type', failureCounted: true };
   }

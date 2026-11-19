@@ -34,6 +34,22 @@ export function dagEventType(project, role) {
 // getRun 从事件结果推导状态：没有 run=queued；有多个 run 取最新；Hub 不可达抛错（由控制器本轮记 lastError，不改状态）。
 // 授权按中台规则分治：/v1/events 的读与写用 source 密钥（中台要求事件「来源自己的密钥」），
 // /v1/runs/:id/cancel 与 /v1/state 仍走 hubRequest 的 owner 默认（cancel 用 source 会被中台以「要本人自己的密钥」拒）。
+// 纯文本回执兜底：worker 有时把回执写成 "advanceId=x runId=y ..." 而非 JSON。
+// 能解析出 advanceId 即视为合法回执（evaluateAdvance 再校验字段一致性）；解析不出标记 malformed，
+// 由 evaluateAdvance 判 stale（不计失败），避免同一次审阅被非结构化输出误计失败。
+function parsePlainReceipt(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  const out = {};
+  for (const part of text.trim().split(/\s+/)) {
+    const eq = part.indexOf('=');
+    if (eq < 1) continue;
+    const key = part.slice(0, eq), value = part.slice(eq + 1);
+    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key)) continue;
+    out[key] = value === 'true' ? true : value === 'false' ? false : /^\d+$/.test(value) ? Number(value) : value;
+  }
+  return typeof out.advanceId === 'string' && out.advanceId.trim() ? out : null;
+}
+
 export function createHubAdapter({ config, request = hubRequest, project } = {}) {
   const outcome = eventNo => request(config, `/v1/events/${encodeURIComponent(eventNo)}`, { auth: 'source' });
   const newest = out => [...(out?.runs || [])].sort((a, b) => b.run - a.run)[0] || null;
@@ -59,7 +75,9 @@ export function createHubAdapter({ config, request = hubRequest, project } = {})
       if (!hubRun) return { status: 'queued' };
       const status = HUB_STATES.has(hubRun.state) ? hubRun.state : 'unknown';
       const receipts = (hubRun.events || []).filter(e => /\.advance$/.test(e?.type || '')).map(e => {
-        try { return JSON.parse(e.detail); } catch { return { malformed: true }; }
+        try { return JSON.parse(e.detail); } catch { /* 非 JSON：尝试 key=value 纯文本回执 */ }
+        const parsed = parsePlainReceipt(e.detail);
+        return parsed ?? { malformed: true };
       });
       return { status: status === 'nothing' ? 'done' : status, receipts, hubRun: hubRun.run };
     },
