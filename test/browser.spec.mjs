@@ -451,6 +451,11 @@ try {
   assert.equal(innerFill.length, 3, '每节点一段内圈进度弧');
   assert.ok(innerFill[0] > innerFill[1] && innerFill[1] > innerFill[2], '内圈进度弧长：done > dev 50% > pending 0');
   assert.equal(await progressRow.locator('.ring-pointer').count(), 1, '正在开发的节点有一枚指向它的指针');
+  // 实测 percent 才报「节点内进度」；档位只报「完成度档」，不把推导值说成实测
+  const ariaN2 = await progressRow.locator('.ring-seg[data-ring-node="n2"]').getAttribute('aria-label');
+  const ariaN3 = await progressRow.locator('.ring-seg[data-ring-node="n3"]').getAttribute('aria-label');
+  assert.match(ariaN2, /节点内进度 50%/, '自报 percent 的节点报实测进度');
+  assert.match(ariaN3, /完成度档 0%/, '无 percent 的节点报完成度档，不编造节点内进度');
   const detailTitle = progressRow.locator('.overview-node-head strong');
   assert.equal(await detailTitle.innerText(), '节点二', 'default detail shows the current active node');
   for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node detail must carry ${label}`);

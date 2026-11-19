@@ -169,11 +169,12 @@ const RING_INNER_GAP = 4;
 const RING_ACTIVE_KINDS = new Set(['active', 'review', 'rework']);
 
 // 节点内进度 0..1：优先节点自报的 percent（串行编排器写入），否则回落到状态完成度档（DAG/未报 percent 的串行节点）。
+// reported=true 才是实测；档位是推导值，对外播报必须区分措辞，不把档位说成实测进度。
 export function nodeInnerProgress(node) {
-  if (node?.status?.kind === 'done') return 1;
+  if (node?.status?.kind === 'done') return { value: 1, reported: Number.isFinite(Number(node?.percent)) };
   const percent = Number(node?.percent);
-  if (Number.isFinite(percent) && percent > 0) return Math.min(1, percent / 100);
-  return Math.min(1, Math.max(0, completionOf(node?.status)));
+  if (Number.isFinite(percent) && percent > 0) return { value: Math.min(1, percent / 100), reported: true };
+  return { value: Math.min(1, Math.max(0, completionOf(node?.status))), reported: false };
 }
 
 function colorIsLight(color) {
@@ -244,10 +245,12 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
     seg.setAttribute('role', 'button');
     seg.setAttribute('tabindex', '0');
     seg.setAttribute('aria-pressed', String(selected));
-    const innerPercent = Math.round(nodeInnerProgress(node) * 100);
-    seg.setAttribute('aria-label', `${node.title}，${node.status.label}，节点内进度 ${innerPercent}%${selected ? '，当前选中' : ''}`);
+    const inner = nodeInnerProgress(node);
+    // 实测 percent 才报「节点内进度 N%」；回落状态完成度档的是推导值，只报「完成度档」（不编造数据）。
+    const innerText = inner.reported ? `节点内进度 ${Math.round(inner.value * 100)}%` : `完成度档 ${Math.round(inner.value * 100)}%`;
+    seg.setAttribute('aria-label', `${node.title}，${node.status.label}，${innerText}${selected ? '，当前选中' : ''}`);
     const tip = document.createElementNS(NS, 'title');
-    tip.textContent = `${node.title} · ${node.status.label} · 节点内 ${innerPercent}%`;
+    tip.textContent = `${node.title} · ${node.status.label} · ${innerText}`;
     seg.append(tip);
     const pick = event => {
       if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
@@ -265,7 +268,7 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
     // 内圈进度弧：扇区底色轨道 + 按节点内进度填充的深色弧；并行节点各自成段。
     const track = arc(innerRadius, index * innerShare, innerShare, RING_INNER_STROKE, 'ring-inner-seg');
     innerTrack.append(track);
-    const filled = arc(innerRadius, index * innerShare, innerShare * nodeInnerProgress(node), RING_INNER_STROKE, `ring-inner-fill ${node.status.kind}`);
+    const filled = arc(innerRadius, index * innerShare, innerShare * inner.value, RING_INNER_STROKE, `ring-inner-fill ${node.status.kind}`);
     innerArcs.append(filled);
     // 正在开发的节点在进度弧内侧叠一枚指向它的三角指示；并行时每个活跃节点各一枚。
     if (RING_ACTIVE_KINDS.has(node.status.kind)) {
@@ -276,7 +279,7 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
       dot.setAttribute('d', `M ${center + pointAt * Math.cos(rad)} ${center + pointAt * Math.sin(rad)} L ${center + (pointAt - 5.5) * Math.cos(rad - 4.5 / pointAt)} ${center + (pointAt - 5.5) * Math.sin(rad - 4.5 / pointAt)} L ${center + (pointAt - 5.5) * Math.cos(rad + 4.5 / pointAt)} ${center + (pointAt - 5.5) * Math.sin(rad + 4.5 / pointAt)} Z`);
       dot.setAttribute('class', 'ring-pointer');
       const pointerTip = document.createElementNS(NS, 'title');
-      pointerTip.textContent = `正在开发：${node.title}`;
+      pointerTip.textContent = `进行中：${node.title}（${node.status.label}）`;
       dot.append(pointerTip);
       pointers.append(dot);
     }
