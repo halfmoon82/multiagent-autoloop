@@ -360,3 +360,47 @@ test('变基重审的第 3 次尝试排队等待时不按“排队满次”取�
   s.claimAll(); s.receipt('a', 'review', 'accepted'); await s.ctl.tick();
   assert.equal(s.ctl.snapshot().nodes.a.state, 'accepted');
 });
+
+// ---- 2026-11-19 device-binding 卡住回归 ----
+test('变基重审后审阅被取消：开发原槽位重试不得继承审阅基准（否则永远没有提交可发）', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick(); s.claimAll();
+  s.receipt('a', 'dev', 'done'); await s.ctl.tick(); // 发布 → 派发审阅
+  const review1 = s.runOf('a', 'review');
+  assert.ok(review1);
+  // 审阅通过，但远端 PR head 在审阅后被变基
+  const rebasedHead = 'b'.repeat(40);
+  s.publisher.fetchHead = async () => rebasedHead;
+  s.publisher.merge = async () => { const error = new Error('远端 PR head 与已审 SHA 不一致'); error.code = 'HEAD_MISMATCH'; error.head = rebasedHead; throw error; };
+  s.receipt('a', 'review', 'accepted');
+  await s.ctl.tick();
+  let n = s.store.getRun(s.root.runId).publish.nodes.a;
+  assert.equal(n.commit, rebasedHead, '变基后以新 head 为审阅基准');
+  // 下一轮走变基重审：释放槽位 + 在新 head prepare → prepareBase 被记成节点 commit
+  await s.ctl.tick();
+  n = s.store.getRun(s.root.runId).publish.nodes.a;
+  assert.equal(n.prepareBase, rebasedHead);
+  // 重审排队满次被取消，控制器退回开发重试
+  const review2 = s.runOf('a', 'review');
+  s.hub.set(review2.hub.hubRunId, { status: 'cancelled' });
+  s.store.cancel(review2.runId, { reason: 'attempts-exhausted' });
+  await s.ctl.tick();
+  n = s.store.getRun(s.root.runId).publish.nodes.a;
+  assert.notEqual(n.prepareBase, n.commit, '开发重试不得拿“等于节点提交”的审阅基准当基底');
+  // 夹具控制器未注入 baseRef，默认基底是 origin/main（线上运行时为 refs/heads/<baseBranch>）。
+  assert.equal(n.prepareBase, 'origin/main', '必须释放审阅槽位并在冻结基底重新 prepare');
+  assert.equal(s.runOf('a', 'dev').attempt, 2);
+  assert.ok(s.wip.calls.some(c => c[0] === 'release'), '换基底前按纪律释放槽位（WIP 保全）');
+  assert.ok(s.hub.last('a'), '开发重试必须真正派发出去');
+});
+
+test('开发回执 done 但没有任何提交：按失败尝试重派，不原地重复抛错', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick(); s.claimAll();
+  s.publisher.commitPr = async () => { const error = new Error('节点 a 没有任何提交可发 PR'); error.code = 'NOTHING_TO_PUBLISH'; throw error; };
+  s.receipt('a', 'dev', 'done');
+  await s.ctl.tick();
+  assert.equal(s.runOf('a', 'dev').attempt, 2, '无提交属于一次失败尝试，必须换 attempt 重派');
+  assert.ok(s.hub.last('a'), '重派开发而不是把同一个 done run 每轮重抛');
+  assert.equal(s.ctl.snapshot().nodes.a.lastError, null, '已转为失败重试，不再记同一错误');
+});

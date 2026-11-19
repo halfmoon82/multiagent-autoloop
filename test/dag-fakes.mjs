@@ -30,9 +30,10 @@ export function fakeRt(project = '/proj') {
       if (prev?.nodeId === a.nodeId && (prev.base !== a.base || prev.branch !== a.branch)) {
         const error = new Error(`槽位 ${a.slot} 状态与请求的 base/branch 不一致，拒绝复用`); error.code = 'SLOT_STATE_MISMATCH'; throw error;
       }
-      state[a.slot] = { nodeId: a.nodeId, base: a.base, branch: a.branch };
+      state[a.slot] = { nodeId: a.nodeId, base: a.base, branch: a.branch, baseCommit: a.base };
       events.push(['prepare', a.slot, a.nodeId, a.base]);
-      return { ...a, reused: Boolean(prev) };
+      // 与真实运行时一致：prepare 返回解析后的冻结 base commit，控制器据此判断“槽位是否可原样重试”。
+      return { ...a, reused: Boolean(prev), baseCommit: a.base };
     },
     async dirty() { return false; },
   };
