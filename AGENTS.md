@@ -100,8 +100,8 @@ npm run test:browser
 - 并行 AI 修改使用独立 worktree；不得同时编辑同一目录。
 - 派发必开 worktree（硬约束，2026-11-14 多起共享 checkout 碰撞事故后确立）：任何 worker 会话（AI 开发/改造任务）必须先 `git worktree add .worktrees/<任务名> -b feat/<topic>` 开局（任务名 kebab-case ASCII）、在 worktree 内开发与提交，禁止在共享 checkout（仓库主 checkout）直接开发；监工派发 prompt 必须显式写入该指令；主 checkout 常驻 main，只保留给控制台服务运行与文档级小修。会话收尾须回收 worktree（合并后 archive/remove）。违反此约束造成的碰撞（分支被切走、垃圾文件混入提交、服务部署被堵）由当事会话负责清理。
 - 提交前运行适用测试、`git diff --check`、敏感信息扫描，并审阅 staged diff。
-- PR 创建后自动派发独立、非作者视角 reviewer，按 P0（资金/数据正确性）、P1（逻辑/事务）、P2（边界/回归）、P3（建议）审阅。
-- P0–P2 逐条核实并修复，重跑测试、推同一分支、复审；清零且验证绿后 squash 合并。返工最多三轮，超限停止并报告分歧。
+- PR 创建后自动派发独立、非作者视角 reviewer，按 [docs/review-severity.md](docs/review-severity.md) 分级：P0（真实丢钱/丢数据/泄露）、P1（主流程坏或结果错）、P2（常见场景回归）、P3（其余）。只有“会真实发生 + 本 PR 造成 + 后果够级”三条同时满足才算 P0–P2；对抗场景只在本 PR 改到外部输入、多租户、资金、隐私/凭据四类代码路径时按拦截审，且只防外部一方，worker 与作者 Agent 一律按合作方。
+- P0–P2 逐条核实并修复，重跑测试、推同一分支、复审；清零且验证绿后 squash 合并。P3 不拦合并，登记在 PR 描述“已知后续”。返工最多三轮，超限停止并报告分歧。
 - 不直推受保护主干，不强推共享分支。仓库首次 `main` 基线引导是唯一例外，不得借此推送功能代码。
 - PR 合并不授权部署、发布、生产数据变更或真实调度规则修改；这些动作需要独立授权。
 

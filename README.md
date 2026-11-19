@@ -51,6 +51,6 @@ npm run test:browser
 
 ## 开发与交付
 
-修改前阅读 [AGENTS.md](AGENTS.md)。功能在分支上开发，行为修改先写失败测试；PR 经独立 reviewer 审阅，P0–P2 清零且验证通过后 squash 合并。
+修改前阅读 [AGENTS.md](AGENTS.md)。功能在分支上开发，行为修改先写失败测试；PR 经独立 reviewer 按 [审阅分级口径](docs/review-severity.md) 审阅，P0–P2 清零且验证通过后 squash 合并。
 
 合并不自动部署、不重启本机服务、不修改真实调度规则，也不授权目标项目发布。
