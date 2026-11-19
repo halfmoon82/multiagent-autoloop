@@ -1,0 +1,22 @@
+{
+  "appId": "cool.autoloop.console",
+  "appName": "Autoloop 控制台",
+  "webDir": "www",
+  "bundledWebRuntime": false,
+  "loggingBehavior": "none",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false
+  },
+  "autoloop": {
+    "target": "可安装 Android APK，兼容当前旧版鸿蒙设备",
+    "harmonyOsNext": false,
+    "android": {
+      "minSdkVersion": 23
+    },
+    "note": "壳资源在 www/；HTTPS 远程入口提供 /mobile/ 时 App 与控制台 API 同源。独立 APK 需由原生桥注入 window.AutoloopConsoleBase（控制台 HTTPS 地址）或把 server.url 指向 /mobile/；用户在「控制台地址」填写的地址经 HTTPS 校验。真机打包、签名与安装需单独授权。"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "autoloop-mobile-shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "独立移动端前端壳与 Android APK 打包工程；真机打包、签名与安装需单独授权，不由 CI 或 PR 合并触发。",
+  "scripts": {
+    "android:sync": "npx cap sync android",
+    "android:apk": "node build-apk.mjs"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/cli": "^6.2.0",
+    "@capacitor/core": "^6.2.0"
+  }
+}
