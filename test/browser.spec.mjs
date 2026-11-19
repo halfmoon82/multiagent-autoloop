@@ -841,7 +841,8 @@ try {
     if (op === 'quarter') { const top = Math.min(Math.max(1, Math.floor(max * 0.25)), Math.max(0, max - 1)); node.scrollTop = top; return { top, max }; }
     if (op === 'bottom') { node.scrollTop = node.scrollHeight; return node.scrollTop; }
     if (op === 'atBottom') return node.scrollHeight - node.scrollTop - node.clientHeight < 40;
-    return node.scrollTop;
+    if (op === 'read') return node.scrollTop;
+    throw new Error(`未知的 archiveScroll 操作：${op}`);
   }, op);
   const scrollTarget = await archiveScroll('quarter');
   assert.ok(scrollTarget.max > 4, 'archived transcript must be scrollable to verify scroll survival');
