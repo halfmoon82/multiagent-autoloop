@@ -131,6 +131,14 @@ try {
   assert.equal(await page.locator('.navigation .nav-item.active').count(), 0, '情境屏幕不点亮任何主导航项');
   assert.equal(hub.requests.some(r => r.url.includes('/v1/runs')), false, '创建 DAG 不触碰 Hub 旧通道');
   const runs = store.listRuns(); assert.equal(runs.length, 1);
+  // 节点 PR：按发布器真实写法登记在根 run.prs（registerPr 新的、再把旧的标为被取代关闭），各轮 nodeRuns[].prs 保持为空。
+  // 页面必须链到仍开着的 #7，不显示被取代的 #6；没有 PR 的节点如实显示「暂无 PR」（#142 回归）。
+  const PR_OLD = 'https://github.com/example/demo/pull/6', PR_NEW = 'https://github.com/example/demo/pull/7';
+  store.registerPr(runs[0].runId, 'a', PR_OLD);
+  store.registerPr(runs[0].runId, 'a', PR_NEW);
+  store.publishClosePr(runs[0].runId, 'a', PR_OLD, { supersededBy: PR_NEW });
+  const prLinksIn = selector => page.evaluate(sel => [...document.querySelectorAll(`${sel} a`)].map(a => a.getAttribute('href')).filter(href => /\/pull\//.test(href || '')), selector);
+  const textIn = selector => page.evaluate(sel => document.querySelector(sel)?.innerText || '', selector);
   assert.deepEqual(runs[0].authorizationSnapshot.allowedActions.includes('deploy'), false);
 
   // 总览分组：新 DAG 出现，旧区域保留
@@ -156,6 +164,10 @@ try {
   // DAG 总览与串行总览同构：环形扇区切换右侧单个节点详情，不离开总览
   const dagDetailTitle = page.locator('#dag-overview-list .overview-node-head strong');
   assert.equal(await dagDetailTitle.innerText(), '账户模型', 'default DAG detail shows the current pending node');
+  await page.waitForFunction(url => [...document.querySelectorAll('#dag-overview-list .overview-node a')].some(a => a.getAttribute('href') === url), PR_NEW, { timeout: 6000 });
+  const overviewLinksA = await prLinksIn('#dag-overview-list .overview-node');
+  assert.ok(overviewLinksA.length >= 1 && overviewLinksA.every(href => href === PR_NEW), `overview node detail links only the live PR #7 (got ${overviewLinksA.join(', ')})`);
+  assert.match(await textIn('#dag-overview-list .overview-node'), /查看 PR/, 'overview node detail labels the evidence as 查看 PR');
   // 定位、滚入视口、算坐标在页面内一次同步完成（总览每 2 秒整块重建，原先靠 6 次重试兜底撞上重建的情况）。
   // 随后按坐标点击：即使其间重建，新扇区位置相同照样命中。
   const dagPoint = await page.evaluate(radians => {
@@ -171,6 +183,8 @@ try {
   assert.ok(dagPoint, 'DAG ring sector b must exist');
   await page.mouse.click(dagPoint.x, dagPoint.y);
   assert.equal(await dagDetailTitle.innerText(), XSS, 'clicking a DAG sector switches the detail');
+  assert.deepEqual(await prLinksIn('#dag-overview-list .overview-node'), [], 'a node without a registered PR has no PR link');
+  // 总览节点详情只在有 PR 时出现「查看 PR」链接（无 PR 不出文案）；「暂无 PR」文案在 DAG 详情的「证据」行断言
   assert.equal(await page.locator('#dag-overview-list .overview-node img').count(), 0, 'node title renders as text in the overview detail');
   assert.equal(await page.locator('#view-overview').isVisible(), true, 'DAG ring click stays on the overview');
   assert.equal(await page.locator('#view-dag').isVisible(), false, 'DAG ring click must not open the detail view');
@@ -188,6 +202,12 @@ try {
   assert.equal(await page.locator('#dag-node-detail img').count(), 0);
   assert.match(await page.locator('#dag-node-detail').innerText(), /模型待选择/);
   assert.match(await page.locator('#dag-node-detail').innerText(), /产出契约：计费规则|计费规则/);
+  assert.match(await textIn('#dag-node-detail'), /暂无 PR/, 'DAG detail: node without PR says 暂无 PR');
+  assert.deepEqual(await prLinksIn('#dag-node-detail'), [], 'DAG detail: node without PR has no PR link');
+  await page.locator('#dag-detail [data-dag-node="a"]').click();
+  await page.waitForFunction(() => document.querySelector('#dag-node-detail h3')?.textContent === '账户模型', null, { timeout: 6000 });
+  assert.deepEqual(await prLinksIn('#dag-node-detail'), [PR_NEW], 'DAG detail: node links the live PR #7, never the superseded #6');
+  await page.locator('#dag-detail [data-dag-node="b"]').click();
   assert.match(await page.locator('.run-metrics').innerText(), /1 \/ 3|1 \/ 4|0 \/ 4/);
   await noOverflow('dag-desktop');
   await page.screenshot({ path: path.join(process.env.DAG_SHOTS || root, 'dag-desktop.png'), fullPage: true });
