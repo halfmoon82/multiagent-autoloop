@@ -404,3 +404,24 @@ test('开发回执 done 但没有任何提交：按失败尝试重派，不原�
   assert.ok(s.hub.last('a'), '重派开发而不是把同一个 done run 每轮重抛');
   assert.equal(s.ctl.snapshot().nodes.a.lastError, null, '已转为失败重试，不再记同一错误');
 });
+
+test('派发提示带逐字 advance 回执模板（缺 detail 会被 Hub 判 malformed）', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick();
+  const dev = s.hub.last('a');
+  const devRun = s.runOf('a');
+  assert.match(dev.prompt, /"type":"dag\.node\.advance"/);
+  assert.ok(dev.prompt.includes(`"advanceId":"${devRun.expectedAdvanceId}"`), '回执模板必须逐字带 expectedAdvanceId');
+  assert.match(dev.prompt, /"runId":"[^"]+"/);
+  assert.match(dev.prompt, /"nodeId":"a"/);
+  assert.match(dev.prompt, /"role":"dev"/);
+  assert.match(dev.prompt, /"generation":1,"attempt":1/);
+  assert.match(dev.prompt, /"outcome":"done"/);
+  s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  const review = s.hub.last('a', 'review');
+  const reviewRun = s.runOf('a', 'review');
+  assert.match(review.prompt, /"type":"dag\.auto\.review\.advance"/);
+  assert.ok(review.prompt.includes(`"advanceId":"${reviewRun.expectedAdvanceId}"`));
+  assert.match(review.prompt, /"role":"review"/);
+  assert.match(review.prompt, /"outcome":"accepted"/);
+});
