@@ -80,12 +80,12 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
   };
 
   const tierOf = (root, id, role, n) => nodeTier(root.nodes.find(x => x.id === id) || {}, role, { bump: n.tierBump || 0 });
-  // 换打法留痕：记录本次换打法后开发角色将使用的档位。
-  const applyApproach = (root, st, id, approach, generation) => {
+  // 换打法留痕：记录本次换打法后该角色将使用的档位。
+  const applyApproach = (root, st, id, approach, generation, role = 'dev') => {
     const n = st.nodes[id];
     n.model = approach.model ?? n.model;
     n.tierBump = (n.tierBump || 0) + Math.max(0, Number(approach.tierBump) || 0);
-    st.approachChanges.push({ nodeId: id, generation, reason: approach.reason, model: approach.model ?? null, tier: tierOf(root, id, 'dev', n) });
+    st.approachChanges.push({ nodeId: id, generation, reason: approach.reason, model: approach.model ?? null, tier: tierOf(root, id, role, n) });
   };
 
   async function send(root, id, run, n) {
@@ -270,7 +270,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       const prev = latest(root, id, role);
       if (todo.reason === 'change-approach') {
         const approach = await chooseApproach({ nodeId: id, run: prev });
-        applyApproach(root, st, id, approach, prev.generation + (prev.attempt >= MAX_ATTEMPTS ? 1 : 0));
+        applyApproach(root, st, id, approach, prev.generation + (prev.attempt >= MAX_ATTEMPTS ? 1 : 0), role);
       }
       await reattempt(root, st, id, role, todo.reason, true); return;
     }

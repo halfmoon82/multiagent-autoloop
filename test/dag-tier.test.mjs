@@ -40,6 +40,15 @@ test('资金/数据/安全节点：开发至少 standard，审阅 heavy（显式
     assert.equal(nodeTier(node([file], { complexity: 'light' }), 'dev'), 'standard', file);
   }
   assert.equal(nodeTier(node(['src/author-list.mjs']), 'review'), 'standard', '不能把 author 误判为 auth');
+  for (const file of ['src/paymentService.ts', 'src/AuthProvider.tsx', 'src/userAuth.ts', 'src/authentication.mjs', 'src/password-reset.mjs', '.env.local']) {
+    assert.equal(nodeTier(node([file]), 'review'), 'heavy', file);
+  }
+});
+
+test('整合审阅节点（空文件、以 dev 派发）固定 heavy，不被判成最便宜档', () => {
+  const ir = { id: 'integration-review', depends_on: ['a'], contract: { input: 'i', output: 'o', error_behavior: 'e', acceptance_example: 'a', files: [] } };
+  assert.equal(nodeTier(ir, 'dev'), 'heavy');
+  assert.equal(nodeTier({ ...ir, id: 'final-check', integration_review: true }, 'dev'), 'heavy');
 });
 
 test('升档：light→standard→heavy，heavy 封顶；升档不低于底线', () => {
