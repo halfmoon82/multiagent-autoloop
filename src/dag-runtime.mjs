@@ -16,6 +16,7 @@ import * as wip from './dag-wip.mjs';
 import { hubRequest } from './hub.mjs';
 import { verifyDesign as defaultVerifyDesign } from './design-verify.mjs';
 import { ensureMirror } from './dag-mirror.mjs';
+import { loadEnabledTiers } from './dag-tier.mjs';
 
 export const MIN_POLL_MS = 5000;
 const HUB_STATES = new Set(['queued', 'claimed', 'unknown', 'done', 'nothing', 'cancelled']);
@@ -37,11 +38,13 @@ export function createHubAdapter({ config, request = hubRequest, project } = {})
   const outcome = eventNo => request(config, `/v1/events/${encodeURIComponent(eventNo)}`, { auth: 'source' });
   const newest = out => [...(out?.runs || [])].sort((a, b) => b.run - a.run)[0] || null;
   return {
-    async dispatch({ run, slot, worktree, branch, expectedAdvanceId, model, prompt }) {
-      const detail = JSON.stringify({ runId: run.runId, nodeId: run.nodeId, role: run.role, generation: run.generation, attempt: run.attempt, slot, worktree, branch, expectedAdvanceId, model: model ?? null, prompt });
+    async dispatch({ run, slot, worktree, branch, expectedAdvanceId, model, tier, prompt }) {
+      const detail = JSON.stringify({ runId: run.runId, nodeId: run.nodeId, role: run.role, generation: run.generation, attempt: run.attempt, slot, worktree, branch, expectedAdvanceId, model: model ?? null, tier: tier ?? null, prompt });
       if (detail.length > 4000) throw new Error('派发事件正文超过 4000 字符，拒绝截断派发');
+      // 档位只在运行目录开关启用后才进入事件类型（由对应 Hub 规则选执行者/模型）；每次派发现读，改开关无需重启。
+      const routed = tier && loadEnabledTiers(config?.root).has(tier) ? `${run.role}.${tier}` : run.role;
       const res = await request(config, '/v1/events', { method: 'POST', auth: 'source', body: {
-        id: `dag:${run.runId}`, type: dagEventType(project || run.project, run.role), subject: `dag-${seg(run.nodeId)}`,
+        id: `dag:${run.runId}`, type: dagEventType(project || run.project, routed), subject: `dag-${seg(run.nodeId)}`,
         summary: `DAG ${run.nodeId} ${run.role} g${run.generation}a${run.attempt}`.slice(0, 200), detail,
       } });
       if (!res || !Number.isInteger(res.event)) throw new Error('Hub 未返回事件号，派发未确认');
