@@ -194,9 +194,10 @@ export function scanForQuotaDetours(config, options = {}) {
       states.delete(key); // 成功或非额度失败都打断同 agent+model 的连续命中
     }
   }
-  // 只有窗口末尾仍在连续命中的 streak 才登记：历史 streak 被后来的成功打断的不误绕。
+  // 只有窗口末尾仍在连续命中且达到阈值的 streak 才登记：历史 streak 被后来的成功打断的不误绕。
+  // 用 >=：连续命中超过阈值（更该绕行）不能漏掉。
   const candidates = [...states.values()]
-    .filter(state => state.count === threshold)
+    .filter(state => state.count >= threshold)
     .map(state => ({ agent: state.agent, model: state.model, kind: state.kind, at: state.at, hits: state.count, evidence: state.samples.join('；') }));
 
   const detours = [];

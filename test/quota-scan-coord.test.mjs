@@ -125,6 +125,19 @@ test('「调度自愈处理」这类 coord 规则名能被判出工作类型，�
   assert.deepEqual(result.detours[0].rules.map(r => r.name), ['调度自愈处理']);
 });
 
+test('连续命中超过阈值（4+ 次）也照样登记绕行', () => {
+  const config = setup();
+  mkHubDb(config.root, [
+    { id: 1, rule: '调度会话执行', agent: 'codex-full-tier-light', error: hubErr },
+    { id: 2, rule: '调度会话执行', agent: 'codex-full-tier-light', error: hubErr },
+    { id: 3, rule: '调度会话执行', agent: 'codex-full-tier-light', error: hubErr },
+    { id: 4, rule: '调度会话执行', agent: 'codex-full-tier-light', error: hubErr },
+  ]);
+  const result = scanForQuotaDetours(config, { policy, threshold: 3, now: new Date('2026-11-19T11:00:00Z'), dryRun: false });
+  assert.equal(result.detours.length, 1, 'count>=threshold 才放行，不是 ==threshold');
+  assert.equal(result.detours[0].blockedAgent, 'codex-full-tier-light');
+});
+
 test('窗口内出现过连续命中但最新已恢复成功，不误登记绕行', () => {
   const config = setup();
   mkHubDb(config.root, [
