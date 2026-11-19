@@ -68,7 +68,7 @@ export function defaultUserCodexHome(env = process.env) {
 }
 
 // 返回专用 CODEX_HOME 绝对路径；任何一步失败都抛错，由调用方拒绝启动（不回退全局配置）。
-export function prepareSessionCodexHome({ targetDir, userCodexHome = defaultUserCodexHome() } = {}) {
+export function prepareSessionCodexHome({ targetDir, userCodexHome = defaultUserCodexHome(), model = null } = {}) {
   if (!targetDir) throw new Error('未指定会话专用 CODEX_HOME 目录');
   const target = path.resolve(targetDir);
   // 预置软链可能指向 ~/.codex，随后的重写/删凭据会波及用户全局配置：软链一律拒绝启动。
@@ -79,7 +79,20 @@ export function prepareSessionCodexHome({ targetDir, userCodexHome = defaultUser
   let userToml = '';
   try { userToml = readFileSync(path.join(userCodexHome, 'config.toml'), 'utf8'); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
-  const inherited = mergeInheritedConfig(userToml);
+  let inherited = mergeInheritedConfig(userToml);
+  // 管理后台为本类会话选定的档位模型：替换继承来的顶层 model（模型名已在 platform-models 校验为安全字符）。
+  if (model) {
+    if (!/^[A-Za-z0-9][\w.:/@+-]{0,99}$/.test(String(model))) throw new Error(`会话模型名不合法：${model}`);
+    // TOML：表头之后的键属于该表，只能去掉/插入顶层（首个表头之前）的 model。
+    const statements = splitTomlStatements(inherited);
+    let topLevel = true;
+    const kept = statements.filter(statement => {
+      const first = statement.split('\n')[0].trim();
+      if (/^\[/.test(first) && !first.includes('=')) topLevel = false;
+      return !(topLevel && /^model\s*=/.test(first));
+    });
+    inherited = [`model = "${model}"`, ...kept].join('\n');
+  }
   const content = [
     '# 由控制台生成，每次开会话前重写，请勿手改（改动会被覆盖）。',
     '# 权限由控制台 #decidePermission 裁定：审批请求必须回到控制台，不继承用户全局 approval_policy。',

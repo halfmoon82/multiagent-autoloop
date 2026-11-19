@@ -76,7 +76,11 @@ try {
   assert.equal(await section.locator('.arch-row').count(), 2, 'project filter must narrow the archive');
   assert.equal(await section.locator('.arch-group-name').count(), 0, 'filtered archive drops group headings');
   assert.ok((await section.locator('summary .arch-scope').innerText()).includes('alpha'), 'filter scope must be visible');
-  assert.ok((await section.locator('.arch-row').first().innerText()).includes('Alpha DAG 任务') || (await section.innerText()).includes('Alpha 全完成任务'), 'alpha rows must be the alpha tasks');
+  const alphaRows = await section.locator('.arch-row').allInnerTexts();
+  assert.equal(alphaRows.length, 2, 'alpha must keep exactly its own two archived rings');
+  assert.ok(alphaRows.some(text => text.includes('Alpha DAG 任务')), 'alpha DAG task row must be shown');
+  assert.ok(alphaRows.some(text => text.includes('Alpha 全完成任务')), 'alpha serial task row must be shown');
+  assert.ok(alphaRows.every(text => !text.includes('Beta')), 'beta rows must be filtered out');
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.equal(overflow, 0, 'desktop must not overflow horizontally');

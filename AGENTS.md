@@ -31,7 +31,8 @@
 | `src/session-permission.mjs` / `src/session-codex-home.mjs` | 按 kind 的权限裁定矩阵；会话专用 CODEX_HOME（强制 on-request） | 不继承用户全局 approval_policy，不信任提示词护栏 |
 | `src/session-archive.mjs` | 调度会话写穿存档（console-sessions/）与继续提示词拼装 | ACP 进程恢复、会话业务逻辑 |
 | `src/models.mjs` | 本机模型标签的只读发现与默认文案 | 模型计费推断、凭证采集 |
-| `src/dag-tier.mjs` | DAG 节点成本优先分档（light/standard/heavy）、审阅与敏感节点底线、换打法升档、`dag-tiers.json` 只读开关 | 具体模型名、执行者映射（属 Hub 规则）、rules.json 写入 |
+| `src/dag-tier.mjs` | DAG 节点成本优先分档（light/standard/heavy）、审阅与敏感节点底线、换打法升档、`platform-models.json` 开关只读与分档规则存在性检查 | 具体模型名、执行者映射（属 Hub 规则）、rules.json 写入 |
+| `src/platform-models.mjs` | 管理后台「平台与模型」：平台自动发现与可选模型只读发现、三档模型/工作分配/会话档位校验、在状态锁内原子生成分档执行者与规则（含备份）、写 `platform-models.json` 与 `detour-policy.json` defaults、会话启动模型 | 节点分档判定、频限绕行登记、会话沙箱护栏 |
 | `src/serial-progress.mjs` | 串行编排状态文件（`*-serial.json`）读取、项目映射与进度计算 | 编排状态写入、节点计划定义 |
 | `src/chain-closeout.mjs` | 串行链收口巡检（无模型）：完成链独占 cron 规则暂停（中台 pause）、链文件归档（`.done-<日期>` 后缀）与收口审计（`closeouts.jsonl`） | rules.json 编辑、编排状态写入、事件路由 |
 | `src/detour.mjs` | 频限绕行登记（`detours.json`）、冷却核实、rules.json 原子回归与状态锁（`withStateLock`，rules.mjs 表单保存共用） | 探测命令实现、Hub 事件、规则表单校验 |

@@ -44,7 +44,7 @@
 | 条件 | 状态 | 主视图 |
 | --- | --- | --- |
 | 最新 run ∈ {`queued`, `claimed`} | `active` | 显示 |
-| 最新 run `done` 且该 run 全部节点 `accepted`（历史记录里可能是 `done`） | `completed` | 归档 |
+| 最新 run `done` 且该 run 全部节点 `accepted`（历史记录里可能是 `done`；跑完后计划删过节点、计数多于计划也按完成算） | `completed` | 归档 |
 | 最新 run ∈ {`cancelled`, `abandoned`, `blocked_unknown`} 且无进行中 run | `cancelled` | 归档 |
 | 计划文件存在但从未运行 | `not_started` | 显示（0%） |
 | 最新 run `done` 但仍有节点未 `accepted` | 不归档 | 由环视图显示（不在本条归档范围内） |
@@ -55,7 +55,7 @@
 
 `{ taskId, kind: serial|dag, project, title, percent, nodes: {done,total}, reason: completed|cancelled|abandoned, archivedAt }`
 
-- `taskId` 带项目前缀（`serial:<project>:<stem>`、`dag:<project>:<planId>`），跨项目同名不会互相吞掉。
+- `taskId` 带项目前缀（`serial:<project>:<stem>`、`dag:<project>:<planId>`），DAG 归并键同样是「项目 + planId」，跨项目同名不会互相吞掉。
 - `link`（跳转原始记录）暂不在本 PR 范围，后续由环视图/详情页统一提供。
 
 - `archivedAt`：串行取文件名里的 `YYYYMMDD`；DAG 取最新终态 run 的 `finishedAt || updatedAt`。

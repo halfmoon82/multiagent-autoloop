@@ -67,14 +67,16 @@ export function archiveDag(runs, { titles = {}, now = new Date() } = {}) {
   const roots = runs.filter(run => run && run.nodeId === '__root__' && run.planId);
   const latest = new Map();
   for (const run of roots) {
-    const key = String(run.planId);
+    // 跨项目同名 planId 不能互相吞并：按 项目 + planId 归并。
+    const key = `${String(run.project || '')}::${String(run.planId)}`;
     const prev = latest.get(key);
     const at = String(run.createdAt || '');
     const prevAt = String(prev?.createdAt || '');
     if (!prev || at > prevAt) latest.set(key, run);
   }
   const out = [];
-  for (const [planId, run] of latest) {
+  for (const [, run] of latest) {
+    const planId = String(run.planId);
     const status = String(run.status || '');
     if (ACTIVE.has(status)) continue;
     const total = Array.isArray(run.nodes) ? run.nodes.length : 0;
@@ -82,12 +84,12 @@ export function archiveDag(runs, { titles = {}, now = new Date() } = {}) {
     const states = Object.values(run.publish?.nodes || {}).map(node => String(node?.state || ''));
     // 生产里节点终态是 accepted（dag-controller: n.state='accepted'）；done 只兼容历史记录。
     const done = states.length ? states.filter(state => state === 'accepted' || state === 'done').length : (status === 'done' ? total : 0);
-    const completed = status === 'done' && (done === total || !states.length);
+    const completed = status === 'done' && (done >= total || !states.length);
     if (!completed && !TERMINAL_CANCEL.has(status)) continue;
     out.push({
       taskId: `dag:${String(run.project || '')}:${planId}`, kind: 'dag', source: planId,
       project: String(run.project || ''),
-      title: String(titles[planId] || planId),
+      title: String(titles[`${String(run.project || '')}::${planId}`] || titles[planId] || planId),
       percent: Math.round((done / total) * 100), nodes: { done, total },
       reason: completed ? 'completed' : 'cancelled',
       archivedAt: String(run.finishedAt || run.updatedAt || run.createdAt || now.toISOString()).slice(0, 10),
@@ -116,7 +118,9 @@ export function planTitles(projects = []) {
     for (const name of names) {
       const plan = readJson(path.join(dir, name));
       const planId = String(plan?.plan_id || name.replace(/\.json$/, ''));
-      if (plan?.title) titles[planId] = String(plan.title).slice(0, 120);
+      if (!plan?.title) continue;
+      titles[`${String(project)}::${planId}`] = String(plan.title).slice(0, 120);
+      if (!titles[planId]) titles[planId] = String(plan.title).slice(0, 120);
     }
   }
   return titles;

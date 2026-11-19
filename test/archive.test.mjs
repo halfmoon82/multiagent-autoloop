@@ -123,3 +123,18 @@ test('planTitles 读取计划标题，读不到回退 planId', () => {
     assert.equal(titles.p1, '标题一');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('跨项目同名 planId 不互相吞并', () => {
+  const base = { nodeId: '__root__', status: 'done', createdAt: '2026-11-19T02:00:00Z', nodes: [{}], publish: { nodes: { a: { state: 'accepted' } } } };
+  const items = archiveDag([
+    { ...base, runId: 'r1', planId: 'same-plan', project: '/p/one' },
+    { ...base, runId: 'r2', planId: 'same-plan', project: '/p/two' },
+  ]);
+  assert.equal(items.length, 2);
+  assert.deepEqual(new Set(items.map(item => item.project)), new Set(['/p/one', '/p/two']));
+});
+
+test('跑完后计划删过节点（done > total）仍算完成', () => {
+  const runs = [{ runId: 'r', planId: 'plan-g', nodeId: '__root__', status: 'done', project: '/p/demo', createdAt: '2026-11-19T02:00:00Z', nodes: [{}, {}], publish: { nodes: { a: { state: 'accepted' }, b: { state: 'accepted' }, gone: { state: 'accepted' } } } }];
+  assert.equal(archiveDag(runs)[0]?.reason, 'completed');
+});

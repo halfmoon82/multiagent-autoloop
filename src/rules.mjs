@@ -51,7 +51,7 @@ function ruleFrom(input) {
   if (parallelText && (!/^[1-9][0-9]*$/.test(parallelText) || Number(parallelText) > 100)) throw new RuleError('并发数要是 1–100 的整数');
   return { name, when, to, cwd, prompt, ...(parallelText ? { parallel: Number(parallelText) } : {}), resume: input.resume === true };
 }
-function defaultCheck(config, draft) {
+export function defaultCheck(config, draft) {
   try { execFileSync(config.cliPath, ['check', draft], { env: { ...process.env, AGENT_AUTOLOOP_HOME: config.root }, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 }); }
   catch (error) { throw new RuleError(error.stderr?.toString().trim() || error.stdout?.toString().trim() || error.message); }
 }
