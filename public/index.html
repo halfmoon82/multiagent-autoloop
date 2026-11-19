@@ -26,7 +26,7 @@
     <section id="view-overview" class="view" aria-labelledby="overview-title">
       <div class="page-heading"><div><p class="eyebrow">PILOT OVERVIEW</p><h1 id="overview-title">今天的自动化</h1><p class="subtle">看见进展，只处理真正需要你的事。</p></div><button id="overview-new-session" class="button primary" type="button"><span class="button-icon">＋</span>新建会话</button></div>
       <div id="summary" class="summary-grid" aria-live="polite"></div>
-      <section class="panel" aria-labelledby="progress-title"><div class="panel-heading"><h2 id="progress-title">项目任务进度</h2><span class="subtle">串行链与并行 DAG 在同一项目中汇总 · 点标题看详情，点摘要行展开</span></div><div id="progress-state" class="state-banner" role="status" hidden></div><div id="progress-list" class="list" aria-live="polite"></div><div id="dag-overview-list" class="dag-overview-list" aria-live="polite"></div></section>
+      <section class="panel" aria-labelledby="progress-title"><div class="panel-heading"><div><h2 id="progress-title">项目任务进度</h2><span class="subtle">串行链与并行 DAG 在同一项目中汇总 · 点标题看详情，点摘要行展开</span></div><button id="overview-dag-new" class="button secondary" type="button">新建 DAG（执行授权）</button></div><div id="progress-state" class="state-banner" role="status" hidden></div><div id="progress-list" class="list" aria-live="polite"></div><div id="dag-overview-list" class="dag-overview-list" aria-live="polite"></div></section>
       <div class="work-grid" aria-live="polite">
         <section class="panel"><div class="panel-heading"><h2>正在运行</h2><span class="subtle">最近 5 条</span></div><div id="running-list" class="list compact-list"></div></section>
         <section class="panel"><div class="panel-heading"><h2>等待重试</h2><span class="subtle">最近 5 条</span></div><div id="retrying-list" class="list compact-list"></div></section>
@@ -94,6 +94,11 @@
       <div class="classification-override" role="radiogroup" aria-label="手动选择会话类型"><button type="button" class="active" data-type-override="auto" aria-pressed="true">自动</button><button type="button" data-type-override="normal" aria-pressed="false">普通</button><button type="button" data-type-override="scheduling" aria-pressed="false">调度</button><button type="button" data-type-override="design" aria-pressed="false">设计</button></div>
     </div>
     <div id="classification-contract" class="classification-contract">普通会话：直接创建于项目工作区，不组装额外提示词。</div>
+    <div id="new-session-error" class="dialog-error" role="alert" hidden></div>
+    <div id="new-session-conflict" class="dialog-conflict" role="alert" hidden>
+      <p id="new-session-conflict-text"></p>
+      <div class="dialog-conflict-actions"><button id="conflict-continue" class="button secondary" type="button">继续旧会话</button><button id="conflict-replace" class="button primary" type="button">关闭旧会话并新建</button></div>
+    </div>
     <div class="dialog-actions"><button class="button secondary js-close-new-session" type="button">取消</button><button id="create-session" class="button primary" type="button" disabled>创建会话</button></div>
   </dialog>
   <dialog id="rule-dialog" aria-labelledby="rule-dialog-title"><div id="rule-form-container"></div></dialog>

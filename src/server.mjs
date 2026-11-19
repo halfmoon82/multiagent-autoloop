@@ -219,7 +219,7 @@ export function createConsoleServer(config, schedulingSessions) {
     try { if (url.pathname.startsWith('/api/') && await handleApi(config, req, res, url) !== false) return; }
     catch (error) {
       const status = error instanceof RequestError || error instanceof RuleError || error instanceof SchedulingSessionError || error instanceof DagServiceError || error instanceof CardDelegateError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
-      return jsonResponse(res, status, { error: error.message });
+      return jsonResponse(res, status, { error: error.message, ...(error instanceof SchedulingSessionError && error.conflict ? { conflict: error.conflict } : {}) });
     }
     const asset = FILES.get(url.pathname);
     if (asset && req.method === 'GET') {
