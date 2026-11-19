@@ -1,6 +1,6 @@
 import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
 import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, chainCurrentExecutor, projectUsageText, usageNotes } from './status-sections.mjs';
-import { buildSerialView, progressVisual } from './progress-view.mjs';
+import { buildSerialView, progressOverview } from './progress-view.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function empty(container, text) { container.replaceChildren(el('div', 'empty', text)); }
 function badge(text, kind = '') { return el('span', `status ${kind}`, text); }
@@ -302,7 +302,6 @@ export function renderArchivedSessions(archived = [], discoveredProjects = []) {
   });
 }
 
-const STATUS_TEXT = { done: '完成', pending: '未开始', dev_dispatched: '开发中', in_progress: '进行中', in_review: '审阅中', review: '审阅中', rework: '返工中', external_in_progress: '外部验证中', blocked: '卡住' };
 
 function countsChips(activity, cardsHere) {
   const chips = el('div', 'row-meta chips-line');
@@ -398,17 +397,9 @@ function renderChainRow(chain, sessions, rules, openCards, lines, allChains = []
     head.append(el('span', 'progress-pct', `${Math.round(chain.percent)}%`));
     main.append(head);
 
-    // #75：串行链与 DAG 共用「分段环形总进度 + 分组四栏节点卡片」组件语言。
+    // 总览：环形扇区 = 节点，右侧只显示选中/当前活跃节点；卡片高度固定，不随节点数增高。
     const view = buildSerialView(chain, chainUsageText(chainUsage(chain, rules, lines, allChains)), executor);
-    main.append(progressVisual(view, { label: `${name} `, cls: 'progress-node', key: 'serialNode', runId: chain.sourceFile, donutCls: 'serial-donut', clampSummary: true }));
-
-    if (chain.current) {
-      const line = el('div', 'current-line');
-      line.append(document.createTextNode('当前：'), el('strong', '', `${chain.current.title} · ${chain.current.part || (STATUS_TEXT[chain.current.status] || chain.current.status)} ${chain.current.percent}%`));
-      if (chain.current.summary) line.append(document.createTextNode(` — ${chain.current.summary.length > 80 ? `${chain.current.summary.slice(0, 80)}…` : chain.current.summary}`));
-      if (chain.current.prUrl) { const link = el('a', 'pr-link', 'PR'); link.href = chain.current.prUrl; link.rel = 'noreferrer'; line.append(link); }
-      main.append(line);
-    }
+    main.append(progressOverview(view, { runId: chain.sourceFile, open: 'serial' }));
 
     const activity = projectActivity(chain.project, rules, lines);
     const cardsHere = openCards.filter(card => matchesProject(projectForCard(card, rules), chain.project)).length;

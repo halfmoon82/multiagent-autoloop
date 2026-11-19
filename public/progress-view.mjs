@@ -130,6 +130,124 @@ export function buildDagView(detail) {
   };
 }
 
+// ---------- 总览项目进度：环形扇区 + 单节点详情（高度固定，不随节点数变化） ----------
+// 选择只记用户显式点过的节点；没有显式选择时每次渲染都回到“当前活跃节点”，跟随轮询更新。
+const overviewSelection = new Map();
+
+function overviewDefaultNode(view) {
+  const byId = id => (id ? view.nodes.find(node => node.id === id) : null);
+  const current = byId(view.extra?.current?.id);
+  if (current) return current;
+  return view.nodes.find(node => ['active', 'review', 'rework', 'blocked'].includes(node.status.kind))
+    || view.nodes.find(node => node.status.kind === 'pending')
+    || view.nodes[view.nodes.length - 1] || null;
+}
+
+function overviewRingCenter(view) {
+  const center = el('div', 'overview-ring-center');
+  center.append(el('strong', '', `${view.percent}%`), el('span', '', `总进度 · ${view.nodes.length} 个节点`));
+  return center;
+}
+
+// 每个节点 = 环形中的一个扇区；扇区可点、可 Tab+Enter 切换右侧详情。
+export function progressRing(view, { selectedId = '', onPick = null } = {}) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const wrap = el('div', 'overview-ring');
+  wrap.dataset.segments = String(view.nodes.length);
+  wrap.setAttribute('role', 'group');
+  wrap.setAttribute('aria-label', `${view.title} 节点环，共 ${view.nodes.length} 个节点，点击扇区切换详情`);
+  const size = 132, radius = 52, center = size / 2;
+  const circumference = 2 * Math.PI * radius;
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+  svg.setAttribute('class', 'overview-ring-svg');
+  const share = view.nodes.length ? circumference / view.nodes.length : 0;
+  const gap = view.nodes.length > 1 ? Math.min(2.4, share / 3) : 0;
+  const frame = el('div', 'overview-ring-frame');
+  view.nodes.forEach((node, index) => {
+    const length = Math.max(share - gap, 0.6);
+    const seg = document.createElementNS(NS, 'circle');
+    seg.setAttribute('cx', String(center)); seg.setAttribute('cy', String(center)); seg.setAttribute('r', String(radius));
+    seg.setAttribute('fill', 'none');
+    seg.setAttribute('stroke', node.color);
+    seg.setAttribute('stroke-width', node.id === selectedId ? '20' : '14');
+    seg.setAttribute('stroke-dasharray', `${length} ${circumference - length}`);
+    seg.setAttribute('stroke-dashoffset', String(-(index * share + gap / 2)));
+    seg.setAttribute('transform', `rotate(-90 ${center} ${center})`);
+    seg.setAttribute('class', `ring-seg ${node.status.kind}${node.id === selectedId ? ' selected' : ''}`);
+    seg.dataset.ringNode = node.id;
+    seg.setAttribute('role', 'button');
+    seg.setAttribute('tabindex', '0');
+    seg.setAttribute('aria-pressed', String(node.id === selectedId));
+    seg.setAttribute('aria-label', `${node.title}，${node.status.label}${node.id === selectedId ? '，当前选中' : ''}`);
+    const tip = document.createElementNS(NS, 'title');
+    tip.textContent = `${node.title} · ${node.status.label}`;
+    seg.append(tip);
+    if (onPick) {
+      const pick = event => {
+        if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault(); event.stopPropagation();
+        onPick(node.id);
+      };
+      seg.addEventListener('click', pick);
+      seg.addEventListener('keydown', pick);
+    }
+    svg.append(seg);
+  });
+  frame.append(svg, overviewRingCenter(view));
+  wrap.append(frame, el('small', 'overview-ring-note', view.segmentNote || ''), el('small', 'overview-ring-note', '点扇区切换节点'));
+  return wrap;
+}
+
+// 右侧只显示一个节点：标题 + 状态 + 四栏事实；内容超出在面板内滚动，卡片高度不变。
+function overviewNodePanel(node, { open = '', runId = '' } = {}) {
+  const panel = el('div', 'overview-node');
+  if (!node) { panel.append(el('div', 'empty', '暂无节点。')); return panel; }
+  const head = el('div', 'overview-node-head');
+  head.append(el('strong', '', node.title), badge(node.status.label, node.status.kind === 'done' ? 'good' : node.status.kind === 'blocked' ? 'warn' : ''));
+  panel.append(head);
+  const facts = el('div', 'overview-node-facts');
+  const fact = (label, value, cls = '') => {
+    const row = el('div', 'node-field');
+    row.append(el('span', 'node-field-label', label), el('span', `node-field-value ${cls}`.trim(), value));
+    facts.append(row);
+  };
+  fact('状态', `${node.status.label}${node.part ? ` · ${node.part}` : ''}`);
+  if (Number.isFinite(node.percent)) fact('节点内进度', `${node.percent}%`);
+  fact('任务摘要', node.summary, 'node-task-summary');
+  fact('执行 Agent', node.agent, 'node-agent');
+  fact('模型', node.model, 'node-model');
+  fact('费用 Token', node.usageText, 'node-usage');
+  panel.append(facts);
+  if (node.prUrl) { const link = el('a', 'pr-link', '查看 PR'); link.href = node.prUrl; link.rel = 'noreferrer'; link.target = '_blank'; panel.append(link); }
+  if (open === 'serial') {
+    const btn = el('button', 'text-button', '查看运行详情 →');
+    btn.type = 'button'; btn.dataset.serialNode = node.id; btn.dataset.serialRun = runId;
+    panel.append(btn);
+  }
+  return panel;
+}
+
+
+// 总览项目进度：环形 + 单节点详情。高度由 CSS 固定，节点多少只改变扇区数量。
+export function progressOverview(view, { runId = '', open = '' } = {}) {
+  const root = el('div', 'overview-progress');
+  root.dataset.progressKind = view.kind;
+  const paint = (pickedId = null) => {
+    if (pickedId) overviewSelection.set(view.key, pickedId);
+    const chosen = overviewSelection.get(view.key);
+    const node = (chosen && view.nodes.find(item => item.id === chosen)) || overviewDefaultNode(view);
+    const hadFocus = root.contains(document.activeElement) && document.activeElement !== document.body;
+    root.replaceChildren(
+      progressRing(view, { selectedId: node?.id || '', onPick: id => paint(id) }),
+      overviewNodePanel(node, { open, runId }),
+    );
+    if (hadFocus && node) root.querySelector(`.ring-seg[data-ring-node="${CSS.escape(String(node.id))}"]`)?.focus({ preventScroll: true });
+  };
+  paint();
+  return root;
+}
+
 // ---------- 共用组件：分段环 / 四栏节点卡片 / 分组 / 视觉区 ----------
 export function progressDonut(view, { label = '', cls = '' } = {}) {
   const nodes = view.nodes || [];
@@ -144,12 +262,8 @@ export function progressDonut(view, { label = '', cls = '' } = {}) {
   return box;
 }
 
-// 总览卡片每 2s 轮询重建，展开状态放在模块级，跨渲染保留（键 = 卡片类型 + 运行 + 节点）。
-const expandedSummaries = new Set();
-
 // 四栏：任务摘要 / 执行 Agent / 模型 / 费用 Token；缺数据一律如实写未上报。
-// clampSummary：总览里任务摘要默认收起一行，点摘要行就地展开；点击不得触发卡片选中/跳转。
-export function progressNodeCard(node, { cls = 'progress-node', selected = false, runId = '', key = 'serialNode', selectedRun = '', clampSummary = false } = {}) {
+export function progressNodeCard(node, { cls = 'progress-node', selected = false, runId = '', key = 'serialNode', selectedRun = '' } = {}) {
   const button = el('button', `${cls} ${node.status.kind}${selected ? ' selected' : ''}`.trim());
   button.type = 'button';
   if (key === 'dagNode') { button.dataset.dagNode = node.id; button.dataset.dagRun = runId; }
@@ -163,25 +277,8 @@ export function progressNodeCard(node, { cls = 'progress-node', selected = false
     row.append(el('span', 'node-field-label', label), el('span', `node-field-value ${valueClass}`.trim(), value));
     return row;
   };
-  const summary = field('任务摘要', node.summary, 'node-task-summary');
-  if (clampSummary) {
-    const summaryKey = `${key}:${runId || ''}:${node.id}`;
-    const paint = (open) => {
-      summary.classList.toggle('summary-collapsed', !open);
-      summary.classList.toggle('summary-expanded', open);
-      summary.title = open ? '点击收起任务摘要' : '点击展开任务摘要';
-    };
-    summary.firstElementChild.append(el('span', 'node-summary-caret', '▾'));
-    paint(expandedSummaries.has(summaryKey));
-    summary.addEventListener('click', event => {
-      event.preventDefault(); event.stopPropagation(); // 只展开摘要，不选中节点、不跳详情
-      const open = !expandedSummaries.has(summaryKey);
-      if (open) expandedSummaries.add(summaryKey); else expandedSummaries.delete(summaryKey);
-      paint(open);
-    });
-  }
   fields.append(
-    summary,
+    field('任务摘要', node.summary, 'node-task-summary'),
     field('执行 Agent', node.agent, 'node-agent'),
     field('模型', node.model, 'node-model'),
     field('费用 Token', node.usageText, 'node-usage'),
@@ -191,35 +288,18 @@ export function progressNodeCard(node, { cls = 'progress-node', selected = false
   return button;
 }
 
-export function progressGroups(view, { cls = 'progress-node', key = 'serialNode', runId = '', selectedNode = '', selectedRun = '', clampSummary = false } = {}) {
+export function progressGroups(view, { cls = 'progress-node', key = 'serialNode', runId = '', selectedNode = '', selectedRun = '' } = {}) {
   const wrap = el('div', 'progress-waves');
   for (const group of view.groups || []) {
     const row = el('div', 'wave');
     const label = el('div', 'wave-label'); label.append(el('span', '', group.label), el('small', '', group.sublabel));
     const body = el('div', 'wave-nodes');
     for (const node of group.nodes) {
-      body.append(progressNodeCard(node, { cls, key, runId, selected: selectedNode === node.id && selectedRun === (runId || view.id), selectedRun: runId || view.id, clampSummary }));
+      body.append(progressNodeCard(node, { cls, key, runId, selected: selectedNode === node.id && selectedRun === (runId || view.id), selectedRun: runId || view.id }));
     }
     row.append(label, body); wrap.append(row);
   }
   return wrap;
-}
-
-export function progressVisual(view, { label = '', cls = 'progress-node', key = 'serialNode', runId = '', donutCls = '', clampSummary = false } = {}) {
-  const visual = el('div', 'dag-visual');
-  const donutWrap = el('div', 'donut-wrap');
-  donutWrap.append(progressDonut(view, { label, cls: donutCls }), el('small', 'subtle', view.segmentNote));
-  if (view.legend?.length) {
-    const legend = el('div', 'donut-legend');
-    for (const item of view.legend) {
-      const chip = el('span', '', '');
-      const swatch = el('i', 'legend-swatch'); swatch.style.backgroundColor = item.color;
-      chip.append(swatch, document.createTextNode(item.label)); legend.append(chip);
-    }
-    donutWrap.append(legend);
-  }
-  visual.append(donutWrap, progressGroups(view, { cls, key, runId, clampSummary }));
-  return visual;
 }
 
 // ---------- 同构的运行详情：串行与 DAG 共用同一结构 ----------
