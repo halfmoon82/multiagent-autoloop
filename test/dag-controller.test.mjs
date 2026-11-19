@@ -361,6 +361,19 @@ test('变基重审的第 3 次尝试排队等待时不按“排队满次”取�
   assert.equal(s.ctl.snapshot().nodes.a.state, 'accepted');
 });
 
+test('开发重试到第 3 次尝试时只是排队等 worker，不得按“排队满次”取消并 gate', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick();
+  for (let i = 0; i < 2; i++) { s.claimAll(); s.receipt('a', 'dev', 'rework'); await s.ctl.tick(); }
+  const dev = s.runOf('a', 'dev');
+  assert.equal(dev.attempt, 3, '第 3 次开发尝试已派发，尚未被 worker 接单');
+  await s.ctl.tick(); await s.ctl.tick();
+  assert.ok(!s.hub.cancelled.length, '排队中的重试不应被取消');
+  assert.equal(s.ctl.snapshot().nodes.a.state, 'dev', '不得 gate');
+  s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick();
+  assert.notEqual(s.ctl.snapshot().nodes.a.state, 'gated');
+});
+
 // ---- 2026-11-19 device-binding 卡住回归 ----
 test('变基重审后审阅被取消：开发原槽位重试不得继承审阅基准（否则永远没有提交可发）', async () => {
   const s = setup([mkNode('a')]);
