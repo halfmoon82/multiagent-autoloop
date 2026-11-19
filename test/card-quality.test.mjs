@@ -113,7 +113,7 @@ test('初始化模板独立携带审阅分级口径（三条件拦截、四类�
   for (const rel of ['../docs/scheduling-contract.md', '../docs/2026-11-13-project-initialization-design.md']) {
     const normalized = read(rel).replace(/\s+/g, '');
     assert.ok(!normalized.includes('按P0–P3审阅'), `${rel} 仍是旧口径「按 P0–P3 审阅」`);
-    for (const piece of ['会真实发生', '本PR', '后果够级', '合作方', '外部不可信输入', '多租户', '真实资金', '个人隐私', '外部一方', 'P3不拦合并', '已知后续', '必然变红', '回归测试', '不论哪一轮']) {
+    for (const piece of ['会真实发生', '本PR', '后果够级', '合作方', '外部不可信输入', '多租户', '真实资金', '个人隐私', '外部一方', 'P3不拦合并', '已知后续', '必然变红', '回归测试', '不论哪一轮', '占位']) {
       assert.ok(normalized.includes(piece), `${rel} 缺少审阅分级要点：${piece}`);
     }
   }
