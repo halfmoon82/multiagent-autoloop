@@ -156,25 +156,20 @@ try {
   // DAG 总览与串行总览同构：环形扇区切换右侧单个节点详情，不离开总览
   const dagDetailTitle = page.locator('#dag-overview-list .overview-node-head strong');
   assert.equal(await dagDetailTitle.innerText(), '账户模型', 'default DAG detail shows the current pending node');
-  let dagClicked = false;
-  for (let attempt = 0; attempt < 6 && !dagClicked; attempt += 1) {
-    try {
-      const seg = page.locator('#dag-overview-list .ring-seg[data-ring-node="b"]');
-      await seg.evaluate(el => el.scrollIntoView({ block: 'center' }));
-      const point = await seg.evaluate((el, radians) => {
-        const box = el.getBoundingClientRect();
-        const r = parseFloat(el.getAttribute('r'));
-        const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
-        const scale = box.width / (2 * r + stroke);
-        return { x: box.x + box.width / 2 + r * scale * Math.cos(radians), y: box.y + box.height / 2 + r * scale * Math.sin(radians) };
-      }, (-90 + 1.5 * 90) * Math.PI / 180); // 4 个扇区里第 2 个（b）的中角
-      await page.mouse.click(point.x, point.y);
-      dagClicked = true;
-    } catch {
-      await page.waitForTimeout(150);
-    }
-  }
-  assert.equal(dagClicked, true, 'ring sector click dispatched');
+  // 定位、滚入视口、算坐标在页面内一次同步完成（总览每 2 秒整块重建，原先靠 6 次重试兜底撞上重建的情况）。
+  // 随后按坐标点击：即使其间重建，新扇区位置相同照样命中。
+  const dagPoint = await page.evaluate(radians => {
+    const el = document.querySelector('#dag-overview-list .ring-seg[data-ring-node="b"]');
+    if (!el) return null;
+    el.scrollIntoView({ block: 'center' });
+    const box = el.getBoundingClientRect();
+    const r = parseFloat(el.getAttribute('r'));
+    const stroke = parseFloat(el.getAttribute('stroke-width')) || 0;
+    const scale = box.width / (2 * r + stroke);
+    return { x: box.x + box.width / 2 + r * scale * Math.cos(radians), y: box.y + box.height / 2 + r * scale * Math.sin(radians) };
+  }, (-90 + 1.5 * 90) * Math.PI / 180); // 4 个扇区里第 2 个（b）的中角
+  assert.ok(dagPoint, 'DAG ring sector b must exist');
+  await page.mouse.click(dagPoint.x, dagPoint.y);
   assert.equal(await dagDetailTitle.innerText(), XSS, 'clicking a DAG sector switches the detail');
   assert.equal(await page.locator('#dag-overview-list .overview-node img').count(), 0, 'node title renders as text in the overview detail');
   assert.equal(await page.locator('#view-overview').isVisible(), true, 'DAG ring click stays on the overview');
