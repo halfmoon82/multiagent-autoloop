@@ -35,6 +35,23 @@ const FILES = new Map([
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/archive-view.mjs', ['archive-view.mjs', 'text/javascript; charset=utf-8']], ['/archive.css', ['archive.css', 'text/css; charset=utf-8']],
 ]);
+// 移动端壳资源（独立前端，不与 public/ 网页控制台混用）：固定白名单，不读取任意路径。
+const MOBILE = path.join(MODULE_DIR, '..', 'mobile', 'app', 'www');
+const MOBILE_FILES = new Map([
+  ['/mobile/', ['index.html', 'text/html; charset=utf-8']],
+  ['/mobile/index.html', ['index.html', 'text/html; charset=utf-8']],
+  ['/mobile/app.mjs', ['app.mjs', 'text/javascript; charset=utf-8']],
+  ['/mobile/shell.mjs', ['shell.mjs', 'text/javascript; charset=utf-8']],
+  ['/mobile/styles.css', ['styles.css', 'text/css; charset=utf-8']],
+  ['/mobile/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json; charset=utf-8']],
+  ['/mobile/icon.svg', ['icon.svg', 'image/svg+xml']],
+]);
+// 移动端安全入口只中继这些既定只读控制台 API；不代理任意 URL，设备授权管理 API 不在此列。
+const MOBILE_API_ALLOWLIST = new Map([
+  ['state', '/api/state'], ['projects', '/api/projects'], ['rules', '/api/rules'],
+  ['dag-runs', '/api/dag-runs'], ['archive', '/api/archive'], ['closeouts', '/api/closeouts'],
+  ['detours', '/api/detours'], ['serial-progress', '/api/serial-progress'], ['project-usage', '/api/project-usage'],
+]);
 export function securityHeaders() {
   return { 'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'", 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'cache-control': 'no-store' };
 }
@@ -46,6 +63,21 @@ function checkWrite(req) {
   if (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) throw new RequestError(403, '拒绝跨站操作');
   if (req.headers['x-console-request'] !== '1') throw new RequestError(403, '缺少控制台请求标记');
   if (req.headers['content-type']?.split(';')[0] !== 'application/json') throw new RequestError(415, '操作内容必须是 JSON');
+}
+// 远程访问层必须终结为 HTTPS；本机直连（无转发头）保持不变。
+function requireSecureTransport(req) {
+  const forwarded = req.headers['x-forwarded-proto'];
+  if (forwarded && forwarded.split(',')[0].trim().toLowerCase() !== 'https') throw new RequestError(403, '远程访问必须使用 HTTPS');
+}
+// 设备级授权：解除授权后同一凭据立即失效；只返回该设备自身的公开信息。
+function requireMobileDevice(req, config) {
+  const token = req.headers['x-device-token'];
+  if (!config.deviceAuth || typeof token !== 'string' || !config.deviceAuth.isAuthorizedToken(token)) {
+    throw new RequestError(401, '设备未授权或授权已失效，请重新绑定');
+  }
+  const device = typeof config.deviceAuth.touch === 'function' ? config.deviceAuth.touch(token) : null;
+  if (!device) throw new RequestError(401, '设备未授权或授权已失效，请重新绑定');
+  return device;
 }
 async function readJson(req) {
   let size = 0; const chunks = [];
@@ -140,6 +172,32 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/session-classify') {
     const body = await readJson(req);
     return jsonResponse(res, 200, classifySessionRequest(body.text));
+  }
+  // 移动端安全入口（Spec §5）：设备级授权 + 固定只读 API 中继 + HTTPS，不新增弱认证入口。
+  // 控制台仍只监听本机；公网 HTTPS 终结与设备级网关的部署需单独授权，不在本 PR 内暴露远程访问。
+  if (url.pathname.startsWith('/api/mobile/')) {
+    requireSecureTransport(req);
+    // 首次绑定：一次性二维码令牌是唯一能力凭证；非浏览器客户端不受同源 CSRF 头约束，但拒绝跨站请求。
+    if (req.method === 'POST' && url.pathname === '/api/mobile/bind') {
+      if (req.headers['sec-fetch-site'] === 'cross-site') throw new RequestError(403, '拒绝跨站绑定请求');
+      if (req.headers['content-type']?.split(';')[0] !== 'application/json') throw new RequestError(415, '绑定内容必须是 JSON');
+      if (!config.deviceAuth) throw new RequestError(503, '设备授权通道不可用（未配置数据目录）');
+      const bindBody = await readJson(req);
+      return jsonResponse(res, 201, config.deviceAuth.bindDevice(bindBody));
+    }
+    if (req.method !== 'GET') throw new RequestError(404, '没有这个控制台地址');
+    const device = requireMobileDevice(req, config);
+    if (url.pathname === '/api/mobile/session') {
+      return jsonResponse(res, 200, { device, apis: [...MOBILE_API_ALLOWLIST.keys()], secure: true });
+    }
+    const relayMatch = url.pathname.match(/^\/api\/mobile\/api\/([^/]+)$/);
+    if (relayMatch) {
+      const target = MOBILE_API_ALLOWLIST.get(relayMatch[1]);
+      if (!target) throw new RequestError(404, '该 API 不在移动端允许列表中');
+      // 目标路径来自服务端常量，查询串不转发；因此不会成为任意 URL 代理。
+      return handleApi(config, req, res, new URL(target, 'http://localhost'));
+    }
+    throw new RequestError(404, '没有这个控制台地址');
   }
   if (!['POST', 'PUT', 'DELETE'].includes(req.method)) return false;
   checkWrite(req); const body = await readJson(req);
@@ -274,6 +332,11 @@ export function createConsoleServer(config, schedulingSessions) {
     if (asset && req.method === 'GET') {
       try { const body = readFileSync(path.join(PUBLIC, asset[0])); res.writeHead(200, { ...securityHeaders(), 'content-type': asset[1] }); return res.end(body); }
       catch { return jsonResponse(res, 404, { error: '控制台资源尚未安装' }); }
+    }
+    const mobileAsset = MOBILE_FILES.get(url.pathname);
+    if (mobileAsset && req.method === 'GET') {
+      try { const body = readFileSync(path.join(MOBILE, mobileAsset[0])); res.writeHead(200, { ...securityHeaders(), 'content-type': mobileAsset[1] }); return res.end(body); }
+      catch { return jsonResponse(res, 404, { error: '移动端资源尚未安装' }); }
     }
     return jsonResponse(res, 404, { error: '没有这个控制台地址' });
   });

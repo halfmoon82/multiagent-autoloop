@@ -1,0 +1,69 @@
+/* 移动端壳样式：跟随系统字体度量，触控热区约 44–48dp，安全区适配，不强制横向滚动。
+   视觉方向沿用控制台品牌绿与卡片式信息架构；不以网页缩放代替原生字体。 */
+:root {
+  color-scheme: light;
+  --ink: #0f3d2e;
+  --ink-soft: #2f6b53;
+  --mint: #d9f2e6;
+  --line: #d7e5de;
+  --bg: #f4f8f6;
+  --card: #ffffff;
+  --danger: #a3312a;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+.app { max-width: 40rem; margin: 0 auto; }
+.screen {
+  padding: calc(1rem + env(safe-area-inset-top)) calc(1rem + env(safe-area-inset-right))
+           calc(1.5rem + env(safe-area-inset-bottom)) calc(1rem + env(safe-area-inset-left));
+  overflow-wrap: anywhere;
+}
+[hidden] { display: none !important; }
+.brand { display: flex; align-items: center; gap: 0.6rem; margin: 0 0 1.2rem; }
+.brand strong { display: block; font-size: 1.15rem; letter-spacing: 0.01em; }
+.brand small { display: block; color: var(--ink-soft); font-size: 0.85rem; }
+.brand-gem {
+  display: grid; place-items: center; width: 2.5rem; height: 2.5rem; flex: 0 0 auto;
+  border-radius: 0.7rem; background: var(--ink); color: #fff; font-weight: 700; font-size: 1.2rem;
+}
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 0.9rem;
+  padding: 1rem; margin: 0 0 1rem; box-shadow: 0 1px 3px rgba(15, 61, 46, 0.06);
+}
+h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+.hint { margin: 0.4rem 0 0.9rem; color: var(--ink-soft); font-size: 0.9rem; }
+label { display: block; margin: 0.8rem 0 0.3rem; font-size: 0.9rem; font-weight: 600; }
+input[type="text"] {
+  width: 100%; min-height: 48px; padding: 0.7rem 0.8rem; font: inherit; font-size: 1rem;
+  color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 0.6rem;
+}
+input[type="text"]:focus-visible, button:focus-visible { outline: 3px solid var(--mint); outline-offset: 2px; }
+button {
+  min-height: 48px; padding: 0.7rem 1rem; margin: 0.6rem 0 0; font: inherit; font-size: 1rem;
+  color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 0.6rem; cursor: pointer;
+}
+button.primary { width: 100%; color: #fff; background: var(--ink); border-color: var(--ink); font-weight: 600; }
+button:disabled { opacity: 0.6; cursor: default; }
+.row { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.row button { flex: 1 1 10rem; }
+.status { margin: 0.6rem 0 0; font-size: 0.9rem; min-height: 1.3em; }
+.status.error { color: var(--danger); }
+.app-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
+  flex-wrap: wrap; margin: 0 0 1rem;
+}
+.app-header .brand { margin: 0; }
+.status-pill {
+  padding: 0.35rem 0.7rem; border-radius: 999px; font-size: 0.85rem;
+  background: var(--mint); color: var(--ink); border: 1px solid var(--line);
+}
+.status-pill[data-state="offline"], .status-pill[data-state="error"] { background: #fbe9e7; color: var(--danger); }
+.content { display: block; }
