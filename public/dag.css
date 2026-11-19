@@ -57,7 +57,7 @@
 .overview-node-head strong{font-size:13px;overflow-wrap:anywhere}
 .overview-node-facts{display:grid;gap:3px;margin:0;padding:0}
 .overview-node-facts .node-field{grid-template-columns:72px minmax(0,1fr);font-size:11px}
-.overview-node .text-button{position:sticky;bottom:0;align-self:stretch;margin-top:2px;padding:6px 0;background:var(--surface);border-top:1px solid var(--line)}
+.overview-node .text-button{position:sticky;bottom:0;align-self:stretch;margin-top:2px;padding:8px 0 4px;background:var(--surface);text-align:left;box-shadow:0 -6px 8px -8px rgba(22,42,34,.3)}
 .node-usage{color:var(--accent-dark)}
 .dag-node.rework,.progress-node.rework{border-left-color:#c08a2e}
 .capacity-note{margin-top:10px;font-size:12px;color:var(--muted)}
