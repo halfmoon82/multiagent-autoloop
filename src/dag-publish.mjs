@@ -248,6 +248,10 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
     },
 
     // 下游基线推进：fetch 更新后，后续 prepare 从合并后的基线建分支。
-    async baseline() { await rt.git(rt.project, ['fetch', '-q', root.remoteUrl, '+refs/heads/main:refs/heads/main']); return {}; },
+    async baseline() {
+      const root = store.getRun(rootRunId);
+      await rt.git(rt.project, ['fetch', '-q', root.remoteUrl, '+refs/heads/main:refs/heads/main']);
+      return {};
+    },
   };
 }

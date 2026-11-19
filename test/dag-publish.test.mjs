@@ -428,3 +428,14 @@ test('fetchHead：把远端分支 tip 取回控制器 mirror 并返回精确 SHA
   assert.equal(sh(b.mirror.mirrorPath, 'rev-parse', 'refs/dag-head/a'), head, '取回到控制器自有 ref');
   await assert.rejects(b.pub.fetchHead({ nodeId: 'a', branch: '--upload-pack=evil' }), /分支名/);
 });
+
+test('baseline：把远端 main 推进同步到控制器 mirror（后续节点不落在陈旧基底）', async () => {
+  const b = await boot();
+  writeFileSync(path.join(b.project, 'after.txt'), 'y\n');
+  sh(b.project, 'add', '-A'); sh(b.project, 'commit', '-qm', 'advance main');
+  sh(b.project, 'push', '-q', 'origin', 'main');
+  const tip = sh(b.project, 'rev-parse', 'HEAD');
+  assert.notEqual(sh(b.mirror.mirrorPath, 'rev-parse', 'refs/heads/main'), tip, '前置：mirror 仍是旧 main');
+  await b.pub.baseline({ nodeId: 'a', mergeCommit: tip });
+  assert.equal(sh(b.mirror.mirrorPath, 'rev-parse', 'refs/heads/main'), tip, 'baseline 后 mirror main 跟上远端');
+});
