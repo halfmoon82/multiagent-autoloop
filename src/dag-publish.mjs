@@ -164,7 +164,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
         await rt.git(worktree, ['push', '-q', root.remoteUrl, `${commit}:refs/heads/${branch}`], { env: { GIT_ASKPASS: askpass } });
       } finally { rmSync(authDir, { recursive: true, force: true }); }
       let prUrl = await gh.findPr({ branch });
-      if (!prUrl) prUrl = await gh.createPr({ branch, title: `${nodeId} (${root.runId})` });
+      if (!prUrl) prUrl = await gh.createPr({ branch, title: `${nodeId} (${root.runId})`, base: root.baseBranch });
       store.registerPr(root.runId, nodeId, prUrl);
       await closeSuperseded(root.runId, nodeId, prUrl);
       return { prUrl, commit, outOfScope: outside, ...(warnings.length ? { warnings } : {}) };

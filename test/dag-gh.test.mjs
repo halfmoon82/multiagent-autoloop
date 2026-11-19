@@ -52,6 +52,20 @@ test('适配器其余方法契约：findPr/createPr/prHead/mergePr', async () =>
   await assert.rejects(gh.mergePr(PR, { strategy: 'rebase' }), /squash/);
 });
 
+test('createPr：非交互式必须带非空 --body（gh 缺 body 会直接失败）', async () => {
+  const calls = [];
+  const runner = async (cmd, args) => { calls.push(args); return { stdout: PR }; };
+  const gh = createGhAdapter({ runner });
+  await gh.createPr({ branch: 'feat/a', title: 'a (run-1)' });
+  const args = calls[0];
+  const bodyAt = args.indexOf('--body');
+  assert.ok(bodyAt > 0, '必须传 --body');
+  assert.ok(args[bodyAt + 1].trim().length > 0, '--body 不能为空');
+  assert.equal(args[args.indexOf('--title') + 1], 'a (run-1)', '标题原样作为单参数传递');
+  await gh.createPr({ branch: 'feat/a', title: 'a', base: 'main', body: '自定义说明' });
+  assert.deepEqual(calls[1], ['pr', 'create', '--head', 'feat/a', '--title', 'a', '--body', '自定义说明', '--base', 'main']);
+});
+
 test('publisher 接入生产 gh 适配器：关闭被替代 PR 不 TypeError', async () => {
   const { project, remote } = makeRepo();
   const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-gh-pub-'));
