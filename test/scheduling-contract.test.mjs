@@ -68,7 +68,7 @@ test('scheduling prompt console entry labels all exist in the console UI, and th
     '项目任务进度': [/id="progress-title">项目任务进度</, overview, '总览视图'],
     '新建 DAG（执行授权）': [/id="overview-dag-new"[^>]*>新建 DAG（执行授权）</, progressPanel, '总览「项目任务进度」面板（常驻，不依赖运行中的 DAG）'],
     '读取计划与预检': [/id="authorize-load"[^>]*>读取计划与预检</, authorize, '执行授权页'],
-    '确认并进入事件链': [/'确认并进入事件链'[^\n]*go\.id = 'authorize-button'/, authorizeRenderer, '执行授权页渲染（dag-authorize.mjs）'],
+    '确认并进入事件链': [/['"]确认并进入事件链['"]/, authorizeRenderer, '执行授权页渲染（dag-authorize.mjs）'],
   };
   assert.deepEqual(Object.keys(where), [...CONSOLE_DAG_ENTRY_LABELS], '入口步骤清单变了：先同步这里的位置断言');
   for (const label of CONSOLE_DAG_ENTRY_LABELS) {
@@ -76,6 +76,8 @@ test('scheduling prompt console entry labels all exist in the console UI, and th
     assert.match(scope, pattern, `「${label}」不在${place}`);
     assert.ok(CONSOLE_DAG_ENTRY_TEXT.includes(label), `提示词入口说明漏了「${label}」`);
   }
+  // 授权主按钮由 dag-authorize.mjs 渲染：标签与 id 分开查，换行或改引号风格不误报。
+  assert.match(authorizeRenderer, /\bid\s*=\s*['"]authorize-button['"]/, '执行授权页的主按钮 id（authorize-button）不见了');
   // 提示词里的步骤顺序必须和用户实际点击顺序一致。
   const positions = CONSOLE_DAG_ENTRY_LABELS.map(label => CONSOLE_DAG_ENTRY_TEXT.indexOf(`「${label}」`));
   assert.ok(positions.every(position => position >= 0), '提示词入口说明里每一步都要用「」标出');
