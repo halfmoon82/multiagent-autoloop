@@ -5,6 +5,7 @@ import { projectForRun, projectForCard, matchesProject, collectProjects, scopedT
 import { el } from './views.mjs';
 import { initDag } from './dag-app.mjs';
 import { initAdmin } from './admin-platform-models.mjs';
+import { initDevices } from './device.mjs';
 import { stableReplace, hasLiveInteraction } from './dom-stable.mjs';
 const state = { snapshot: null, rules: [], sessions: [], projects: [], view: 'overview', loading: false, projectFilter: '', skipPinOnce: null, queueEditing: null, artifactsPanel: null, sessionTab: 'scheduling', selectedSession: '', sessionQuery: '', collapsedSessions: {}, archivedOpen: false, archivedView: '', sessionDrafts: {} };
 const $ = id => document.getElementById(id);
@@ -233,10 +234,12 @@ function renderSessionsChrome(sessions) {
   replaceKeyedPreserving('session-workspace-body', workspaceNodes, 'ws', state.skipPinOnce ? `s:${state.skipPinOnce}` : null);
 }
 
+let devices;
 function showView(name) {
   state.view = name;
   if (name === 'admin' && !admin.loaded()) admin.load();
   document.querySelectorAll('.view').forEach(view => { view.hidden = view.id !== `view-${name}`; });
+  if (name === 'devices' && devices) devices.onShow();
   // 回到某个视图时把可见聊天框停到最新消息（隐藏期间的刷新不碰滚动位置，见 render 里的 offsetHeight 守卫）
   requestAnimationFrame(() => { document.querySelectorAll(`#view-${name} .chat-log`).forEach(log => { log.scrollTop = log.scrollHeight; }); });
   document.querySelectorAll('.nav-item').forEach(item => { const active = item.dataset.view === name; item.classList.toggle('active', active); if (active) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current'); });
@@ -244,6 +247,7 @@ function showView(name) {
 document.querySelectorAll('.nav-item').forEach(item => item.addEventListener('click', () => showView(item.dataset.view)));
 const dag = initDag({ api, notify: showNotice, showView, getProjects: () => state.projects });
 const admin = initAdmin({ api, toast: showToast });
+devices = initDevices({ api, notify: showNotice, showView });
 document.querySelectorAll('[data-go]').forEach(item => item.addEventListener('click', () => showView(item.dataset.go)));
 async function perform(action, id, body = {}) {
   const paths = { resolve: `/api/cards/${id}/resolve`, run: `/api/rules/${encodeURIComponent(id)}/run`, pause: `/api/rules/${encodeURIComponent(id)}/pause`, resume: `/api/rules/${encodeURIComponent(id)}/resume`, cancel: `/api/runs/${id}/cancel`, 'close-session': `/api/scheduling-sessions/${encodeURIComponent(id)}/close` };

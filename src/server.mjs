@@ -20,6 +20,7 @@ import { readCloseouts } from './chain-closeout.mjs';
 import { createDagService, DagServiceError, withHubUsage } from './dag-service.mjs';
 import { CardDelegateError, createCardDelegateStore, delegateOpenCard, settleDelegations } from './card-delegate.mjs';
 import { getCardRouting, CardFilterError } from './card-routing.mjs';
+import { createDeviceStore, DeviceAuthError } from './device-auth.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(MODULE_DIR, '..', 'public');
@@ -30,6 +31,7 @@ const FILES = new Map([
   ['/status-sections.mjs', ['status-sections.mjs', 'text/javascript; charset=utf-8']],
   ['/views.mjs', ['views.mjs', 'text/javascript; charset=utf-8']], ['/rule-form.mjs', ['rule-form.mjs', 'text/javascript; charset=utf-8']],
   ['/dag-model.mjs', ['dag-model.mjs', 'text/javascript; charset=utf-8']], ['/dag-views.mjs', ['dag-views.mjs', 'text/javascript; charset=utf-8']], ['/dag-authorize.mjs', ['dag-authorize.mjs', 'text/javascript; charset=utf-8']], ['/dag-app.mjs', ['dag-app.mjs', 'text/javascript; charset=utf-8']], ['/admin-platform-models.mjs', ['admin-platform-models.mjs', 'text/javascript; charset=utf-8']], ['/progress-view.mjs', ['progress-view.mjs', 'text/javascript; charset=utf-8']], ['/dag.css', ['dag.css', 'text/css; charset=utf-8']],
+  ['/device.mjs', ['device.mjs', 'text/javascript; charset=utf-8']], ['/qr.mjs', ['qr.mjs', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/archive-view.mjs', ['archive-view.mjs', 'text/javascript; charset=utf-8']], ['/archive.css', ['archive.css', 'text/css; charset=utf-8']],
 ]);
@@ -129,6 +131,10 @@ async function handleApi(config, req, res, url) {
     return jsonResponse(res, 200, aggregateProjectUsage({ state, rules, cumulativeByRule: usage?.byRule }));
   }
   if (req.method === 'GET' && url.pathname === '/api/closeouts') return jsonResponse(res, 200, { closeouts: readCloseouts(config.root) });
+  if (req.method === 'GET' && url.pathname === '/api/devices') {
+    if (!config.deviceAuth) throw new RequestError(503, '设备授权通道不可用（未配置数据目录）');
+    return jsonResponse(res, 200, { devices: config.deviceAuth.listDevices(), audit: config.deviceAuth.listAudit() });
+  }
   if (req.method === 'POST' && url.pathname === '/api/session-classify') {
     const body = await readJson(req);
     return jsonResponse(res, 200, classifySessionRequest(body.text));
@@ -227,6 +233,15 @@ async function handleApi(config, req, res, url) {
       resolveCard: (cardId, reason) => hubRequest(config, `/v1/cards/${cardId}/resolve`, { method: 'POST', body: { reason } }),
     }));
   }
+  // 设备授权管理后台：与规则/会话写操作共用 checkWrite，不新增弱认证入口。
+  if (url.pathname.startsWith('/api/devices')) {
+    if (!config.deviceAuth) throw new RequestError(503, '设备授权通道不可用（未配置数据目录）');
+    if (req.method === 'POST' && url.pathname === '/api/devices/bindings') return jsonResponse(res, 201, config.deviceAuth.createBinding());
+    if (req.method === 'POST' && url.pathname === '/api/devices/bind') return jsonResponse(res, 201, config.deviceAuth.bindDevice(body));
+    let deviceMatch;
+    if (req.method === 'POST' && (deviceMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/revoke$/))) return jsonResponse(res, 200, config.deviceAuth.revokeDevice(decodeURIComponent(deviceMatch[1]), { type: 'admin' }));
+    if (req.method === 'POST' && (deviceMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/rename$/))) return jsonResponse(res, 200, config.deviceAuth.renameDevice(decodeURIComponent(deviceMatch[1]), body.name, { type: 'admin' }));
+  }
   return false;
 }
 export function createConsoleServer(config, schedulingSessions) {
@@ -242,14 +257,15 @@ export function createConsoleServer(config, schedulingSessions) {
   const dagService = config.dagService || (config.root ? createDagService({ root: config.root, storeDirectory: path.join(config.root, 'dag-runs') }) : null);
   // 退回记录落盘：重启后「待代理决策」列表不丢；无运行目录退回内存 store（退回行为不变）。
   const cardDelegateStore = config.cardDelegateStore || createCardDelegateStore({ file: config.root ? path.join(config.root, 'card-delegates.json') : null });
-  config = { ...config, schedulingSessions, dagService, cardDelegateStore, cardRouting: config.cardRouting || getCardRouting(config) };
+  const deviceAuth = config.deviceAuth || createDeviceStore({ file: config.root ? path.join(config.root, 'device-auth.json') : null });
+  config = { ...config, schedulingSessions, dagService, cardDelegateStore, deviceAuth, cardRouting: config.cardRouting || getCardRouting(config) };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const host = req.headers.host?.split(':')[0]?.toLowerCase();
     if (!['127.0.0.1', 'localhost'].includes(host)) return jsonResponse(res, 403, { error: '控制台只接受本机地址' });
     try { if (url.pathname.startsWith('/api/') && await handleApi(config, req, res, url) !== false) return; }
     catch (error) {
-      const status = error instanceof RequestError || error instanceof RuleError || error instanceof PlatformModelsError || error instanceof SchedulingSessionError || error instanceof DagServiceError || error instanceof CardDelegateError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
+      const status = error instanceof RequestError || error instanceof RuleError || error instanceof PlatformModelsError || error instanceof SchedulingSessionError || error instanceof DagServiceError || error instanceof CardDelegateError || error instanceof DeviceAuthError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;
       return jsonResponse(res, status, { error: error.message, ...(error instanceof SchedulingSessionError && error.conflict ? { conflict: error.conflict } : {}) });
     }
     const asset = FILES.get(url.pathname);

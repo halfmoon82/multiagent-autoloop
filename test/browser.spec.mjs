@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { createConsoleServer } from '../src/server.mjs';
+import { decodeQr } from '../public/qr.mjs';
 import { fakeHub, json, listen, close } from './helpers.mjs';
 
 const root = mkdtempSync(path.join(tmpdir(), 'console-browser-data-'));
@@ -896,6 +897,46 @@ try {
   await page.locator('#session-items .session-select').first().click();
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('#session-items').getByText('还没有该类型的会话').waitFor();
+  // 设备授权管理后台：生成真实二维码 → 解码校验 → 设备端提交绑定 → 查看 → 解除 → 审计。
+  // 网页只负责出码与展示；绑定必须由设备端提交（网页不得消耗一次性码或丢弃设备凭证）。
+  await page.locator('.header-actions [data-go="devices"]').click();
+  await page.getByRole('heading', { name: '设备授权管理' }).waitFor();
+  await page.locator('#device-list .empty').waitFor();
+  assert.equal(await page.locator('#device-list .empty').isVisible(), true, 'device list starts empty');
+  await page.getByRole('button', { name: '生成一次性二维码' }).click();
+  const grid = page.locator('#device-qr .qr-grid');
+  await grid.waitFor();
+  const qrSize = Number(await grid.getAttribute('data-size'));
+  const qrFlags = await grid.locator('span').evaluateAll(flags => flags.map(flag => flag.classList.contains('on')));
+  assert.equal(qrFlags.length, qrSize * qrSize, 'QR DOM matrix is complete');
+  const decoded = decodeQr(Array.from({ length: qrSize }, (_, y) => qrFlags.slice(y * qrSize, (y + 1) * qrSize)));
+  assert.match(decoded, /^autoloop:\/\/bind\?token=[0-9a-f]{64}$/, 'rendered QR decodes to a real bind payload');
+  const qrToken = decoded.slice('autoloop://bind?token='.length);
+  assert.equal(await page.locator('#device-bind-submit').count(), 0, 'web must not expose a button that consumes the one-time code');
+
+  // 模拟设备端扫码：用一次性码向服务端换取设备凭证，凭证由设备自己持有。
+  const bindResponse = await fetch(`${url}/api/devices/bind`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-console-request': '1' },
+    body: JSON.stringify({ token: qrToken, name: 'Browser Test Phone', platform: 'Android' }),
+  });
+  assert.equal(bindResponse.status, 201, 'device-side bind succeeds');
+  const bound = await bindResponse.json();
+  assert.match(bound.deviceToken, /^[0-9a-f]{64}$/, 'device holds its own credential returned to the device');
+
+  await page.locator('#device-refresh').click();
+  const deviceRow = page.locator('#device-list .list-row').filter({ hasText: 'Browser Test Phone' });
+  await deviceRow.waitFor();
+  assert.ok((await deviceRow.innerText()).includes('已授权'), 'bound device shows authorized status');
+  assert.equal(await page.locator('#device-qr').isHidden(), true, 'QR is cleared once the device consumed the code');
+  const deviceViewText = await page.locator('#view-devices').innerText();
+  assert.ok(!deviceViewText.includes(qrToken), 'binding code must not linger in the management page');
+  assert.ok(!/tokenHash|deviceToken|server-secret/.test(deviceViewText), 'page must not expose keys or device credentials');
+  assert.ok((await page.locator('#device-audit').innerText()).includes('绑定设备'), 'bind is audited');
+  await deviceRow.getByRole('button', { name: '解除授权' }).click();
+  await page.locator('#device-list .list-row').filter({ hasText: 'Browser Test Phone' }).getByText('已解除').waitFor();
+  assert.ok((await page.locator('#device-audit').innerText()).includes('解除授权'), 'revoke is audited');
+  assert.equal(await page.locator('#device-qr-token').count(), 0, 'no binding code is rendered after revoke');
   await page.screenshot({ path: path.join(output, 'console-mobile.png'), fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
