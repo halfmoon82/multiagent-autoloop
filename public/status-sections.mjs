@@ -208,19 +208,33 @@ export function chainRules(chain, rules = [], allChains = []) {
   return names;
 }
 
-// 串行链当前节点的执行者：状态文件不记 Agent，只能取该链规则在 Hub 上最近一轮"真正用了模型"的轮次。
-// 判据 = 轮次自报了 Token 或费用；巡检/轮询/控制器这类无模型轮次从不上报，不能冒充节点执行者。
-// 找不到如实返回 null（界面写未上报）。agentNames 与"正在运行"列表同一显示名口径。
-const reportedUsage = usage => usage && typeof usage === 'object' && !Array.isArray(usage)
-  && ['input', 'output', 'cost'].some(key => typeof usage[key] === 'number' && Number.isFinite(usage[key]));
-export function chainCurrentExecutor(chain, rules = [], runs = [], allChains = [], models = {}, agentNames = {}) {
+// 串行链每个节点自己的最近一轮执行者与自报用量。归属依据：串行编排派发节点时，Hub 轮次的触发事件
+// subject = 节点 id；巡检/定时器/手动运行不带节点编号，不会挂到任何节点上。
+// 底数来自服务端 chain.nodeRounds（翻过 Hub 全部历史）；再叠加首页 runs 里更新的轮次（含正在跑的），
+// 让刚派发的轮次不用等服务端刷新。查不到的节点不出现在结果里，界面如实写未上报。
+const usageObject = usage => (usage && typeof usage === 'object' && !Array.isArray(usage) ? usage : null);
+export function chainNodeExecutors(chain, rules = [], runs = [], allChains = [], models = {}, agentNames = {}) {
+  const latest = {};
+  for (const [nodeId, round] of Object.entries(chain?.nodeRounds || {})) {
+    if (round && String(round.agent || '').trim()) latest[nodeId] = { id: Number(round.id), agent: String(round.agent).trim(), state: round.state, usage: usageObject(round.usage) };
+  }
+  const nodeIds = new Set([...(chain?.order || []), ...(chain?.nodes || []).map(node => node?.id)].map(id => String(id || '').trim()).filter(Boolean));
   const names = chainRules(chain, rules, allChains);
-  const latest = (runs || [])
-    .filter(run => names.has(run?.rule) && String(run?.agent || '').trim() && reportedUsage(run.usage))
-    .sort((a, b) => Number(b.id) - Number(a.id))[0];
-  if (!latest) return null;
-  const agent = String(latest.agent).trim();
-  return { agent: agentNames[agent] || agent, model: models[agent] || '未配置', usage: latest.usage };
+  for (const run of runs || []) {
+    const agent = String(run?.agent || '').trim();
+    if (!names.has(run?.rule) || !agent) continue;
+    for (const event of run.events || []) {
+      const nodeId = String(event?.subject || '').trim();
+      if (!nodeIds.has(nodeId)) continue;
+      if (latest[nodeId] && latest[nodeId].id >= Number(run.id)) continue;
+      latest[nodeId] = { id: Number(run.id), agent, state: run.state, usage: usageObject(run.usage) };
+    }
+  }
+  const out = {};
+  for (const [nodeId, round] of Object.entries(latest)) {
+    out[nodeId] = { agent: agentNames[round.agent] || round.agent, model: models[round.agent] || '未配置', usage: round.usage, running: round.state === 'claimed' };
+  }
+  return out;
 }
 
 // 整条调度链从头到尾的累计 Token 与计费：优先用服务端 chain-usage.mjs 台账

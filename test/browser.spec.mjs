@@ -145,7 +145,8 @@ const hubEvents = [];
 // 台账翻页的历史轮次：demo 巡检在 ?before= 页里还有更早完成的两轮，
 // 链/项目累计必须来自这些 runs 全量累加，而不是 lines 的今日窗口。
 const historyRuns = [
-  { id: 2, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: '2026-11-10T01:00:00Z', usage: { input: 600, output: 200, cost: 0.1 }, summary: '更早完成一轮巡检' },
+  // 这一轮由串行编排派给节点 n2（触发事件 subject=节点 id），它就是 n2 的最近一轮；首页 #5 没有节点编号，不算任何节点的。
+  { id: 2, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: '2026-11-10T01:00:00Z', usage: { input: 600, output: 200, cost: 0.1 }, summary: '更早完成一轮巡检', events: [{ source: 'local', type: 'demo.dev', subject: 'n2', summary: '节点二开发' }] },
   { id: 1, rule: 'demo 巡检', agent: 'fake', state: 'done', finishedAt: '2026-11-09T01:00:00Z', usage: { input: 574, output: 192, cost: 0.04 }, summary: '首轮巡检' },
 ];
 const hub = await fakeHub((req, res) => {
@@ -426,9 +427,9 @@ try {
   for (const label of ['任务摘要', '执行 Agent', '模型', '费用 Token']) assert.ok(progressText.includes(label), `node detail must carry ${label}`);
   assert.ok(progressText.includes('正在实现第二块功能'), 'detail shows the real task summary');
   assert.ok(progressText.includes('联调'), 'detail keeps the node part');
-  // 当前节点的执行者/用量来自该链规则在 Hub 上最近一轮自报了用量的轮次（假 Hub：demo 巡检 #5 · fake · $0.07），不编造
-  assert.equal(await progressRow.locator('.overview-node .node-agent').innerText(), '无模型 Agent', 'current node agent comes from the latest Hub round that reported usage');
-  assert.match(await progressRow.locator('.overview-node .node-usage').innerText(), /^最近一轮 · 费用 \$0\.07 · Token 100/, 'current node usage is the latest round self-report');
+  // 节点的执行者/用量只来自派给它自己的那一轮（假 Hub 历史页 #2：subject=n2 · fake · $0.10）；首页更新的 #5 没有节点编号，不能挂到节点上
+  assert.equal(await progressRow.locator('.overview-node .node-agent').innerText(), '无模型 Agent', 'current node agent comes from its own latest Hub round');
+  assert.match(await progressRow.locator('.overview-node .node-usage').innerText(), /^最近一轮 · 费用 \$0\.10 · Token 800/, 'current node usage is its own round self-report, not the chain-wide latest round');
   await progressRow.locator('.ring-seg[data-ring-node="n3"]').focus(); await page.keyboard.press('Enter');
   assert.equal(await progressRow.locator('.overview-node .node-agent').innerText(), '未上报', 'non-current nodes without data stay unreported, never fabricated');
   assert.equal(await progressRow.locator('.overview-node .node-usage').innerText(), '费用未上报 · Token 未上报');
