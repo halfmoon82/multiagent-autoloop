@@ -33,6 +33,26 @@ test('Agent/模型如实：已上报才显示，缺失显示待派发/未上报�
   assert.equal(a.prUrl, 'https://example.com/pr/1');
 });
 
+// 真实数据形状：发布器只把 PR 登记在根 run.prs（带 nodeId），各轮 nodeRuns[].prs 为空（2026-11-19 device-binding：详情一直显示「暂无 PR」）
+test('节点 PR 取自根 run.prs：同节点最新一个 open/merged，被取代/已关闭的不算；根上没有才回退 nodeRuns', () => {
+  const plan2 = [{ id: 'x', title: 'X', depends_on: [] }, { id: 'y', title: 'Y', depends_on: [] }, { id: 'z', title: 'Z', depends_on: [] }];
+  const real = {
+    run: { runId: 'r2', nodes: plan2, publish: { nodes: { x: { state: 'dev' }, y: { state: 'accepted' }, z: { state: 'dev' } } }, prs: [
+      { prUrl: 'https://github.com/o/r/pull/121', nodeId: 'x', state: 'closed', supersededBy: 'https://github.com/o/r/pull/136' },
+      { prUrl: 'https://github.com/o/r/pull/136', nodeId: 'x', state: 'open' },
+      { prUrl: 'https://github.com/o/r/pull/140', nodeId: 'y', state: 'merged' },
+      { prUrl: 'https://github.com/o/r/pull/150', nodeId: 'z', state: 'closed' },
+    ] },
+    nodeRuns: [{ runId: 'q1', nodeId: 'x', role: 'dev', status: 'done', prs: [] }, { runId: 'q2', nodeId: 'z', role: 'dev', status: 'done', prs: [] }],
+  };
+  const [x, y, z] = buildDagNodes(real);
+  assert.equal(x.prUrl, 'https://github.com/o/r/pull/136', '被取代的 #121 不显示，显示仍开着的 #136');
+  assert.equal(y.prUrl, 'https://github.com/o/r/pull/140', '已合并的 PR 照常显示');
+  assert.equal(z.prUrl, '', '只有已关闭（未合并）的 PR 时如实显示无 PR');
+  // 根 run 上没有登记时，沿用旧数据源 nodeRuns[].prs（旧记录兼容）
+  assert.equal(buildDagNodes(detail)[0].prUrl, 'https://example.com/pr/1');
+});
+
 test('分段环：每节点一段，百分比=accepted 占比，颜色=波次色相+完成度深浅', () => {
   const model = donutModel(buildDagNodes(detail));
   assert.equal(model.segments, 4); assert.equal(model.percent, 25);
