@@ -288,8 +288,10 @@ try {
   await runSummary.waitFor();
   // 定位与选定在页面内一次同步完成：locator.evaluate 先定位、后执行，两步之间撞上 2 秒整块重建就会选中已摘除的旧节点。
   const selectedText = await page.evaluate(() => {
-    const node = [...document.querySelectorAll('#runs-list .run-summary')].find(item => item.textContent.includes('beta 项目等待重试'));
-    if (!node) throw new Error('找不到 beta 项目等待重试 的执行摘要');
+    // 与 locator 严格模式一致：必须恰好命中一个，多命中直接报错而不是悄悄取第一个
+    const matches = [...document.querySelectorAll('#runs-list .run-summary')].filter(item => item.textContent.includes('beta 项目等待重试'));
+    if (matches.length !== 1) throw new Error(`beta 项目等待重试 的执行摘要应恰好 1 个，实际 ${matches.length} 个`);
+    const [node] = matches;
     const range = document.createRange();
     range.selectNodeContents(node);
     const selection = document.getSelection();
@@ -316,8 +318,9 @@ try {
   // 拖出窗口外释放收不到 pointerup，靠 window blur 兜底清除按压状态
   // 坐标在页面内一次取：boundingBox 同样先定位后测量，撞上重建会拿到已摘除节点（null）。按下后 pressTarget 保护才生效。
   const pressBox = await page.evaluate(() => {
-    const card = [...document.querySelectorAll('#runs-list .run-card')].find(item => item.textContent.includes('beta 项目已改派'));
-    if (!card) throw new Error('找不到 beta 项目已改派 的执行卡片');
+    const matches = [...document.querySelectorAll('#runs-list .run-card')].filter(item => item.textContent.includes('beta 项目已改派'));
+    if (matches.length !== 1) throw new Error(`beta 项目已改派 的执行卡片应恰好 1 个，实际 ${matches.length} 个`);
+    const [card] = matches;
     const box = card.getBoundingClientRect();
     return { x: box.x, y: box.y, width: box.width, height: box.height };
   });
@@ -475,7 +478,9 @@ try {
   };
   // 进度面板每 2 秒整块重建：所有读写都在页面内一次同步完成（定位当前节点 + 操作），不用 locator.evaluate 两步往返。
   const inProgressRow = op => page.evaluate(({ op }) => {
-    const row = [...document.querySelectorAll('#progress-list .list-row')].find(item => item.textContent.includes('demo-repo'));
+    const rows = [...document.querySelectorAll('#progress-list .list-row')].filter(item => item.textContent.includes('demo-repo'));
+    if (rows.length !== 1) throw new Error(`demo-repo 的进度行应恰好 1 个，实际 ${rows.length} 个`);
+    const [row] = rows;
     const pane = row?.querySelector('.overview-node');
     if (op === 'height') { const node = row?.querySelector('.overview-progress'); if (!node) throw new Error('找不到 demo-repo 的进度卡'); return node.getBoundingClientRect().height; }
     if (!pane) throw new Error('找不到 demo-repo 的节点详情面板');
