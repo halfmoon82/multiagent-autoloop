@@ -436,7 +436,7 @@ export function renderRunSection(items, emptyText) {
 }
 // 频限绕行条目：契约要求"等待重试/待调度处理"中显示"绕行中（原模型频限，核实恢复中）"及被拦模型/宿主；
 // 核实回归后按正常条目展示，不再出现在这里。
-function detourItems(detours, rules) {
+function detourItems(detours, rules, now = new Date()) {
   return (detours || []).filter((detour) => detour.status === 'detoured')
     .slice() // 最旧在前 → 最新在前，与总览其他队列一致；展示契约每组最多 5 条
     .sort((a, b) => String(b.blockedAt || '').localeCompare(String(a.blockedAt || '')))
@@ -445,10 +445,16 @@ function detourItems(detours, rules) {
       const blocked = detour.blockedModel ? `${detour.blockedAgent}/${detour.blockedModel}` : detour.blockedAgent;
       const firstRule = detour.rules[0]?.name;
       const project = firstRule ? ruleProject(rules, firstRule) : '';
+      // 自动核实进度：让人一眼看出它在自动跑、不用等人工。探测次数与下次时间来自 publicDetour。
+      const count = Number(detour.probeCount) || 0;
+      const cooldown = Number(detour.cooldownMinutes) || 30;
+      const lastMs = detour.lastProbeAt ? Date.parse(detour.lastProbeAt) : NaN;
+      const nextIn = Number.isFinite(lastMs) ? Math.max(0, Math.ceil((lastMs + cooldown * 60000 - now.getTime()) / 60000)) : null;
+      const status = `绕行中 · 自动核实 ${count > 0 ? `已探测 ${count} 次` : '待首次探测'}${nextIn !== null ? `，约 ${nextIn} 分后下一次` : ''}`;
       return {
         id: detour.id, rule: '频限绕行',
         ...(project ? { project, projectName: projectName(project) } : {}),
-        status: '绕行中（原模型频限，核实恢复中）',
+        status,
         agent: detour.fallbackAgent || '未配置', model: blocked || '未配置', text: detour.evidence || '',
       };
     });
@@ -470,9 +476,9 @@ function delegatedCardItems(delegated = [], rules = []) {
     }));
 }
 
-export function renderAttention(snapshot, rules = [], agentNames = {}, detours = [], delegated = []) {
-  const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules, agentNames);
-  return renderRunSection([...delegatedCardItems(delegated, rules), ...detourItems(detours, rules), ...sections.needsAttention], '没有等待调度处理的事。');
+export function renderAttention(snapshot, rules = [], agentNames = {}, detours = [], delegated = [], now = new Date()) {
+  const sections = splitRunSections(snapshot, snapshot.models || {}, now, rules, agentNames);
+  return renderRunSection([...delegatedCardItems(delegated, rules), ...detourItems(detours, rules, now), ...sections.needsAttention], '没有等待调度处理的事。');
 }
 export function renderWorkSections(snapshot, rules = [], agentNames = {}, detours = [], delegated = []) {
   const sections = splitRunSections(snapshot, snapshot.models || {}, new Date(), rules, agentNames);
