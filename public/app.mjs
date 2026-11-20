@@ -245,7 +245,9 @@ function showView(name) {
   document.querySelectorAll('.nav-item').forEach(item => { const active = item.dataset.view === name; item.classList.toggle('active', active); if (active) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current'); });
 }
 document.querySelectorAll('.nav-item').forEach(item => item.addEventListener('click', () => showView(item.dataset.view)));
-const dag = initDag({ api, notify: showNotice, showView, getProjects: () => state.projects });
+const dag = initDag({ api, notify: showNotice, showView, getProjects: () => state.projects,
+  // DAG 卡片的项目计数/用量行与串行链同源：直接复用总览本轮已拉取的数据，不另发请求
+  getOverviewContext: () => (state.snapshot ? { rules: state.rules || [], snapshot: state.snapshot, projectUsage: state.projectUsage || [], usageLoadError: !!state.projectUsageFailed } : null) });
 const admin = initAdmin({ api, toast: showToast });
 // 管理后台分区切换：平台与模型 / 运行环境（运行环境由 render 随快照刷新，这里只切显隐）
 document.querySelectorAll('.admin-subnav a[data-admin-pane]').forEach(link => link.addEventListener('click', event => {

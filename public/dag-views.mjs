@@ -1,6 +1,6 @@
 // DAG 视图：总览分组、运行详情、历史运行。所有上游文本只经 textContent 写入。
 // #75：节点/波次/环形/详情统一走 progress-view.mjs 的同一套组件语言，与串行链同构。
-import { el } from './views.mjs';
+import { el, projectStatusChips } from './views.mjs';
 import { projectName } from './format.mjs';
 import { buildDagNodes, donutModel, formatUsage, segmentColor, sumUsage } from './dag-model.mjs';
 import { buildDagView, progressDonut, progressNodeCard, progressOverview, renderProgressDetail } from './progress-view.mjs';
@@ -59,7 +59,8 @@ export function nodeCard(node, { selected = false, cls = 'dag-node', runId = '' 
 }
 
 // 总览：每个活跃 DAG 一张卡；环形 + 分组四栏节点卡片，与串行链同构。
-export function renderDagOverview(details = []) {
+// context（可选）：总览已加载的 rules/snapshot/projectUsage，用于补上与串行链一致的项目计数与用量行。
+export function renderDagOverview(details = [], context = null) {
   return details.filter(detail => isDagActive(detail.run)).map(detail => {
     const view = buildDagView(detail);
     const card = el('article', 'project-progress dag-project'); card.dataset.dagRun = detail.run.runId;
@@ -72,7 +73,9 @@ export function renderDagOverview(details = []) {
     const visual = progressOverview(view, { runId: detail.run.runId });
     const sum = view.extra.sum;
     const note = el('div', 'capacity-note', `${sum.slotsUsed}/5 路占用${sum.quarantined.length ? `（另有 ${sum.quarantined.length} 个隔离槽位仍占名额）` : ''} · 只有 PR 合并后下游才启动。`);
-    card.append(head, usage, visual, note);
+    card.append(head, usage, visual);
+    if (context) card.append(...projectStatusChips(detail.run.project, context));
+    card.append(note);
     return card;
   });
 }

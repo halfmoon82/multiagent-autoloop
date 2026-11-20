@@ -164,6 +164,9 @@ try {
   assert.equal(await page.locator('#dag-overview-list .ring-pointer').count(), 0, '无活跃节点时不画指针');
   assert.match(await page.locator('#dag-overview-list .dag-project').innerText(), /待派发/);
   assert.match(await page.locator('#dag-overview-list .dag-project').innerText(), /费用未上报 · Token 未上报/);
+  // 与串行链同一套项目级计数与用量行：等待重试 / 今日完成 / 待您处理 / 今日费用 + 项目今日 / 项目累计
+  const dagCardText = await textIn('#dag-overview-list .dag-project');
+  for (const label of ['等待重试 0', '今日完成 0', '待您处理 0 张', '今日费用', '项目今日', '项目累计']) assert.ok(dagCardText.includes(label), `DAG 卡片缺少「${label}」`);
   // DAG 总览与串行总览同构：环形扇区切换右侧单个节点详情，不离开总览
   const dagDetailTitle = page.locator('#dag-overview-list .overview-node-head strong');
   assert.equal(await dagDetailTitle.innerText(), '账户模型', 'default DAG detail shows the current pending node');
