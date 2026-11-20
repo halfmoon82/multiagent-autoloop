@@ -1,12 +1,76 @@
-// 移动端壳的 DOM 装配：把 shell.mjs 的状态机接到页面上。
-// 只更新已有节点的 textContent / hidden / dataset，不整块重建 DOM（避免触控与刷新竞态）。
+// 移动端 App 壳：只做路由与装配。业务逻辑在 mobile/src（视图模型）与 pages/（页面模块）。
+// 页面模块按固定列表静态 import；各页导出 mount(ctx)，ctx 含 client / state / hooks。
+// 跨页互调一律走 ctx.hooks，不直接 import 其他页面模块。
 import { ShellState, createTokenStore, createMobileClient, createBiometricGate, shouldAutoRetry } from './shell.mjs';
 import { createScanSession, createUserMediaCamera } from './scan.mjs';
+import * as corePage from './pages/core.mjs';
+import * as sessionsPage from './pages/sessions.mjs';
+import * as artifactsPage from './pages/artifacts.mjs';
+import * as dagPage from './pages/dag.mjs';
+import * as projectFilterPage from './pages/project-filter.mjs';
+import * as notifyPage from './pages/notify.mjs';
+import * as voicePage from './pages/voice.mjs';
+import * as fontTouchPage from './pages/font-touch.mjs';
+import * as devicesPage from './pages/devices.mjs';
+
+export const MOBILE_PAGES = Object.freeze([
+  'core', 'sessions', 'artifacts', 'dag', 'project-filter', 'notify', 'voice', 'font-touch', 'devices',
+]);
+const PAGE_MODULES = {
+  core: corePage, sessions: sessionsPage, artifacts: artifactsPage, dag: dagPage,
+  'project-filter': projectFilterPage, notify: notifyPage, voice: voicePage,
+  'font-touch': fontTouchPage, devices: devicesPage,
+};
+
+// 默认钩子全部是空操作：未就绪时调用不抛错，后续节点只覆盖自己的钩子。
+export function createDefaultHooks() {
+  return {
+    attachVoice() {},
+    notify: { setBadge() {}, refresh() {} },
+    openSessionArtifacts() {},
+    projectFilter: { current() { return null; }, onChange() {} },
+    pushView() {},
+    popView() {},
+    haptic: { tap() {}, success() {} },
+    download() {},
+  };
+}
+
+// 页面栈：Tab 根页 → 详情 → 产物阅读。有上一级就回上一级，根页才提示二次退出。
+export function createViewStack() {
+  const views = [];
+  return {
+    get depth() { return views.length; },
+    push(view) { views.push(view); return views.length; },
+    pop() { return views.length ? views.pop() : null; },
+    current() { return views.length ? views[views.length - 1] : null; },
+    clear() { views.length = 0; },
+    back() {
+      if (views.length) return { action: 'pop', view: views.pop() };
+      return { action: 'confirm-exit' };
+    },
+  };
+}
+
+// 返回键二次确认：只在短时间窗内连按两次才退出，且只有 Tab 根页才会走到这里。
+export function createBackGuard({ now = () => Date.now(), windowMs = 2500 } = {}) {
+  let last = 0;
+  return {
+    press() {
+      const time = now();
+      if (last && time - last <= windowMs) { last = 0; return 'exit'; }
+      last = time;
+      return 'confirm';
+    },
+    reset() { last = 0; },
+  };
+}
 
 function boot() {
   const $ = id => document.getElementById(id);
   const els = {
     lockScreen: $('lock-screen'), appMain: $('app-main'),
+    bindCard: $('bind-card'), unlockCard: $('unlock-card'), toast: $('toast'),
     baseUrl: $('base-url'), bindName: $('bind-name'), bindPayload: $('bind-payload'), bindSubmit: $('bind-submit'), bindStatus: $('bind-status'),
     scanBind: $('scan-bind'), scanVideo: $('scan-video'), scanStatus: $('scan-status'),
     unlock: $('unlock'), lockError: $('lock-error'),
@@ -24,6 +88,7 @@ function boot() {
   let retryTimer = null;
   let bindMessage = '';
   let scanSession = null;
+  let toastTimer = null;
 
   // 网页同源部署时用 location.origin；独立 APK 由原生桥注入控制台 HTTPS 地址，或由用户填写。
   els.baseUrl.value = window.AutoloopConsoleBase || window.location.origin;
@@ -46,10 +111,97 @@ function boot() {
     error: '连接异常，准备重试',
   })[state.connection] || '未连接';
 
+  // ---- 路由与接缝 ----
+  const hooks = createDefaultHooks();
+  // 原生桥缺省时保持空操作；注入后只覆盖对应钩子，不改其他节点的实现。
+  if (window.AutoloopHaptics && typeof window.AutoloopHaptics.tap === 'function') hooks.haptic = window.AutoloopHaptics;
+  if (window.AutoloopDownload && typeof window.AutoloopDownload.start === 'function') {
+    hooks.download = (url, name) => window.AutoloopDownload.start(url, name);
+  }
+  const stack = createViewStack();
+  const guard = createBackGuard();
+  const ctx = {
+    get client() { return getClient(); },
+    state,
+    hooks,
+  };
+
+  const tabBar = $('tab-bar');
+  const tabs = tabBar ? [...tabBar.querySelectorAll('.tab')] : [];
+  const pageEls = new Map([...document.querySelectorAll('.content .page')].map(el => [el.dataset.page, el]));
+  let activeTab = 'core';
+  const renderViewState = () => {
+    els.appMain.dataset.activeTab = activeTab;
+    els.appMain.dataset.viewDepth = String(stack.depth);
+  };
+  function selectTab(name) {
+    if (!pageEls.has(name)) return;
+    activeTab = name;
+    stack.clear();
+    guard.reset();
+    for (const tab of tabs) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
+    for (const [key, el] of pageEls) el.hidden = key !== name;
+    renderViewState();
+  }
+  for (const tab of tabs) tab.addEventListener('click', () => selectTab(tab.dataset.tab));
+
+  hooks.pushView = view => { stack.push(view); renderViewState(); };
+  hooks.popView = () => { const view = stack.pop(); renderViewState(); return view; };
+
+  function showToast(text) {
+    els.toast.textContent = text;
+    els.toast.hidden = false;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { els.toast.hidden = true; els.toast.textContent = ''; }, 2200);
+  }
+  // 原生 MainActivity 把返回键转成 autoloop:back；Capacitor 标准 backbutton 同样受理。
+  function onBack() {
+    const step = stack.back();
+    if (step.action === 'pop') {
+      window.dispatchEvent(new CustomEvent('autoloop:view-popped', { detail: step.view }));
+      renderViewState();
+      return;
+    }
+    if (guard.press() === 'confirm') { showToast('再按一次退出'); return; }
+    if (typeof window.AutoloopApp?.exit === 'function') window.AutoloopApp.exit();
+  }
+  window.addEventListener('autoloop:back', onBack);
+  window.addEventListener('backbutton', onBack);
+
+  // 软键盘高度写进 CSS 变量，供页面固定底部输入栏使用（visualViewport 不可用时保持 0）。
+  const syncViewport = () => {
+    const vv = window.visualViewport;
+    const keyboard = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
+    document.documentElement.style.setProperty('--keyboard-height', `${keyboard}px`);
+  };
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncViewport);
+    window.visualViewport.addEventListener('scroll', syncViewport);
+    syncViewport();
+  }
+
+  // H5 / 原生共用的接缝出口；各页与回归脚本通过这里覆盖钩子与驱动导航。
+  window.AutoloopHooks = hooks;
+  window.AutoloopNav = {
+    pushView: hooks.pushView,
+    popView: hooks.popView,
+    back: onBack,
+    selectTab,
+    current: () => stack.current(),
+    depth: () => stack.depth,
+  };
+
+  for (const name of MOBILE_PAGES) PAGE_MODULES[name].mount(ctx);
+  selectTab('core');
+
   function render() {
     const unlocked = state.canShowMain();
     els.lockScreen.hidden = unlocked;
     els.appMain.hidden = !unlocked;
+    // 锁屏两态：未绑定只显示绑定卡；已绑定未解锁只显示解锁卡。
+    const bound = Boolean(state.token) && !state.needsBind;
+    els.bindCard.hidden = bound;
+    els.unlockCard.hidden = !bound;
     els.bindStatus.textContent = bindMessage;
     els.lockError.textContent = state.lockError || '';
     els.deviceName.textContent = state.device?.name || '未绑定设备';
@@ -57,6 +209,7 @@ function boot() {
     els.connectionStatus.dataset.state = state.connection;
     els.connectionError.textContent = ['error', 'offline'].includes(state.connection) ? (state.error || '') : '';
     els.unlock.disabled = state.phase === 'unlocking';
+    renderViewState();
   }
 
   async function reconnect() {

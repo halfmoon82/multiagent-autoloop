@@ -1,0 +1,2 @@
+/* sessions 页面接缝样式：后续节点实现会话列表与详情。 */
+.page[data-page="sessions"] { min-height: 4rem; }

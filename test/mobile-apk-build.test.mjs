@@ -45,7 +45,9 @@ function makeSandbox() {
   writeFileSync(manifest, '<?xml version="1.0" encoding="utf-8"?>\n'
     + '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="cool.autoloop.console">\n'
     + '  <uses-sdk android:minSdkVersion="22" android:targetSdkVersion="34" />\n'
-    + '  <application android:label="NoMoTo"></application>\n'
+    + '  <application android:label="NoMoTo">\n'
+    + '    <activity android:name="cool.autoloop.console.MainActivity" android:exported="true"></activity>\n'
+    + '  </application>\n'
     + '</manifest>\n');
   const vars = path.join(dir, VARS_REL);
   mkdirSync(path.dirname(vars), { recursive: true });
@@ -60,6 +62,41 @@ function makeSandbox() {
   const unsigned = path.join(dir, UNSIGNED_REL);
   mkdirSync(path.dirname(unsigned), { recursive: true });
   writeFileSync(unsigned, 'fake-unsigned-apk-payload');
+
+  // 自写原生源码与离线兜底页：由 scaffold 节点入库，构建期拷入生成的 android 工程并合并。
+  const native = path.join(dir, 'native');
+  mkdirSync(path.join(native, 'java', 'cool', 'autoloop', 'console', 'auth'), { recursive: true });
+  writeFileSync(path.join(native, 'java', 'cool', 'autoloop', 'console', 'MainActivity.java'),
+    'package cool.autoloop.console;\npublic class MainActivity {}\n');
+  writeFileSync(path.join(native, 'manifest-additions.xml'),
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    + '<manifest-additions xmlns:android="http://schemas.android.com/apk/res/android">\n'
+    + '  <uses-permission android:name="android.permission.CAMERA" />\n'
+    + '  <uses-permission android:name="android.permission.RECORD_AUDIO" />\n'
+    + '  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
+    + '  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n'
+    + '  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />\n'
+    + '  <uses-permission android:name="android.permission.USE_BIOMETRIC" />\n'
+    + '  <activity-config android:windowSoftInputMode="adjustResize" />\n'
+    + '  <application>\n'
+    + '    <service android:name="cool.autoloop.console.notify.ForegroundService" android:exported="false" android:foregroundServiceType="dataSync" />\n'
+    + '  </application>\n'
+    + '</manifest-additions>\n');
+  writeFileSync(path.join(native, 'gradle-dependencies.gradle'),
+    'dependencies {\n'
+    + '  implementation "androidx.biometric:biometric:1.1.0"\n'
+    + '  implementation "androidx.security:security-crypto:1.1.0-alpha06"\n'
+    + '}\n');
+  const wwwDir = path.join(dir, 'www');
+  mkdirSync(wwwDir, { recursive: true });
+  writeFileSync(path.join(wwwDir, 'offline.html'), '<html><head>'
+    + '<meta name="autoloop-console-mobile-url" content="">'
+    + '</head><body>网络不可用<button id="retry">重试</button></body></html>\n');
+  const assetsPublic = path.join(dir, 'android', 'app', 'src', 'main', 'assets', 'public');
+  mkdirSync(assetsPublic, { recursive: true });
+  writeFileSync(path.join(assetsPublic, 'offline.html'), readFileSync(path.join(wwwDir, 'offline.html')));
+  writeFileSync(path.join(dir, 'android', 'app', 'build.gradle'),
+    'apply plugin: "com.android.application"\n\ndependencies {\n  implementation "androidx.core:core:1.0.0"\n}\n');
 
   // 构建工具假命令：只记录参数，不调用真实 SDK。
   const commands = path.join(dir, 'commands.log');
@@ -227,4 +264,71 @@ test('www/index.html 预置默认控制台地址与同源 /mobile/ 说明', () =
   const html = readFileSync(INDEX_HTML, 'utf8');
   assert.match(html, /id="base-url"[^>]*value="https:\/\/auto\.socialmore\.net"/, '控制台地址应预置默认值，不必手工注入');
   assert.match(html, /https:\/\/auto\.socialmore\.net\/mobile\//, '应说明打包版直接加载同源 /mobile/');
+});
+
+// --- RED 9：原生权限与前台服务声明一次性合并进生成的 manifest ---
+test('授权构建把全部原生权限与前台服务声明合并进 AndroidManifest', () => {
+  const box = makeSandbox();
+  try {
+    ok(runBuild(box));
+    const manifest = readFileSync(path.join(box.dir, MANIFEST_REL), 'utf8');
+    for (const permission of ['CAMERA', 'RECORD_AUDIO', 'POST_NOTIFICATIONS', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_DATA_SYNC', 'USE_BIOMETRIC']) {
+      assert.match(manifest, new RegExp(`android\\.permission\\.${permission}`), `缺少权限 ${permission}`);
+    }
+    assert.match(manifest, /<service[^>]*ForegroundService[^>]*>/, '缺少前台服务声明');
+    assert.match(manifest, /<activity[^>]*android:windowSoftInputMode="adjustResize"/, '键盘应 adjustResize');
+  } finally {
+    rmSync(box.dir, { recursive: true, force: true });
+  }
+});
+
+// --- RED 10：gradle 片段合并 biometric 与 security-crypto ---
+test('授权构建把 androidx.biometric 与 security-crypto 依赖合并进 build.gradle', () => {
+  const box = makeSandbox();
+  try {
+    ok(runBuild(box));
+    const gradle = readFileSync(path.join(box.dir, 'android', 'app', 'build.gradle'), 'utf8');
+    assert.match(gradle, /androidx\.biometric:biometric/);
+    assert.match(gradle, /androidx\.security:security-crypto/);
+  } finally {
+    rmSync(box.dir, { recursive: true, force: true });
+  }
+});
+
+// --- RED 11：native/java 源码拷入生成的 android 工程 ---
+test('授权构建把 native/java 源码拷入生成的 android 工程', () => {
+  const box = makeSandbox();
+  try {
+    ok(runBuild(box));
+    const copied = path.join(box.dir, 'android', 'app', 'src', 'main', 'java', 'cool', 'autoloop', 'console', 'MainActivity.java');
+    assert.ok(existsSync(copied), '自写 MainActivity 应被拷入 android 工程');
+  } finally {
+    rmSync(box.dir, { recursive: true, force: true });
+  }
+});
+
+// --- RED 12：offline.html 的 meta 被注入远程 /mobile/ 地址 ---
+test('授权构建把远程 /mobile/ 地址写入内置 offline.html 的 meta', () => {
+  const box = makeSandbox();
+  try {
+    ok(runBuild(box));
+    const html = readFileSync(path.join(box.dir, 'android', 'app', 'src', 'main', 'assets', 'public', 'offline.html'), 'utf8');
+    assert.match(html, /name="autoloop-console-mobile-url" content="https:\/\/auto\.socialmore\.net\/mobile\/"/);
+  } finally {
+    rmSync(box.dir, { recursive: true, force: true });
+  }
+});
+
+// --- RED 13：原生源码缺失时非零退出且不产半成品 ---
+test('缺少 native 原生源码时非零退出且不产出半成品', () => {
+  const box = makeSandbox();
+  try {
+    rmSync(path.join(box.dir, 'native'), { recursive: true, force: true });
+    const result = runBuild(box);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr + result.stdout, /native/);
+    assert.ok(!existsSync(path.join(box.dir, SIGNED_REL)), '合并失败不得产出 APK');
+  } finally {
+    rmSync(box.dir, { recursive: true, force: true });
+  }
 });

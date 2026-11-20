@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { createReadStream } from 'node:fs';
 import { classifySessionRequest } from './session-classify.mjs';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HubError, hubRequest } from './hub.mjs';
@@ -23,6 +23,7 @@ import { createDagService, DagServiceError, withHubUsage, collectHubRuns } from 
 import { CardDelegateError, createCardDelegateStore, delegateOpenCard, settleDelegations } from './card-delegate.mjs';
 import { getCardRouting, CardFilterError } from './card-routing.mjs';
 import { createDeviceStore, DeviceAuthError } from './device-auth.mjs';
+import { handleMobileWrite } from './mobile-write.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(MODULE_DIR, '..', 'public');
@@ -50,6 +51,48 @@ const MOBILE_FILES = new Map([
   ['/mobile/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json; charset=utf-8']],
   ['/mobile/icon.svg', ['icon.svg', 'image/svg+xml']],
 ]);
+// 受限目录规则（scaffold）：页面模块与视图模型各自限定在一个目录内，页面用 ../src/... 引用视图模型。
+// 白名单之上的两条规则：/mobile/pages/<kebab>.(mjs|css) 与 /mobile/src/<kebab 路径>.mjs。
+// 仅接受 kebab 名；..、非 .mjs、符号链接、realpath 逃逸一律 404。
+const MOBILE_SRC = path.join(MODULE_DIR, '..', 'mobile', 'src');
+const KEBAB_SEGMENT = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+function readMobileFile(file, root, type) {
+  try {
+    const relative = path.relative(root, file);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+    if (lstatSync(root).isSymbolicLink()) return null;
+    let cursor = root;
+    for (const segment of relative.split(path.sep)) {
+      cursor = path.join(cursor, segment);
+      if (lstatSync(cursor).isSymbolicLink()) return null;
+    }
+    if (!statSync(file).isFile()) return null;
+    const real = realpathSync(file);
+    const realRoot = realpathSync(root);
+    if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null;
+    return { body: readFileSync(real), type };
+  } catch {
+    return null;
+  }
+}
+export function resolveMobileAsset(pathname, { www = MOBILE, src = MOBILE_SRC } = {}) {
+  let decoded;
+  try { decoded = decodeURIComponent(pathname); } catch { return null; }
+  if (decoded.includes('\0') || decoded.includes('\\') || decoded.split('/').includes('..')) return null;
+  let match;
+  if ((match = /^\/mobile\/pages\/([^/]+)\.(mjs|css)$/.exec(decoded))) {
+    if (!KEBAB_SEGMENT.test(match[1])) return null;
+    const type = match[2] === 'css' ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8';
+    const root = path.join(www, 'pages');
+    return readMobileFile(path.join(root, `${match[1]}.${match[2]}`), root, type);
+  }
+  if ((match = /^\/mobile\/src\/(.+)\.mjs$/.exec(decoded))) {
+    const segments = match[1].split('/');
+    if (!segments.length || !segments.every(segment => KEBAB_SEGMENT.test(segment))) return null;
+    return readMobileFile(path.join(src, `${match[1]}.mjs`), src, 'text/javascript; charset=utf-8');
+  }
+  return null;
+}
 // 移动端安全入口只中继这些既定只读控制台 API；不代理任意 URL，设备授权管理 API 不在此列。
 const MOBILE_API_ALLOWLIST = new Map([
   ['state', '/api/state'], ['projects', '/api/projects'], ['rules', '/api/rules'],
@@ -231,8 +274,11 @@ async function handleApi(config, req, res, url) {
       const bindBody = await readJson(req);
       return jsonResponse(res, 201, config.deviceAuth.bindDevice(bindBody));
     }
-    if (req.method !== 'GET') throw new RequestError(404, '没有这个控制台地址');
+    if (req.method !== 'GET' && url.pathname === '/api/mobile/session') throw new RequestError(404, '没有这个控制台地址');
     const device = requireMobileDevice(req, config);
+    // 写路由钩子：设备鉴权之后、GET-only 闸之前。返回 true 表示已处理（当前为 501 占位）。
+    if (handleMobileWrite(req, res, url, { device, config })) return true;
+    if (req.method !== 'GET') throw new RequestError(404, '没有这个控制台地址');
     if (url.pathname === '/api/mobile/session') {
       return jsonResponse(res, 200, { device, apis: [...MOBILE_API_ALLOWLIST.keys()], secure: true });
     }
@@ -429,6 +475,13 @@ export function createConsoleServer(config, schedulingSessions) {
     if (mobileAsset && req.method === 'GET') {
       try { const body = readFileSync(path.join(MOBILE, mobileAsset[0])); res.writeHead(200, { ...securityHeaders(), 'content-type': mobileAsset[1] }); return res.end(body); }
       catch { return jsonResponse(res, 404, { error: '移动端资源尚未安装' }); }
+    }
+    if (req.method === 'GET') {
+      const resolved = resolveMobileAsset(url.pathname);
+      if (resolved) {
+        res.writeHead(200, { ...securityHeaders(), 'content-type': resolved.type });
+        return res.end(resolved.body);
+      }
     }
     return jsonResponse(res, 404, { error: '没有这个控制台地址' });
   });

@@ -1,0 +1,2 @@
+/* dag 页面接缝样式：后续节点实现进度环与节点详情。 */
+.page[data-page="dag"] { min-height: 4rem; }

@@ -1,0 +1,5 @@
+// scaffold 一次性声明自写插件所需的 AndroidX 依赖；build-apk.mjs 合并进生成的 android/app/build.gradle。
+dependencies {
+  implementation "androidx.biometric:biometric:1.1.0"
+  implementation "androidx.security:security-crypto:1.1.0-alpha06"
+}

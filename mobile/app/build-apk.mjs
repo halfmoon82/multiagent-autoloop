@@ -4,7 +4,7 @@
 // 未获授权时只给出可读阻塞原因并以非零码退出，绝不改动任何文件——APK 打包失败不阻塞其他节点。
 // 授权后：生成平台 → 注入 CAMERA 权限/相机非必需声明与 minSdk 23 → 让内置壳同源加载远程
 // /mobile/ → 用仓库外密钥库 zipalign + apksigner 签名 → 产物与 sha256 写入 work/apk/。
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,12 @@ const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || '';
 const CONSOLE_BASE = 'https://auto.socialmore.net';
 const CONSOLE_MOBILE_URL = `${CONSOLE_BASE}/mobile/`;
 const CONSOLE_HOST = new URL(CONSOLE_BASE).host;
+
+// 自写原生源码与离线兜底页：一次性预留并入库在 native/，构建期拷入并合并生成的 android 工程。
+const NATIVE_SRC = path.join(here, 'native');
+const MANIFEST_ADDITIONS = path.join(NATIVE_SRC, 'manifest-additions.xml');
+const GRADLE_DEPS = path.join(NATIVE_SRC, 'gradle-dependencies.gradle');
+const OFFLINE_HTML = path.join(here, 'www', 'offline.html');
 
 // 构建期工具与密钥库都来自环境变量，绝不入库；口令不写入任何产物或日志。
 const MIN_SDK = 23;
@@ -48,6 +54,101 @@ const run = (command, args, exitCode = 5) => {
     fail(exitCode, `步骤失败：${path.basename(command)}（退出码 ${result.status ?? 'N/A'}）`);
   }
 };
+
+// 自写原生源码只入库在 native/；生成目录 android/ 仍不入库。合并失败即非零退出，不产半成品。
+function copyNativeJava() {
+  const source = path.join(NATIVE_SRC, 'java');
+  if (!existsSync(source)) fail(10, '缺少 native/java 源码目录');
+  const target = path.join(here, 'android', 'app', 'src', 'main', 'java');
+  mkdirSync(target, { recursive: true });
+  cpSync(source, target, { recursive: true });
+}
+
+function mergeManifest(manifestPath, additionsXml) {
+  let manifest = readFileSync(manifestPath, 'utf8');
+  let body = additionsXml
+    .replace(/<\?xml[\s\S]*?\?>/g, '')
+    .replace(/<manifest-additions\b[^>]*>/, '')
+    .replace(/<\/manifest-additions>/, '')
+    .trim();
+  // activity-config 不是清单节点，只用来给生成的 <activity> 追加属性（键盘 adjustResize）。
+  const activityConfig = /<activity-config\b([^>]*)\/>/.exec(body);
+  if (activityConfig) body = body.replace(activityConfig[0], '');
+  const appMatch = /<application\b[^>]*>[\s\S]*?<\/application>/.exec(body);
+  const outside = (appMatch ? body.replace(appMatch[0], '') : body).trim();
+  const appInner = appMatch
+    ? appMatch[0].replace(/^<application\b[^>]*>/, '').replace(/<\/application>$/, '').trim()
+    : '';
+
+  if (activityConfig) {
+    for (const attribute of activityConfig[1].matchAll(/([\w:]+)="([^"]*)"/g)) {
+      const [, name, value] = attribute;
+      if (!manifest.includes(`${name}="`)) {
+        manifest = manifest.replace(/(<activity\b[^>]*?)(>)/, `$1 ${name}="${value}"$2`);
+      }
+    }
+  }
+
+  if (outside) {
+    const missing = outside.split(/\r?\n/).map(line => line.trim()).filter(Boolean).filter(line => {
+      const name = /android:name="([^"]+)"/.exec(line)?.[1];
+      return !name || !manifest.includes(`android:name="${name}"`);
+    });
+    if (missing.length) {
+      const block = missing.join('\n    ');
+      if (/<application\b/.test(manifest)) manifest = manifest.replace(/(<application\b[^>]*>)/, `    ${block}\n    $1`);
+      else manifest = manifest.replace(/(<manifest\b[^>]*>)/, `$1\n    ${block}`);
+    }
+  }
+  if (appInner) {
+    if (!/<application\b[^>]*>/.test(manifest)) fail(10, '生成的 AndroidManifest 缺少 <application>，无法合并前台服务声明');
+    manifest = manifest.replace(/(<application\b[^>]*>)/, `$1\n    ${appInner}`);
+  }
+  writeFileSync(manifestPath, manifest);
+}
+
+function mergeGradle(gradlePath, additions) {
+  let gradle = readFileSync(gradlePath, 'utf8');
+  const lines = additions.split(/\r?\n/).map(line => line.trim()).filter(line => /^implementation\b/.test(line));
+  const missing = lines.filter(line => !gradle.includes(line));
+  if (!missing.length) return;
+  const open = gradle.indexOf('dependencies {');
+  if (open < 0) fail(10, '生成的 build.gradle 缺少 dependencies 块，无法合并原生依赖');
+  const brace = gradle.indexOf('{', open);
+  gradle = `${gradle.slice(0, brace + 1)}\n    ${missing.join('\n    ')}${gradle.slice(brace + 1)}`;
+  writeFileSync(gradlePath, gradle);
+}
+
+function injectOfflineUrl() {
+  if (!existsSync(OFFLINE_HTML)) fail(11, '缺少内置 www/offline.html 离线兜底页');
+  const original = readFileSync(OFFLINE_HTML, 'utf8');
+  const meta = `<meta name="autoloop-console-mobile-url" content="${CONSOLE_MOBILE_URL}">`;
+  const html = /<meta\s+name="autoloop-console-mobile-url"/.test(original)
+    ? original.replace(/<meta\s+name="autoloop-console-mobile-url"[^>]*>/, meta)
+    : original.replace(/<\/head>/, `  ${meta}\n  </head>`);
+  // cap sync 把 www/ 拷进生成的 assets（Capacitor 版本不同目录名可能是 public 或 www）。
+  const candidates = [
+    path.join(here, 'android', 'app', 'src', 'main', 'assets', 'public', 'offline.html'),
+    path.join(here, 'android', 'app', 'src', 'main', 'assets', 'www', 'offline.html'),
+  ];
+  const targets = candidates.filter(file => existsSync(path.dirname(file)));
+  if (!targets.length) fail(11, '未找到生成的 Android assets 目录，无法注入离线兜底页');
+  for (const file of targets) writeFileSync(file, html);
+}
+
+function mergeNativeSources() {
+  for (const file of [MANIFEST_ADDITIONS, GRADLE_DEPS]) {
+    if (!existsSync(file)) fail(10, `缺少 native/ 原生接缝文件：${path.basename(file)}`);
+  }
+  const manifestPath = path.join(here, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+  const gradlePath = path.join(here, 'android', 'app', 'build.gradle');
+  if (!existsSync(manifestPath)) fail(8, '未找到生成的 AndroidManifest.xml：请先成功执行 cap add android / cap sync android。');
+  if (!existsSync(gradlePath)) fail(10, '未找到生成的 android/app/build.gradle：请先成功执行 cap add android。');
+  copyNativeJava();
+  mergeManifest(manifestPath, readFileSync(MANIFEST_ADDITIONS, 'utf8'));
+  mergeGradle(gradlePath, readFileSync(GRADLE_DEPS, 'utf8'));
+  injectOfflineUrl();
+}
 
 function patchAndroidPlatform() {
   const manifestPath = path.join(here, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
@@ -88,6 +189,7 @@ function patchAndroidPlatform() {
   assetCfg.server = {
     ...(assetCfg.server || {}),
     androidScheme: 'https',
+    errorPath: 'offline.html',
     url: CONSOLE_MOBILE_URL,
     allowNavigation: [CONSOLE_HOST],
   };
@@ -177,6 +279,8 @@ function main() {
   }
   run('npx', ['cap', 'sync', 'android']);
 
+  // 合并自写原生源码与离线兜底页（失败即非零退出，不进入签名步骤、不产半成品）。
+  mergeNativeSources();
   patchAndroidPlatform();
   const creds = signingCredentials();
   run(path.join(here, 'android', 'gradlew'), ['assembleRelease']);

@@ -1,0 +1,2 @@
+/* core 页面接缝样式：总览/规则/轮次/待办由后续节点填充。 */
+.page[data-page="core"] { min-height: 4rem; }

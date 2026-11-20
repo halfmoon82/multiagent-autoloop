@@ -5,7 +5,8 @@
   "bundledWebRuntime": false,
   "loggingBehavior": "none",
   "server": {
-    "androidScheme": "https"
+    "androidScheme": "https",
+    "errorPath": "offline.html"
   },
   "android": {
     "allowMixedContent": false,

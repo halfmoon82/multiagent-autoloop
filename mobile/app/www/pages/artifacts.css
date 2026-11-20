@@ -1,0 +1,2 @@
+/* artifacts 页面接缝样式：后续节点实现产物浏览与阅读。 */
+.page[data-page="artifacts"] { min-height: 4rem; }
