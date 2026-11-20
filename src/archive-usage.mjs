@@ -3,15 +3,17 @@
 const isNum = value => typeof value === 'number' && Number.isFinite(value);
 
 export function sumRunUsage(nodeRuns = []) {
-  let cost = null; let input = 0; let output = 0; let tokenReported = false; let rounds = 0;
+  let cost = null; let input = 0; let output = 0; let tokenReported = false; let rounds = 0; let missingCostRounds = 0;
   for (const run of nodeRuns) {
     rounds += 1;
     const usage = run?.usage;
+    // 不跑模型的通道本来就没有费用，不算「漏报」。
+    if (!isNum(usage?.cost) && !run?.usageNoModel) missingCostRounds += 1;
     if (!usage) continue;
     if (isNum(usage.cost)) cost = (cost || 0) + usage.cost;
     if (isNum(usage.input) || isNum(usage.output)) { tokenReported = true; input += usage.input || 0; output += usage.output || 0; }
   }
-  return { input, output, tokens: input + output, cost, rounds, tokenReported };
+  return { input, output, tokens: input + output, cost, rounds, missingCostRounds, tokenReported };
 }
 
 const dagCache = new Map();

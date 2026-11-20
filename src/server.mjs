@@ -12,7 +12,7 @@ import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-s
 import { HubSchedulingSessionAdapter } from './hub-scheduling-session.mjs';
 import { discoverGitProjects } from './projects.mjs';
 import { readDetours, publicDetour } from './detour.mjs';
-import { loadChains } from './serial-progress.mjs';
+import { loadChains, chainRuleNames } from './serial-progress.mjs';
 import { aggregateProjectUsage } from './project-usage.mjs';
 import { readArchive } from './archive.mjs';
 import { attachArchiveUsage, sumRunUsage } from './archive-usage.mjs';
@@ -169,7 +169,8 @@ async function handleApi(config, req, res, url) {
     let byChain = new Map();
     if (pseudoChains.length) { try { byChain = (await refreshUsage({ config, rules, chains: pseudoChains }))?.byChain || new Map(); } catch { byChain = new Map(); } }
     const archived = await attachArchiveUsage(archive.archived, {
-      chainUsageFor: item => byChain.get(`${item.source}-serial.json`),
+      // 链词干没有认领任何规则时不用项目回退（归档链没有活跃链做排除，会把整个项目的用量算给它）。
+      chainUsageFor: item => (chainRuleNames(`${item.source}-serial.json`, rules).length ? byChain.get(`${item.source}-serial.json`) : null),
       dagUsageFor: async item => {
         if (!config.dagService) return null;
         const detail = config.dagService.get(item.runId);
