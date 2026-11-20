@@ -71,3 +71,23 @@ test('retired dispatch_task routes are gone', async () => {
     assert.equal(hub.requests.length, 0);
   } finally { await close(server); await close(hub.server); }
 });
+
+// 卡片退回事务的 Hub 授权规则（#177 后对齐 dag-runtime/#85）：
+//   POST /v1/events → source；/v1/cards/:id/resolve、GET /v1/state → owner（默认）。
+test('POST /api/cards/:id/delegate authenticates the delegate event with the source key', async () => {
+  const hub = await fakeHub((req, res) => {
+    if (req.url === '/v1/state') return json(res, { cards: [{ id: 8, state: 'open', title: '凭据问题', text: 'x' }] });
+    if (req.url === '/v1/events') return json(res, { event: 1 });
+    if (req.url === '/v1/cards/8/resolve') return json(res, { ok: true });
+    json(res, { error: 'unexpected' }, 404);
+  });
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'owner-key', sourceKey: 'source-key', host: '127.0.0.1' });
+  const url = await listen(server);
+  try {
+    const response = await action(url, '/api/cards/8/delegate', {});
+    assert.equal(response.status, 200);
+    const authOf = p => hub.requests.find(r => r.url === p)?.headers.authorization;
+    assert.equal(authOf('/v1/events'), 'Bearer source-key', '退回事件必须带 source 密钥，否则中台回「要来源自己的密钥」401');
+    assert.equal(authOf('/v1/cards/8/resolve'), 'Bearer owner-key');
+  } finally { await close(server); await close(hub.server); }
+});
