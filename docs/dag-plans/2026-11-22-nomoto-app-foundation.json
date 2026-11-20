@@ -12,9 +12,9 @@
       "complexity": "standard",
       "contract": {
         "input": "现状：mobile/app/www 只有绑定页+空壳主界面（index.html/app.mjs/styles.css 单文件），不引用 mobile/src；src/server.mjs MOBILE_FILES 是 9 项固定白名单；/api/mobile/* 绑定后一律 GET-only（server.mjs:233 非 GET 即 404）；android/ 不入库，build-apk.mjs 只在缺 android/ 时 cap add 再 patch 生成物，自写原生代码无处安放。后续所有节点若各自改这些共享文件只能串行。",
-        "output": "一次性预留所有共享接缝，之后各节点只改自己的文件、全部并行：1) www 页面模块化：index.html 改为底部 Tab（总览/规则/轮次/待办/会话/产物/DAG/设备）+ 全局项目筛选挂载点 + 各页容器；锁屏区拆成「未绑定只显示绑定卡、已绑定未解锁只显示解锁卡」，错误信息就近显示；app.mjs 只做路由与装配，按固定列表 import mobile/app/www/pages/{core,sessions,artifacts,dag,project-filter,notify,voice,font-touch,devices}.mjs，各文件先放导出 mount(ctx) 的空实现与同名 .css；ctx 含 client/state/hooks。2) 受限静态服务：server.mjs 把 /mobile/ 资源由固定 Map 改为两条受限目录规则——/mobile/pages/<kebab>.(mjs|css) 映射 mobile/app/www/pages/，/mobile/src/<kebab 路径>.mjs 映射 mobile/src/（仅 .mjs、禁 ..、禁符号链接逃逸、realpath 必须在目录内），页面用相对路径 ../src/... 引用视图模型；保留原 9 项。3) 写路由钩子：新增 src/mobile-write.mjs，导出 handleMobileWrite(req,res,url,ctx)；server.mjs 在设备鉴权之后、GET-only 闸之前调用它，返回 true 即已处理；先实现路由表与 501 占位：POST /api/mobile/cards/:id/answer、POST /api/mobile/cards/:id/authorize、POST /api/mobile/sessions/:id/continue、GET /api/mobile/sessions/:id/download、GET/POST /api/mobile/sync。写操作沿用 checkWrite 同等校验（JSON、同源、自定义头）+ x-device-token。4) 原生源码入库：新建 mobile/app/native/（java 源、manifest-additions.xml、gradle-dependencies.gradle）；MainActivity.java 在 onCreate 前 registerPlugin 全部自写插件，插件类按子包 auth/、notify/、speech/ 先放可编译的空实现；manifest-additions 一次写全权限（CAMERA、RECORD_AUDIO、POST_NOTIFICATIONS、FOREGROUND_SERVICE、FOREGROUND_SERVICE_DATA_SYNC、USE_BIOMETRIC）与前台服务声明；gradle 片段加 androidx.biometric、androidx.security:security-crypto。build-apk.mjs 在 cap add/sync 后把 native/ 拷入并合并 manifest/gradle，再签名；android/ 仍不入库。",
+        "output": "一次性预留所有共享接缝，之后各节点只改自己的文件、全部并行：1) www 页面模块化：index.html 改为底部 Tab（总览/规则/轮次/待办/会话/产物/DAG/设备）+ 全局项目筛选挂载点 + 各页容器；锁屏区拆成「未绑定只显示绑定卡、已绑定未解锁只显示解锁卡」，错误信息就近显示；app.mjs 只做路由与装配，按固定列表 import mobile/app/www/pages/{core,sessions,artifacts,dag,project-filter,notify,voice,font-touch,devices}.mjs，各文件先放导出 mount(ctx) 的空实现与同名 .css；ctx 含 client/state/hooks。2) 受限静态服务：server.mjs 把 /mobile/ 资源由固定 Map 改为两条受限目录规则——/mobile/pages/<kebab>.(mjs|css) 映射 mobile/app/www/pages/，/mobile/src/<kebab 路径>.mjs 映射 mobile/src/（仅 .mjs、禁 ..、禁符号链接逃逸、realpath 必须在目录内），页面用相对路径 ../src/... 引用视图模型；保留原 9 项。3) 写路由钩子：新增 src/mobile-write.mjs，导出 handleMobileWrite(req,res,url,ctx)；server.mjs 在设备鉴权之后、GET-only 闸之前调用它，返回 true 即已处理；先实现路由表与 501 占位：POST /api/mobile/cards/:id/answer、POST /api/mobile/cards/:id/authorize、POST /api/mobile/sessions/:id/continue、GET /api/mobile/sessions/:id/download、GET/POST /api/mobile/sync。写操作沿用 checkWrite 同等校验（JSON、同源、自定义头）+ x-device-token。4) 原生源码入库：新建 mobile/app/native/（java 源、manifest-additions.xml、gradle-dependencies.gradle）；MainActivity.java 在 onCreate 前 registerPlugin 全部自写插件，插件类按子包 auth/、notify/、speech/ 先放可编译的空实现；manifest-additions 一次写全权限（CAMERA、RECORD_AUDIO、POST_NOTIFICATIONS、FOREGROUND_SERVICE、FOREGROUND_SERVICE_DATA_SYNC、USE_BIOMETRIC）与前台服务声明；gradle 片段加 androidx.biometric、androidx.security:security-crypto。build-apk.mjs 在 cap add/sync 后把 native/ 拷入并合并 manifest/gradle，再签名；android/ 仍不入库。5) 接缝细则：ctx.hooks 由 app.mjs 预置默认空操作——attachVoice(el)、notify.setBadge(n)/notify.refresh()、openSessionArtifacts(sessionId)、projectFilter.current()/onChange(fn)——各节点只覆盖自己的钩子，未就绪时调用不抛错；页面间互调一律走 ctx.hooks，不直接 import 其他页面模块。原生侧 MainActivity 预置 auth/AutoLoopWebChromeClient 空子类并在 onCreate 后 bridge.getWebView().setWebChromeClient(...) 接好，native-auth 只填实现。写路由表另预留 POST /api/mobile/rules/:id/{run,pause,resume}（501），由 mobile-write-api 实现。",
         "error_behavior": "受限静态服务对越界路径、非 .mjs、符号链接一律 404 并有单测；钩子 501 占位不影响现有绑定/会话/只读中继；打包合并失败即非零退出、不产半成品；不改设备授权协议。",
-        "acceptance_example": "单测：/mobile/pages/core.mjs 与 /mobile/src/core/pages.mjs 可取，/mobile/src/../package.json、/mobile/src/x.json、符号链接 404；POST /api/mobile/cards/x/answer 鉴权后返回 501、未鉴权 401；build-apk 合并逻辑对假 android 目录产出含全部权限的 manifest。浏览器回归：Tab 切换、锁屏两态。npm test + npm run test:browser 全绿。",
+        "acceptance_example": "单测：/mobile/pages/core.mjs 与 /mobile/src/core/pages.mjs 可取，/mobile/src/../package.json、/mobile/src/x.json、符号链接 404；POST /api/mobile/cards/x/answer 鉴权后返回 501、未鉴权 401；build-apk 合并逻辑对假 android 目录产出含全部权限的 manifest。浏览器回归：Tab 切换、锁屏两态。npm test + npm run test:browser 全绿。单测另覆盖：所有默认钩子可调用且不抛错。",
         "files": [
           "mobile/app/www/index.html",
           "mobile/app/www/app.mjs",
@@ -125,7 +125,7 @@
       "complexity": "standard",
       "contract": {
         "input": "scaffold 已在 src/mobile-write.mjs 定好路由表（501 占位）且挂在 GET-only 闸之前；网页控制台已有卡片回答/授权、会话 continue、会话 download 的实现可复用。",
-        "output": "实现 cards answer/authorize（复用网页侧同一服务函数，不另造状态）、sessions continue（复用 /api/scheduling-sessions/:id/continue 的服务逻辑）、sessions download（复用 download 实现，移动端用 x-device-token 鉴权）；所有写入记录来源设备 id。",
+        "output": "实现 cards answer/authorize（复用网页侧同一服务函数，不另造状态）、sessions continue（复用 /api/scheduling-sessions/:id/continue 的服务逻辑）、sessions download（复用 download 实现，移动端用 x-device-token 鉴权）；所有写入记录来源设备 id。；rules run/pause/resume 复用网页控制台规则操作的同一服务函数。",
         "error_behavior": "未授权 401、非法 id 404、重复提交幂等返回当前状态、已失效事项 409；不暴露内部错误详情；不放宽任何网页侧校验。",
         "acceptance_example": "契约测试：绑定设备可回答/授权/恢复/下载，未绑定全拒；同一卡片网页与移动端先后提交结果一致。npm test 全绿。",
         "files": [
@@ -170,7 +170,7 @@
       "complexity": "heavy",
       "contract": {
         "input": "mobile/src/features/sessions 与 question-group 有视图模型但未接线。（接缝契约由 mobile-scaffold 定义：页面模块 mobile/app/www/pages/<name>.mjs 导出 mount(ctx)，ctx 含 client、state、hooks；hooks.attachVoice(inputEl)/hooks.notify 由对应节点实现，未实现时为空操作）",
-        "output": "实现 pages/sessions.mjs/.css：类型筛选、搜索、当前/归档会话；归档「继续调度」调 POST sessions continue；会话内待回答组逐题聚焦、已答折叠、进度轨、选项/文字作答（走 cards answer），输入框调用 ctx.hooks.attachVoice(el)；切页/旋转后草稿与滚动保留。",
+        "output": "实现 pages/sessions.mjs/.css：类型筛选、搜索、当前/归档会话；归档「继续调度」调 POST sessions continue；会话内待回答组逐题聚焦、已答折叠、进度轨、选项/文字作答（走 cards answer），输入框调用 ctx.hooks.attachVoice(el)，「本会话产物」调用 ctx.hooks.openSessionArtifacts(id)；切页/旋转后草稿与滚动保留。",
         "error_behavior": "已处理/失效事项不重复提交；失败保留题目与草稿；钩子为空操作时无麦克风按钮但输入正常。",
         "acceptance_example": "浏览器回归：会话筛选、恢复归档、待回答组逐题提交与草稿保留。npm test + npm run test:browser 全绿。",
         "files": [
@@ -195,7 +195,7 @@
       "complexity": "standard",
       "contract": {
         "input": "mobile/src/features/artifacts 有视图模型（含折叠双栏布局）但未接线。（接缝契约由 mobile-scaffold 定义：页面模块 mobile/app/www/pages/<name>.mjs 导出 mount(ctx)，ctx 含 client、state、hooks；hooks.attachVoice(inputEl)/hooks.notify 由对应节点实现，未实现时为空操作）",
-        "output": "实现 pages/artifacts.mjs/.css：全局产物页 + 供会话页调用的 openSessionArtifacts(sessionId)；手机全屏列表→全屏阅读→逐级返回；折叠/宽屏左列表右阅读只刷新右侧；下载/分享走 GET sessions download。",
+        "output": "实现 pages/artifacts.mjs/.css：全局产物页 + 覆盖 ctx.hooks.openSessionArtifacts(sessionId) 供会话页调用；手机全屏列表→全屏阅读→逐级返回；折叠/宽屏左列表右阅读只刷新右侧；下载/分享走 GET sessions download。",
         "error_behavior": "产物只读；下载失败可重试；返回会话不丢原会话状态。",
         "acceptance_example": "浏览器回归：全局页与会话入口打开同一产物，宽屏双栏。npm test + npm run test:browser 全绿。",
         "files": [
