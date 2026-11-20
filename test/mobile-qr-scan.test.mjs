@@ -35,6 +35,35 @@ function renderQrImage(text, { scale = 6, quiet = 4 } = {}) {
   return { data, width: dim, height: dim };
 }
 
+// 把真实 QR 图像按给定角度旋转并可选缩放，模拟手持扫码时手机与屏幕不可能端平的场景。
+// 用反向映射逐像素取样：目标像素 (x,y) 反算回源像素，避免旋转后出现空洞。
+function renderRotatedQrImage(text, angleDeg, { scale = 1, ...renderOpts } = {}) {
+  const base = renderQrImage(text, renderOpts);
+  const src = base.width; // renderQrImage 生成方阵
+  const rad = angleDeg * Math.PI / 180;
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  const dim = Math.ceil(src * (Math.abs(c) + Math.abs(s)) * scale) + 4;
+  const data = new Uint8ClampedArray(dim * dim * 4);
+  data.fill(255);
+  const srcCenter = (src - 1) / 2;
+  const dstCenter = (dim - 1) / 2;
+  for (let y = 0; y < dim; y++) {
+    for (let x = 0; x < dim; x++) {
+      const dx = (x - dstCenter) / scale;
+      const dy = (y - dstCenter) / scale;
+      const sx = Math.round(srcCenter + dx * c + dy * s);
+      const sy = Math.round(srcCenter - dx * s + dy * c);
+      if (sx < 0 || sy < 0 || sx >= src || sy >= src) continue;
+      const from = (sy * src + sx) * 4;
+      const to = (y * dim + x) * 4;
+      data[to] = base.data[from]; data[to + 1] = base.data[from + 1];
+      data[to + 2] = base.data[from + 2]; data[to + 3] = base.data[from + 3];
+    }
+  }
+  return { data, width: dim, height: dim };
+}
+
 // ---------------------------------------------------------------------------
 // RED 1：vendor 纯 JS 解码库——从真实 QR 图像读回载荷，不依赖 BarcodeDetector
 // ---------------------------------------------------------------------------
@@ -43,6 +72,16 @@ test('vendor QR 解码器：从真实 QR 图像读回一次性绑定载荷', () 
   const image = renderQrImage(payload);
   assert.equal(decodeQrImage(image.data, image.width, image.height), payload);
 });
+
+// g2a1 P1 回归：真实手持扫码不可能把手机端平，倾斜几度 + 轻微缩放就必须仍能解码。
+// 旧实现只用三个定位角的距离推模块宽、再按水平/竖直网格采样，1° 以上就采错码字。
+for (const [angle, seed] of [[3, 'x'], [10, 'y'], [30, 'z']]) {
+  test(`vendor QR 解码器：旋转 ${angle}° 且轻微放大仍可读回一次性绑定载荷`, () => {
+    const payload = payloadOf(seed);
+    const image = renderRotatedQrImage(payload, angle, { scale: 1.12 });
+    assert.equal(decodeQrImage(image.data, image.width, image.height), payload);
+  });
+}
 
 test('vendor QR 解码器：二维码不在画面中心也能定位解码', () => {
   const payload = payloadOf('b');

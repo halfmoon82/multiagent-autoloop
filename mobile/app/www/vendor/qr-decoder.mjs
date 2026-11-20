@@ -1,8 +1,10 @@
 // 纯 JS 二维码图像解码器（自带，无需 BarcodeDetector）。
 // 适配旧版鸿蒙 WebView：只吃 RGBA 像素，输出到文本；不碰 DOM、不碰网络、不碰存储。
 // 解码范围与控制台 public/qr.mjs 的编码器对称：版本 1-5 / 纠错级别 L / 单块 / 字节模式。
-// 图像侧只假设二维码大致正向（-scanning a screen），用三个定位角求模块网格；
-// 数据侧直接读数据码字（单块时数据码字在最前），因此对清晰图像无需纠错即可还原载荷。
+// 图像侧用三个定位角锚定仿射网格：topLeft→topRight 与 topLeft→bottomLeft 两条向量
+// 就是 QR 的 x/y 轴，因此旋转、倾斜、轻微缩放都能正确取样，不依赖 BarcodeDetector。
+// 数据侧直接读数据码字（单块时数据码字在最前），用格式信息 BCH 校验挑选正确版本，
+// 对清晰图像无需纠错即可还原载荷。
 // 许可证见同目录 LICENSE（MIT）。
 
 const MAX_VERSION = 5;
@@ -195,23 +197,26 @@ function cornersOf(centers) {
   };
 }
 
-function readModules(bits, width, height, corners) {
+// 用三个定位角锚定的仿射网格取样：topLeft→topRight 与 topLeft→bottomLeft 两条向量
+// 就是 QR 的 x/y 轴，旋转与倾斜都被仿射变换吸收。旧实现只用定位角间距推模块宽、
+// 再按水平/竖直网格采样，手机倾斜 1° 就会采错码字，真实手持扫码几乎读不出。
+function readModules(bits, width, height, corners, version) {
   const { topLeft, topRight, bottomLeft } = corners;
-  const roughModule = (topLeft.module + topRight.module + bottomLeft.module) / 3;
-  const horizontal = Math.hypot(topLeft.x - topRight.x, topLeft.y - topRight.y);
-  const vertical = Math.hypot(topLeft.x - bottomLeft.x, topLeft.y - bottomLeft.y);
-  const version = Math.round(((horizontal / roughModule - 10) + (vertical / roughModule - 10)) / 8);
-  if (!Number.isInteger(version) || version < 1 || version > MAX_VERSION) return null;
   const size = version * 4 + 17;
-  const module = (horizontal + vertical) / (2 * (size - 7));
-  if (!Number.isFinite(module) || module < 1) return null;
-  const originX = topLeft.x - 3 * module;
-  const originY = topLeft.y - 3 * module;
+  const span = size - 7; // 定位角中心之间相隔的模块数
+  // 每模块的像素向量：两个轴分别由 topLeft 指向 topRight / bottomLeft。
+  const vx = (topRight.x - topLeft.x) / span;
+  const vy = (topRight.y - topLeft.y) / span;
+  const wx = (bottomLeft.x - topLeft.x) / span;
+  const wy = (bottomLeft.y - topLeft.y) / span;
+  if (![vx, vy, wx, wy].every(Number.isFinite)) return null;
   const modules = Array.from({ length: size }, () => new Array(size).fill(false));
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const px = Math.round(originX + x * module);
-      const py = Math.round(originY + y * module);
+      // 定位角中心落在模块 (3,3)/(size-4,3)/(3,size-4)，故模块 (x,y) 的中心
+      // = topLeft + (x-3)*v + (y-3)*w。
+      const px = Math.round(topLeft.x + (x - 3) * vx + (y - 3) * wx);
+      const py = Math.round(topLeft.y + (x - 3) * vy + (y - 3) * wy);
       if (px < 0 || py < 0 || px >= width || py >= height) return null;
       modules[y][x] = bits[py * width + px] === 1;
     }
@@ -231,8 +236,14 @@ function readPayload(modules, size, version) {
   let format = 0;
   for (let index = 0; index < 15; index++) format |= formatBit(index) << index;
   format ^= 0x5412;
-  const mask = ((format >>> 10) & 0x1F) & 7;
-  if (mask > 7) return null;
+  // 格式信息带 10 位 BCH 校验：错版网格的采样点几乎不可能通过，用它挑选正确版本，
+  // 同时避免误读帧恰好解出字符串后被当成「非 NoMoTo 载荷」直接中止扫码。
+  const formatData = (format >>> 10) & 0x1F;
+  if ((formatData >>> 3) !== 1) return null; // 只解项目自己的纠错级别 L
+  let rem = formatData;
+  for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+  if ((rem & 0x3FF) !== (format & 0x3FF)) return null;
+  const mask = formatData & 7;
 
   const isFunc = buildFunctionMap(size, version);
   const totalCodewords = Math.floor(numRawDataModules(version) / 8);
@@ -279,7 +290,14 @@ function decode(data, width, height) {
   const bits = binarize(data, width, height);
   const centers = findFinderCenters(bits, width, height);
   if (!centers) return null;
-  const grid = readModules(bits, width, height, cornersOf(centers));
-  if (!grid) return null;
-  return readPayload(grid.modules, grid.size, grid.version);
+  const corners = cornersOf(centers);
+  // 版本不能靠扫描线估算的模块宽推出（倾斜会把它放大 1/cosθ，30° 时足以错判版本）。
+  // 改为逐个候选版本按定位角锚点取样，用格式信息 BCH 校验挑出真正匹配的那个。
+  for (let version = 1; version <= MAX_VERSION; version++) {
+    const grid = readModules(bits, width, height, corners, version);
+    if (!grid) continue;
+    const payload = readPayload(grid.modules, grid.size, grid.version);
+    if (payload !== null) return payload;
+  }
+  return null;
 }
