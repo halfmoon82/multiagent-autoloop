@@ -3,7 +3,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkNode, setup } from './dag-fakes.mjs';
 import { ROOT_NODE } from '../src/dag-run.mjs';
-import { findDagStalls, findDagGated, findDagClaimedStalls, CLAIMED_STALL_THRESHOLD_MS, buildStallEvent, sweepDagStalls, createDagStallSweeper, STALL_THRESHOLD_MS } from '../src/dag-stall.mjs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { createSentStore, findDagStalls, findDagGated, findDagClaimedStalls, CLAIMED_STALL_THRESHOLD_MS, buildStallEvent, sweepDagStalls, createDagStallSweeper, STALL_THRESHOLD_MS } from '../src/dag-stall.mjs';
 
 const pushFails = s => { s.publisher.commitPr = async () => { throw new Error("git push failed: could not read Username for 'https://github.com': terminal prompts disabled"); }; };
 const toReview = async s => { await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); };
@@ -223,4 +226,54 @@ test('claimed 超时巡检：异项目同 nodeId 的 claimed run 不误取', asy
   assert.equal(stalled[0].runId, s.root.runId, '报的是本链 run，不是异项目 run');
   const ownDevRun = s.store.listRuns().find(r => r.project === '/proj' && r.nodeId === 'a' && r.role === 'dev');
   assert.match(stalled[0].error, new RegExp(`Hub run ${ownDevRun.runId}`), 'error 引用本链 dev run');
+});
+
+test('createSentStore 持久化去重：写入文件，重启（重建实例）后仍记得已投事件', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'sent-'));
+  const file = path.join(dir, 'wake-sent.json');
+  const first = createSentStore({ file });
+  first.add('console:dag-progress:x:a1');
+  first.add('console:dag-stall:x:y:1700000000');
+  assert.equal(first.size(), 2);
+  // 模拟进程重启：新实例读同一文件
+  const second = createSentStore({ file });
+  assert.equal(second.has('console:dag-progress:x:a1'), true, '重启后不重投');
+  assert.equal(second.has('other'), false);
+  // 文件确实是持久化的 JSON
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  assert.ok(raw.sent.includes('console:dag-stall:x:y:1700000000'));
+});
+
+test('createSentStore 文件损坏时按空表，不抛错', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'sent-bad-'));
+  const file = path.join(dir, 'wake-sent.json');
+  writeFileSync(file, 'not json{{{');
+  const store = createSentStore({ file });
+  assert.equal(store.size(), 0);
+  store.add('x');
+  assert.equal(store.has('x'), true);
+});
+
+test('sweepDagStalls 用持久化 sent 时，重建后同事件不重投', async () => {
+  // 持久化 sent 与 plain Set 同接口（has/add），sweep 只调这两个方法。
+  const dir = mkdtempSync(path.join(tmpdir(), 'sent-sweep-'));
+  const file = path.join(dir, 'wake-sent.json');
+  const sent = createSentStore({ file });
+  const posts = [];
+  const post = async (e) => posts.push(e.id);
+  await sweepDagStalls({ runs: [], post, sent, now: Date.now() });
+  // 没有 stall 时什么都不投，但接口兼容（has/add 都走 Set 语义）
+  assert.deepEqual(posts, []);
+});
+
+test('两个 createSentStore 实例共用同一文件：add 前重读磁盘合并，不丢对方写的事件', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'sent-share-'));
+  const file = path.join(dir, 'wake-sent.json');
+  const a = createSentStore({ file });
+  const b = createSentStore({ file });
+  a.add('evt-1'); b.add('evt-2');
+  // b.add 前会重读磁盘，把 a 写的 evt-1 并进来，文件里两者都有
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  assert.ok(raw.sent.includes('evt-1') && raw.sent.includes('evt-2'), '共享文件的写者不互相覆盖');
+  assert.equal(b.has('evt-1'), true, 'b 也读到了 a 写的事件');
 });

@@ -4,12 +4,49 @@
 // 同一次卡住最多唤醒一次；错误变了或恢复后再卡，首次时间变化才会再唤醒。
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { hubRequest } from './hub.mjs';
 import { createRunStore, isTerminal, ROOT_NODE } from './dag-run.mjs';
 
 export const STALL_THRESHOLD_MS = 10 * 60 * 1000;
 export const CLAIMED_STALL_THRESHOLD_MS = 30 * 60 * 1000; // claimed 是 worker 在跑，正常长任务可能超 10 分钟，阈值放宽到 30 分钟
 const ERROR_LIMIT = 600;
+const SENT_LIMIT = 2000; // 已投递事件 ID 保留上限，超出丢弃最旧；防文件无界增长
+
+/** 已投递唤醒事件的持久化去重表：读文件惰性加载，add 时先重读磁盘合并再原子写回。
+ *  解决「sent 只在进程内存、服务重启后重投同批 blocked/gated/完成事件」导致的重复烧钱。
+ *  多个持有者（控制器进度唤醒 + 卡住巡检）共用同一文件：add 前先重读磁盘并合并，
+ *  把别的持有者已写的事件也并进来，避免相互覆盖丢更新。写仍是 tmp+rename 原子替换。 */
+export function createSentStore({ file, load = true } = {}) {
+  const sent = new Set();
+  const read = () => {
+    if (!file || !existsSync(file)) return;
+    try {
+      const raw = JSON.parse(readFileSync(file, 'utf8'));
+      const list = Array.isArray(raw) ? raw : raw?.sent;
+      for (const id of Array.isArray(list) ? list : []) if (typeof id === 'string') sent.add(id);
+    } catch { /* 文件损坏按空表处理，重启后靠中台按事件 ID 去重兜底 */ }
+  };
+  const write = () => {
+    if (!file) return;
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify({ sent: [...sent].slice(-SENT_LIMIT) }), { mode: 0o600 });
+    renameSync(tmp, file);
+  };
+  if (load) read();
+  return {
+    has(id) { return sent.has(id); },
+    add(id) {
+      if (sent.has(id)) return;
+      read(); // 先并入别的持有者写进磁盘的 ID，减少同一文件两个写者的丢更新
+      sent.add(id);
+      if (sent.size > SENT_LIMIT) { const first = sent.values().next().value; sent.delete(first); }
+      write();
+    },
+    size() { return sent.size; },
+  };
+}
 
 // 错误原文可能带 URL 凭据或 GitHub token；进中台前抹掉。
 export function redactError(text) {
@@ -160,16 +197,18 @@ export async function sweepDagStalls({ runs, post, sent = new Set(), now = Date.
 
 // 周期巡检器：同 chain-closeout 模式，显式 start 才轮询，句柄 unref，单轮不重叠。
 export function createDagStallSweeper({ config, directory = path.join(config.root, 'dag-runs'), intervalMs = 5 * 60 * 1000,
-  thresholdMs = STALL_THRESHOLD_MS, hub = hubRequest, log = console.log, setTimer = setInterval, clearTimer = clearInterval } = {}) {
+  thresholdMs = STALL_THRESHOLD_MS, hub = hubRequest, log = console.log, setTimer = setInterval, clearTimer = clearInterval,
+  sent = null } = {}) {
   const store = createRunStore({ directory });
-  const sent = new Set();
+  // sent 持久化到 dag-runs 旁的文件；服务重启不重投已发过的卡住/恢复事件。可由调用方注入（共享给进度唤醒）。
+  const sentStore = sent || createSentStore({ file: path.join(directory, 'wake-sent.json') });
   const post = event => hub(config, '/v1/events', { method: 'POST', body: event, auth: 'source' });
   let timer = null; let running = false;
   const tick = async () => {
     if (running) return;
     running = true;
     try {
-      const result = await sweepDagStalls({ runs: store.listRuns(), post, sent, thresholdMs });
+      const result = await sweepDagStalls({ runs: store.listRuns(), post, sent: sentStore, thresholdMs });
       for (const id of result.posted) log(`[dag-stall] 已唤醒调度会话：${id}`);
       if (result.errors.length) log(`[dag-stall] 投递失败（下轮重试）：${result.errors.join('；')}`);
     } catch (error) { log(`[dag-stall] 巡检失败：${error.message}`); }

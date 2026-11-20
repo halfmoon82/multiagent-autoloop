@@ -11,7 +11,7 @@ import { createGhAdapter } from './dag-gh.mjs';
 import { acquireControllerLock } from './dag-lock.mjs';
 import { createPublisher } from './dag-publish.mjs';
 import { ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
-import { createProgressNotifier } from './dag-stall.mjs';
+import { createProgressNotifier, createSentStore } from './dag-stall.mjs';
 import { createSlotRuntime, seg } from './dag-slots.mjs';
 import * as wip from './dag-wip.mjs';
 import { hubRequest } from './hub.mjs';
@@ -131,7 +131,9 @@ export function startDagControllers({ config, store, directory = path.join(confi
   const controllers = new Map(); // rootRunId → { ctl, lock } | { pending:true }
   let inflight = null; let stopped = false;
   const every = Math.max(MIN_POLL_MS, Number(intervalMs) || MIN_POLL_MS);
-  const notifyProgress = createProgressNotifier({ post: event => request(config, '/v1/events', { method: 'POST', body: event, auth: 'source' }), sent: rest.progressSent });
+  // sent 持久化：重启后同批状态变化不重复投递。与卡住巡检共用同一去重表文件。
+  const progressSent = rest.progressSent || createSentStore({ file: path.join(directory, 'wake-sent.json') });
+  const notifyProgress = createProgressNotifier({ post: event => request(config, '/v1/events', { method: 'POST', body: event, auth: 'source' }), sent: progressSent });
 
   async function adopt(rootRun) {
     if (controllers.has(rootRun.runId)) return;
