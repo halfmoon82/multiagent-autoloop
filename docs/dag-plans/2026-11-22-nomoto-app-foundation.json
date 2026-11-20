@@ -12,9 +12,9 @@
       "complexity": "standard",
       "contract": {
         "input": "现状：mobile/app/www 只有绑定页+空壳主界面（index.html/app.mjs/styles.css 单文件），不引用 mobile/src；src/server.mjs MOBILE_FILES 是 9 项固定白名单；/api/mobile/* 绑定后一律 GET-only（server.mjs:233 非 GET 即 404）；android/ 不入库，build-apk.mjs 只在缺 android/ 时 cap add 再 patch 生成物，自写原生代码无处安放。后续所有节点若各自改这些共享文件只能串行。",
-        "output": "一次性预留所有共享接缝，之后各节点只改自己的文件、全部并行：1) www 页面模块化：index.html 改为底部 Tab（总览/规则/轮次/待办/会话/产物/DAG/设备）+ 全局项目筛选挂载点 + 各页容器；锁屏区拆成「未绑定只显示绑定卡、已绑定未解锁只显示解锁卡」，错误信息就近显示；app.mjs 只做路由与装配，按固定列表 import mobile/app/www/pages/{core,sessions,artifacts,dag,project-filter,notify,voice,font-touch,devices}.mjs，各文件先放导出 mount(ctx) 的空实现与同名 .css；ctx 含 client/state/hooks。2) 受限静态服务：server.mjs 把 /mobile/ 资源由固定 Map 改为两条受限目录规则——/mobile/pages/<kebab>.(mjs|css) 映射 mobile/app/www/pages/，/mobile/src/<kebab 路径>.mjs 映射 mobile/src/（仅 .mjs、禁 ..、禁符号链接逃逸、realpath 必须在目录内），页面用相对路径 ../src/... 引用视图模型；保留原 9 项。3) 写路由钩子：新增 src/mobile-write.mjs，导出 handleMobileWrite(req,res,url,ctx)；server.mjs 在设备鉴权之后、GET-only 闸之前调用它，返回 true 即已处理；先实现路由表与 501 占位：POST /api/mobile/cards/:id/answer、POST /api/mobile/cards/:id/authorize、POST /api/mobile/sessions/:id/continue、GET /api/mobile/sessions/:id/download、GET/POST /api/mobile/sync。写操作沿用 checkWrite 同等校验（JSON、同源、自定义头）+ x-device-token。4) 原生源码入库：新建 mobile/app/native/（java 源、manifest-additions.xml、gradle-dependencies.gradle）；MainActivity.java 在 onCreate 前 registerPlugin 全部自写插件，插件类按子包 auth/、notify/、speech/ 先放可编译的空实现；manifest-additions 一次写全权限（CAMERA、RECORD_AUDIO、POST_NOTIFICATIONS、FOREGROUND_SERVICE、FOREGROUND_SERVICE_DATA_SYNC、USE_BIOMETRIC）与前台服务声明；gradle 片段加 androidx.biometric、androidx.security:security-crypto。build-apk.mjs 在 cap add/sync 后把 native/ 拷入并合并 manifest/gradle，再签名；android/ 仍不入库。5) 接缝细则：ctx.hooks 由 app.mjs 预置默认空操作——attachVoice(el)、notify.setBadge(n)/notify.refresh()、openSessionArtifacts(sessionId)、projectFilter.current()/onChange(fn)——各节点只覆盖自己的钩子，未就绪时调用不抛错；页面间互调一律走 ctx.hooks，不直接 import 其他页面模块。原生侧 MainActivity 预置 auth/AutoLoopWebChromeClient 空子类并在 onCreate 后 bridge.getWebView().setWebChromeClient(...) 接好，native-auth 只填实现。写路由表另预留 POST /api/mobile/rules/:id/{run,pause,resume}（501），由 mobile-write-api 实现。",
-        "error_behavior": "受限静态服务对越界路径、非 .mjs、符号链接一律 404 并有单测；钩子 501 占位不影响现有绑定/会话/只读中继；打包合并失败即非零退出、不产半成品；不改设备授权协议。",
-        "acceptance_example": "单测：/mobile/pages/core.mjs 与 /mobile/src/core/pages.mjs 可取，/mobile/src/../package.json、/mobile/src/x.json、符号链接 404；POST /api/mobile/cards/x/answer 鉴权后返回 501、未鉴权 401；build-apk 合并逻辑对假 android 目录产出含全部权限的 manifest。浏览器回归：Tab 切换、锁屏两态。npm test + npm run test:browser 全绿。单测另覆盖：所有默认钩子可调用且不抛错。",
+        "output": "一次性预留所有共享接缝，之后各节点只改自己的文件、全部并行：1) www 页面模块化：index.html 改为底部 Tab（总览/规则/轮次/待办/会话/产物/DAG/设备）+ 全局项目筛选挂载点 + 各页容器；锁屏区拆成「未绑定只显示绑定卡、已绑定未解锁只显示解锁卡」，错误信息就近显示；app.mjs 只做路由与装配，按固定列表 import mobile/app/www/pages/{core,sessions,artifacts,dag,project-filter,notify,voice,font-touch,devices}.mjs，各文件先放导出 mount(ctx) 的空实现与同名 .css；ctx 含 client/state/hooks。2) 受限静态服务：server.mjs 把 /mobile/ 资源由固定 Map 改为两条受限目录规则——/mobile/pages/<kebab>.(mjs|css) 映射 mobile/app/www/pages/，/mobile/src/<kebab 路径>.mjs 映射 mobile/src/（仅 .mjs、禁 ..、禁符号链接逃逸、realpath 必须在目录内），页面用相对路径 ../src/... 引用视图模型；保留原 9 项。3) 写路由钩子：新增 src/mobile-write.mjs，导出 handleMobileWrite(req,res,url,ctx)；server.mjs 在设备鉴权之后、GET-only 闸之前调用它，返回 true 即已处理；先实现路由表与 501 占位：POST /api/mobile/cards/:id/answer、POST /api/mobile/cards/:id/authorize、POST /api/mobile/sessions/:id/continue、GET /api/mobile/sessions/:id/download、GET/POST /api/mobile/sync。写操作沿用 checkWrite 同等校验（JSON、同源、自定义头）+ x-device-token。4) 原生源码入库：新建 mobile/app/native/（java 源、manifest-additions.xml、gradle-dependencies.gradle）；MainActivity.java 在 onCreate 前 registerPlugin 全部自写插件，插件类按子包 auth/、notify/、speech/ 先放可编译的空实现；manifest-additions 一次写全权限（CAMERA、RECORD_AUDIO、POST_NOTIFICATIONS、FOREGROUND_SERVICE、FOREGROUND_SERVICE_DATA_SYNC、USE_BIOMETRIC）与前台服务声明；gradle 片段加 androidx.biometric、androidx.security:security-crypto。build-apk.mjs 在 cap add/sync 后把 native/ 拷入并合并 manifest/gradle，再签名；android/ 仍不入库。5) 接缝细则：ctx.hooks 由 app.mjs 预置默认空操作——attachVoice(el)、notify.setBadge(n)/notify.refresh()、openSessionArtifacts(sessionId)、projectFilter.current()/onChange(fn)——各节点只覆盖自己的钩子，未就绪时调用不抛错；页面间互调一律走 ctx.hooks，不直接 import 其他页面模块。原生侧 MainActivity 预置 auth/AutoLoopWebChromeClient 空子类并在 onCreate 后 bridge.getWebView().setWebChromeClient(...) 接好，native-auth 只填实现。写路由表另预留 POST /api/mobile/rules/:id/{run,pause,resume}（501），由 mobile-write-api 实现。6) 系统返回键：MainActivity 接管返回键，转成 H5 事件；app.mjs 维护页面栈（Tab→详情→产物阅读等），有上一级就回上一级，在 Tab 根页才提示「再按一次退出」，暴露 ctx.hooks.pushView/popView 供各页登记子视图。7) 断网兜底：capacitor 配置 server.errorPath 指向内置 www/offline.html（打包进 APK，不依赖服务器），显示「网络不可用」与重试按钮，恢复后重新加载 /mobile/。8) 键盘与震动：manifest 设 windowSoftInputMode=adjustResize；app.mjs 用 visualViewport 计算键盘高度写 CSS 变量供页面固定底部输入栏；MainActivity 提供 window.AutoloopHaptics.tap()/success()，预置为 ctx.hooks.haptic。",
+        "error_behavior": "受限静态服务对越界路径、非 .mjs、符号链接一律 404 并有单测；钩子 501 占位不影响现有绑定/会话/只读中继；打包合并失败即非零退出、不产半成品；不改设备授权协议。返回键在任何页面都不得直接退出 App（Tab 根页除外且需二次确认）；offline.html 不含任何凭证与业务数据。",
+        "acceptance_example": "单测：/mobile/pages/core.mjs 与 /mobile/src/core/pages.mjs 可取，/mobile/src/../package.json、/mobile/src/x.json、符号链接 404；POST /api/mobile/cards/x/answer 鉴权后返回 501、未鉴权 401；build-apk 合并逻辑对假 android 目录产出含全部权限的 manifest。浏览器回归：Tab 切换、锁屏两态。npm test + npm run test:browser 全绿。单测另覆盖：所有默认钩子可调用且不抛错。浏览器回归：进入会话→产物阅读后模拟返回事件逐级回到会话、再回列表；离线页可独立打开。",
         "files": [
           "mobile/app/www/index.html",
           "mobile/app/www/app.mjs",
@@ -25,7 +25,9 @@
           "mobile/app/native/",
           "mobile/app/build-apk.mjs",
           "test/mobile-scaffold.test.mjs",
-          "test/mobile-apk-build.test.mjs"
+          "test/mobile-apk-build.test.mjs",
+          "mobile/app/www/offline.html",
+          "mobile/app/capacitor.config.json"
         ]
       }
     },
@@ -62,9 +64,9 @@
       "complexity": "standard",
       "contract": {
         "input": "scaffold 已入库 native/ 与 auth/ 子包空实现。真机现象：扫码不弹相机权限（Capacitor 默认不把 getUserMedia 转为运行时权限）、解锁按钮无反应（无 window.AutoloopBiometric）、token 只在内存。",
-        "output": "在 mobile/app/native/java/cool/autoloop/console/auth/ 实现：WebChromeClient.onPermissionRequest 把 RESOURCE_VIDEO_CAPTURE/AUDIO_CAPTURE 转运行时权限并授予（现有 scan.mjs 无需改即可取景）；androidx.biometric 实现 window.AutoloopBiometric.verify()（BIOMETRIC_WEAK|DEVICE_CREDENTIAL 兜底，兼容旧鸿蒙）；EncryptedSharedPreferences 实现 window.AutoloopSecureStorage.get/set/remove。不依赖谷歌服务。",
+        "output": "在 mobile/app/native/java/cool/autoloop/console/auth/ 实现：WebChromeClient.onPermissionRequest 把 RESOURCE_VIDEO_CAPTURE/AUDIO_CAPTURE 转运行时权限并授予（现有 scan.mjs 无需改即可取景）；androidx.biometric 实现 window.AutoloopBiometric.verify()（BIOMETRIC_WEAK|DEVICE_CREDENTIAL 兜底，兼容旧鸿蒙）；EncryptedSharedPreferences 实现 window.AutoloopSecureStorage.get/set/remove。不依赖谷歌服务。另在同一 WebChromeClient/WebView 上：实现 onShowFileChooser（H5 文件选择走系统选择器）与 DownloadListener（产物下载用系统 DownloadManager 带 x-device-token 头保存到「下载」并发通知），否则 WebView 内下载按钮无反应。",
         "error_behavior": "用户拒权给 JS 明确错误码；生物识别取消/失败返回 false 不放行；Keystore 异常回退内存并在 JS 侧提示重启后需重绑。",
-        "acceptance_example": "静态测试校验插件类、注入名与 scaffold 接缝一致；模拟器：扫码弹系统相机权限并取景，解锁弹系统指纹，杀进程重开 token 仍在（证据由 smoke-emulator 汇总）。npm test 全绿。",
+        "acceptance_example": "静态测试校验插件类、注入名与 scaffold 接缝一致；模拟器：扫码弹系统相机权限并取景，解锁弹系统指纹，杀进程重开 token 仍在（证据由 smoke-emulator 汇总）。npm test 全绿。模拟器：产物页点下载，系统下载通知出现且文件可打开。",
         "files": [
           "mobile/app/native/java/cool/autoloop/console/auth/",
           "test/mobile-native-auth.test.mjs"
@@ -170,9 +172,9 @@
       "complexity": "heavy",
       "contract": {
         "input": "mobile/src/features/sessions 与 question-group 有视图模型但未接线。（接缝契约由 mobile-scaffold 定义：页面模块 mobile/app/www/pages/<name>.mjs 导出 mount(ctx)，ctx 含 client、state、hooks；hooks.attachVoice(inputEl)/hooks.notify 由对应节点实现，未实现时为空操作）",
-        "output": "实现 pages/sessions.mjs/.css：类型筛选、搜索、当前/归档会话；归档「继续调度」调 POST sessions continue；会话内待回答组逐题聚焦、已答折叠、进度轨、选项/文字作答（走 cards answer），输入框调用 ctx.hooks.attachVoice(el)，「本会话产物」调用 ctx.hooks.openSessionArtifacts(id)；切页/旋转后草稿与滚动保留。",
+        "output": "实现 pages/sessions.mjs/.css：类型筛选、搜索、当前/归档会话；归档「继续调度」调 POST sessions continue；会话内待回答组逐题聚焦、已答折叠、进度轨、选项/文字作答（走 cards answer），输入框调用 ctx.hooks.attachVoice(el)，「本会话产物」调用 ctx.hooks.openSessionArtifacts(id)；切页/旋转后草稿与滚动保留。会话体验硬门槛（对标原生聊天 App）：只渲染可视区附近消息（虚拟列表），图片懒加载；流式输出按帧合并刷新，用户在底部时自动跟随、上翻时不被拉回并出现「回到底部」按钮；底部输入栏用 scaffold 的键盘高度变量固定，键盘弹起不遮挡、不跳动、收起不留白；子视图（产物阅读等）经 hooks.pushView 登记以支持返回键；发送/选中选项触发 hooks.haptic；长按消息弹自定义菜单（复制），不出浏览器默认菜单。",
         "error_behavior": "已处理/失效事项不重复提交；失败保留题目与草稿；钩子为空操作时无麦克风按钮但输入正常。",
-        "acceptance_example": "浏览器回归：会话筛选、恢复归档、待回答组逐题提交与草稿保留。npm test + npm run test:browser 全绿。",
+        "acceptance_example": "浏览器回归：会话筛选、恢复归档、待回答组逐题提交与草稿保留。npm test + npm run test:browser 全绿。体验门槛：500 条消息会话在模拟器滚动无明显卡顿（掉帧率记录入 smoke 报告）；模拟流式输出 30 秒不抖动、不乱跳；键盘弹起/收起各 10 次输入框始终可见。",
         "files": [
           "mobile/app/www/pages/sessions.mjs",
           "mobile/app/www/pages/sessions.css",
@@ -195,7 +197,7 @@
       "complexity": "standard",
       "contract": {
         "input": "mobile/src/features/artifacts 有视图模型（含折叠双栏布局）但未接线。（接缝契约由 mobile-scaffold 定义：页面模块 mobile/app/www/pages/<name>.mjs 导出 mount(ctx)，ctx 含 client、state、hooks；hooks.attachVoice(inputEl)/hooks.notify 由对应节点实现，未实现时为空操作）",
-        "output": "实现 pages/artifacts.mjs/.css：全局产物页 + 覆盖 ctx.hooks.openSessionArtifacts(sessionId) 供会话页调用；手机全屏列表→全屏阅读→逐级返回；折叠/宽屏左列表右阅读只刷新右侧；下载/分享走 GET sessions download。",
+        "output": "实现 pages/artifacts.mjs/.css：全局产物页 + 覆盖 ctx.hooks.openSessionArtifacts(sessionId) 供会话页调用；手机全屏列表→全屏阅读→逐级返回；折叠/宽屏左列表右阅读只刷新右侧；下载/分享走 GET sessions download。；阅读页经 hooks.pushView 登记，返回键逐级退出。",
         "error_behavior": "产物只读；下载失败可重试；返回会话不丢原会话状态。",
         "acceptance_example": "浏览器回归：全局页与会话入口打开同一产物，宽屏双栏。npm test + npm run test:browser 全绿。",
         "files": [
@@ -351,6 +353,29 @@
       }
     },
     {
+      "id": "session-early-device",
+      "title": "会话页早期真机试用（需所有者授权安装）",
+      "depends_on": [
+        "ui-sessions",
+        "native-auth",
+        "bind-ux",
+        "mobile-write-api"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "旧鸿蒙 WebView 内核偏老是体验最大变数；会话页是体验要求最高的页面。若等全部完成才上真机，发现体验不达标时返工代价最大。",
+        "output": "会话页与原生认证就绪后，立即用当前脚手架打一版预览 APK（AUTOLOOP_APK_BUILD_AUTHORIZED 由所有者授权），请所有者在自己手机上完成：粘贴绑定、指纹解锁、打开会话、长会话滚动、键盘输入、返回键。结果写入试用记录；若体验不达标，调度方在记录里给出原因并决定是否把会话页单独改原生（另起节点），不阻塞其他页面并行。",
+        "error_behavior": "未获授权时节点标为等待授权，不阻塞其他节点；试用发现的问题登记为缺陷交回 ui-sessions 返工，不在本节点改代码。",
+        "acceptance_example": "试用记录含所有者对六项体验的结论（可用/不可用+现象）；不达标项已转为缺陷。",
+        "files": [
+          "docs/2026-11-22-nomoto-session-early-device.md"
+        ]
+      }
+    },
+    {
       "id": "smoke-emulator",
       "title": "Android 模拟器 smoke：绑定→解锁→各页→通知直复→双机同步",
       "depends_on": [
@@ -384,7 +409,8 @@
       "id": "smoke-device",
       "title": "真机验收（需所有者另行授权安装）",
       "depends_on": [
-        "smoke-emulator"
+        "smoke-emulator",
+        "session-early-device"
       ],
       "integration_after": [],
       "parallel_group": "wave-5",
