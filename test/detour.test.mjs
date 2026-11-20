@@ -280,6 +280,8 @@ test('publicDetour keeps display fields and strips the probe command', () => {
   assert.deepEqual(shown.rules, [{ name: '开发', originalTo: 'workbuddy' }, { name: '审阅', originalTo: 'workbuddy' }]);
   assert.equal(shown.probe, undefined);
   assert.equal(JSON.stringify(shown).includes('probe.sh'), false);
+  assert.equal(shown.cooldownMinutes, 15);
+  assert.equal(shown.probeCount, 0, '刚登记还没有探测历史');
 });
 
 test('publicDetour returns null for malformed records instead of throwing', () => {
@@ -312,4 +314,16 @@ test('findActiveDetour matches blocked agent/model and ignores reverted records'
   assert.equal(findActiveDetour(config, { blockedAgent: 'claude' }), null);
   revertDetour(config, 'wb-hy4-1', T0);
   assert.equal(findActiveDetour(config, { blockedAgent: 'workbuddy', blockedModel: 'hy4free' }), null);
+});
+
+test('publicDetour 暴露探测次数与冷却，供总览显示自动核实进度', () => {
+  const { config } = fixture();
+  const record = recordDetour(config, { ...input, probe: { command: ['/secret/path/probe.sh'], cooldownMinutes: 30 } }, T0);
+  // 手动造一次探测历史（markProbeResult 要求 detoured 状态 + 走锁）
+  record.history.push({ at: '2026-11-19T15:00:00Z', event: 'probe-fail' });
+  record.history.push({ at: '2026-11-19T15:30:00Z', event: 'probe-fail' });
+  record.history.push({ at: '2026-11-19T16:00:00Z', event: 'probe-ok' });
+  const shown = publicDetour(record);
+  assert.equal(shown.probeCount, 3);
+  assert.equal(shown.cooldownMinutes, 30);
 });

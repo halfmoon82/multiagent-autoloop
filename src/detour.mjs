@@ -80,6 +80,9 @@ export function publicDetour(detour) {
     rules: detour.rules.map((rule) => ({ name: String(rule?.name ?? ''), originalTo: String(rule?.originalTo ?? '') })),
     ...(detour.lastProbeAt ? { lastProbeAt: detour.lastProbeAt } : {}),
     ...(detour.lastProbeOk !== null && detour.lastProbeOk !== undefined ? { lastProbeOk: detour.lastProbeOk } : {}),
+    // 给总览展示自动核实进度：冷却分钟数 + 已探测次数（从 history 里数 probe-fail/probe-ok）。
+    ...(Number.isFinite(Number(detour.probe?.cooldownMinutes)) ? { cooldownMinutes: Number(detour.probe.cooldownMinutes) } : {}),
+    probeCount: Array.isArray(detour.history) ? detour.history.filter(h => h.event === 'probe-fail' || h.event === 'probe-ok').length : 0,
   };
 }
 

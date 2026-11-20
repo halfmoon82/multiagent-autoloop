@@ -236,7 +236,7 @@ try {
   const retryingText = await page.locator('#retrying-list').innerText();
   assert.ok(retryingText.includes('绕行中'), 'an active detour must show in the retrying section');
   assert.ok(retryingText.includes('workbuddy/hy4free'), 'the detour row must name the blocked agent/model');
-  assert.ok(retryingText.includes('核实恢复中'), 'the detour row must say verification is pending');
+  assert.ok(retryingText.includes('自动核实'), 'the detour row must say automatic verification is running');
   assert.ok(!retryingText.includes('wb-hy4-old'), 'a reverted detour must not be listed anymore');
   const attentionText = await page.locator('#attention-list').innerText();
   assert.ok(attentionText.includes('绕行中'), 'the scheduling-handled queue must surface the active detour too');
