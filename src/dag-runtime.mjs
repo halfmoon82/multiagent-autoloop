@@ -4,7 +4,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createController, HUB_TERMINAL } from './dag-controller.mjs';
 import { createGhAdapter } from './dag-gh.mjs';
@@ -56,8 +56,17 @@ export function createHubAdapter({ config, request = hubRequest, project } = {})
   const newest = out => [...(out?.runs || [])].sort((a, b) => b.run - a.run)[0] || null;
   return {
     async dispatch({ run, slot, worktree, branch, expectedAdvanceId, model, tier, prompt }) {
-      const detail = JSON.stringify({ runId: run.runId, nodeId: run.nodeId, role: run.role, generation: run.generation, attempt: run.attempt, slot, worktree, branch, expectedAdvanceId, model: model ?? null, tier: tier ?? null, prompt });
-      if (detail.length > 4000) throw new Error('派发事件正文超过 4000 字符，拒绝截断派发');
+      const build = text => JSON.stringify({ runId: run.runId, nodeId: run.nodeId, role: run.role, generation: run.generation, attempt: run.attempt, slot, worktree, branch, expectedAdvanceId, model: model ?? null, tier: tier ?? null, prompt: text });
+      let detail = build(prompt);
+      if (detail.length > 4000) {
+        // 超限不截断：完整提示落盘，事件正文只放读取指引，worker 必须先读该文件（含节点契约与回执模板）。
+        const dir = path.join(config?.root || tmpdir(), 'dag-prompts');
+        mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, `${seg(run.runId)}.md`);
+        writeFileSync(file, `${prompt}\n`, 'utf8');
+        detail = build(`提示全文过长，未放进事件。先完整阅读此文件再动手（含节点契约与回执模板，回执以其为准）：${file}`);
+        if (detail.length > 4000) throw new Error('派发事件正文超过 4000 字符，拒绝截断派发');
+      }
       // 档位只在后台开关开启、且 rules.json 确有规则接收该分档事件时才进入事件类型；每次派发现读，改设置无需重启。
       const tiered = tier && loadEnabledTiers(config?.root).has(tier) ? dagEventType(project || run.project, `${run.role}.${tier}`) : null;
       const type = tiered && rulesConsume(config?.rulesFile, tiered) ? tiered : dagEventType(project || run.project, run.role);
