@@ -858,3 +858,29 @@ test('after an interrupted turn, or a send while the previous turn still runs, t
   assert.match(body, /## 最近一次得到的回答（属于更早一轮；上一轮未得到回答）\n+第一轮的回答/);
   assert.doesNotMatch(body.split('## 上一轮用户原话')[1].split('\n## ')[0], /再试一次/, '本轮消息不得混进上一轮');
 });
+
+test('notifyCardAnswered 按 card.lane 找到会话，发一条带答复原文的新轮次并写入转录', async () => {
+  const client = fakeHubClient();
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = newManager(adapter, { hubReconcileMs: 0 });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const before = posts(client);
+  const result = await manager.notifyCardAnswered({ card: { id: 9, title: '是否重试', lane: started.hubSubject }, answerText: '继续' });
+  assert.ok(result, '命中会话应返回会话视图');
+  assert.equal(posts(client), before + 1, '只发一条新事件');
+  const last = client.calls.filter(call => call[0] === 'postEvent').at(-1)[1];
+  assert.equal(last.subject, started.hubSubject, '必须落在同一事项上');
+  assert.match(JSON.parse(last.detail).text, /用户已回答卡片 9《是否重试》：继续/);
+  assert.ok(manager.list()[0].messages.some(message => message.role === 'user' && /用户已回答卡片 9/.test(message.text)), '转录里要看得见这次答复');
+});
+
+test('notifyCardAnswered 没有 lane、或 lane 没有对应活跃会话时返回 null 且不发事件', async () => {
+  const client = fakeHubClient();
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = newManager(adapter, { hubReconcileMs: 0 });
+  await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  const before = posts(client);
+  assert.equal(await manager.notifyCardAnswered({ card: { id: 1, title: 't' }, answerText: 'x' }), null);
+  assert.equal(await manager.notifyCardAnswered({ card: { id: 1, title: 't', lane: 'scheduling:other' }, answerText: 'x' }), null);
+  assert.equal(posts(client), before);
+});

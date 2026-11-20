@@ -304,7 +304,35 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/cards\/([^/]+)\/(answer|resolve)$/))) {
     const id = idOf(match[1]); const action = match[2];
     const payload = action === 'answer' ? (body.choice !== undefined ? { choice: Number(body.choice) } : { text: String(body.text || '') }) : { reason: String(body.reason || '') };
-    return jsonResponse(res, 200, await hubRequest(config, `/v1/cards/${id}/${action}`, { method: 'POST', body: payload }));
+    // 先读状态再结案：已结案卡片可能从 /v1/state 的 cards 列表消失，lane 必须在结案前取到。
+    // 读失败不拦回答（answer 本身才是用户动作），只把唤醒标记为 failed。
+    // 只有注入了支持唤醒的会话管理器才查状态；生产由 createConsoleServer 自动装配，
+    // 无 sessions 形参时 config.schedulingSessions 是新建的（同样带该方法），测试里传 null 即跳过整段。
+    const canWake = action === 'answer' && typeof config.schedulingSessions?.notifyCardAnswered === 'function';
+    let card = null; let stateFailed = false;
+    if (canWake) {
+      try {
+        const state = await hubRequest(config, '/v1/state');
+        card = (state?.cards || []).find(item => Number(item?.id) === id) || null;
+      } catch { stateFailed = true; }
+    }
+    const result = await hubRequest(config, `/v1/cards/${id}/${action}`, { method: 'POST', body: payload });
+    // 回答后唤醒卡片所在事项的调度会话：只有 answer 且 card.lane 对应一个活着的 Hub 会话才发事件；
+    // 找不到会话/发送失败都不影响卡片已结案的事实。
+    let schedulingWake = 'skipped';
+    if (canWake) {
+      if (stateFailed) schedulingWake = 'failed';
+      else if (!card) schedulingWake = 'no-session';
+      else {
+        try {
+          const answerText = payload.choice !== undefined
+            ? String(card.options?.[payload.choice] ?? `选项 ${payload.choice}`)
+            : String(payload.text || '');
+          schedulingWake = await config.schedulingSessions.notifyCardAnswered({ card, answerText }) ? 'sent' : 'no-session';
+        } catch { schedulingWake = 'failed'; }
+      }
+    }
+    return jsonResponse(res, 200, { ...result, schedulingWake });
   }
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/cards\/([^/]+)\/delegate$/))) {
     const id = idOf(match[1]);
@@ -329,8 +357,18 @@ async function handleApi(config, req, res, url) {
   }
   return false;
 }
+// 空会话管理器：不暴露 notifyCardAnswered，唤醒分支自动跳过。
+// 用于纯转发 API 测试：不装配真实管理器，也不触发 /v1/state 预读。
+const NULL_SESSIONS = {
+  async list() { return []; },
+  async listArchived() { return { sessions: [] }; },
+};
+
 export function createConsoleServer(config, schedulingSessions) {
-  if (!schedulingSessions) {
+  // schedulingSessions === false 为显式关闭会话：用 NULL_SESSIONS，不装配真实管理器。
+  // undefined/null 走默认装配；其余对象按注入件使用。
+  if (schedulingSessions === false) schedulingSessions = NULL_SESSIONS;
+  else if (!schedulingSessions) {
     const writableDir = config.root ? path.join(config.root, 'scripts') : null;
     let allowedDir = writableDir;
     if (allowedDir) {

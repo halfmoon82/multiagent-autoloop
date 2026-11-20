@@ -254,6 +254,14 @@ async function perform(action, id, body = {}) {
   if (!paths[action]) throw new Error('不支持的操作');
   await api(paths[action], { method: 'POST', body: JSON.stringify(body) }); showNotice('操作已完成，正在刷新状态。'); await refresh();
 }
+// 答复卡片后的反馈：告诉用户调度会话是否已被通知，避免「提交了却没下文」。
+function wakeNotice(result) {
+  const wake = result?.schedulingWake;
+  if (wake === 'sent') return '回答已提交，已通知调度会话继续处理，结论会出现在会话里。';
+  if (wake === 'no-session') return '回答已提交，但这张卡片没有对应的调度会话，后续由事件链自行继续。';
+  if (wake === 'failed') return '回答已提交，但通知调度会话失败，请在会话里手动说一声。';
+  return '回答已提交，任务将继续。';
+}
 // Agent id → 显示名：正在运行列表与串行节点执行者共用同一口径。
 function agentNameMap() { return Object.fromEntries((state.agents || []).map(agent => [agent.id, agent.name]).filter(([, name]) => name)); }
 // Agent id → 对接程序（use）：判断该通道结构上产不产得出用量。
@@ -277,7 +285,7 @@ document.addEventListener('click', async event => {
     if (action === 'cancel' && !confirm(`确定停止第 ${id} 轮？`)) return;
     if (action === 'close-session' && !confirm(`关闭调度会话“${id}”？`)) return;
     if (action === 'edit') { const rule = state.rules.find(item => item.name === id); openRuleForm({ rule, agents: state.agents, sources: state.sources, api, onSaved: refresh }); return; }
-    if (action === 'answer-choice') { const split = id.lastIndexOf(':'); await api(`/api/cards/${id.slice(0, split)}/answer`, { method: 'POST', body: JSON.stringify({ choice: Number(id.slice(split + 1)) }) }); showNotice('回答已提交，任务将继续。'); await refresh(); return; }
+    if (action === 'answer-choice') { const split = id.lastIndexOf(':'); const answered = await api(`/api/cards/${id.slice(0, split)}/answer`, { method: 'POST', body: JSON.stringify({ choice: Number(id.slice(split + 1)) }) }); showNotice(wakeNotice(answered)); await refresh(); return; }
     if (action === 'delegate-card') {
       const result = await api(`/api/cards/${encodeURIComponent(id)}/delegate`, { method: 'POST', body: JSON.stringify({}) });
       showNotice(result?.idempotent ? '这张卡已经退回过调度，未重复派发。' : '已退回调度处理，原卡已结案。');
@@ -485,7 +493,7 @@ document.addEventListener('submit', async event => {
     const input = answerForm.elements.answer;
     const cardId = answerForm.dataset.id;
     const answerText = input.value;
-    try { await api(`/api/cards/${cardId}/answer`, { method: 'POST', body: JSON.stringify({ text: answerText }) }); const liveInput = liveFormInput('answer-text', cardId, 'answer'); if (liveInput && liveInput.value === answerText) { liveInput.value = ''; autoGrow(liveInput); } state.skipPinOnce = cardId; showNotice('回答已提交，任务将继续。'); await refresh(); }
+    try { const answered = await api(`/api/cards/${cardId}/answer`, { method: 'POST', body: JSON.stringify({ text: answerText }) }); const liveInput = liveFormInput('answer-text', cardId, 'answer'); if (liveInput && liveInput.value === answerText) { liveInput.value = ''; autoGrow(liveInput); } state.skipPinOnce = cardId; showNotice(wakeNotice(answered)); await refresh(); }
     catch (error) { showNotice(error.message); }
     return;
   }

@@ -32,6 +32,8 @@ const schedulingSessions = {
   queueSeq: 0,
   archived: [{ id: 'deadbeef-aaaa-bbbb-cccc-ddddeeee0001', project: demoRepo, agent: 'Codex ACP', prompt: '旧的首轮调度说明', continuedFrom: null, messages: [...Array.from({ length: 8 }, (_, index) => [{ role: 'user', text: `第 ${index + 1} 轮调度指令`, at: '2026-11-15T00:00:00Z' }, { role: 'agent', text: `第 ${index + 1} 轮回复：` + '内容较长需要换行展示。'.repeat(6), at: '2026-11-15T00:05:00Z' }]).flat(), { role: 'user', text: '上次看到一半的计划', at: '2026-11-15T01:00:00Z' }, { role: 'agent', text: '计划草案已给出，待确认。' + '收尾补充说明。'.repeat(20), at: '2026-11-15T01:01:00Z' }], createdAt: '2026-11-15T01:00:00Z', updatedAt: '2026-11-15T01:01:00Z', closedAt: null, endStatus: 'interrupted', truncated: false }],
   async listArchived() { return this.archived; },
+  // 卡片答复唤醒：记录调用并按 lane 匹配记录里的 hubSubject（测试里的会话无 hubSubject 则视为无会话）。
+  async notifyCardAnswered(payload) { (this.cardWakeCalls ||= []).push(payload); return this.records.find(item => item.hubSubject && item.hubSubject === payload?.card?.lane) || null; },
   async continueSession(id) {
     const original = this.archived.find(item => item.id === id);
     const session = await this.start({ prompt: '续跑', project: original?.project || '未识别' });

@@ -19,5 +19,7 @@ export async function fakeHub(handler) {
   return { server, url: await listen(server), requests };
 }
 export const json = (res, value, status = 200) => {
-  res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value));
+  // connection:close 防止 undici keep-alive 池挂住 node:test 事件循环
+  res.writeHead(status, { 'content-type': 'application/json', connection: 'close' });
+  res.end(JSON.stringify(value));
 };
