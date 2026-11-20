@@ -1,6 +1,6 @@
 {
   "appId": "cool.autoloop.console",
-  "appName": "Autoloop 控制台",
+  "appName": "NoMoTo",
   "webDir": "www",
   "bundledWebRuntime": false,
   "loggingBehavior": "none",

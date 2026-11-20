@@ -1,6 +1,6 @@
 {
-  "name": "Autoloop 移动控制台",
-  "short_name": "Autoloop",
+  "name": "NoMoTo",
+  "short_name": "NoMoTo",
   "description": "独立移动端控制台壳：安全连接、生物识别与设备级授权",
   "lang": "zh-CN",
   "start_url": "./",
