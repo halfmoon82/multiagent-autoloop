@@ -210,7 +210,12 @@ export function progressRing(view, { selectedId = '', onPick = null } = {}) {
   const step = count ? 360 / count : 0;
   const arcAt = radius + 6; // 节点名写在色带偏外沿，弧长更长、可读字更多
   const labelFont = count > 8 ? 8 : 9;
-  const fitChars = Math.max(2, Math.floor(((2 * Math.PI * arcAt) / Math.max(count, 1) - 1.5) / (labelFont + 0.3)));
+  const charWidth = labelFont + 0.3;
+  const arcChars = Math.floor(((2 * Math.PI * arcAt) / Math.max(count, 1) - 1.5) / charWidth);
+  // 文字沿切线直排：越长两端越偏离圆弧，会冲出色带外沿。按外沿余量限制半宽。
+  const outerEdge = radius + RING_STROKE / 2 - labelFont / 2 - 1;
+  const radialChars = Math.floor((2 * Math.sqrt(Math.max(0, outerEdge ** 2 - arcAt ** 2))) / charWidth);
+  const fitChars = Math.max(2, Math.min(arcChars, radialChars));
   // 节点多时封顶 4 字，给相邻名字留出视觉间隔，避免读成一串。
   const maxChars = count > 8 ? Math.min(4, fitChars) : fitChars;
   // 圆环空间紧，超长标题按可容纳字数截断（不加省略号，完整标题在悬停与右侧面板）。
