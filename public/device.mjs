@@ -4,7 +4,11 @@
 import { el } from './views.mjs';
 import { encodeQr } from './qr.mjs';
 
-const ACTION_LABEL = { 'qr.create': '生成二维码', bind: '绑定设备', rename: '重命名设备', revoke: '解除授权' };
+const ACTION_LABEL = {
+  'qr.create': '生成二维码', bind: '绑定设备', rename: '重命名设备', revoke: '解除授权',
+  'sync.submit': '同步提交结论', 'sync.denied': '越权访问同步（已拒绝）', 'card.answer': '手机回答卡片', 'card.authorize': '手机授权卡片', 'rule.action': '手机操作规则',
+};
+const RESULT_LABEL = { ok: ['good', '成功'], denied: ['bad', '已拒绝'], failed: ['bad', '失败'] };
 const fmtTime = value => (value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '从未');
 
 export function initDevices({ api, notify, showView }) {
@@ -98,10 +102,13 @@ export function initDevices({ api, notify, showView }) {
     for (const item of s.audit) {
       const row = el('div', 'list-row');
       const main = el('div');
-      const detail = [item.deviceName, item.platform].filter(Boolean).join(' · ');
+      const byName = item.byDevice ? (s.devices.find(device => device.id === item.byDevice)?.name || item.byDevice) : '';
+      const target = item.ruleName ? `${item.ruleName}${item.ruleAction ? `（${item.ruleAction}）` : ''}` : (item.cardId ? `卡片 ${item.cardId}` : '');
+      const detail = [item.deviceName, item.platform, target, byName ? `来源设备 ${byName}` : ''].filter(Boolean).join(' · ');
       main.append(el('div', 'row-title', ACTION_LABEL[item.action] || item.action), el('div', 'row-meta', `${detail || '—'} · ${fmtTime(item.at)}`));
       const side = el('div', 'device-row-actions');
-      side.append(el('span', `status ${item.result === 'ok' ? 'good' : 'bad'}`, item.result === 'ok' ? '成功' : '失败'), el('span', 'subtle', item.source || '—'));
+      const [tone, label] = RESULT_LABEL[item.result] || ['bad', '失败'];
+      side.append(el('span', `status ${tone}`, label), el('span', 'subtle', item.source || '—'));
       row.append(main, side);
       host.append(row);
     }
