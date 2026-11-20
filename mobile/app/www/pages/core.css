@@ -1,2 +1,45 @@
-/* core 页面接缝样式：总览/规则/轮次/待办由后续节点填充。 */
-.page[data-page="core"] { min-height: 4rem; }
+/* 核心页面样式：总览/规则/轮次/待办/执行授权。沿用品牌绿与卡片式信息架构，
+   字体跟随系统度量；触控热区约 44–48dp，窄屏与 160% 字体均纵向滚动不横向溢出。 */
+.page[data-page="core"],
+.page[data-page="rules"],
+.page[data-page="rounds"],
+.page[data-page="todos"],
+.page[data-page="authorize"] { min-height: 4rem; }
+
+.core-section h3 { margin: 0 0 0.6rem; font-size: 1rem; }
+.core-section-body { display: block; }
+.core-usage { margin: 0; font-weight: 600; }
+.core-list { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+.core-list li { margin: 0.2rem 0; }
+.core-metric { padding: 0.5rem 0; border-bottom: 1px solid var(--line); }
+.core-metric:last-child { border-bottom: 0; }
+.core-item { display: flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; padding: 0.4rem 0; border-bottom: 1px solid var(--line); }
+.core-item:last-child { border-bottom: 0; }
+.core-item strong { flex: 1 1 12rem; }
+.core-meta { margin: 0.2rem 0; color: var(--ink-soft); font-size: 0.9rem; }
+.core-card { padding: 0.8rem 0; border-bottom: 1px solid var(--line); }
+.core-card:last-child { border-bottom: 0; }
+.core-card-text { margin: 0.4rem 0; white-space: pre-wrap; }
+.core-status { display: inline-block; margin: 0.4rem 0 0; padding: 0.15rem 0.6rem; border-radius: 999px; background: var(--mint); font-size: 0.9rem; }
+.core-status.warn { background: #fbe9e7; color: var(--danger); }
+.core-actions, .core-choices { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.6rem; }
+.core-actions .core-action,
+.core-choices .core-choice {
+  flex: 1 1 7rem; min-height: 48px; margin: 0; font-size: 1rem;
+  color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 0.6rem;
+}
+.core-choices .core-choice[aria-pressed="true"] { background: var(--mint); border-color: var(--ink-soft); font-weight: 600; }
+.core-answer-text {
+  width: 100%; min-height: 3.5rem; margin: 0.6rem 0 0; padding: 0.6rem 0.7rem;
+  font: inherit; font-size: 1rem; color: var(--ink); background: #fff;
+  border: 1px solid var(--line); border-radius: 0.6rem; resize: vertical;
+}
+.core-card > .core-action.primary { width: 100%; margin-top: 0.6rem; }
+.core-answer { margin: 0.4rem 0 0; font-weight: 600; }
+.core-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+  padding: 0.7rem 0.9rem; margin: 0 0 1rem;
+  background: #fbe9e7; border: 1px solid var(--danger); border-radius: 0.7rem; color: var(--danger);
+}
+.core-banner-text { flex: 1 1 12rem; }
+.core-retry { min-height: 44px; margin: 0; color: var(--danger); border-color: var(--danger); }
