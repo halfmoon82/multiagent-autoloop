@@ -300,6 +300,23 @@ cron 规则模板（每 30 分钟，提示词只调用 verify 并汇报，不手
 - **安全**：错误原文进中台前抹掉 URL 凭据与 GitHub token，截断至 600 字符。
 - **开关**：`AUTOLOOP_DAG_STALL=0`（或 `AUTOLOOP_DAG=0`）关闭。不新增中台规则、不改协议字段。
 
+### 13.2 链终结收口被取代的非终态 run（2026-11-20）
+
+背景：复活/换打法时 `createAttempt` 先生成新 run（`queued`），再由 prepare/send 派发；
+派发中途失败（如推送凭据缺失）留下的 `queued` run 没有 hubRunId 也永远等不到回执。
+它已非终态且被更新的 attempt 取代，占着「每项目一条活跃 DAG」的名额——2026-11-19
+device-binding 链已 `done` 却留着一个 gen2att1 `queued` 孤儿。
+
+- **时机（`src/dag-controller.mjs` tick 末尾）**：根 run 本轮进入终态（done/cancelled）后调
+  `closeoutSupersededRuns`；终态后不再有 tick，只在这一次收口，天然幂等。
+- **判定（`src/dag-stall.mjs` `findStaleNonTerminalRuns`）**：同 project+planId+nodeId+role 存在
+  generation/attempt 更高的 run（与 STALE_RUN 同一条「已被取代」判定；取代者查全集，含已终态）。
+- **动作**：只收尾 `status === 'queued'`、无 `hub.hubRunId`、无 `slot` 的孤儿——从未派发成功、
+  Hub 侧无对应 run，`store.cancel` 记 `cancelReason: superseded-by-later-attempt`。
+  `claimed` 及以上的被取代 run 不动（worker 可能活着），留给调度方核实；
+  未被取代的非终态 run 不动。
+- **无模型**：不唤醒调度会话、不投事件，只写 `[dag-closeout]` 日志；单个收尾失败记日志不阻断其余。
+
 ## 验收示例
 
 1. **部署失败但代码已推送**：开发调度仍继续；部署卡片独立处理，不阻塞开发。

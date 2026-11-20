@@ -181,3 +181,36 @@ export function createDagStallSweeper({ config, directory = path.join(config.roo
     stop() { if (timer) { clearTimer(timer); timer = null; } },
   };
 }
+
+// 链完成收口（无模型）：根 run 终结后，同一项目同计划里"仍非终态、已被更新的 run 取代"的旧 run
+// 是派发中途失败的遗留尝试（如从未拿到 hubRunId 的 queued），占着"每项目一条活跃 DAG"的名额。
+// 「已被取代」用与 STALE_RUN 同一条判定：同 nodeId+role 有 generation/attempt 更高的 run。
+// 只动非终态且非最新的 run，活着的/最新的 run 一律不碰；cancelReason 记 superseded-by-later-attempt 可审计。
+export function findStaleNonTerminalRuns(runs, { project, planId } = {}) {
+  const all = (runs || []).filter(r => r && r.nodeId !== ROOT_NODE);
+  // 「被取代」看全集：收官时取代者（最新 attempt）通常已 done，只盯非终态会永远找不到取代者。
+  const isSuperseded = run => all.some(other =>
+    other !== run && other.project === run.project && other.planId === run.planId
+    && other.nodeId === run.nodeId && other.role === run.role
+    && (other.generation > run.generation || (other.generation === run.generation && other.attempt > run.attempt)));
+  return all.filter(run => !isTerminal(run.status) && (project == null || run.project === project) && (planId == null || run.planId === planId) && isSuperseded(run));
+}
+
+// 收尾给定根 run 的孤儿。只在该根 run 已终结时调用（完成或取消）；返回被收尾的 runId 列表。
+export function closeoutSupersededRuns(store, rootRunId, { reason = 'superseded-by-later-attempt', log = () => {} } = {}) {
+  const root = store.getRun(rootRunId);
+  if (!root || !isTerminal(root.status)) return [];
+  const stale = findStaleNonTerminalRuns(store.listRuns(), { project: root.project, planId: root.planId });
+  const closed = [];
+  for (const run of stale) {
+    try {
+      // 只收尾能走 queued→cancelled 的孤儿；claimed/claimed 以上状态留给调度方核实 worker，不静默取消。
+      if (run.status === 'queued' && !run.hub?.hubRunId && run.slot == null) {
+        store.cancel(run.runId, { reason });
+        closed.push(run.runId);
+        log(`[dag-closeout] 收尾被取代的孤儿 run：${run.nodeId}:${run.role} gen${run.generation}att${run.attempt} ${run.runId}`);
+      }
+    } catch (error) { log(`[dag-closeout] 收尾 ${run.runId} 失败：${error.message}`); }
+  }
+  return closed;
+}

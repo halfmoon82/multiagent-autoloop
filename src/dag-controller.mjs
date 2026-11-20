@@ -5,6 +5,7 @@ import { assertNodeDesignSnapshot, designContractDigest } from './design-baselin
 import { MAX_SLOTS, MAX_ATTEMPTS, QUARANTINE_AFTER_MS, isTerminal, ROOT_NODE, DagRunError } from './dag-run.mjs';
 import { seg } from './dag-slots.mjs';
 import { nodeTier } from './dag-tier.mjs';
+import { closeoutSupersededRuns } from './dag-stall.mjs';
 
 export const HUB_TERMINAL = new Set(['done', 'cancelled', 'failed', 'nothing']);
 const SUCCESS = new Set(['done', 'accepted', 'merged']);
@@ -487,6 +488,9 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
           try { await dispatchReady(root, st); } catch (error) { st.lastError = msg(error); }
           // 收尾要等槽位都还干净：最后一个节点验收时若补释放被拒，root 一终结就再没有 tick 来补。
           if (Object.values(st.nodes).length && Object.values(st.nodes).every(n => n.state === 'accepted' && n.slot == null)) store.finishRoot(root.runId, 'done');
+          // 链终结（done 或 cancelled）后收掉遗留的非终态孤儿 run——派发中途失败、已被更新的
+          // attempt 取代却永远停在 queued 的旧 run。只动被取代的，不碰活着的；否则占"每项目一条活跃 DAG"名额。
+          if (isTerminal(loadRoot().status)) closeoutSupersededRuns(store, root.runId);
         }
       } finally { trackPersistentErrors(st, before, now()); persist(root, st); }
       const progress = [];
