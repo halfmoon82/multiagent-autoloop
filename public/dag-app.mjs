@@ -4,7 +4,7 @@ import { renderSerialDetail } from './progress-view.mjs';
 import { renderAuthorize, renderPreflight } from './dag-authorize.mjs';
 import { stableReplace } from './dom-stable.mjs';
 
-export function initDag({ api, notify, showView, getProjects }) {
+export function initDag({ api, notify, showView, getProjects, getOverviewContext = () => null }) {
   const $ = id => document.getElementById(id);
   const s = { details: [], loaded: false, failed: '', loading: false, selectedRun: '', selectedNode: '', slotNote: {}, historyOpen: false, plan: null, planError: '', preflight: null, preflightError: '', checked: false, submitting: false, created: null, authProject: '', optionalGrants: [], serialDetail: null };
   const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) });
@@ -19,7 +19,7 @@ export function initDag({ api, notify, showView, getProjects }) {
   function renderAll() {
     const active = s.details.filter(d => isDagActive(d.run));
     // 全部走稳定替换：详情里有大量可复制的契约/摘要文本，轮询重建同样会打散选区
-    stableReplace('dag-overview-list', [...renderDagOverview(s.details)]);
+    stableReplace('dag-overview-list', [...renderDagOverview(s.details, getOverviewContext())]);
     if (s.serialDetail) {
       // 串行链节点点击 → 与 DAG 同构的运行详情视图（不再是只有浮层）
       stableReplace('dag-detail', [renderSerialDetail(s.serialDetail.chain, { selectedNode: s.selectedNode, usageText: s.serialDetail.usageText || '', executors: s.serialDetail.executors || {} })]);

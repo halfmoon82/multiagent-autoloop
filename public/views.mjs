@@ -351,6 +351,13 @@ function projectUsageChips(project, projectUsage = [], loadError = false) {
   return wrap;
 }
 
+// 项目级计数行 + 项目今日/累计行：串行链与并行 DAG 卡片共用，口径按项目（不是按单条链/单次运行）。
+export function projectStatusChips(project, { rules = [], snapshot = {}, projectUsage = [], usageLoadError = false } = {}) {
+  const activity = projectActivity(project, rules, snapshot.lines || []);
+  const cardsHere = (snapshot.cards || []).filter(card => card.state === 'open' && matchesProject(projectForCard(card, rules), project)).length;
+  return [countsChips(activity, cardsHere), projectUsageChips(project, projectUsage, usageLoadError)];
+}
+
 // 项目任务进度：每行一个项目（串行链或有活动但无链文件）。节点段可点击，展开卡显示节点摘要。
 export function renderProjectProgress({ chains: rawChains = [], sessions = [], rules = [], snapshot = {}, loadError = false, projectUsage = [], usageLoadError = false, agentNames = {}, agentAdapters = {} } = {}) {
   const chains = latestChainsByProject(rawChains); // 同一项目多条链只显示最近更新的一条
