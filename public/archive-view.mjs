@@ -1,6 +1,6 @@
 // 底部「已归档的任务环」区：只读展示，跟随顶部统一的项目筛选。
 // 自包含挂载（#archive-section），不依赖 app.mjs 的渲染循环，避免与环形视图互相打断。
-import { projectName } from './format.mjs';
+import { projectName, formatDateTime, formatNumber } from './format.mjs';
 
 const REFRESH_MS = 10000;
 const $ = id => document.getElementById(id);
@@ -18,12 +18,26 @@ function summaryLine(list) {
   return cancelled ? `全部完成 ${done} · 已取消 ${cancelled}` : `全部完成 ${done}`;
 }
 
+// 最终计费与 Token：只信上报值；费用缺失写「费用未上报」，完全没有就写「用量未上报」，不当 0。
+export function archiveUsageText(usage) {
+  if (!usage) return '用量未上报';
+  const tokens = Number(usage.tokens) || 0;
+  const tokenText = tokens > 0 ? `Token ${formatNumber(tokens)}（入 ${formatNumber(usage.input)} / 出 ${formatNumber(usage.output)}）` : 'Token 未上报';
+  const costText = typeof usage.cost === 'number' ? `费用 $${usage.cost.toFixed(2)}` : '费用未上报';
+  const partial = Number(usage.missingCostRounds) > 0 && typeof usage.cost === 'number' ? `（${formatNumber(usage.missingCostRounds)} 轮未上报费用，实际更高）` : '';
+  return `${costText}${partial} · ${tokenText}`;
+}
+
 function rowFor(item) {
   const row = el('div', 'arch-row');
   const title = el('div', 'arch-task');
   title.append(el('div', 'arch-task-name', item.title));
   const source = item.kind === 'dag' ? `${item.source} · ${item.nodes.total} 节点` : `${item.source}-serial · ${item.nodes.total} 节点`;
   title.append(el('div', 'arch-task-meta', source));
+  title.append(el('div', 'arch-task-meta arch-task-usage', `链计费 · ${archiveUsageText(item.usage)}`));
+  const created = formatDateTime(item.createdAt);
+  const closed = formatDateTime(item.archivedTime) || item.archivedAt;
+  title.append(el('div', 'arch-task-meta arch-task-times', `创建 ${created || '未记录'} · 归档 ${closed}`));
   const pct = el('div', 'arch-pct', `${item.percent}%`);
   const reason = el('span', `status ${REASON[item.reason]?.cls || ''}`, REASON[item.reason]?.label || item.reason);
   const reasonBox = el('div', 'arch-reason'); reasonBox.append(reason);

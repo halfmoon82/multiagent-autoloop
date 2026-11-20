@@ -1,4 +1,4 @@
-import { formatState, formatTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
+import { formatState, formatTime, formatDateTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
 import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, chainNodeExecutors, projectUsageText, usageNotes } from './status-sections.mjs';
 import { buildSerialView, progressOverview } from './progress-view.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
@@ -407,6 +407,7 @@ function renderChainRow(chain, sessions, rules, openCards, lines, allChains = []
     const cardsHere = openCards.filter(card => matchesProject(projectForCard(card, rules), chain.project)).length;
     const chips = countsChips(activity, cardsHere);
     chips.append(el('span', 'chip chain-usage', chainUsageText(chainUsage(chain, rules, lines, allChains))));
+    if (chain.createdAt) chips.append(el('span', 'chip chain-created', `创建于 ${formatDateTime(chain.createdAt)}`));
     main.append(chips);
     main.append(projectUsageChips(chain.project, projectUsage, usageLoadError));
     row.append(main);

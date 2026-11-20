@@ -29,7 +29,10 @@ export function serialEntries(root) {
     if (!match) continue;
     const data = readJson(path.join(root, name));
     if (!data || typeof data !== 'object') continue;
-    out.push({ sourceFile: name, stem: match[1], archivedAt: match[2] ? `${match[2]}-${match[3]}-${match[4]}` : null, data });
+    let stat = null;
+    try { stat = statSync(path.join(root, name)); } catch { /* 读不到就不给时间 */ }
+    out.push({ sourceFile: name, stem: match[1], archivedAt: match[2] ? `${match[2]}-${match[3]}-${match[4]}` : null, data,
+      birthMs: stat?.birthtimeMs > 0 ? stat.birthtimeMs : null, modifiedMs: stat?.mtimeMs > 0 ? stat.mtimeMs : null });
   }
   return out;
 }
@@ -40,6 +43,11 @@ export function dagRuns(directory) {
   return names.filter(name => DAG_RUN_RE.test(name)).map(name => readJson(path.join(directory, name))).filter(Boolean);
 }
 
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+// 只有日期的原值保持日期（不补 00:00 冒充精确时刻）；其余转 ISO。
+const iso = value => { const raw = String(value ?? '').trim(); if (DATE_ONLY.test(raw)) return raw; const time = Date.parse(raw); return Number.isFinite(time) ? new Date(time).toISOString() : null; };
+const localDay = ms => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const isoMs = ms => (Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null);
 const allDone = nodes => nodes.length > 0 && nodes.every(node => node?.status === 'done');
 
 // 串行任务 → 归档条目（未完成且未归档返回 null，留给主视图）。
@@ -59,6 +67,10 @@ export function archiveSerial(entry, { now = new Date() } = {}) {
     percent, nodes: { done, total: nodes.length },
     reason: completed ? 'completed' : 'abandoned',
     archivedAt: stamp,
+    createdAt: iso(chain.createdAt) || iso(chain.created) || iso(chain.meta?.createdAt) || iso(chain.meta?.created) || isoMs(entry.birthMs),
+    // 归档时刻：文件名只有日期，精确时刻取归档文件最后写入时间（改名不改 mtime）；活动文件直接完成时取最后事件。
+    // 文件名日期与最后写入同一天才信 mtime；否则（归档后只改名、或更晚）不编造时刻，前端只显示日期。
+    archivedTime: entry.archivedAt ? (entry.modifiedMs && localDay(entry.modifiedMs) === entry.archivedAt ? isoMs(entry.modifiedMs) : null) : iso(chain.lastEventAt || chain.updatedAt),
   };
 }
 
@@ -87,12 +99,14 @@ export function archiveDag(runs, { titles = {}, now = new Date() } = {}) {
     const completed = status === 'done' && (done >= total || !states.length);
     if (!completed && !TERMINAL_CANCEL.has(status)) continue;
     out.push({
-      taskId: `dag:${String(run.project || '')}:${planId}`, kind: 'dag', source: planId,
+      taskId: `dag:${String(run.project || '')}:${planId}`, kind: 'dag', source: planId, runId: String(run.runId || ''),
       project: String(run.project || ''),
       title: String(titles[`${String(run.project || '')}::${planId}`] || titles[planId] || planId),
       percent: Math.round((done / total) * 100), nodes: { done, total },
       reason: completed ? 'completed' : 'cancelled',
       archivedAt: String(run.finishedAt || run.updatedAt || run.createdAt || now.toISOString()).slice(0, 10),
+      createdAt: iso(run.createdAt),
+      archivedTime: iso(run.finishedAt || run.updatedAt || run.createdAt),
     });
   }
   return out;
