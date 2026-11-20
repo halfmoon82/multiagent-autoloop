@@ -6,6 +6,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -26,6 +28,10 @@ import java.util.Locale;
  * 系统语音识别插件。用平台 SpeechRecognizer（系统/厂商识别服务，不依赖谷歌服务），
  * 运行时申请 RECORD_AUDIO。isAvailable 在无识别服务时返回 false；拒权/无网/超时通过
  * autoloop:speech-error 回 JS 明确错误码，不崩溃；识别文字只回传，绝不自动发送。
+ *
+ * 线程约束：Capacitor 6 的 @PluginMethod 默认在后台线程回调，而 SpeechRecognizer 启停与
+ * Fragment 权限申请要求主线程。这类调用统一经 runOnMain 投递，避免真机上被吞成「没有识别
+ * 服务」；JS 回传由 AutoLoopSpeechBridge 用 WebView.post 投递主线程。
  */
 @CapacitorPlugin(name = "AutoloopSpeech")
 public class AutoLoopSpeech extends Plugin {
@@ -41,9 +47,13 @@ public class AutoLoopSpeech extends Plugin {
   private static final String ERR_BUSY = "AUTOLOOP_SPEECH_BUSY";
   private static final String ERR_UNKNOWN = "AUTOLOOP_SPEECH_UNKNOWN";
 
+  private static final long RELEASE_DELAY_MS = 1500L;
+
   private SpeechRecognizer recognizer;
   private boolean listening;
   private PluginCall pendingCall;
+  private Runnable pendingRelease;
+  private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
   @Override
   public void load() {
@@ -51,17 +61,31 @@ public class AutoLoopSpeech extends Plugin {
     AutoLoopSpeechBridge.inject(this);
   }
 
+  /** Capacitor 插件方法在后台线程执行；统一投递到主线程后再碰主线程专属 API。 */
+  private void runOnMain(Runnable task) {
+    Activity activity = getActivity();
+    if (activity != null) activity.runOnUiThread(task);
+    else mainHandler.post(task);
+  }
+
   @PluginMethod
   public void isAvailable(PluginCall call) {
-    Context context = getContext();
-    boolean available = context != null && SpeechRecognizer.isRecognitionAvailable(context);
-    JSObject result = new JSObject();
-    result.put("available", available);
-    call.resolve(result);
+    runOnMain(() -> {
+      Context context = getContext();
+      boolean available = context != null && SpeechRecognizer.isRecognitionAvailable(context);
+      JSObject result = new JSObject();
+      result.put("available", available);
+      call.resolve(result);
+    });
   }
 
   @PluginMethod
   public void start(PluginCall call) {
+    runOnMain(() -> startOnMain(call));
+  }
+
+  /** 主线程：校验服务与权限；未授权时申请，授予后再真正开始。 */
+  private void startOnMain(PluginCall call) {
     Context context = getContext();
     if (context == null) {
       fail(call, ERR_NO_SERVICE, "当前环境没有可用的语音识别服务");
@@ -71,6 +95,10 @@ public class AutoLoopSpeech extends Plugin {
       fail(call, ERR_NO_SERVICE, "当前设备没有可用的系统语音识别服务");
       return;
     }
+    if (pendingCall != null) {
+      fail(call, ERR_BUSY, "正在申请麦克风权限，请稍后再试");
+      return;
+    }
     if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
         != PackageManager.PERMISSION_GRANTED) {
       // 运行时申请录音权限；授予后再真正开始，绝不在未授权时开麦。
@@ -78,9 +106,10 @@ public class AutoLoopSpeech extends Plugin {
       requestRecordAudio();
       return;
     }
-    doStart(call);
+    doStartOnMain(call);
   }
 
+  /** 主线程：headless Fragment 申请权限并接收结果。 */
   private void requestRecordAudio() {
     Activity activity = getActivity();
     if (!(activity instanceof FragmentActivity)) {
@@ -95,19 +124,21 @@ public class AutoLoopSpeech extends Plugin {
           PluginCall call = pendingCall;
           pendingCall = null;
           if (call == null) return;
-          if (granted) doStart(call);
+          if (granted) doStartOnMain(call);
           else fail(call, ERR_PERMISSION, "麦克风权限被拒绝，请用键盘输入");
         });
   }
 
-  private void doStart(PluginCall call) {
+  /** 主线程：创建并启动识别器；语音服务异常转明确错误码，不崩溃。 */
+  private void doStartOnMain(PluginCall call) {
     if (listening) {
       fail(call, ERR_BUSY, "正在聆听中");
       return;
     }
     Context context = getContext();
     try {
-      releaseRecognizer();
+      cancelScheduledRelease();
+      releaseRecognizerNow();
       recognizer = SpeechRecognizer.createSpeechRecognizer(context);
       recognizer.setRecognitionListener(new SpeechListener());
       Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
@@ -121,21 +152,45 @@ public class AutoLoopSpeech extends Plugin {
       result.put("started", true);
       call.resolve(result);
     } catch (Exception e) {
-      // 识别服务异常不崩溃，给 JS 明确错误码。
-      releaseRecognizer();
+      releaseRecognizerNow();
       fail(call, ERR_NO_SERVICE, "语音识别启动失败，请用键盘输入");
     }
   }
 
   @PluginMethod
   public void stop(PluginCall call) {
-    releaseRecognizer();
-    JSObject result = new JSObject();
-    result.put("stopped", true);
-    call.resolve(result);
+    runOnMain(() -> {
+      // 先 stopListening 让最终文字有机会经 onResults 回传，不在此处同步 destroy。
+      if (recognizer != null) {
+        try { recognizer.stopListening(); } catch (Exception ignored) { /* 不崩溃 */ }
+        scheduleRelease();
+      }
+      listening = false;
+      JSObject result = new JSObject();
+      result.put("stopped", true);
+      call.resolve(result);
+    });
+  }
+
+  /** 主线程：没有识别回调时延迟释放，避免识别器泄漏；新 start 会取消它。 */
+  private void scheduleRelease() {
+    cancelScheduledRelease();
+    pendingRelease = () -> {
+      pendingRelease = null;
+      releaseRecognizerNow();
+    };
+    mainHandler.postDelayed(pendingRelease, RELEASE_DELAY_MS);
+  }
+
+  private void cancelScheduledRelease() {
+    if (pendingRelease != null) {
+      mainHandler.removeCallbacks(pendingRelease);
+      pendingRelease = null;
+    }
   }
 
   private void fail(PluginCall call, String code, String message) {
+    // reportToJs 内部用 WebView.post 投递主线程，调用方线程无关。
     AutoLoopSpeechBridge.reportToJs(EVENT_ERROR, code, message, "");
     JSObject result = new JSObject();
     result.put("started", false);
@@ -143,10 +198,11 @@ public class AutoLoopSpeech extends Plugin {
     call.resolve(result);
   }
 
-  private void releaseRecognizer() {
+  /** 仅从主线程路径调用：销毁识别器，释放麦克风。 */
+  private void releaseRecognizerNow() {
     listening = false;
+    cancelScheduledRelease();
     if (recognizer != null) {
-      try { recognizer.stopListening(); } catch (Exception ignored) { /* 不崩溃 */ }
       try { recognizer.destroy(); } catch (Exception ignored) { /* 不崩溃 */ }
       recognizer = null;
     }
@@ -167,6 +223,7 @@ public class AutoLoopSpeech extends Plugin {
     @Override public void onResults(Bundle results) {
       listening = false;
       AutoLoopSpeechBridge.reportToJs(EVENT_FINAL, "", "", firstText(results));
+      releaseRecognizerNow();
     }
 
     @Override public void onError(int error) {
@@ -189,6 +246,7 @@ public class AutoLoopSpeech extends Plugin {
           code = ERR_UNKNOWN; message = "语音识别失败，请用键盘输入"; break;
       }
       AutoLoopSpeechBridge.reportToJs(EVENT_ERROR, code, message, "");
+      releaseRecognizerNow();
     }
   }
 

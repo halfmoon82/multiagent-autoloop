@@ -45,7 +45,10 @@ final class AutoLoopSpeechBridge {
     WebView webView = bridge.getWebView();
     if (webView == null) return;
     webViewRef = new WeakReference<>(webView);
-    webView.evaluateJavascript(SPEECH_SHIM, null);
+    // WebView.evaluateJavascript 必须在 UI 线程；插件 load 可能来自 Capacitor 后台线程。
+    webView.post(() -> {
+      webView.evaluateJavascript(SPEECH_SHIM, null);
+    });
   }
 
   /** 把识别结果或错误码以纯字符串事件回传 JS（不拼不可信 HTML、不输出堆栈与凭据）。 */
@@ -57,7 +60,10 @@ final class AutoLoopSpeechBridge {
         + "',text:'" + jsEscape(text == null ? "" : text) + "'};"
         + "window.dispatchEvent(new CustomEvent('" + event
         + "',{detail:window.AutoloopSpeechEvent}));";
-    webView.evaluateJavascript(js, null);
+    // 识别回调可能来自后台线程；统一 post 到 UI 线程再回传 JS。
+    webView.post(() -> {
+      webView.evaluateJavascript(js, null);
+    });
   }
 
   private static String jsEscape(String s) {
