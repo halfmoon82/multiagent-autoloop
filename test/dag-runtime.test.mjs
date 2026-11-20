@@ -1,7 +1,7 @@
 // #54 生产装配：Hub 适配（经 /v1/events，不起 ACP）、启动恢复、有界轮询、blocked 证据。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ALLOWED_ACTIONS, ROOT_NODE, createRunStore } from '../src/dag-run.mjs';
@@ -38,7 +38,21 @@ test('hub.dispatch 走 POST /v1/events，事件 id 由 runId 决定（幂等）'
   assert.equal(calls[0].body.type, 'dag.my-project.dev');
   assert.equal(JSON.parse(calls[0].body.detail).expectedAdvanceId, 'e1');
   await assert.rejects(() => createHubAdapter({ config: {}, request: recorder({ 'POST /v1/events': {} }).request }).dispatch({ run, slot: 1, worktree: '/w', branch: 'b', prompt: 'p' }), /未确认/);
-  await assert.rejects(() => hub.dispatch({ run, slot: 1, worktree: '/w', branch: 'b', prompt: 'x'.repeat(4001) }), /4000/);
+});
+
+test('hub.dispatch：提示超 4000 字符不截断，全文落盘、事件正文只放读取路径', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'dag-spill-'));
+  const { calls, request } = recorder({ 'POST /v1/events': { event: 7 } });
+  const hub = createHubAdapter({ config: { root }, request });
+  const big = '节点契约'.repeat(2000);
+  const res = await hub.dispatch({ run, slot: 1, worktree: '/w', branch: 'b', expectedAdvanceId: 'e1', prompt: big });
+  assert.deepEqual(res, { hubRunId: 7 });
+  const detail = JSON.parse(calls[0].body.detail);
+  assert.ok(calls[0].body.detail.length <= 4000);
+  const file = detail.prompt.slice(detail.prompt.lastIndexOf(root));
+  assert.equal(readFileSync(file, 'utf8').trim(), big);
+  assert.equal(detail.expectedAdvanceId, 'e1');
+  rmSync(root, { recursive: true, force: true });
 });
 
 test('hub.getRun：无 run=queued，终态与回执映射；404=unknown；不可达抛错不改状态', async () => {
