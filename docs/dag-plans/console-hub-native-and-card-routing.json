@@ -1,6 +1,19 @@
 {
   "plan_id": "console-hub-native-and-card-routing",
   "title": "控制台 Hub 原生调度与卡片路由自我改进",
+  "superseded": {
+    "status": "superseded",
+    "date": "2026-11-20",
+    "by": [
+      "#71",
+      "#76 (execution-grants)",
+      "#74 #94 #98 #110 (hub-scheduling)",
+      "#77 (card-delegation)",
+      "#65 #80 (dag-recovery)",
+      "#81 #86 (card-routing-filter)"
+    ],
+    "note": "本计划的运行 dagrun-mwklgr10-e4c17e57 于 2026-11-18 取消，6 个节点均停在 planned；功能已由上列 PR 单独合入。#109 之后门禁口径改为只报不拦：卡片质量门只挂元数据不拦截、过滤器激活不再要求评测通过、写范围与设计证据只警示，节点 contract 里相关“拦截/拒绝”表述已不适用。integration-review 节点从未执行。"
+  },
   "design": {
     "manifestPath": "docs/design/2026-11-16-parallel-dag/design-manifest.json",
     "approvalPath": "docs/prd/console-hub-native-and-card-routing/design-approval.json"
