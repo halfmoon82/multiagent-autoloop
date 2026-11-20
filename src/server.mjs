@@ -314,7 +314,7 @@ async function handleApi(config, req, res, url) {
     return jsonResponse(res, 200, await delegateOpenCard({
       card,
       store: config.cardDelegateStore,
-      postEvent: event => hubRequest(config, '/v1/events', { method: 'POST', body: event }),
+      postEvent: event => hubRequest(config, '/v1/events', { method: 'POST', body: event, auth: 'source' }),
       resolveCard: (cardId, reason) => hubRequest(config, `/v1/cards/${cardId}/resolve`, { method: 'POST', body: { reason } }),
     }));
   }

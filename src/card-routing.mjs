@@ -188,7 +188,7 @@ export function getCardRouting(config, overrides = {}) {
   if (!registry.has(key)) {
     registry.set(key, createCardRouting({
       persistFile: path.join(key, 'card-router', 'store.json'),
-      postEvent: event => hubRequest(config, '/v1/events', { method: 'POST', body: event }),
+      postEvent: event => hubRequest(config, '/v1/events', { method: 'POST', body: event, auth: 'source' }),
       resolveCard: (cardId, reason) => hubRequest(config, `/v1/cards/${cardId}/resolve`, { method: 'POST', body: { reason } }),
       delegateStore: config.cardDelegateStore,
       onError: error => console.error(`[card-router] ${error.message}`),

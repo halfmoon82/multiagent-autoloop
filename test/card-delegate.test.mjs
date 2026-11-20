@@ -128,7 +128,7 @@ async function apiFixture(handler, store = createCardDelegateStore()) {
   const hub = await fakeHub(handler);
   const root = mkdtempSync(path.join(tmpdir(), 'card-delegate-api-'));
   writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ sources: {}, agents: {}, rules: [] }));
-  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'server-secret', root, cardDelegateStore: store });
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'server-secret', sourceKey: 'source-key', root, cardDelegateStore: store });
   const url = await listen(server);
   return { hub, server, url, root };
 }
