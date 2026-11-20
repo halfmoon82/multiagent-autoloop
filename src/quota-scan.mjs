@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { classifyKind, loadPolicy, resolveFallback } from './detour-policy.mjs';
 import { findActiveDetour, recordDetour } from './detour.mjs';
+import { probeCommand } from '../scripts/detour-probe.mjs';
 
 export class QuotaScanError extends Error {}
 
@@ -222,7 +223,7 @@ export function scanForQuotaDetours(config, options = {}) {
       detours.push(recordDetour(config, {
         id, origin: 'auto-scan', blockedAgent: candidate.agent, blockedModel: candidate.model,
         evidence, fallbackAgent: fallback, ruleNames,
-        probe: { ...(probeCommand ? { command: probeCommand } : {}), cooldownMinutes },
+        probe: { ...(probeCommand ? { command: probeCommand } : autoProbe(rawRules?.agents?.[candidate.agent])), cooldownMinutes },
       }, now));
     } catch (error) {
       why(`登记失败：${error.message}`);
@@ -230,4 +231,10 @@ export function scanForQuotaDetours(config, options = {}) {
   }
 
   return { scanned: failures.length, candidates, detours, skipped, threshold, patterns };
+}
+
+/** 未显式传 --probe 时，为被拦 Agent 自动拼一条最便宜的试活命令；拼不出返回 {} 由登记跳过。 */
+function autoProbe(agent) {
+  const command = probeCommand(agent);
+  return command ? { command } : {};
 }
