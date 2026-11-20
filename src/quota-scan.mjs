@@ -159,7 +159,7 @@ export function readHubRunFailures({ dbFile, window = 200, patterns = DEFAULT_PA
     return {
       id: String(row.id), run: Number(row.id), attempt: 1, agent: String(row.agent || ''), model: '',
       kind: classifyKind(row.rule), ruleName: String(row.rule || ''),
-      failed: failed && quota, quota, evidence: redactEvidence(errorText) || '(无错误原文)', at: row.created_at || '',
+      failed: failed && quota, quota, hits: failed && quota ? Math.max(1, Number(row.attempts) || 0) : 1, evidence: redactEvidence(errorText) || '(无错误原文)', at: row.created_at || '',
     };
   });
 }
@@ -174,10 +174,12 @@ export function scanForQuotaDetours(config, options = {}) {
   const probeCommand = Array.isArray(options.probeCommand) && options.probeCommand.length
     ? options.probeCommand.map(String) : null;
   const now = options.now instanceof Date ? options.now : new Date();
-  const failures = [
-    ...readRunFailures({ root: config.root, runsDir: options.runsDir, window: options.window, patterns }),
-    ...readHubRunFailures({ dbFile: options.hubDbFile ?? path.join(config.root, 'hub.db'), window: options.window, patterns }),
-  ];
+  const hubFailures = readHubRunFailures({ dbFile: options.hubDbFile ?? path.join(config.root, 'hub.db'), window: options.window, patterns });
+  // Hub 一行已用 attempts 涵盖该任务的全部尝试；同一 run 号在 worker 日志里的各次尝试不再重复计入。
+  const hubRunIds = new Set(hubFailures.map(item => item.run));
+  const workerFailures = readRunFailures({ root: config.root, runsDir: options.runsDir, window: options.window, patterns })
+    .filter(item => !hubRunIds.has(item.run));
+  const failures = [...workerFailures, ...hubFailures];
 
   const states = new Map();
   for (const failure of failures) {
@@ -186,8 +188,8 @@ export function scanForQuotaDetours(config, options = {}) {
     if (failure.failed && failure.quota) {
       const state = states.get(key) || { count: 0, samples: [], kind: failure.kind, at: failure.at };
       state.agent = failure.agent; state.model = failure.model;
-      state.count += 1;
-      state.samples.push(`run ${failure.id}「${failure.evidence}」`);
+      state.count += failure.hits || 1; // Hub 一条 run 重试 N 次只有一行，按 attempts 计 N 次
+      state.samples.push(`run ${failure.id}${failure.hits > 1 ? `（重试 ${failure.hits} 次）` : ''}「${failure.evidence}」`);
       state.kind = state.kind || failure.kind;
       state.at = failure.at;
       states.set(key, state);
