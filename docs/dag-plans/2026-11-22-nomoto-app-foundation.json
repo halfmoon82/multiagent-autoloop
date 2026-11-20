@@ -1,0 +1,404 @@
+{
+  "plan_id": "2026-11-22-nomoto-app-foundation",
+  "title": "NoMoTo App 全面修复与接线（脚手架先行、最大并行）",
+  "nodes": [
+    {
+      "id": "mobile-scaffold",
+      "title": "接缝脚手架：页面模块化、受限静态服务、写路由钩子、原生源码目录与打包拷入",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "现状：mobile/app/www 只有绑定页+空壳主界面（index.html/app.mjs/styles.css 单文件），不引用 mobile/src；src/server.mjs MOBILE_FILES 是 9 项固定白名单；/api/mobile/* 绑定后一律 GET-only（server.mjs:233 非 GET 即 404）；android/ 不入库，build-apk.mjs 只在缺 android/ 时 cap add 再 patch 生成物，自写原生代码无处安放。后续所有节点若各自改这些共享文件只能串行。",
+        "output": "一次性预留所有共享接缝，之后各节点只改自己的文件、全部并行：1) www 页面模块化：index.html 改为底部 Tab（总览/规则/轮次/待办/会话/产物/DAG/设备）+ 全局项目筛选挂载点 + 各页容器；锁屏区拆成「未绑定只显示绑定卡、已绑定未解锁只显示解锁卡」，错误信息就近显示；app.mjs 只做路由与装配，按固定列表 import mobile/app/www/pages/{core,sessions,artifacts,dag,project-filter,notify,voice,font-touch,devices}.mjs，各文件先放导出 mount(ctx) 的空实现与同名 .css；ctx 含 client/state/hooks。2) 受限静态服务：server.mjs 把 /mobile/ 资源由固定 Map 改为两条受限目录规则——/mobile/pages/<kebab>.(mjs|css) 映射 mobile/app/www/pages/，/mobile/src/<kebab 路径>.mjs 映射 mobile/src/（仅 .mjs、禁 ..、禁符号链接逃逸、realpath 必须在目录内），页面用相对路径 ../src/... 引用视图模型；保留原 9 项。3) 写路由钩子：新增 src/mobile-write.mjs，导出 handleMobileWrite(req,res,url,ctx)；server.mjs 在设备鉴权之后、GET-only 闸之前调用它，返回 true 即已处理；先实现路由表与 501 占位：POST /api/mobile/cards/:id/answer、POST /api/mobile/cards/:id/authorize、POST /api/mobile/sessions/:id/continue、GET /api/mobile/sessions/:id/download、GET/POST /api/mobile/sync。写操作沿用 checkWrite 同等校验（JSON、同源、自定义头）+ x-device-token。4) 原生源码入库：新建 mobile/app/native/（java 源、manifest-additions.xml、gradle-dependencies.gradle）；MainActivity.java 在 onCreate 前 registerPlugin 全部自写插件，插件类按子包 auth/、notify/、speech/ 先放可编译的空实现；manifest-additions 一次写全权限（CAMERA、RECORD_AUDIO、POST_NOTIFICATIONS、FOREGROUND_SERVICE、FOREGROUND_SERVICE_DATA_SYNC、USE_BIOMETRIC）与前台服务声明；gradle 片段加 androidx.biometric、androidx.security:security-crypto。build-apk.mjs 在 cap add/sync 后把 native/ 拷入并合并 manifest/gradle，再签名；android/ 仍不入库。5) 接缝细则：ctx.hooks 由 app.mjs 预置默认空操作——attachVoice(el)、notify.setBadge(n)/notify.refresh()、openSessionArtifacts(sessionId)、projectFilter.current()/onChange(fn)——各节点只覆盖自己的钩子，未就绪时调用不抛错；页面间互调一律走 ctx.hooks，不直接 import 其他页面模块。原生侧 MainActivity 预置 auth/AutoLoopWebChromeClient 空子类并在 onCreate 后 bridge.getWebView().setWebChromeClient(...) 接好，native-auth 只填实现。写路由表另预留 POST /api/mobile/rules/:id/{run,pause,resume}（501），由 mobile-write-api 实现。",
+        "error_behavior": "受限静态服务对越界路径、非 .mjs、符号链接一律 404 并有单测；钩子 501 占位不影响现有绑定/会话/只读中继；打包合并失败即非零退出、不产半成品；不改设备授权协议。",
+        "acceptance_example": "单测：/mobile/pages/core.mjs 与 /mobile/src/core/pages.mjs 可取，/mobile/src/../package.json、/mobile/src/x.json、符号链接 404；POST /api/mobile/cards/x/answer 鉴权后返回 501、未鉴权 401；build-apk 合并逻辑对假 android 目录产出含全部权限的 manifest。浏览器回归：Tab 切换、锁屏两态。npm test + npm run test:browser 全绿。单测另覆盖：所有默认钩子可调用且不抛错。",
+        "files": [
+          "mobile/app/www/index.html",
+          "mobile/app/www/app.mjs",
+          "mobile/app/www/styles.css",
+          "mobile/app/www/pages/",
+          "src/server.mjs",
+          "src/mobile-write.mjs",
+          "mobile/app/native/",
+          "mobile/app/build-apk.mjs",
+          "test/mobile-scaffold.test.mjs",
+          "test/mobile-apk-build.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "bind-ux",
+      "title": "绑定交互：备用码直贴即用",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "网页管理后台「备用绑定码」框显示裸 64hex token（public/device.mjs:35），移动端 parseBindPayload 强制 autoloop://bind?token= 前缀（mobile/app/www/shell.mjs:48），用户复制后必须手输前缀才能绑定。",
+        "output": "后台备用码框改显示完整 qrPayload 并加一键复制按钮，文案「复制后在手机粘贴即可」；移动端 parseBindPayload 同时接受完整载荷与裸 64hex（自动补前缀），绑定输入框 placeholder 与报错改为人话。",
+        "error_behavior": "仍只认这一种一次性载荷：任意网址、带多余参数、userinfo 一律拒；不记录载荷内容；过期提示「绑定码已过期，请在电脑上重新生成」。",
+        "acceptance_example": "单测：完整载荷、裸 hex、前后带空格均可解析；任意网址/多参数被拒；后台备用码框内容=二维码载荷。npm test + npm run test:browser 全绿。",
+        "files": [
+          "public/device.mjs",
+          "mobile/app/www/shell.mjs",
+          "test/mobile-shell.test.mjs",
+          "test/device-bind-ux.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "native-auth",
+      "title": "原生：相机授权转发、生物识别、Keystore 安全存储",
+      "depends_on": [
+        "mobile-scaffold"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "scaffold 已入库 native/ 与 auth/ 子包空实现。真机现象：扫码不弹相机权限（Capacitor 默认不把 getUserMedia 转为运行时权限）、解锁按钮无反应（无 window.AutoloopBiometric）、token 只在内存。",
+        "output": "在 mobile/app/native/java/cool/autoloop/console/auth/ 实现：WebChromeClient.onPermissionRequest 把 RESOURCE_VIDEO_CAPTURE/AUDIO_CAPTURE 转运行时权限并授予（现有 scan.mjs 无需改即可取景）；androidx.biometric 实现 window.AutoloopBiometric.verify()（BIOMETRIC_WEAK|DEVICE_CREDENTIAL 兜底，兼容旧鸿蒙）；EncryptedSharedPreferences 实现 window.AutoloopSecureStorage.get/set/remove。不依赖谷歌服务。",
+        "error_behavior": "用户拒权给 JS 明确错误码；生物识别取消/失败返回 false 不放行；Keystore 异常回退内存并在 JS 侧提示重启后需重绑。",
+        "acceptance_example": "静态测试校验插件类、注入名与 scaffold 接缝一致；模拟器：扫码弹系统相机权限并取景，解锁弹系统指纹，杀进程重开 token 仍在（证据由 smoke-emulator 汇总）。npm test 全绿。",
+        "files": [
+          "mobile/app/native/java/cool/autoloop/console/auth/",
+          "test/mobile-native-auth.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "native-notify",
+      "title": "原生：前台常驻服务、系统通知、RemoteInput 锁屏直复、角标",
+      "depends_on": [
+        "mobile-scaffold"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "heavy",
+      "contract": {
+        "input": "用户手机为华为旧鸿蒙、无谷歌服务；已定本期用常驻通知保活。scaffold 已声明前台服务与 notify/ 子包空实现。",
+        "output": "在 mobile/app/native/java/cool/autoloop/console/notify/ 实现：dataSync 前台服务+「NoMoTo 在线」常驻通知；服务内按 JS 下发的轮询间隔/设备令牌调用 /api/mobile/api/state 与卡片（App 退到后台仍跑）；发系统通知（待办与节点完成分渠道）、RemoteInput 直复（选项按钮+文字）回调写路由 POST /api/mobile/cards/:id/answer；setBadge；注入 window.AutoloopNotify（start/stop/notify/cancel/onReply/setBadge）。Android 13+ 运行时请求 POST_NOTIFICATIONS。",
+        "error_behavior": "网络错退避不狂刷；401 停服务并发「请重新绑定」通知；直复失败保留通知并提示；同一事项不重复通知；电池优化被杀后下次打开 App 自动重启服务。",
+        "acceptance_example": "静态测试校验注入名/方法签名；模拟器：常驻通知出现，造一条待办后锁屏可直复，回复后通知撤销（证据由 smoke-emulator 汇总）。npm test 全绿。",
+        "files": [
+          "mobile/app/native/java/cool/autoloop/console/notify/",
+          "test/mobile-native-notify.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "native-speech",
+      "title": "原生：系统语音识别桥",
+      "depends_on": [
+        "mobile-scaffold"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "WebView 无 Web Speech API；scaffold 已放 speech/ 子包空实现与 RECORD_AUDIO 权限。",
+        "output": "在 mobile/app/native/java/cool/autoloop/console/speech/ 用 Android SpeechRecognizer（系统/厂商识别服务，不依赖谷歌）实现 window.AutoloopSpeech（isAvailable/start/stop/onPartial/onFinal/onError），运行时请求 RECORD_AUDIO。",
+        "error_behavior": "无识别服务时 isAvailable=false；拒权/无网/超时给错误码，不崩溃；不自动发送任何内容。",
+        "acceptance_example": "静态测试校验接口；模拟器能回传识别文字或给出 isAvailable=false 的明确结果。npm test 全绿。",
+        "files": [
+          "mobile/app/native/java/cool/autoloop/console/speech/",
+          "test/mobile-native-speech.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "mobile-write-api",
+      "title": "服务端：移动端写路由实现",
+      "depends_on": [
+        "mobile-scaffold"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "scaffold 已在 src/mobile-write.mjs 定好路由表（501 占位）且挂在 GET-only 闸之前；网页控制台已有卡片回答/授权、会话 continue、会话 download 的实现可复用。",
+        "output": "实现 cards answer/authorize（复用网页侧同一服务函数，不另造状态）、sessions continue（复用 /api/scheduling-sessions/:id/continue 的服务逻辑）、sessions download（复用 download 实现，移动端用 x-device-token 鉴权）；所有写入记录来源设备 id。；rules run/pause/resume 复用网页控制台规则操作的同一服务函数。",
+        "error_behavior": "未授权 401、非法 id 404、重复提交幂等返回当前状态、已失效事项 409；不暴露内部错误详情；不放宽任何网页侧校验。",
+        "acceptance_example": "契约测试：绑定设备可回答/授权/恢复/下载，未绑定全拒；同一卡片网页与移动端先后提交结果一致。npm test 全绿。",
+        "files": [
+          "src/mobile-write.mjs",
+          "test/mobile-write-api.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "ui-core-pages",
+      "title": "页面：总览/规则/轮次/待办/执行授权",
+      "depends_on": [
+        "mobile-scaffold"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "mobile/src/core/pages.mjs 已有五页视图模型但从未被 App 引用。（接缝契约由 mobile-scaffold 定义：页面模块 mobile/app/www/pages/<name>.mjs 导出 mount(ctx)，ctx 含 client、state、hooks；hooks.attachVoice(inputEl)/hooks.notify 由对应节点实现，未实现时为空操作）",
+        "output": "实现 mobile/app/www/pages/core.mjs/.css：用 ctx.client.api(key) 拉数据，经 ../src/core/pages.mjs 渲染总览四组（各最近 5 条）、规则（运行/暂停/恢复按钮调用写路由，未就绪显示禁用）、轮次、待办（选项/文字回答走 cards answer）、执行授权；待办数经 hooks.notify?.setBadge 同步。照设计稿 docs/design/2026-11-17-mobile-app。",
+        "error_behavior": "接口失败显示可重试状态不白屏；写路由 501/失败保留草稿；只更新已有节点，不整块重建 DOM。",
+        "acceptance_example": "浏览器回归（假 Hub）：五页渲染真实字段，回答一条待办后列表更新。npm test + npm run test:browser 全绿。",
+        "files": [
+          "mobile/app/www/pages/core.mjs",
+          "mobile/app/www/pages/core.css",
+          "mobile/src/core/",
+          "test/mobile-core.test.mjs",
+          "test/mobile-ui-core.browser.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "ui-sessions",
+      "title": "页面：会话列表、归档恢复、会话内待回答组",
+      "depends_on": [
+        "mobile-scaffold"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "heavy",
+      "contract": {
+        "input": "mobile/src/features/sessions 与 question-group 有视图模型但未接线。（接缝契约由 mobile-scaffold 定义：页面模块 mobile/app/www/pages/<name>.mjs 导出 mount(ctx)，ctx 含 client、state、hooks；hooks.attachVoice(inputEl)/hooks.notify 由对应节点实现，未实现时为空操作）",
+        "output": "实现 pages/sessions.mjs/.css：类型筛选、搜索、当前/归档会话；归档「继续调度」调 POST sessions continue；会话内待回答组逐题聚焦、已答折叠、进度轨、选项/文字作答（走 cards answer），输入框调用 ctx.hooks.attachVoice(el)，「本会话产物」调用 ctx.hooks.openSessionArtifacts(id)；切页/旋转后草稿与滚动保留。",
+        "error_behavior": "已处理/失效事项不重复提交；失败保留题目与草稿；钩子为空操作时无麦克风按钮但输入正常。",
+        "acceptance_example": "浏览器回归：会话筛选、恢复归档、待回答组逐题提交与草稿保留。npm test + npm run test:browser 全绿。",
+        "files": [
+          "mobile/app/www/pages/sessions.mjs",
+          "mobile/app/www/pages/sessions.css",
+          "mobile/src/features/sessions/",
+          "mobile/src/features/question-group/",
+          "test/mobile-sessions.test.mjs",
+          "test/mobile-question-group.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "ui-artifacts",
+      "title": "页面：产物双入口与只读阅读器、折叠屏双栏",
+      "depends_on": [
+        "mobile-scaffold"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "mobile/src/features/artifacts 有视图模型（含折叠双栏布局）但未接线。（接缝契约由 mobile-scaffold 定义：页面模块 mobile/app/www/pages/<name>.mjs 导出 mount(ctx)，ctx 含 client、state、hooks；hooks.attachVoice(inputEl)/hooks.notify 由对应节点实现，未实现时为空操作）",
+        "output": "实现 pages/artifacts.mjs/.css：全局产物页 + 覆盖 ctx.hooks.openSessionArtifacts(sessionId) 供会话页调用；手机全屏列表→全屏阅读→逐级返回；折叠/宽屏左列表右阅读只刷新右侧；下载/分享走 GET sessions download。",
+        "error_behavior": "产物只读；下载失败可重试；返回会话不丢原会话状态。",
+        "acceptance_example": "浏览器回归：全局页与会话入口打开同一产物，宽屏双栏。npm test + npm run test:browser 全绿。",
+        "files": [
+          "mobile/app/www/pages/artifacts.mjs",
+          "mobile/app/www/pages/artifacts.css",
+          "mobile/src/features/artifacts/",
+          "test/mobile-artifacts.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "ui-dag-filter",
+      "title": "页面：项目 DAG 环与全局项目筛选",
+      "depends_on": [
+        "mobile-scaffold"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "mobile/src/features/dag-ring 与 project-filter 为死代码。（接缝契约由 mobile-scaffold 定义：页面模块 mobile/app/www/pages/<name>.mjs 导出 mount(ctx)，ctx 含 client、state、hooks；hooks.attachVoice(inputEl)/hooks.notify 由对应节点实现，未实现时为空操作）",
+        "output": "实现 pages/dag.mjs/.css（环形进度图、波次/状态、中心总进度、节点详情）与 pages/project-filter.mjs（挂在 scaffold 预留的头部挂载点，切换后通过 ctx.state 广播，所有页面重渲染过滤）。",
+        "error_behavior": "空项目/无 DAG 明确空态；筛选不改变会话内上下文。",
+        "acceptance_example": "浏览器回归：切项目后各页内容同步过滤；DAG 环渲染并可点节点。npm test + npm run test:browser 全绿。",
+        "files": [
+          "mobile/app/www/pages/dag.mjs",
+          "mobile/app/www/pages/dag.css",
+          "mobile/app/www/pages/project-filter.mjs",
+          "mobile/app/www/pages/project-filter.css",
+          "mobile/src/features/dag-ring/",
+          "mobile/src/features/project-filter/",
+          "test/mobile-dag-ring.test.mjs",
+          "test/mobile-project-filter.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "font-touch",
+      "title": "系统字体 160% 与触控热区",
+      "depends_on": [
+        "mobile-scaffold"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "mobile/src/features/font-touch 有度量逻辑但未接线；scaffold 预留 pages/font-touch.*。",
+        "output": "实现 pages/font-touch.mjs/.css：跟随系统字体（原生度量，不用网页缩放），160% 下换行/增高/纵向滚动，热区 44–48dp，整卡选项按压/选中/禁用态；作为全局样式层由 app.mjs 首先加载。",
+        "error_behavior": "不截断、不遮挡、不横向滚动正文。",
+        "acceptance_example": "浏览器回归在 160% 字号下各页无横向溢出。npm test + npm run test:browser 全绿。",
+        "files": [
+          "mobile/app/www/pages/font-touch.mjs",
+          "mobile/app/www/pages/font-touch.css",
+          "mobile/src/features/font-touch/",
+          "test/mobile-font-touch.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "notify-wiring",
+      "title": "JS 接线：常驻通知、待办/节点完成提醒、直复同步",
+      "depends_on": [
+        "native-notify",
+        "mobile-write-api"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "native-notify 提供 window.AutoloopNotify；mobile/src/features/notifications 有内容/去重/冷却契约。（接缝契约由 mobile-scaffold 定义：页面模块 mobile/app/www/pages/<name>.mjs 导出 mount(ctx)，ctx 含 client、state、hooks；hooks.attachVoice(inputEl)/hooks.notify 由对应节点实现，未实现时为空操作）",
+        "output": "实现 pages/notify.mjs：解锁连上后把设备令牌与间隔交给原生服务 start；按 notifications 契约生成通知内容与去重键；onReply 后刷新 App 内状态；实现 hooks.notify（setBadge 等）；设置页开关通知（偏好存 AutoloopSecureStorage）。",
+        "error_behavior": "桥不存在（浏览器）时静默降级；授权失效 stop；同一事项不重复通知。",
+        "acceptance_example": "单测（假桥）：新卡片一次通知、重复不发、直复后撤销与角标更新、401 停服务。npm test 全绿。",
+        "files": [
+          "mobile/app/www/pages/notify.mjs",
+          "mobile/src/features/notifications/",
+          "test/mobile-notify.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "voice-wiring",
+      "title": "JS 接线：语音输入覆盖所有输入框",
+      "depends_on": [
+        "native-speech"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "native-speech 提供 window.AutoloopSpeech；mobile/src/features/voice-input 有状态机。（接缝契约由 mobile-scaffold 定义：页面模块 mobile/app/www/pages/<name>.mjs 导出 mount(ctx)，ctx 含 client、state、hooks；hooks.attachVoice(inputEl)/hooks.notify 由对应节点实现，未实现时为空操作）",
+        "output": "实现 pages/voice.mjs：hooks.attachVoice(el) 给输入框挂麦克风按钮，接 voice-input 状态机（实时转写进输入框、可编辑/追加/撤销、不因停顿自动发送）。",
+        "error_behavior": "isAvailable=false 或拒权时不显示/置灰按钮并提示用键盘；识别失败保留已有文字。",
+        "acceptance_example": "单测（假桥）：开始→部分结果→最终结果写入输入框且未发送；拒权回落。npm test + npm run test:browser 全绿。",
+        "files": [
+          "mobile/app/www/pages/voice.mjs",
+          "mobile/src/features/voice-input/",
+          "test/mobile-voice-input.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "sync-audit",
+      "title": "多设备同步与审计（含管理后台审计列表）",
+      "depends_on": [
+        "mobile-write-api",
+        "bind-ux"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "src/device-auth.mjs 的 submitDecision/getSyncState 无路由消费；PRD 要求任一台提交后其他设备同步、关键操作审计可见。",
+        "output": "在 src/mobile-write.mjs 实现 GET/POST /api/mobile/sync（版本号/冲突按 device-sync reconcile）；device-auth.mjs 记录绑定/解除/重命名/回答/授权审计（来源设备、时间、结果）；pages/devices.mjs 展示本机绑定信息与同步状态；public/device.mjs 管理后台审计列表展示新增操作类型。",
+        "error_behavior": "冲突取最新且不双写；审计写失败不吞为成功；移动端只能看自身信息，不能解除其他设备。",
+        "acceptance_example": "单测：A 设备提交后 B 设备 sync 拿到新版本；审计条目含来源设备；移动端访问他人设备 403。npm test + npm run test:browser 全绿。",
+        "files": [
+          "src/mobile-write.mjs",
+          "src/device-auth.mjs",
+          "public/device.mjs",
+          "mobile/app/www/pages/devices.mjs",
+          "mobile/src/features/device-sync/",
+          "test/device-sync.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "apk-verify",
+      "title": "打包集成校验：原生插件全部进包",
+      "depends_on": [
+        "native-auth",
+        "native-notify",
+        "native-speech"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-3",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "三个原生节点各自完成；需确认 build-apk 合并后 APK 内插件、权限、依赖齐全。",
+        "output": "build-apk.mjs 增加签名前校验：合并后 manifest 含全部权限与服务声明、自写插件类全部在编译输出、capacitor 插件注册完整；缺一即失败退出并报缺项。",
+        "error_behavior": "校验失败不签名不产包；不打印签名口令。",
+        "acceptance_example": "单测用假 android 输出验证校验能拦缺权限/缺类；有 SDK 时授权构建产包并校验通过。npm test 全绿。",
+        "files": [
+          "mobile/app/build-apk.mjs",
+          "test/mobile-apk-build.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "smoke-emulator",
+      "title": "Android 模拟器 smoke：绑定→解锁→各页→通知直复→双机同步",
+      "depends_on": [
+        "apk-verify",
+        "bind-ux",
+        "ui-core-pages",
+        "ui-sessions",
+        "ui-artifacts",
+        "ui-dag-filter",
+        "font-touch",
+        "notify-wiring",
+        "voice-wiring",
+        "sync-audit"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-4",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "历史两轮只在桌面浏览器假桥回归，从未在 Android 环境验证，真机一装即废。",
+        "output": "新增 mobile/app/scripts/emulator-smoke.mjs 与 npm 脚本 smoke:android（不进 test/*.test.mjs，CI 不跑）：在 API 23+ 模拟器装新 APK，依次验证扫码弹相机权限、粘贴备用码绑定、指纹解锁、各 Tab 可达且有数据、常驻通知出现、锁屏直复一条待办、第二台模拟器同步、系统字体 160% 无溢出；每步截图与日志归档到 work/smoke/（不入库）。",
+        "error_behavior": "任一步失败给可读原因与截图，不静默判过；无模拟器环境时明确报「未执行」而非通过。",
+        "acceptance_example": "smoke 报告逐项通过并附截图路径；npm test 不受影响。",
+        "files": [
+          "mobile/app/scripts/emulator-smoke.mjs",
+          "mobile/app/package.json"
+        ]
+      }
+    },
+    {
+      "id": "smoke-device",
+      "title": "真机验收（需所有者另行授权安装）",
+      "depends_on": [
+        "smoke-emulator"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-5",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "目标设备华为旧鸿蒙、无谷歌服务；真机安装按 AGENTS.md 须单独授权、人工值守。",
+        "output": "授权后真机安装新 APK，按 PRD §9 验收示例逐项过并把结果写入验收记录文档。",
+        "error_behavior": "任一项不达标登记缺陷并按重试纪律换打法，不宣告完成。",
+        "acceptance_example": "验收记录显示：绑定不再卡住、解锁可用、核心页面/通知直复/语音/160% 字体可用。",
+        "files": [
+          "docs/2026-11-22-nomoto-app-foundation-acceptance.md"
+        ]
+      }
+    }
+  ]
+}
