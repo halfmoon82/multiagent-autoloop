@@ -118,6 +118,7 @@ export function buildDagView(detail) {
         ['费用 / Token', node.usageText],
         ['证据', node.prUrl ? '查看 PR' : '暂无 PR', node.prUrl],
         ['合并提交', node.mergeCommit || '尚未合并'],
+        ['终审结果', node.review?.rounds > 1 ? `${node.review.text}（共 ${node.review.rounds} 轮）` : (node.review?.text || '尚未审阅')],
       ];
     },
     detailContracts(node) {

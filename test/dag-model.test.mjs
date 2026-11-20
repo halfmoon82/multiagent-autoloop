@@ -141,3 +141,22 @@ test('nodeStatus 未知状态不当成完成', () => {
   assert.equal(nodeStatus('weird').label, '未知状态');
   assert.equal(nodeStatus('accepted').kind, 'done');
 });
+
+test('终审结果：取该节点最新一轮审阅回执，如实显示结论、P0–P3、PR、审过的提交与测试', () => {
+  const base = { run: { runId: 'r2', project: '/p/demo', nodes: [{ id: 'a', title: 'A', depends_on: [], contract: { files: ['a'] } }], publish: { nodes: { a: { state: 'accepted' } } } } };
+  const passed = buildDagNodes({ ...base, nodeRuns: [
+    { runId: 'd1', nodeId: 'a', role: 'dev', status: 'done', attempt: 1 },
+    { runId: 'v1', nodeId: 'a', role: 'review', status: 'done', attempt: 1, appliedAdvance: { result: { outcome: 'rework', detail: { pr: 7, head: 'aaaaaaaaaaaa', p0: 0, p1: 1, p2: 2, p3: 0, tests: 'npm test 10/10' } } } },
+    { runId: 'v2', nodeId: 'a', role: 'review', status: 'done', attempt: 2, appliedAdvance: { result: { outcome: 'accepted', detail: { pr: 7, head: '99b65e3fbc0a62f78cf8c683ba7150321526a462', p0: 0, p1: 0, p2: 0, p3: 6, tests: 'npm test 734/734' } } } },
+  ] })[0];
+  assert.equal(passed.review.text, '通过 · P0 0 / P1 0 / P2 0 / P3 6 · PR #7 · 提交 99b65e3 · 测试：npm test 734/734');
+  assert.equal(passed.review.rounds, 2);
+  const rework = buildDagNodes({ ...base, nodeRuns: [{ runId: 'v1', nodeId: 'a', role: 'review', status: 'done', attempt: 1, appliedAdvance: { result: { outcome: 'rework', detail: { p0: 0, p1: 1, p2: 0, p3: 0 } } } }] })[0];
+  assert.equal(rework.review.text, '打回返工 · P0 0 / P1 1 / P2 0 / P3 0');
+  const running = buildDagNodes({ ...base, nodeRuns: [{ runId: 'v1', nodeId: 'a', role: 'review', status: 'claimed', attempt: 1 }] })[0];
+  assert.equal(running.review.text, '审阅中（第 1 轮）');
+  const none = buildDagNodes({ ...base, nodeRuns: [{ runId: 'd1', nodeId: 'a', role: 'dev', status: 'claimed', attempt: 1 }] })[0];
+  assert.equal(none.review.text, '尚未审阅');
+  const noCounts = buildDagNodes({ ...base, nodeRuns: [{ runId: 'v1', nodeId: 'a', role: 'review', status: 'done', attempt: 1, appliedAdvance: { result: { outcome: 'accepted', detail: {} } } }] })[0];
+  assert.equal(noCounts.review.text, '通过 · 分级未上报');
+});

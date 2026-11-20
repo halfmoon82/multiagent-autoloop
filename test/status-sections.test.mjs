@@ -37,7 +37,7 @@ test('in-flight rounds show the triggering event summary and stable subject when
       { source: 'schedule', type: 'schedule.tick', subject: '', summary: '' },
       { source: 'chain', type: 'dag.node.dev', subject: 'node-cost-agg', summary: '费用聚合节点开发' },
     ] });
-  assert.equal(mixedEvents.taskSummary, '费用聚合节点开发', 'pick the meaningful triggering event, not an empty schedule tick');
+  assert.equal(mixedEvents.taskSummary, '【开发】费用聚合节点开发', 'pick the meaningful triggering event, not an empty schedule tick (dag.*.dev 派发带中文角色标签)');
   assert.equal(mixedEvents.taskNumber, 'node-cost-agg');
 
   const noSummary = runLine({ id: 5565, rule: '调度异常扫描', state: 'queued', attempts: 2, summary: '', error: '',
@@ -296,4 +296,23 @@ test('chainNodeExecutors 每个节点只认 subject=节点 id 的轮次：服务
   assert.deepEqual(out.n2, { agent: 'Codex 可写调度', model: '未配置', usage: null, running: true }, '首页正在跑的轮次覆盖历史');
   assert.equal(out.n3, undefined, '别的规则同名 subject 不算');
   assert.deepEqual(chainNodeExecutors({ ...chain, nodeRounds: undefined }, rules, runs.slice(0, 2), [], {}), {});
+});
+
+test('DAG 派发轮次带中文角色标签：审阅/开发从事件类型识别（含分档后缀），非 DAG 轮次不加', () => {
+  const review = runLine({ id: 9318, rule: 'DAG自动审阅·standard', state: 'queued', attempts: 0, summary: '', error: '',
+    events: [{ type: 'dag.auto.review.standard', subject: 'dag-native-speech', summary: 'DAG native-speech review g1a1' }] });
+  assert.equal(review.roleLabel, '审阅');
+  assert.equal(review.taskSummary, '【审阅】DAG native-speech review g1a1');
+  assert.equal(review.taskNumber, 'dag-native-speech');
+  const dev = runLine({ id: 9300, rule: 'DAG自动开发', state: 'claimed', summary: '', error: '',
+    events: [{ type: 'dag.auto.dev', subject: 'dag-ui-core-pages', summary: 'DAG ui-core-pages dev g1a1' }] });
+  assert.equal(dev.roleLabel, '开发');
+  assert.equal(dev.taskSummary, '【开发】DAG ui-core-pages dev g1a1');
+  const receipt = runLine({ id: 9301, rule: '回执', state: 'done', summary: '', error: '',
+    events: [{ type: 'dag.node.advance', subject: 'dag-x', summary: '一句话结论' }] });
+  assert.equal(receipt.roleLabel, '');
+  assert.equal(receipt.taskSummary, '一句话结论');
+  const plain = runLine({ id: 1, rule: '调度异常扫描', state: 'queued', summary: '', error: '', events: [{ type: 'schedule.tick', subject: '', summary: '' }] });
+  assert.equal(plain.roleLabel, '');
+  assert.equal(plain.taskSummary, '调度异常扫描');
 });
