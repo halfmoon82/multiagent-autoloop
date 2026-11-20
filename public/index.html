@@ -35,9 +35,6 @@
         <section class="panel"><div class="panel-heading"><h2>今日完成</h2><span class="subtle">最近 5 条</span></div><div id="done-list" class="list compact-list"></div></section>
         <section class="panel"><div class="panel-heading"><h2>待调度处理</h2><span class="subtle">调度会话按契约自行处理，不升级给您 · 最近 5 条</span></div><div id="attention-list" class="list compact-list"></div></section>
       </div>
-      <div class="overview-grid">
-        <section class="panel"><div class="panel-heading"><h2>运行环境</h2><span class="subtle">实时状态</span></div><div id="environment-list" class="list"></div></section>
-      </div>
       <section class="panel"><div class="panel-heading"><h2>接下来的复查</h2><span class="subtle">到期后才会调用 Agent</span></div><div id="timer-list" class="list"></div></section>
     </section>
     <section id="view-rules" class="view" hidden aria-labelledby="rules-title">
@@ -88,8 +85,9 @@
     <section id="view-admin" class="view" hidden aria-labelledby="admin-title">
       <div class="page-heading"><div><p class="eyebrow">ADMIN</p><h1 id="admin-title">管理后台</h1><p class="subtle">控制台的长期配置。这里的改动会写入真实调度配置，保存前自动备份。</p></div></div>
       <div class="admin-layout">
-        <nav class="admin-subnav" aria-label="后台分区"><div class="admin-subnav-group">配置</div><a href="#admin" class="active" aria-current="page">平台与模型</a></nav>
+        <nav class="admin-subnav" aria-label="后台分区"><div class="admin-subnav-group">配置</div><a href="#admin" class="active" aria-current="page" data-admin-pane="admin-platform-models">平台与模型</a><div class="admin-subnav-group">状态</div><a href="#admin" data-admin-pane="admin-environment">运行环境</a></nav>
         <div id="admin-platform-models" class="admin-stack" aria-live="polite"><p class="subtle">正在读取平台与模型设置…</p></div>
+        <div id="admin-environment" class="admin-stack" hidden><section class="panel"><div class="panel-heading"><h2>运行环境</h2><span class="subtle">实时状态</span></div><div id="environment-list" class="list"></div></section></div>
       </div>
     </section>
     <section id="view-devices" class="view" hidden aria-labelledby="devices-title">
