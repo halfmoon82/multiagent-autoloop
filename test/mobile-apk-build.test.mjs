@@ -26,6 +26,11 @@ function shLog(file, prefix) {
   return `#!/bin/sh\nprintf '%s\\n' "${prefix} $*" >> ${JSON.stringify(file)}\n`;
 }
 
+// 生成工程里某个类的编译产物路径（与 AGP 的 javac 输出目录结构一致的最小替身）。
+function compiledClassPath(dir, fqn) {
+  return path.join(dir, 'android', 'app', 'build', 'intermediates', 'javac', 'release', 'classes', ...fqn.split('.')) + '.class';
+}
+
 function makeSandbox() {
   const dir = mkdtempSync(path.join(tmpdir(), 'apk-build-node-'));
   const bin = path.join(dir, 'bin');
@@ -117,6 +122,17 @@ function makeSandbox() {
     + '  prev="$arg"\n'
     + 'done\n'
     + 'if [ -n "$out" ]; then printf "signed-apk-payload" > "$out"; fi\n', { mode: 0o755 });
+
+  // 服务声明对应的自写类（清单声明的前台服务必须真实存在于源码与编译产物中）。
+  mkdirSync(path.join(native, 'java', 'cool', 'autoloop', 'console', 'notify'), { recursive: true });
+  writeFileSync(path.join(native, 'java', 'cool', 'autoloop', 'console', 'notify', 'ForegroundService.java'),
+    'package cool.autoloop.console.notify;\npublic class ForegroundService {}\n');
+  // 假编译产物：fake gradlew 不产出类文件，这里预置与源码一一对应的 .class（签名前校验读取）。
+  for (const fqn of ['cool.autoloop.console.MainActivity', 'cool.autoloop.console.notify.ForegroundService']) {
+    const classFile = compiledClassPath(dir, fqn);
+    mkdirSync(path.dirname(classFile), { recursive: true });
+    writeFileSync(classFile, 'fake-class-bytes');
+  }
 
   // 仓库外密钥库（仅存在于临时目录，绝不入库）。
   writeFileSync(path.join(dir, 'release.jks'), 'fake-keystore-bytes');
@@ -328,6 +344,59 @@ test('缺少 native 原生源码时非零退出且不产出半成品', () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr + result.stdout, /native/);
     assert.ok(!existsSync(path.join(box.dir, SIGNED_REL)), '合并失败不得产出 APK');
+  } finally {
+    rmSync(box.dir, { recursive: true, force: true });
+  }
+});
+
+// --- RED 14：清单里被注释掉的权限不算已合并，签名前校验必须拦截且不签名 ---
+test('签名前校验拦截只存在于注释中的权限，不签名不产包', () => {
+  const box = makeSandbox();
+  try {
+    const manifest = path.join(box.dir, MANIFEST_REL);
+    writeFileSync(manifest, readFileSync(manifest, 'utf8').replace(
+      '<application',
+      '<!-- <uses-permission android:name="android.permission.RECORD_AUDIO" /> -->\n  <application',
+    ));
+    const result = runBuild(box);
+    assert.equal(result.status, 12, `应以校验码 12 拒绝：code=${result.status}\nstderr=${result.stderr}`);
+    assert.match(result.stderr, /RECORD_AUDIO/);
+    assert.ok(!existsSync(path.join(box.dir, SIGNED_REL)), '校验失败不得产出 APK');
+    assert.ok(!existsSync(box.signing), '校验失败不得进入签名步骤');
+  } finally {
+    rmSync(box.dir, { recursive: true, force: true });
+  }
+});
+
+// --- RED 15：编译产物缺少服务类时签名前拦截 ---
+test('签名前校验发现编译产物缺少前台服务类时拒绝签名', () => {
+  const box = makeSandbox();
+  try {
+    rmSync(compiledClassPath(box.dir, 'cool.autoloop.console.notify.ForegroundService'));
+    const result = runBuild(box);
+    assert.equal(result.status, 12, `应以校验码 12 拒绝：code=${result.status}\nstderr=${result.stderr}`);
+    assert.match(result.stderr, /ForegroundService/);
+    assert.ok(!existsSync(path.join(box.dir, SIGNED_REL)), '校验失败不得产出 APK');
+    assert.ok(!existsSync(box.signing), '校验失败不得进入签名步骤');
+  } finally {
+    rmSync(box.dir, { recursive: true, force: true });
+  }
+});
+
+// --- RED 16：自写 Capacitor 插件未在 MainActivity 注册时拒绝 ---
+test('签名前校验发现自写插件未 registerPlugin 时拒绝签名', () => {
+  const box = makeSandbox();
+  try {
+    const pluginDir = path.join(box.dir, 'native', 'java', 'cool', 'autoloop', 'console', 'speech');
+    mkdirSync(pluginDir, { recursive: true });
+    writeFileSync(path.join(pluginDir, 'DemoPlugin.java'),
+      'package cool.autoloop.console.speech;\n'
+      + '@CapacitorPlugin(name = "Demo")\npublic class DemoPlugin extends Plugin {}\n');
+    const result = runBuild(box);
+    assert.equal(result.status, 12, `应以校验码 12 拒绝：code=${result.status}\nstderr=${result.stderr}`);
+    assert.match(result.stderr, /DemoPlugin/);
+    assert.match(result.stderr, /注册/);
+    assert.ok(!existsSync(path.join(box.dir, SIGNED_REL)), '校验失败不得产出 APK');
   } finally {
     rmSync(box.dir, { recursive: true, force: true });
   }
