@@ -12,7 +12,7 @@ import { MOBILE_API_KEYS } from '../mobile/app/www/shell.mjs';
 import {
   MOBILE_PAGE_IDS, MOBILE_PAGE_TITLES, CORE_API_KEYS, MOBILE_NAVIGATION,
   statusLabel, cardStateLabel, billingText, projectName, scheduleLabel, ruleStatus,
-  emptyState, collection, assembleSnapshot, createMobileCore,
+  emptyState, collection, assembleSnapshot, createMobileCore, createCoreWrite,
   buildOverview, buildRules, buildRuns, buildTodos, buildAuthorization, buildPages,
 } from '../mobile/src/core/index.mjs';
 import { mobileProjectSummaries, mobileProjectOptions, discoverGitProjects } from '../src/projects.mjs';
@@ -22,7 +22,8 @@ import { createConsoleServer } from '../src/server.mjs';
 import { createDeviceStore } from '../src/device-auth.mjs';
 import { listen, close, fakeHub, json } from './helpers.mjs';
 
-const CORE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'mobile', 'src', 'core');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const CORE_DIR = path.join(ROOT, 'mobile', 'src', 'core');
 const NOW = new Date('2026-11-19T12:00:00+08:00');
 
 // ---------------------------------------------------------------------------
@@ -442,4 +443,71 @@ test('端到端：经 /api/mobile/api/<key> 读取真实服务端响应，五个
   assert.equal(pages.authorize.items.items.length, 2);
   const dump = JSON.stringify(pages);
   assert.ok(!dump.includes('server-secret') && !dump.includes(deviceToken), '页面不得含密钥或设备凭证');
+});
+
+// ---------------------------------------------------------------------------
+// RED 10：core 页面写操作——只打固定写路由、带设备凭证，501/失败可读且保留草稿
+// ---------------------------------------------------------------------------
+function writeClient({ token = 'device-token-abc', origin = 'http://127.0.0.1:50761' } = {}) {
+  return { origin, api: async () => ({}), tokenStore: { get: async () => token } };
+}
+
+test('createCoreWrite：选项/文字回答与规则动作都钉在固定写路径并带齐凭证头', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  const write = createCoreWrite(writeClient(), { fetchImpl });
+  await write.answerCard(9, { choice: 1 });
+  await write.answerCard('c/x', { text: '文字回答' });
+  await write.ruleAction('移动控制台 · 设计推进', 'pause');
+
+  assert.deepEqual(calls.map(call => call.url), [
+    'http://127.0.0.1:50761/api/mobile/cards/9/answer',
+    'http://127.0.0.1:50761/api/mobile/cards/c%2Fx/answer',
+    'http://127.0.0.1:50761/api/mobile/rules/%E7%A7%BB%E5%8A%A8%E6%8E%A7%E5%88%B6%E5%8F%B0%20%C2%B7%20%E8%AE%BE%E8%AE%A1%E6%8E%A8%E8%BF%9B/pause',
+  ]);
+  for (const call of calls) {
+    assert.equal(call.init.method, 'POST');
+    assert.equal(call.init.headers['content-type'], 'application/json');
+    assert.equal(call.init.headers['x-console-request'], '1');
+    assert.equal(call.init.headers['x-device-token'], 'device-token-abc');
+  }
+  assert.deepEqual(JSON.parse(calls[0].init.body), { choice: 1 });
+  assert.deepEqual(JSON.parse(calls[1].init.body), { text: '文字回答' });
+  await assert.rejects(() => write.ruleAction('r', 'delete'), /不支持|不支持的动作/);
+});
+
+test('createCoreWrite：501/失败给出人话错误，不泄漏设备凭证；未绑定时不发请求', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return { ok: false, status: 501, json: async () => ({ error: '卡片回答尚未实现', route: 'card-answer', declared: true }) };
+  };
+  const write = createCoreWrite(writeClient(), { fetchImpl });
+  await assert.rejects(() => write.answerCard(9, { text: '草稿' }), error => {
+    assert.equal(error.status, 501);
+    assert.match(error.message, /尚未实现/);
+    assert.ok(!String(error.message).includes('device-token-abc'));
+    assert.ok(!JSON.stringify(error).includes('device-token-abc'));
+    return true;
+  });
+  const offline = createCoreWrite(writeClient({ token: null }), { fetchImpl });
+  await assert.rejects(() => offline.answerCard(9, { text: '草稿' }), /绑定/);
+  assert.equal(calls.length, 1, '未绑定时不得发请求');
+});
+
+test('core 页面模块：安全 DOM 渲染五页、接写路由与角标，接口失败可重试', () => {
+  const code = readFileSync(path.join(ROOT, 'mobile', 'app', 'www', 'pages', 'core.mjs'), 'utf8');
+  assert.match(code, /export function mount\s*\(/);
+  assert.ok(code.includes('../src/core/index.mjs'), '页面通过相对路径引用视图模型');
+  assert.match(code, /createMobileCore/);
+  assert.match(code, /createCoreWrite/);
+  assert.match(code, /setBadge/);
+  assert.match(code, /textContent/);
+  assert.match(code, /MutationObserver/, '解锁进入主界面后才拉数据');
+  for (const id of ['overview', 'rules', 'runs', 'todos', 'authorize']) assert.ok(code.includes(id), `必须渲染 ${id}`);
+  assert.ok(!/innerHTML|insertAdjacentHTML/.test(code), '不得拼接不可信 HTML');
+  assert.ok(!/\bfetch\s*\(/.test(code.replace(/\/\/.*$/gm, '')), '页面不直接发请求，写操作走 write 助手');
 });
