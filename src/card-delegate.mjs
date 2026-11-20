@@ -124,6 +124,7 @@ export async function delegateOpenCard({
       requestedAt: at,
     },
   };
+  event.detail = JSON.stringify(event.detail); // 中台要求 detail 为字符串（#89 同口径）
 
   store.set(eventId, { ...base, status: 'pending', event });
   let result;
