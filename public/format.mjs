@@ -1,5 +1,6 @@
 export const formatNumber = value => new Intl.NumberFormat('zh-CN').format(Number(value || 0));
 export const formatTime = value => value ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—';
+export const formatDateTime = value => { if (/^\d{4}-\d{2}-\d{2}$/.test(String(value ?? ''))) return String(value); const time = Date.parse(String(value ?? '')); return Number.isFinite(time) ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(time)) : ''; };
 export function formatCost(spending = {}) {
   if (spending.missingCost === spending.rounds || (!spending.rounds && !spending.cost)) return '未上报';
   const missing = spending.missingCost ? `（${spending.missingCost} 轮未报）` : '';

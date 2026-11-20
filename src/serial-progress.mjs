@@ -38,6 +38,7 @@ export function chainRuleNames(sourceFile, rules = []) {
     return name.startsWith(stem) && !/^[a-z0-9]/.test(name.slice(stem.length));
   }).map(item => item.name);
 }
+const isoOrNull = value => { const raw = text(value, 40).trim(); if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw; const time = Date.parse(raw); return raw && Number.isFinite(time) ? new Date(time).toISOString() : null; };
 const validPercent = value => Number.isInteger(value) && value >= 0 && value <= 100 ? value : null;
 
 export function effectiveNodePercent(node) {
@@ -136,6 +137,7 @@ export function parseChainFile(raw, sourceFile, rules = []) {
     percent,
     current,
     updatedAt: text(data.lastEventAt, 40) || null,
+    createdAt: isoOrNull(data.createdAt) || isoOrNull(data.created) || isoOrNull(data.meta?.createdAt) || isoOrNull(data.meta?.created),
   };
 }
 
@@ -159,6 +161,8 @@ export async function loadChains({ root, rules = [], now = () => Date.now() } = 
         chain = cached.chain;
       } else {
         chain = parseChainFile(readFileSync(full, 'utf8'), file, rules);
+        // 链文件没写创建时间：退回文件创建时刻（改名归档不改变它）。
+        if (!chain.createdAt && Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0) chain.createdAt = new Date(stat.birthtimeMs).toISOString();
         cache.set(full, { mtimeMs: stat.mtimeMs, at: now(), chain });
       }
       chains.push(chain);

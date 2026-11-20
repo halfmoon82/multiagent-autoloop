@@ -138,3 +138,21 @@ test('跑完后计划删过节点（done > total）仍算完成', () => {
   const runs = [{ runId: 'r', planId: 'plan-g', nodeId: '__root__', status: 'done', project: '/p/demo', createdAt: '2026-11-19T02:00:00Z', nodes: [{}, {}], publish: { nodes: { a: { state: 'accepted' }, b: { state: 'accepted' }, gone: { state: 'accepted' } } } }];
   assert.equal(archiveDag(runs)[0]?.reason, 'completed');
 });
+
+test('归档条目带创建时间、归档时刻（串行取文件时间、DAG 取 run 时间）', () => {
+  const serial = archiveSerial({ stem: 'demo', archivedAt: '2026-11-18', birthMs: Date.parse('2026-11-16T01:00:00Z'), modifiedMs: Date.parse('2026-11-18T05:30:00Z'), data: chainOf({ a: 'done' }) });
+  assert.equal(serial.createdAt, '2026-11-16T01:00:00.000Z');
+  assert.equal(serial.archivedTime, '2026-11-18T05:30:00.000Z');
+  const explicit = archiveSerial({ stem: 'x', archivedAt: '2026-11-18', birthMs: 1, data: chainOf({ a: 'done' }, { created: '2026-11-10T00:00:00Z' }) });
+  assert.equal(explicit.createdAt, '2026-11-10T00:00:00.000Z');
+  const [dag] = archiveDag([{ runId: 'r1', planId: 'p', nodeId: '__root__', project: '/p', status: 'done', createdAt: '2026-11-19T02:54:23.942Z', updatedAt: '2026-11-19T16:16:45.131Z', nodes: [{ id: 'a' }], publish: { nodes: { a: { state: 'accepted' } } } }]);
+  assert.equal(dag.runId, 'r1');
+  assert.equal(dag.createdAt, '2026-11-19T02:54:23.942Z');
+  assert.equal(dag.archivedTime, '2026-11-19T16:16:45.131Z');
+});
+
+test('只有日期的创建时间保持日期，归档日期与文件写入日不符时不编造时刻', () => {
+  const item = archiveSerial({ stem: 'v6', archivedAt: '2026-11-17', birthMs: 1, modifiedMs: Date.parse('2026-11-15T09:00:00Z'), data: chainOf({ a: 'done' }, { created: '2026-11-14' }) });
+  assert.equal(item.createdAt, '2026-11-14');
+  assert.equal(item.archivedTime, null);
+});

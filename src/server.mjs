@@ -15,6 +15,7 @@ import { readDetours, publicDetour } from './detour.mjs';
 import { loadChains } from './serial-progress.mjs';
 import { aggregateProjectUsage } from './project-usage.mjs';
 import { readArchive } from './archive.mjs';
+import { attachArchiveUsage, sumRunUsage } from './archive-usage.mjs';
 import { refreshUsage } from './chain-usage.mjs';
 import { readCloseouts } from './chain-closeout.mjs';
 import { createDagService, DagServiceError, withHubUsage, collectHubRuns } from './dag-service.mjs';
@@ -162,7 +163,24 @@ async function handleApi(config, req, res, url) {
     try { rules = readRuleOptions(config).rules || []; } catch { rules = []; }
     let projects = [];
     try { projects = discoverGitProjects({ roots: config.projectRoots || [], rules }).map(item => item.path); } catch { projects = []; }
-    return jsonResponse(res, 200, readArchive({ root: config.root, projects }));
+    const archive = readArchive({ root: config.root, projects });
+    // 最终计费/Token：串行读台账累计（按链词干归属规则），DAG 汇总节点轮次的 Hub 自报用量。
+    const pseudoChains = archive.archived.filter(item => item.kind === 'serial').map(item => ({ sourceFile: `${item.source}-serial.json`, project: item.project }));
+    let byChain = new Map();
+    if (pseudoChains.length) { try { byChain = (await refreshUsage({ config, rules, chains: pseudoChains }))?.byChain || new Map(); } catch { byChain = new Map(); } }
+    const archived = await attachArchiveUsage(archive.archived, {
+      chainUsageFor: item => byChain.get(`${item.source}-serial.json`),
+      dagUsageFor: async item => {
+        if (!config.dagService) return null;
+        const detail = config.dagService.get(item.runId);
+        const wanted = detail.nodeRuns.map(run => run?.hub?.hubRun).filter(Number.isInteger);
+        const hubRuns = wanted.length ? await collectHubRuns(before => hubRequest(config, '/v1/state' + (before == null ? '' : `?before=${before}`)), wanted) : [];
+        // 取不全（Hub 不可达/翻页上限）就不缓存也不给数：宁可写未上报，不给偏低的"最终值"。
+        if (wanted.length && !wanted.every(id => hubRuns.some(run => Number(run?.id) === id))) return null;
+        return sumRunUsage(withHubUsage(detail, hubRuns).nodeRuns);
+      },
+    });
+    return jsonResponse(res, 200, { archived });
   }
   if (req.method === 'GET' && url.pathname === '/api/project-usage') {
     const rules = readRuleOptions(config).rules || [];

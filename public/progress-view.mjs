@@ -2,7 +2,7 @@
 // 再共用同一套「分段环形总进度 + 节点卡片 + 分组 + 运行详情」渲染。
 // 波次（DAG）/ 执行顺序分段（串行）映射到同一分组语言；四栏节点卡片字段一律如实标注，缺失写未上报。
 // 所有上游文本只经 textContent 写入（本模块自建 el，避免与 views.mjs 形成循环依赖）。
-import { projectName } from './format.mjs';
+import { projectName, formatDateTime } from './format.mjs';
 import { buildDagNodes, groupWaves, dagRunSummary, donutModel, formatUsage, sumUsage, segmentColor, completionOf } from './dag-model.mjs';
 
 function el(tag, className, text) {
@@ -66,7 +66,7 @@ export function buildSerialView(chain, usageText = UNKNOWN_USAGE, executors = {}
   const current = chain?.current ? nodes.find(node => node.id === chain.current.id) : null;
   return {
     key: `serial:${chain?.sourceFile || ''}`, kind: 'serial', id: chain?.sourceFile || '', project: chain?.project || '',
-    title: projectName(chain?.project || ''), subtitle: `${nodes.length} 个节点 · 按执行顺序排列${current ? ` · 当前 ${current.title}` : ''}`,
+    title: projectName(chain?.project || ''), subtitle: `${nodes.length} 个节点 · 按执行顺序排列${current ? ` · 当前 ${current.title}` : ''}${chain?.createdAt ? ` · 创建于 ${formatDateTime(chain.createdAt)}` : ''}`,
     percent: Math.round(chain?.percent || 0), segmentNote: '同一色相 · 深浅 = 状态',
     nodes, groups, usageText,
     metrics: [['总进度', `${Math.round(chain?.percent || 0)}%`], ['节点', `${nodes.length} 个`], ['当前节点', current?.title || '—'], ['节点内', current ? `${current.percent}%` : '—'], ['状态', current?.status.label || '—']],
@@ -105,7 +105,7 @@ export function buildDagView(detail) {
   }));
   return {
     key: `dag:${detail?.run?.runId || ''}`, kind: 'dag', id: detail?.run?.runId || '', runId: detail?.run?.runId || '', project: detail?.run?.project || '',
-    title: projectName(detail?.run?.project || ''), subtitle: `${detail?.run?.planId || detail?.run?.runId || ''} · ${nodes.length} 个节点 · 第 ${sum.currentWave}/${sum.totalWaves} 波`,
+    title: projectName(detail?.run?.project || ''), subtitle: `${detail?.run?.planId || detail?.run?.runId || ''} · ${nodes.length} 个节点 · 第 ${sum.currentWave}/${sum.totalWaves} 波${detail?.run?.createdAt ? ` · 创建于 ${formatDateTime(detail.run.createdAt)}` : ''}`,
     percent: donutModel(nodesRaw).percent, segmentNote: '颜色 = 波次 · 深浅 = 完成度',
     nodes, groups, usageText: `本次运行 · ${formatUsage(sum.usage)}`,
     metrics: [['当前波次', `${sum.currentWave} / ${sum.totalWaves}`], ['业务槽位', `${sum.slotsUsed} / 5`], ['已完成', `${sum.doneCount} / ${sum.nodeCount}`], ['换打法', `${(detail?.run?.publish?.approachChanges || []).length} 次`], ['隔离槽位', `${sum.quarantined.length} 个`]],
