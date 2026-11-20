@@ -364,8 +364,10 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
   for (const [name, cwd] of candidates) {
     if (chainNames.has(name)) continue;
     const activity = projectActivity(cwd, rules, lines);
-    if (!(activity.running || activity.waiting || activity.doneToday)) continue;
     const cardsHere = openCards.filter(card => matchesProject(projectForCard(card, rules), cwd)).length;
+    // 没有节点计划的项目不是任务：只有此刻真在跑、或有待用户处理的卡片才占项目进度；
+    // 等待重试与今日完成只是巡检类规则的日常计数，总览里已有，不再像未归档任务一样常驻。
+    if (!(activity.running || cardsHere)) continue;
     const row = el('div', 'list-row');
     row.dataset.chain = name;
     const main = el('div', 'progress-main');

@@ -593,8 +593,7 @@ try {
   await page.locator('#project-filter').selectOption('');
   await page.waitForTimeout(300);
   const betaRow = page.locator('#progress-list .list-row').filter({ hasText: 'beta' }).filter({ hasText: '无节点计划' });
-  assert.ok(await betaRow.count() >= 1, 'a project with activity but no chain file must still show a counts-only row');
-  assert.ok((await betaRow.first().innerText()).includes('等待重试 2'), 'counts-only rows use the same hub aggregates');
+  assert.equal(await betaRow.count(), 0, 'a project with no node plan and only retrying/done activity must not stay in project progress as an unarchived task');
   await page.locator('#project-filter').selectOption('beta');
   await page.waitForTimeout(200);
   await page.locator('#clear-project-filter').click();
