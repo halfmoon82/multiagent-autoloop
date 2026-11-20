@@ -329,3 +329,60 @@ test('上游文本全程是纯字符串：视图模型可安全渲染，不泄�
   assert.ok(!dump.includes('<script') && !dump.includes('</div>') && !dump.includes('onerror='));
   assert.ok(!dump.includes('deviceToken') && !dump.includes('ownerKey') && !dump.includes('server-secret'));
 });
+
+// ---------------------------------------------------------------------------
+// RED 9：浏览器侧筛选控制器——DOM 无关的纯接线（投影 / 加载 / 订阅 / 切换广播）
+// ---------------------------------------------------------------------------
+const PF_BROWSER = '../mobile/src/features/project-filter/browser.mjs';
+
+test('projectOptionsFrom：把 /api/projects 真实行投影成筛选选项，坏项不编造', async () => {
+  const { projectOptionsFrom } = await import(PF_BROWSER);
+  const options = projectOptionsFrom({ projects: [P1, null, { name: '', path: '' }, P2] });
+  assert.deepEqual(options, [
+    { id: ALL_PROJECTS_ID, label: ALL_PROJECTS_LABEL },
+    { id: P1.path, label: P1.name },
+    { id: P2.path, label: P2.name },
+  ]);
+  const empty = [{ id: ALL_PROJECTS_ID, label: ALL_PROJECTS_LABEL }];
+  assert.deepEqual(projectOptionsFrom(null), empty);
+  assert.deepEqual(projectOptionsFrom({ projects: [] }), empty);
+  assert.deepEqual(projectOptionsFrom([P1]), [
+    { id: ALL_PROJECTS_ID, label: ALL_PROJECTS_LABEL },
+    { id: P1.path, label: P1.name },
+  ]);
+});
+
+test('createProjectFilterController：加载/切换不可变并通知订阅者，失效选择回退全部', async () => {
+  const { createProjectFilterController } = await import(PF_BROWSER);
+  let rows = { projects: PROJECTS };
+  const controller = createProjectFilterController({ load: async () => rows });
+  assert.equal(controller.filter.selectedId, ALL_PROJECTS_ID, '初始为「全部」= 不过滤');
+
+  const events = [];
+  const off = controller.subscribe(filter => events.push(filter.selectedId));
+  await controller.reload();
+  assert.equal(controller.filter.selectedId, ALL_PROJECTS_ID);
+  assert.equal(controller.filter.options.length, 3);
+  assert.deepEqual(events, [ALL_PROJECTS_ID], 'reload 完成通知一次');
+
+  controller.select(P1.path);
+  assert.equal(controller.filter.selectedId, P1.path);
+  assert.equal(controller.filter.isAll, false);
+  assert.deepEqual(events, [ALL_PROJECTS_ID, P1.path]);
+
+  controller.select('/work/已被删除');
+  assert.equal(controller.filter.isAll, true, '失效值回退全部，不静默按不存在项目过滤');
+  off();
+  controller.select(P2.path);
+  assert.equal(events.length, 3, '取消订阅后不再收到通知');
+});
+
+test('createProjectFilterController：加载失败保留明确错误，不编造项目', async () => {
+  const { createProjectFilterController } = await import(PF_BROWSER);
+  const controller = createProjectFilterController({ load: async () => { throw new Error('Hub 不可达'); } });
+  await controller.reload();
+  assert.equal(controller.filter.isAll, true);
+  assert.equal(controller.filter.empty, true);
+  assert.match(controller.error, /Hub 不可达/);
+  assert.equal(controller.loading, false);
+});
