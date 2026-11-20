@@ -13,7 +13,7 @@ import java.lang.ref.WeakReference;
  * start(url,name) 两参调用。这里在 WebView 同步注入 H5 契约的全局对象（方法内部再惰性取
  * Capacitor 插件代理），并缓存 WebView 供 WebChromeClient 回 JS 错误码。
  */
-final class AutoLoopBridge {
+public final class AutoLoopBridge {
   static final String SECURE_STORAGE_SHIM =
       "window.AutoloopSecureStorage={"
           + "get:function(){"
@@ -62,6 +62,19 @@ final class AutoLoopBridge {
     if (webView == null) return;
     webViewRef = new WeakReference<>(webView);
     webView.evaluateJavascript(shim, null);
+  }
+
+  /**
+   * 每次页面开始/结束加载都重新注入全部 H5 契约全局对象。App 实际加载的是远程 /mobile/ 页面，
+   * 插件 load 时注入的对象会随页面跳转丢失，导致生物识别/安全存储/下载桥在页面里不存在。
+   * 注入是幂等的整体赋值，重复执行无副作用。
+   */
+  public static void injectAll(WebView webView) {
+    if (webView == null) return;
+    webViewRef = new WeakReference<>(webView);
+    webView.evaluateJavascript(SECURE_STORAGE_SHIM, null);
+    webView.evaluateJavascript(BIOMETRIC_SHIM, null);
+    webView.evaluateJavascript(DOWNLOAD_SHIM, null);
   }
 
   static WebView webView() {
