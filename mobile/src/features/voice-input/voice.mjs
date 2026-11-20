@@ -3,7 +3,7 @@
 // 每次转移返回新对象，便于测试与 UI 逐帧比对；无变化时返回原对象，避免无谓重渲染。
 
 import {
-  VOICE_HISTORY_LIMIT, isKeyboardFallbackState,
+  VOICE_HISTORY_LIMIT, isKeyboardFallbackState, voiceFallbackHint,
 } from './contract.mjs';
 
 const str = value => String(value ?? '');
@@ -144,4 +144,24 @@ export function undoVoice(input) {
     interim: '',
     paused: false,
   };
+}
+
+// 原生识别错误：无权限、无网络是更具体的回退态，其余错误统一回到 failed；草稿与历史保留。
+export function failWithCode(input, error = {}) {
+  if (!input || typeof input !== 'object') return input;
+  const code = str(error?.code);
+  if (code === 'AUTOLOOP_SPEECH_PERMISSION_DENIED') {
+    return { ...input, state: 'no-permission', interim: '', paused: false, error: voiceFallbackHint('no-permission') };
+  }
+  if (code === 'AUTOLOOP_SPEECH_NETWORK') {
+    return { ...input, state: 'offline', interim: '', paused: false, error: voiceFallbackHint('offline') };
+  }
+  return failVoice(input, str(error?.message || '识别失败'));
+}
+
+// 输入框显示文本：草稿 + 实时预览。只用于显示，预览不写入草稿，也不进撤销历史。
+export function previewDraft(input) {
+  const draft = str(input?.draft);
+  const interim = str(input?.interim);
+  return interim ? joinDraft(draft, interim) : draft;
 }
