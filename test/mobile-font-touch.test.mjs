@@ -16,8 +16,13 @@ import {
   touchTarget, reduceOptionState, isInteractive,
   buildFontBinding, buildTouchBinding,
 } from '../mobile/src/features/font-touch/index.mjs';
+import {
+  fontScaleFromEnv, applyGlobalFontLayer, mount as mountFontTouch, loadViewModel as loadFontTouchViewModel,
+} from '../mobile/app/www/pages/font-touch.mjs';
 
-const FEATURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'mobile', 'src', 'features', 'font-touch');
+const REPO_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const FEATURE_DIR = path.join(REPO_DIR, 'mobile', 'src', 'features', 'font-touch');
+const WWW_PAGES_DIR = path.join(REPO_DIR, 'mobile', 'app', 'www', 'pages');
 
 // ---------------------------------------------------------------------------
 // RED 1：契约词表与常量（Spec §9.3 / §9.10 / 设计评审 §3.4）
@@ -253,4 +258,81 @@ test('端到端：160% 全界面缩放无横向溢出，热区达标，选项态
   const touch = buildTouchBinding(ICON_VISUAL_DP, state);
   assert.ok(touch.hitDp >= TOUCH_TARGET_MIN_DP && touch.hitDp <= TOUCH_TARGET_MAX_DP);
   assert.equal(touch.disabled, true);
+});
+
+// ---------------------------------------------------------------------------
+// RED 7：页面接线——page 模块把系统字体档投影为全局样式层（由 app.mjs mount）
+// ---------------------------------------------------------------------------
+test('page 模块导出挂载与纯辅助函数，Node 边界无 DOM 时安全', async () => {
+  assert.equal(typeof fontScaleFromEnv, 'function');
+  assert.equal(typeof applyGlobalFontLayer, 'function');
+  assert.equal(typeof mountFontTouch, 'function');
+  assert.equal(typeof loadFontTouchViewModel, 'function');
+  assert.equal(await mountFontTouch({}), null, 'Node 边界没有 window/document 时不挂载');
+});
+
+test('fontScaleFromEnv 读取宿主注入的系统字体档，缺失回退 100，不在接线层私自换算', () => {
+  assert.equal(fontScaleFromEnv({ AutoloopFontScale: 160 }), 160);
+  assert.equal(fontScaleFromEnv({ AutoloopNativeFontScale: 130 }), 130);
+  assert.equal(fontScaleFromEnv({ AutoloopDevice: { fontScale: 160 } }), 160);
+  assert.equal(fontScaleFromEnv({}), 100);
+  assert.equal(fontScaleFromEnv({ AutoloopFontScale: 'bad' }), 'bad', '归一交给 feature 的 normalizeFontScale');
+});
+
+test('applyGlobalFontLayer 在 160% 写全局 CSS 变量与 data 属性，原生度量不缩放网页', () => {
+  const props = new Map();
+  const dataset = {};
+  const doc = { documentElement: { style: { setProperty: (k, v) => props.set(k, v) }, dataset } };
+  const layer = applyGlobalFontLayer(
+    doc, buildFontBinding(160, { viewportWidth: 360 }), buildTouchBinding(ICON_VISUAL_DP, 'idle'),
+  );
+  assert.equal(layer.font.systemFontScale, 160);
+  assert.equal(props.get('--font-scale'), '160');
+  assert.equal(props.get('--font-base-dp'), String(FONT_BASE_DP));
+  assert.equal(props.get('--font-size-dp'), String(scaledFontDp(160)));
+  assert.equal(props.get('--touch-hit-min-dp'), String(TOUCH_TARGET_MIN_DP));
+  assert.equal(props.get('--touch-hit-max-dp'), String(TOUCH_TARGET_MAX_DP));
+  assert.equal(dataset.fontScale, '160');
+  assert.equal(dataset.fontTouch, 'on');
+  assert.equal(layer.font.layout.wrap, true);
+  assert.equal(layer.font.layout.growContainer, true);
+  assert.equal(layer.font.layout.verticalScroll, true);
+  assert.equal(layer.font.layout.webZoom, false);
+  assert.equal(layer.font.layout.horizontalOverflow, false);
+  assert.equal(layer.touch.hitDp, TOUCH_TARGET_MIN_DP);
+});
+
+test('applyGlobalFontLayer 容忍不完整文档对象、不改入参、不产出 html', () => {
+  const layer = applyGlobalFontLayer(null, buildFontBinding(100), buildTouchBinding(ICON_VISUAL_DP, 'idle'));
+  assert.equal(layer.font.systemFontScale, 100);
+  assert.equal(Object.hasOwn(layer, 'html'), false);
+  const doc = { documentElement: { style: { setProperty() {} }, dataset: {} } };
+  const options = { viewportWidth: 360 };
+  applyGlobalFontLayer(doc, buildFontBinding(130, options), buildTouchBinding(ICON_VISUAL_DP, 'idle'));
+  assert.deepEqual(options, { viewportWidth: 360 }, '入参不被修改');
+});
+
+// ---------------------------------------------------------------------------
+// RED 8：全局样式层 CSS——原生字号、换行增高纵滚、热区、整卡选项态
+// ---------------------------------------------------------------------------
+test('font-touch.css 是全局样式层：原生字号不缩放网页，160% 无横向溢出', () => {
+  const css = readFileSync(path.join(WWW_PAGES_DIR, 'font-touch.css'), 'utf8');
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.match(stripped, /:root\s*\{[\s\S]*?--font-size-dp\s*:/, '用 CSS 变量承载原生字号');
+  assert.match(stripped, /font-size:\s*calc\(\s*var\(--font-size-dp/, '1rem = 系统档原生字号，不是网页缩放');
+  assert.doesNotMatch(stripped, /(?:^|[^-])\bzoom\s*:/, '不用 zoom 缩放网页');
+  assert.doesNotMatch(stripped, /transform\s*:\s*scale\(/, '不用 transform scale 缩放网页');
+  assert.match(stripped, /overflow-wrap\s*:\s*anywhere/, '长文本换行');
+  assert.match(stripped, /word-break\s*:/, '长词断行');
+  assert.match(stripped, /overflow-y\s*:\s*auto/, '增高后纵向滚动');
+  assert.match(stripped, /overflow-x\s*:\s*hidden/, '不横向滚动正文');
+  assert.match(stripped, /max-width\s*:\s*100%\s*;/, '容器不超出视口');
+  assert.match(stripped, /min-height:\s*calc\(\s*var\(--touch-hit-min-dp/, '热区不小于 44dp');
+});
+
+test('font-touch.css 给出整卡选项按压/选中/禁用态', () => {
+  const css = readFileSync(path.join(WWW_PAGES_DIR, 'font-touch.css'), 'utf8');
+  for (const state of ['pressed', 'selected', 'disabled']) {
+    assert.match(css, new RegExp(`\\[data-option-state="${state}"\\]`), `${state} 态有样式`);
+  }
 });
