@@ -23,6 +23,8 @@ import path from 'node:path';
 import { hubRequest } from './hub.mjs';
 import { chainRuleNames } from './serial-progress.mjs';
 import { withStateLockAsync, DetourError } from './detour.mjs';
+import { readRuleOptions } from './rules.mjs';
+import { NO_MODEL_ADAPTERS } from './dag-service.mjs';
 
 export const LEDGER_FILE = 'chain-usage.json';
 const LEDGER_VERSION = 2;
@@ -57,7 +59,7 @@ const numEnv = (name, fallback, { allowZero = false } = {}) => {
   return fallback;
 };
 
-const emptyEntry = () => ({ counted: [], pending: [], unsettled: [], unresolved: 0, input: 0, output: 0, cost: 0, costReported: false, rounds: 0, missingCostRounds: 0 });
+const emptyEntry = () => ({ counted: [], pending: [], unsettled: [], unresolved: 0, input: 0, output: 0, cost: 0, costReported: false, rounds: 0, missingCostRounds: 0, missingByAgent: {} });
 
 export function ledgerPath(root) { return path.join(root, LEDGER_FILE); }
 
@@ -116,6 +118,9 @@ export function readLedger(root) {
       for (const item of (Array.isArray(entry?.pending) ? entry.pending : [])) seen.delete(isNum(item) ? item : Number(item?.id));
       continue;
     }
+    // 旧台账只记了缺费用总数，没记是哪个执行者：无法剔除不需要模型的轮次，整本作废重翻一遍历史
+    // （费用、Token 由 Hub 历史重新累加，结果不变；翻完前界面如实标「历史补全中」）。
+    if ((entry.missingCostRounds || 0) > 0 && (!entry.missingByAgent || typeof entry.missingByAgent !== 'object')) return blank;
     rules[cleaned(name)] = {
       ...emptyEntry(),
       ...entry,
@@ -123,6 +128,7 @@ export function readLedger(root) {
       pending: pendingList(entry.pending, updatedAt),
       unsettled: idList(entry.unsettled),
       unresolved: isNum(entry.unresolved) ? entry.unresolved : 0,
+      missingByAgent: entry.missingByAgent && typeof entry.missingByAgent === 'object' ? entry.missingByAgent : {},
     };
   }
   return {
@@ -167,25 +173,35 @@ export function resolveChainRules(chain, rules, allChains) {
 
 const chainNodeIds = chain => new Set([...(chain?.order || []), ...(chain?.nodes || []).map(node => node?.id)].map(cleaned).filter(Boolean));
 
-const totalsOf = (acc, backfillPending) => {
+// 缺费用轮次只算「跑模型却没读到费用」的：不需要模型的通道（command 等）本来就没有费用可报。
+// 台账按执行者记 missingByAgent，展示时再按当前规则里的通道类型排除，规则改了也不用重翻历史。
+const missingOf = (acc, noModelAgents) => {
+  const byAgent = acc.missingByAgent || {};
+  let skipped = 0;
+  for (const [agent, count] of Object.entries(byAgent)) if (noModelAgents.has(agent)) skipped += count;
+  return Math.max(acc.missingCostRounds - skipped, 0);
+};
+
+const totalsOf = (acc, backfillPending, noModelAgents = new Set()) => {
   const totals = {
     input: acc.input,
     output: acc.output,
     tokens: acc.input + acc.output,
     cost: acc.costReported ? acc.cost : null,
     rounds: acc.rounds,
-    missingCostRounds: acc.missingCostRounds,
+    missingCostRounds: missingOf(acc, noModelAgents),
     unresolvedRounds: acc.unresolved,
   };
   return backfillPending ? { ...totals, backfillPending: true } : totals;
 };
 
-const sumEntries = (entries, backfillPending) => {
+const sumEntries = (entries, backfillPending, noModelAgents) => {
   const acc = emptyEntry();
   for (const entry of entries) {
     acc.input += entry.input; acc.output += entry.output; acc.cost += entry.cost;
     acc.costReported = acc.costReported || entry.costReported;
-    acc.rounds += entry.rounds; acc.missingCostRounds += entry.missingCostRounds;
+    acc.rounds += entry.rounds;
+    acc.missingCostRounds += missingOf(entry, noModelAgents || new Set());
     acc.unresolved += entry.unresolved || 0;
   }
   return totalsOf(acc, backfillPending);
@@ -195,14 +211,14 @@ const resultCache = new WeakMap();  // config → { signature, result }
 const nextScanAt = new WeakMap();   // config → 下一次允许真实扫描的时刻（只由真实扫描推进）
 const inFlight = new WeakMap();     // config → { promise, signature }
 
-function buildResult({ rules, chains, entries, backfillPending, nodes = {} }) {
+function buildResult({ rules, chains, entries, backfillPending, nodes = {}, noModelAgents = new Set() }) {
   const byRule = new Map();
-  for (const name of Object.keys(entries)) byRule.set(name, totalsOf(entries[name], backfillPending));
+  for (const name of Object.keys(entries)) byRule.set(name, totalsOf(entries[name], backfillPending, noModelAgents));
   const byChain = new Map();
   for (const chain of chains || []) {
     const names = resolveChainRules(chain, rules, chains);
     if (!names.length) continue;
-    byChain.set(chain.sourceFile, sumEntries(names.map(name => entries[name] || emptyEntry()), backfillPending));
+    byChain.set(chain.sourceFile, sumEntries(names.map(name => entries[name] || emptyEntry()), backfillPending, noModelAgents));
   }
   // 每条链的节点最近一轮：链的各规则里同一节点取轮次号最大的那轮。
   const nodesByChain = new Map();
@@ -224,14 +240,20 @@ function buildResult({ rules, chains, entries, backfillPending, nodes = {} }) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(entries[name]);
   }
-  for (const [key, list] of groups) byProject.set(key, sumEntries(list, backfillPending));
+  for (const [key, list] of groups) byProject.set(key, sumEntries(list, backfillPending, noModelAgents));
   return { byRule, byChain, byProject, nodesByChain };
+}
+
+// 当前规则里不跑模型的执行者（按通道类型）；规则读不到时按空集处理，宁可多标「未上报」也不吞掉缺口。
+function noModelAgentsOf(config) {
+  try { return new Set(readRuleOptions(config).agents.filter(agent => NO_MODEL_ADAPTERS.has(agent.adapter)).map(agent => agent.id)); }
+  catch { return new Set(); }
 }
 
 // 本地按台账重建当前签名下的结果：不打中台，也不推进扫描调度。
 function rebuildFromLedger({ config, rules, chains, signature }) {
   const ledger = readLedger(config.root);
-  const result = buildResult({ rules, chains, entries: ledger.rules, backfillPending: !ledger.complete, nodes: ledger.nodes });
+  const result = buildResult({ rules, chains, entries: ledger.rules, backfillPending: !ledger.complete, nodes: ledger.nodes, noModelAgents: noModelAgentsOf(config) });
   resultCache.set(config, { signature, result });
   return result;
 }
@@ -334,6 +356,11 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
     if (cleared) { dirty = true; wroteSinceChange = false; }
   };
 
+  const noteMissing = (entry, run) => {
+    entry.missingCostRounds += 1;
+    const agent = cleaned(run.agent);
+    if (agent) { entry.missingByAgent ||= {}; entry.missingByAgent[agent] = (entry.missingByAgent[agent] || 0) + 1; }
+  };
   const fetchState = before => hubRequest(config, '/v1/state' + (before == null ? '' : `?before=${before}`));
   const nextCursor = state => (Number.isSafeInteger(state?.nextBefore) && state.nextBefore > 0 ? state.nextBefore : null);
   const alreadyComplete = ledger.complete === true;
@@ -398,9 +425,9 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
         if (isNum(usage.input)) view.entry.input += usage.input;
         if (isNum(usage.output)) view.entry.output += usage.output;
         if (isNum(usage.cost)) { view.entry.cost += usage.cost; view.entry.costReported = true; }
-        else view.entry.missingCostRounds += 1;
+        else noteMissing(view.entry, run);
       } else {
-        view.entry.missingCostRounds += 1;
+        noteMissing(view.entry, run);
       }
     }
     return { unseenFinished, pageMin };
@@ -483,7 +510,7 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
   // 稳态（已到底 + 前沿正常停止）保持到底；只有真的到底或本来就是到底态才不降级。
   ledger.complete = reachedBottom || (alreadyComplete && frontierStopped);
   ledger.backfillCursor = ledger.complete ? null : resumeCursor;
-  const result = buildResult({ rules, chains, entries, backfillPending: !ledger.complete, nodes: ledger.nodes });
+  const result = buildResult({ rules, chains, entries, backfillPending: !ledger.complete, nodes: ledger.nodes, noModelAgents: noModelAgentsOf(config) });
   if (dirty || stateChanged) try {
     await withStateLockAsync(config, async () => { persistLedger(config.root, ledger); });
   } catch (error) {
