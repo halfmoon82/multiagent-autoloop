@@ -445,9 +445,10 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     if (!left && Object.values(st.nodes).every(n => n.slot == null)) store.finishRoot(root.runId, 'cancelled');
   }
 
-  // 值得唤醒调度会话的节点状态变化（每轮合并成一条 progress，由 dag-stall 巡检投递）。
-  // 不覆盖瞬时错误（中台超时仍归卡住巡检）；accepted 进 review 的那次变化也算 accepted。
-  const PROGRESS_WAKE = new Set(['dev', 'review', 'accepted', 'blocked', 'gated']);
+  // 只在需要调度会话动手时叫醒：blocked、gated，以及整条链完成（根 run 变 done）。
+  // dev/review/accepted 是控制器自己的推进，叫醒只会让调度会话空转一轮（2026-11-19 实测 17 次里大半空转）。
+  // 瞬时错误仍归卡住巡检；claimed 过久、持续报错、gated 过久也由卡住巡检兜底。
+  const PROGRESS_WAKE = new Set(['blocked', 'gated']);
   const snapshot = (root = loadRoot(), progress = []) => {
     const st = load(root); const slots = {};
     for (const [id, n] of Object.entries(st.nodes)) if (n.slot != null) slots[n.slot] = id;
@@ -495,6 +496,8 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         // at 让「返工后再次进入同一状态」得到不同的事件 ID；同一份快照重投时 at 不变，仍然幂等。
         if (n.state !== prev.state && PROGRESS_WAKE.has(n.state)) progress.push({ nodeId: id, from: prev.state ?? null, to: n.state, at });
       }
+      // 整条链完成：本轮 finishRoot 把根 run 从非终态变成 done。终态后 tick 直接返回，所以只会出现这一次。
+      if (!isTerminal(root.status) && loadRoot().status === 'done') progress.push({ nodeId: ROOT_NODE, from: root.status, to: 'done', at });
       return snapshot(loadRoot(), progress);
     },
   };

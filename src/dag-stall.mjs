@@ -87,7 +87,7 @@ export function buildProgressEvent(rootRun, snapshot) {
   const text = [
     `DAG 推进：链 ${rootRun.runId}（计划 ${rootRun.planId}）本轮有节点状态变化：${lines}。`,
     `根 run 状态 ${rootRun.status}；detail.progress 为本次变化明细。`,
-    '请按调度契约接手本轮后续（派审阅、处理 blocked/gated、放行 accepted 后续波次等）；若只是中间进展可自行判断是否行动。核实后本轮结束。',
+    '请按调度契约接手：blocked/gated 节点定位根因后换打法或 revive、需要人决定的才升级；整条链完成则核实收口（PR 合并、工作区回收）。核实后本轮结束。',
   ].join('\n');
   // 事件 ID 由进度内容派生：同一批变化重放幂等，换一批变化即新事件；进程重启也能自愈。
   const digest = createHash('sha1').update(JSON.stringify(snapshot.progress)).digest('hex').slice(0, 12);
