@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- scaffold 一次性写全权限与前台服务声明；build-apk.mjs 在 cap add/sync 后合并进生成的 AndroidManifest。 -->
+<manifest-additions xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.CAMERA" />
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+  <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+  <!-- 键盘弹起时调整 WebView 尺寸，供 app.mjs 的 --keyboard-height 固定底部输入栏。 -->
+  <activity-config android:windowSoftInputMode="adjustResize" />
+  <application>
+    <service
+      android:name="cool.autoloop.console.notify.ForegroundService"
+      android:exported="false"
+      android:foregroundServiceType="dataSync" />
+  </application>
+</manifest-additions>
