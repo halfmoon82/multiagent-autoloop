@@ -26,7 +26,8 @@ test('无计划项目不论有何活动都不显示', () => {
   assert.equal(rowsFor({ ...base, queued: 2 }, { cards }).length, 0, '有待处理卡片');
 });
 
-test('有串行链的项目照常显示，无计划项目全部不显示时给出空态', () => {
+// 串行链行的正向渲染需要真实 DOM，由 test/browser.spec.mjs 覆盖。
+test('只有无计划项目有活动时给出空态', () => {
   const nodes = renderProjectProgress({ rules, snapshot: { lines: [lineOf({ ...base, running: 1 })], cards: [], runs: [] } });
   assert.equal(nodes.length, 1);
   assert.equal(nodes[0].dataset?.chain, undefined, '只剩空态提示');
