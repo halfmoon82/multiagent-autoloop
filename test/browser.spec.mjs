@@ -52,8 +52,9 @@ const schedulingSessions = {
     if (!session) { const error = new Error('调度会话不存在'); error.status = 404; throw error; }
     session.artifactListCalls = (session.artifactListCalls || 0) + 1;
     return [
-      { path: 'docs/调度报告.md', name: '调度报告.md', size: 210, at: '2026-11-16T00:00:00Z' },
-      { path: 'docs/看板.html', name: '看板.html', size: 120, at: '2026-11-16T00:00:00Z' },
+      { path: 'docs/调度报告.md', name: '调度报告.md', size: 210, at: '2026-11-16T00:00:00Z', kind: 'doc' },
+      { path: 'docs/看板.html', name: '看板.html', size: 120, at: '2026-11-16T00:00:00Z', kind: 'doc' },
+      { path: 'work/apk/app.apk', name: 'app.apk', size: 524288, at: '2026-11-16T00:00:00Z', kind: 'file' },
     ];
   },
   async readSessionArtifact(id, relPath) {
@@ -860,6 +861,11 @@ try {
   assert.equal(await page.locator('.md-view a[href="https://example.com"]').count(), 1, 'https links in artifacts must stay clickable');
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await page.locator('#artifact-dialog').waitFor({ state: 'hidden', timeout: 5000 });
+  // 二进制产物：点的是下载链接而不是查看器
+  const apkButton = page.getByRole('button', { name: /app\.apk/ });
+  await apkButton.waitFor({ timeout: 5000 });
+  const [download] = await Promise.all([page.waitForEvent('download', { timeout: 5000 }).catch(() => null), apkButton.click()]);
+  assert.equal(await page.evaluate(() => document.getElementById('artifact-dialog').open), false, 'binary artifacts must download, not open the viewer');
   await page.getByRole('button', { name: /看板\.html/ }).click(); // html → sandbox iframe
   await page.locator('#artifact-dialog').waitFor({ state: 'visible', timeout: 5000 });
   const frame = page.locator('.artifact-frame');

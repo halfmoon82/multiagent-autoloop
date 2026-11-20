@@ -4,6 +4,10 @@ import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 export const ARTIFACT_EXTENSIONS = new Set(['.md', '.markdown', '.html', '.htm']);
+// 可下载的交付物（二进制）：只给桌面控制台「下载」，不预览、不进手机产物页。
+// 刻意不含 txt/json/csv：它们在仓库里到处都是，会把整个项目当成产物。
+export const DOWNLOAD_EXTENSIONS = new Set(['.apk', '.ipa', '.zip', '.tgz', '.dmg', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.xlsx', '.docx', '.pptx']);
+export const MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024;
 const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.worktrees', 'dist', 'build', 'coverage', '.next', '.cache']);
 const MAX_DEPTH = 3;
 const MAX_FILES = 50;
@@ -27,7 +31,8 @@ function assertInside(root, relPath) {
 
 // since：只收会话开始后新建/修改的文件（按 mtime），否则同项目所有会话看到的都是整个仓库的旧文档。
 // 结果按修改时间倒序，上限先留给最新产物。
-export function listArtifacts(cwd, { maxDepth = MAX_DEPTH, maxFiles = MAX_FILES, since = null } = {}) {
+// includeFiles：桌面控制台额外列出可下载的二进制交付物（kind='file'）；缺省只列文档，手机产物页口径不变。
+export function listArtifacts(cwd, { maxDepth = MAX_DEPTH, maxFiles = MAX_FILES, since = null, includeFiles = false } = {}) {
   if (!cwd) return [];
   const sinceMs = since ? Date.parse(since) : NaN;
   const root = realpathSync(cwd);
@@ -44,11 +49,14 @@ export function listArtifacts(cwd, { maxDepth = MAX_DEPTH, maxFiles = MAX_FILES,
       if (entry.isDirectory()) {
         // Dirent 是 lstat 语义：符号链接目录 isDirectory() 为 false，天然不进这里
         walk(full, depth + 1);
-      } else if (entry.isFile() && ARTIFACT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        const kind = ARTIFACT_EXTENSIONS.has(ext) ? 'doc' : includeFiles && DOWNLOAD_EXTENSIONS.has(ext) ? 'file' : null;
+        if (!kind) continue;
         try {
           const stat = statSync(full);
           if (Number.isFinite(sinceMs) && stat.mtimeMs < sinceMs) continue;
-          files.push({ path: path.relative(root, full), name: entry.name, size: stat.size, at: stat.mtime.toISOString() });
+          files.push({ path: path.relative(root, full), name: entry.name, size: stat.size, at: stat.mtime.toISOString(), ...(includeFiles ? { kind } : {}) });
         } catch { /* 读取失败跳过 */ }
       }
     }
@@ -67,6 +75,20 @@ export function readArtifact(cwd, relPath, { maxBytes = MAX_BYTES } = {}) {
   if (stat.size > maxBytes) throw new Error(`产物文件过大（${Math.round(stat.size / 1024)}KB，上限 ${Math.round(maxBytes / 1024)}KB）`);
   // 注意：stat 与读取之间存在文件增长窗口；本机单人控制台、产物来源为本机 worker，风险可接受
   return { path: relative, name: path.basename(real), content: readFileSync(real, 'utf8') };
+}
+
+// 下载：只返回已校验的真实路径与元信息，由调用方流式输出（不整文件读入内存）。
+// 越界/符号链接逃逸先于类型校验；上限 300MB。
+export function resolveDownload(cwd, relPath, { maxBytes = MAX_DOWNLOAD_BYTES } = {}) {
+  if (!cwd) throw new Error('会话没有工作目录');
+  const relative = String(relPath || '');
+  const real = assertInside(cwd, relative);
+  const ext = path.extname(relative).toLowerCase();
+  if (!DOWNLOAD_EXTENSIONS.has(ext) && !ARTIFACT_EXTENSIONS.has(ext)) throw new Error(`不支持的产物类型：${ext || '(无扩展名)'}`);
+  const stat = statSync(real);
+  if (!stat.isFile()) throw new Error(`产物文件不存在：${relative}`);
+  if (stat.size > maxBytes) throw new Error(`产物文件过大（${Math.round(stat.size / 1024 / 1024)}MB，上限 ${Math.round(maxBytes / 1024 / 1024)}MB）`);
+  return { real, name: path.basename(real), size: stat.size };
 }
 
 // ---- 全局产物页：跨会话只读汇总（DAG 节点 artifacts）----
