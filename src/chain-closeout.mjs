@@ -136,7 +136,8 @@ export async function sweepPausedQueuedRuns({ root, config, now = Date.now(), gr
   catch (error) { result.errors.push(`state 获取失败：${error.message}`); return result; }
   const paused = new Map();
   for (const p of state?.pauses || []) {
-    if (p?.until == null && p?.since && !paused.has(p.name)) paused.set(p.name, Date.parse(p.since));
+    // 同一规则多条暂停取最新 since：重新暂停后宽限窗口重新起算
+    if (p?.until == null && p?.since) paused.set(p.name, Math.max(paused.get(p.name) ?? -Infinity, Date.parse(p.since)));
   }
   if (!paused.size) return result;
   for (const run of state?.runs || []) {

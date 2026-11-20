@@ -263,6 +263,8 @@ test('queued runs that may still legitimately run are left alone', async () => {
       { name: '暂停到明天', since: ago(240), until: '2026-11-21T00:00:00Z' },
       { name: '刚暂停', since: ago(5), until: null }, // 留出手滑暂停后恢复的窗口
       { name: '已归档', since: ago(240), until: null },
+      { name: '重新暂停', since: ago(240), until: null },
+      { name: '重新暂停', since: ago(5), until: null },
     ],
     runs: [
       queued(1, '没暂停', 200),
@@ -271,6 +273,7 @@ test('queued runs that may still legitimately run are left alone', async () => {
       queued(4, '已归档', 5),
       queued(5, '已归档', 200, { claimedAt: ago(1) }),
       queued(6, '已归档', 200, { stopping: true }),
+      queued(7, '重新暂停', 200),
     ],
   });
   const result = await sweepPausedQueuedRuns({ root, config: HUB_CONFIG, now: NOW, hub });
