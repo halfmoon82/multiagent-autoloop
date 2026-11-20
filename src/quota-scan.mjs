@@ -174,10 +174,12 @@ export function scanForQuotaDetours(config, options = {}) {
   const probeCommand = Array.isArray(options.probeCommand) && options.probeCommand.length
     ? options.probeCommand.map(String) : null;
   const now = options.now instanceof Date ? options.now : new Date();
-  const failures = [
-    ...readRunFailures({ root: config.root, runsDir: options.runsDir, window: options.window, patterns }),
-    ...readHubRunFailures({ dbFile: options.hubDbFile ?? path.join(config.root, 'hub.db'), window: options.window, patterns }),
-  ];
+  const hubFailures = readHubRunFailures({ dbFile: options.hubDbFile ?? path.join(config.root, 'hub.db'), window: options.window, patterns });
+  // Hub 一行已用 attempts 涵盖该任务的全部尝试；同一 run 号在 worker 日志里的各次尝试不再重复计入。
+  const hubRunIds = new Set(hubFailures.map(item => item.run));
+  const workerFailures = readRunFailures({ root: config.root, runsDir: options.runsDir, window: options.window, patterns })
+    .filter(item => !hubRunIds.has(item.run));
+  const failures = [...workerFailures, ...hubFailures];
 
   const states = new Map();
   for (const failure of failures) {

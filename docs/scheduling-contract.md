@@ -205,7 +205,7 @@ Agent 或改写成只读提示词。否定豁免只认紧邻动词的禁止（�
   `job.agent.id` / `model`，缺失时按命令里的 `--model` 等特征推断；工作类型按规则名（开发/dev、审阅/review）判定。
 - **Hub 调度回合**（2026-11-19 主人定）：只读 `<AGENT_AUTOLOOP_HOME>/hub.db` 的 `runs` 视图（用系统 `sqlite3 -json`），
   `error` 或 `summary` 命中额度模式的 run（含仍在 `queued`/`claimed` 排队重试的）也算失败轮次；
-  `done`/`nothing` 打断连续命中。Hub 里一个任务重试 N 次只有一行，命中次数按该行 `attempts`（至少 1）累计，所以同一任务反复撞限也能达到阈值。工作类型按规则名（coord/调度会话、dev、review）判定；命中后按政策表绕行到**同一档**的备选平台执行者。
+  `done`/`nothing` 打断连续命中。Hub 里一个任务重试 N 次只有一行，命中次数按该行 `attempts`（至少 1）累计，所以同一任务反复撞限也能达到阈值。`attempts` 记的是总尝试次数，不区分每次的失败原因，按最近一次错误文本是否命中额度模式整体计入；同一 run 号在 Hub 与 worker 日志两处都有时以 Hub 为准，不重复计数。工作类型按规则名（coord/调度会话、dev、review）判定；命中后按政策表绕行到**同一档**的备选平台执行者。
 - 额度拒绝模式可配：默认 `429, refusal, 配额, quota, 额度, rate.?limit, exhausted, too many requests`，
   `--patterns` 整体替换。编译失败、网络错误等**非额度失败不触发**，并打断同一 agent+model 的连续命中。
 - 同一 agent+model 连续 3 次额度命中（`--threshold` 可配）才自动登记：调 `recordDetour`，

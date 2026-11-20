@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 import { scanForQuotaDetours } from '../src/quota-scan.mjs';
 import { readDetours } from '../src/detour.mjs';
 
@@ -177,4 +178,22 @@ test('重试后成功（done 且 attempts>0）不算失败，不登记', () => {
   ]);
   const result = scanForQuotaDetours(config, { policy, threshold: 3, now: new Date('2026-11-19T11:00:00Z'), dryRun: false });
   assert.equal(result.detours.length, 0);
+});
+
+test('同一任务在 worker 日志和 Hub 都有记录时只算一次（Hub 为准），不重复计数', () => {
+  const config = setup();
+  // Hub：一条 run 7 重试 2 次（attempts=2，不到阈值 3）
+  mkHubDb(config.root, [
+    { id: 7, rule: '调度会话执行', agent: 'codex-full-tier-light', attempts: 2, error: hubErr },
+  ]);
+  // worker 侧：同一 run 7 的两次尝试日志（同 agent，模型未识别）
+  for (const attempt of [1, 2]) {
+    const dir = path.join(config.root, 'worker', 'runs', `7-${attempt}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'entry.json'), JSON.stringify({ run: 7, attempt, job: { rule: { name: '调度会话执行' }, agent: { id: 'codex-full-tier-light', model: '' } } }));
+    writeFileSync(path.join(dir, 'stdout-1.log'), `{"finished":true,"error":${JSON.stringify(hubErr)}}\n`);
+    writeFileSync(path.join(dir, 'exit-1'), '1');
+  }
+  const result = scanForQuotaDetours(config, { policy, threshold: 3, now: new Date('2026-11-19T11:00:00Z'), dryRun: false });
+  assert.equal(result.detours.length, 0, '真实只撞限 2 次，不能因两个通道重复计成 4 次而绕行');
 });
