@@ -381,3 +381,46 @@ test('mount 覆盖默认空操作钩子且桥缺失时仍可安全调用', async
   await timers[0]();
   assert.match(elText(doc.getElementById('notify-root')), /已开启/);
 });
+
+test('页面钩子连发的 refresh 在节流窗内只发一次请求；时间过窗后再拉取', async () => {
+  const bridge = fakeBridge();
+  const doc = fakeDoc(['notify-root']);
+  const win = { AutoloopNotify: bridge, location: { origin: 'https://auto.example' } };
+  const state = fakeState({ phase: 'unlocked', connection: 'online', needsBind: false });
+  const hooks = { notify: {} };
+  let calls = 0;
+  const ctx = { state, hooks, client: { tokenStore: { get: async () => 't' }, api: async () => { calls += 1; return { cards: [], nodeEvents: [] }; } } };
+  let clock = 1000;
+  mountNotifyPage(ctx, { doc, win, feature: notifyFeature, setTimer: () => 1, clearTimer() {}, now: () => clock });
+  await hooks.notify.refresh();
+  await hooks.notify.refresh();
+  assert.equal(calls, 1, '各页加载连发 refresh 只留一次真请求');
+  clock += 6000;
+  await hooks.notify.refresh();
+  assert.equal(calls, 2);
+});
+
+test('授权失效或未解锁时 refresh 不发请求（避免对已撤销设备再打 401）', async () => {
+  for (const flags of [{ phase: 'unlocked', connection: 'online', needsBind: true }, { phase: 'locked', connection: 'offline', needsBind: false }]) {
+    const doc = fakeDoc(['notify-root']);
+    const win = { AutoloopNotify: fakeBridge(), location: { origin: 'https://auto.example' } };
+    const hooks = { notify: {} };
+    let calls = 0;
+    const ctx = { state: fakeState(flags), hooks, client: { tokenStore: { get: async () => 't' }, api: async () => { calls += 1; return {}; } } };
+    mountNotifyPage(ctx, { doc, win, feature: notifyFeature, setTimer: () => 1, clearTimer() {} });
+    await hooks.notify.refresh();
+    assert.equal(calls, 0);
+  }
+});
+
+test('mount 与已有钩子串联：先前包装的 setBadge/refresh 继续被调用', async () => {
+  const doc = fakeDoc(['notify-root']);
+  const win = { AutoloopNotify: fakeBridge(), location: { origin: 'https://auto.example' } };
+  const seen = [];
+  const hooks = { notify: { setBadge: n => seen.push(['badge', n]), refresh: () => seen.push(['refresh']) } };
+  const ctx = { state: fakeState({ phase: 'unlocked', connection: 'online', needsBind: false }), hooks, client: { tokenStore: { get: async () => 't' }, api: async () => ({ cards: [] }) } };
+  mountNotifyPage(ctx, { doc, win, feature: notifyFeature, setTimer: () => 1, clearTimer() {} });
+  hooks.notify.setBadge(3);
+  await hooks.notify.refresh();
+  assert.deepEqual(seen, [['badge', 3], ['refresh']]);
+});

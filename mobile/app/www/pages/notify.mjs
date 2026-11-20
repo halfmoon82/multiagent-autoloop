@@ -9,6 +9,7 @@ export { loadViewModel };
 
 const str = value => String(value ?? '');
 const CHECK_MS = 1200;
+const REFRESH_MIN_MS = 5000; // 页面钩子触发的刷新节流：各页加载常连发多次，只留一次真请求
 
 /** 挂载点。ctx 含 client / state / hooks；其余参数仅供测试注入，浏览器走默认。 */
 export function mount(ctx, {
@@ -18,27 +19,28 @@ export function mount(ctx, {
   setTimer = setInterval,
   clearTimer = clearInterval,
   checkMs = CHECK_MS,
+  now = Date.now,
 } = {}) {
   if (!ctx || !doc || !ctx.hooks) return () => {};
   const root = doc.getElementById('notify-root');
   if (!root) return () => {};
 
-  if (feature) return setup(ctx, doc, win, root, feature, { setTimer, clearTimer, checkMs });
+  if (feature) return setup(ctx, doc, win, root, feature, { setTimer, clearTimer, checkMs, now });
 
   let disposed = false;
   let detach = () => {};
   const loaded = loadViewModel();
   if (loaded && typeof loaded.then === 'function') {
     loaded.then(mod => {
-      if (!disposed && mod) detach = setup(ctx, doc, win, root, mod, { setTimer, clearTimer, checkMs });
+      if (!disposed && mod) detach = setup(ctx, doc, win, root, mod, { setTimer, clearTimer, checkMs, now });
     }).catch(() => {});
   } else if (loaded) {
-    detach = setup(ctx, doc, win, root, loaded, { setTimer, clearTimer, checkMs });
+    detach = setup(ctx, doc, win, root, loaded, { setTimer, clearTimer, checkMs, now });
   }
   return () => { disposed = true; detach(); };
 }
 
-function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs }) {
+function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs, now }) {
   const hooks = ctx.hooks || {};
   const {
     createNotifyBridge, createNotifyPreference,
@@ -55,7 +57,7 @@ function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs }) {
       return store && typeof store.get === 'function' ? await store.get() : null;
     },
     getBaseUrl: () => str(win?.AutoloopConsoleBase || win?.location?.origin || ''),
-    onRefresh: () => { void refreshState(); },
+    onRefresh: () => { void refreshState({ force: true }); },
   });
 
   let enabled = true;
@@ -73,8 +75,15 @@ function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs }) {
   };
 
   // 刷新 App 内状态：复用固定只读 API，按契约生成通知并同步角标；授权失效立即停服。
-  const refreshState = async () => {
+  let lastRefresh = -Infinity;
+  const refreshState = async ({ force = false } = {}) => {
     if (typeof ctx.client?.api !== 'function') return;
+    if (!force && now() - lastRefresh < REFRESH_MIN_MS) return;
+    // 未解锁或授权已失效时不再发请求，避免对已撤销的设备再打一次 401。
+    const current = ctx.state || {};
+    if (current.needsBind === true) return;
+    if (typeof current.canShowMain === 'function' && !current.canShowMain()) return;
+    lastRefresh = now();
     try {
       const state = await ctx.client.api('state');
       controller.syncCards(state?.cards, state?.nodeEvents);
@@ -83,10 +92,12 @@ function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs }) {
     }
   };
 
+  // 与已有钩子串联而非覆盖：先前挂的 setBadge/refresh（含外部包装）继续生效。
+  const prev = hooks.notify && typeof hooks.notify === 'object' ? hooks.notify : {};
   hooks.notify = {
-    ...(hooks.notify && typeof hooks.notify === 'object' ? hooks.notify : {}),
-    setBadge: count => controller.setBadge(count),
-    refresh: () => refreshState(),
+    ...prev,
+    setBadge: count => { try { prev.setBadge?.(count); } catch { /* 前序钩子失败不影响原生角标 */ } return controller.setBadge(count); },
+    refresh: () => { try { prev.refresh?.(); } catch { /* 同上 */ } return refreshState(); },
     publishCard: card => controller.publishCard(card),
     publishNodeDone: event => controller.publishNodeDone(event),
     start: () => syncService(),
