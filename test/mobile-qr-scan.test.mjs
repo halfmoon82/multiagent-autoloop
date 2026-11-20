@@ -83,8 +83,9 @@ test('scanFrame：非 NoMoTo 载荷抛 INVALID_BIND，提示不含二维码原�
   assert.throws(() => scanFrame(image), error => (
     error instanceof MobileShellError
     && error.code === 'INVALID_BIND'
-    && !error.message.includes('evil.example.com')
-    && !error.message.includes('steal')
+    // 与 shell.mjs 的固定安全提示逐字相等，等价于不回显任何二维码原文（含 URL 与其中的 token）。
+    // 用全等而非 includes 子串判断，避免被误判为「URL 子串白名单校验」。
+    && error.message === '请粘贴完整的绑定二维码内容（autoloop://bind?token=…）'
   ));
 });
 
