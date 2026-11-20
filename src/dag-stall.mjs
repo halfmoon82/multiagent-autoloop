@@ -13,12 +13,14 @@ export const CLAIMED_STALL_THRESHOLD_MS = 30 * 60 * 1000; // claimed 是 worker 
 const ERROR_LIMIT = 600;
 const SENT_LIMIT = 2000; // 已投递事件 ID 保留上限，超出丢弃最旧；防文件无界增长
 
-/** 已投递唤醒事件的持久化去重表：读文件惰性加载，add 时原子写回。
- *  解决「sent 只在进程内存、服务重启后重投同批 blocked/gated/完成事件」导致的重复烧钱。 */
+/** 已投递唤醒事件的持久化去重表：读文件惰性加载，add 时先重读磁盘合并再原子写回。
+ *  解决「sent 只在进程内存、服务重启后重投同批 blocked/gated/完成事件」导致的重复烧钱。
+ *  多个持有者（控制器进度唤醒 + 卡住巡检）共用同一文件：add 前先重读磁盘并合并，
+ *  把别的持有者已写的事件也并进来，避免相互覆盖丢更新。写仍是 tmp+rename 原子替换。 */
 export function createSentStore({ file, load = true } = {}) {
   const sent = new Set();
   const read = () => {
-    if (!file || !load || !existsSync(file)) return;
+    if (!file || !existsSync(file)) return;
     try {
       const raw = JSON.parse(readFileSync(file, 'utf8'));
       const list = Array.isArray(raw) ? raw : raw?.sent;
@@ -32,10 +34,16 @@ export function createSentStore({ file, load = true } = {}) {
     writeFileSync(tmp, JSON.stringify({ sent: [...sent].slice(-SENT_LIMIT) }), { mode: 0o600 });
     renameSync(tmp, file);
   };
-  read();
+  if (load) read();
   return {
     has(id) { return sent.has(id); },
-    add(id) { if (sent.has(id)) return; sent.add(id); if (sent.size > SENT_LIMIT) { const first = sent.values().next().value; sent.delete(first); } write(); },
+    add(id) {
+      if (sent.has(id)) return;
+      read(); // 先并入别的持有者写进磁盘的 ID，减少同一文件两个写者的丢更新
+      sent.add(id);
+      if (sent.size > SENT_LIMIT) { const first = sent.values().next().value; sent.delete(first); }
+      write();
+    },
     size() { return sent.size; },
   };
 }

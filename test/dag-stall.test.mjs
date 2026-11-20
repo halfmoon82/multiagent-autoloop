@@ -265,3 +265,15 @@ test('sweepDagStalls 用持久化 sent 时，重建后同事件不重投', async
   // 没有 stall 时什么都不投，但接口兼容（has/add 都走 Set 语义）
   assert.deepEqual(posts, []);
 });
+
+test('两个 createSentStore 实例共用同一文件：add 前重读磁盘合并，不丢对方写的事件', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'sent-share-'));
+  const file = path.join(dir, 'wake-sent.json');
+  const a = createSentStore({ file });
+  const b = createSentStore({ file });
+  a.add('evt-1'); b.add('evt-2');
+  // b.add 前会重读磁盘，把 a 写的 evt-1 并进来，文件里两者都有
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  assert.ok(raw.sent.includes('evt-1') && raw.sent.includes('evt-2'), '共享文件的写者不互相覆盖');
+  assert.equal(b.has('evt-1'), true, 'b 也读到了 a 写的事件');
+});
