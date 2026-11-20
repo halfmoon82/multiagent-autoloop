@@ -1,7 +1,13 @@
-// 移动端写路由接缝：在设备鉴权之后、GET-only 闸之前被调用。
-// 本节点只登记路由表并给出 501 占位，不实现任何业务写操作；实际实现由 mobile-write-api 节点覆盖。
-// 校验口径与 server.mjs 的 checkWrite 对齐（同源 + 自定义头 + JSON），并额外要求 x-device-token。
-// 自包含响应助手，避免与 server.mjs 形成循环依赖。
+// 移动端写路由实现：在设备鉴权之后、GET-only 闸之前被调用。
+// 复用网页控制台的同一服务入口（hubRequest / config.schedulingSessions），不另造状态；
+// 所有写入记录来源设备 id。校验口径与 server.mjs 的 checkWrite 对齐（同源 + 自定义头 + JSON），
+// 并额外要求 x-device-token（由 server 的 requireMobileDevice 验证后传入 ctx.device）。
+// 自包含响应助手与同步 handleMobileWrite 签名，避免改动 server.mjs 或与它形成循环依赖。
+
+import { createReadStream } from 'node:fs';
+import { hubRequest, HubError } from './hub.mjs';
+import { discoverGitProjects } from './projects.mjs';
+import { readRuleOptions } from './rules.mjs';
 
 function securityHeaders() {
   return {
@@ -30,12 +36,7 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
 ]);
 
 const NOT_IMPLEMENTED = Object.freeze({
-  'card-answer': '卡片回答尚未实现',
-  'card-authorize': '卡片授权尚未实现',
-  'session-continue': '会话继续尚未实现',
-  'session-download': '会话产物下载尚未实现',
   sync: '设备同步尚未实现',
-  'rule-action': '规则运行控制尚未实现',
 });
 
 // 与 checkWrite 同等校验；GET 路由不要求 JSON content-type。
@@ -59,6 +60,146 @@ function validate(req, needsJson) {
   return null;
 }
 
+// 只向客户端返回固定的用户可读文案，绝不回显 Hub 错误体、堆栈或内部配置。
+const SAFE_ERRORS = Object.freeze({
+  400: '请求无效',
+  401: '设备未授权或授权已失效，请重新绑定',
+  403: '拒绝跨站操作',
+  404: '目标不存在或已失效',
+  409: '事项已失效或已处理',
+  413: '请求内容过大',
+  415: '操作内容必须是 JSON',
+});
+class WriteError extends Error { constructor(status) { super(SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试'); this.status = status; } }
+const fail = status => { throw new WriteError(status); };
+
+function parseId(text) {
+  if (!/^[1-9][0-9]*$/.test(text)) fail(404);
+  const id = Number(text);
+  if (!Number.isSafeInteger(id)) fail(404);
+  return id;
+}
+
+async function readJson(req) {
+  let size = 0; const chunks = [];
+  for await (const chunk of req) { size += chunk.length; if (size > 65536) fail(413); chunks.push(chunk); }
+  if (!size) return {};
+  try {
+    const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error();
+    return value;
+  } catch { fail(400); }
+}
+
+function writeError(res, error) {
+  if (res.writableEnded) return;
+  const status = error instanceof WriteError ? error.status
+    : error instanceof HubError && error.status >= 400 && error.status < 500 ? error.status
+      : error?.status >= 400 && error?.status < 500 ? error.status
+        : 502;
+  jsonResponse(res, status, { error: SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试' });
+}
+
+async function cardWrite(route, req, res, url, ctx, body) {
+  const { config, device } = ctx;
+  const cardId = parseId(url.pathname.match(route.pattern)[1]);
+  // 与网页回答一致：先读状态确认卡片与可答性，再调用同一 /v1/cards/:id/answer。
+  const state = await hubRequest(config, '/v1/state');
+  const card = (state?.cards || []).find(item => Number(item?.id) === cardId);
+  if (!card) fail(404);
+  if (card.state !== 'open') {
+    // 重复提交幂等：返回当前状态，不再触发 hub 写入。
+    jsonResponse(res, 200, { id: card.id, state: card.state, answer: card.answer, idempotent: true });
+    return;
+  }
+  let payload;
+  if (route.key === 'card-authorize') {
+    if (body.approved === undefined && body.choice === undefined) fail(400);
+    payload = body.choice !== undefined ? { choice: Number(body.choice) } : { choice: body.approved === true ? 0 : 1 };
+  } else {
+    if (body.choice === undefined && typeof body.text !== 'string') fail(400);
+    payload = body.choice !== undefined ? { choice: Number(body.choice) } : { text: String(body.text) };
+  }
+  const result = await hubRequest(config, `/v1/cards/${cardId}/answer`, { method: 'POST', body: { ...payload, sourceDeviceId: device.id } });
+  // 唤醒调度会话：与网页 answer 同一会话管理器与判定，失败不影响卡片已结案。
+  let schedulingWake = 'skipped';
+  if (typeof config.schedulingSessions?.notifyCardAnswered === 'function') {
+    try {
+      const answerText = payload.choice !== undefined
+        ? String(card.options?.[payload.choice] ?? `选项 ${payload.choice}`)
+        : String(payload.text || '');
+      schedulingWake = await config.schedulingSessions.notifyCardAnswered({ card, answerText }) ? 'sent' : 'no-session';
+    } catch { schedulingWake = 'failed'; }
+  }
+  jsonResponse(res, 200, { ...result, schedulingWake });
+}
+
+async function sessionContinue(res, url, route, ctx) {
+  const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
+  if (!id) fail(404);
+  const sessions = ctx.config.schedulingSessions;
+  const archived = await sessions.listArchived();
+  const list = Array.isArray(archived) ? archived : (archived?.sessions || []);
+  const record = list.find(item => item?.id === id);
+  if (!record) fail(404);
+  // 不放宽网页侧校验：项目必须仍在已发现仓库列表中。
+  const known = discoverGitProjects({ roots: ctx.config.projectRoots || [], rules: readRuleOptions(ctx.config).rules || [] }).find(item => item.path === record.project);
+  if (!known) fail(400);
+  const result = await sessions.continueSession(id);
+  jsonResponse(res, 201, { ...result, sourceDeviceId: ctx.device.id });
+}
+
+async function sessionDownload(res, url, route, ctx) {
+  const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
+  const requested = String(url.searchParams.get('path') || '');
+  const file = await ctx.config.schedulingSessions.resolveSessionDownload(id, requested);
+  const asciiName = file.name.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  res.writeHead(200, {
+    ...securityHeaders(),
+    'content-type': 'application/octet-stream',
+    'content-length': String(file.size),
+    'content-disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+  });
+  await new Promise(resolve => {
+    const stream = createReadStream(file.real);
+    stream.on('error', () => { res.destroy(); resolve(); });
+    res.on('close', () => { stream.destroy(); resolve(); });
+    stream.pipe(res);
+  });
+}
+
+async function ruleAction(res, url, route, ctx, body) {
+  const match = url.pathname.match(route.pattern);
+  const name = decodeURIComponent(match[1]);
+  const action = match[2];
+  if (!['run', 'pause', 'resume'].includes(action)) fail(404);
+  const payload = action === 'run'
+    ? { ...(body.subject ? { subject: String(body.subject) } : {}), ...(body.reason ? { reason: String(body.reason) } : {}) }
+    : action === 'pause' ? { ...(body.reason ? { reason: String(body.reason) } : {}) } : {};
+  const result = await hubRequest(ctx.config, `/v1/rules/${encodeURIComponent(name)}/${action}`, {
+    method: 'POST', body: { ...payload, sourceDeviceId: ctx.device.id },
+  });
+  jsonResponse(res, 200, result);
+}
+
+// 实际业务处理；由同步 handleMobileWrite 以 fire-and-forget 方式调用，自行捕获全部错误。
+async function executeWrite(route, req, res, url, ctx) {
+  try {
+    if (route.key === 'sync') {
+      jsonResponse(res, 501, { error: NOT_IMPLEMENTED.sync, route: route.key, declared: true });
+      return;
+    }
+    const body = req.method === 'GET' ? {} : await readJson(req);
+    if (route.key === 'card-answer' || route.key === 'card-authorize') return await cardWrite(route, req, res, url, ctx, body);
+    if (route.key === 'session-continue') return await sessionContinue(res, url, route, ctx);
+    if (route.key === 'session-download') return await sessionDownload(res, url, route, ctx);
+    if (route.key === 'rule-action') return await ruleAction(res, url, route, ctx, body);
+    jsonResponse(res, 501, { error: '该写操作尚未实现', route: route.key, declared: true });
+  } catch (error) {
+    writeError(res, error);
+  }
+}
+
 /**
  * @returns {boolean} true 表示本模块已处理该请求（调用方应直接返回），false 表示不接管。
  */
@@ -70,10 +211,11 @@ export function handleMobileWrite(req, res, url, ctx) {
     jsonResponse(res, failure.status, { error: failure.error });
     return true;
   }
-  jsonResponse(res, 501, {
-    error: NOT_IMPLEMENTED[route.key] || '该写操作尚未实现',
-    route: route.key,
-    declared: true,
-  });
+  // scaffold 兼容：未提供可运行服务（如边界测试只传 device）时仍返回 501 占位。
+  if (!ctx?.config || !ctx?.device?.id) {
+    jsonResponse(res, 501, { error: NOT_IMPLEMENTED[route.key] || '该写操作尚未实现', route: route.key, declared: true });
+    return true;
+  }
+  void executeWrite(route, req, res, url, ctx);
   return true;
 }
