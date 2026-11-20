@@ -4,7 +4,7 @@
 // 同一次卡住最多唤醒一次；错误变了或恢复后再卡，首次时间变化才会再唤醒。
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { hubRequest } from './hub.mjs';
 import { createRunStore, isTerminal, ROOT_NODE } from './dag-run.mjs';
 
@@ -12,6 +12,23 @@ export const STALL_THRESHOLD_MS = 10 * 60 * 1000;
 export const CLAIMED_STALL_THRESHOLD_MS = 30 * 60 * 1000; // claimed 是 worker 在跑，正常长任务可能超 10 分钟，阈值放宽到 30 分钟
 const ERROR_LIMIT = 600;
 const SENT_LIMIT = 2000; // 已投递事件 ID 保留上限，超出丢弃最旧；防文件无界增长
+
+// 唤醒去重表的唯一路径定义（卡住巡检与进度唤醒共用）：放在 run 目录「旁边」而非里面——
+// run 目录下每个 *.json 都会被 listRuns 当作 run 读取，混入非 run 文件会让 DAG 控制器整体 fail closed（#181 回归）。
+// 顺带迁移旧位置 <runs>/wake-sent.json：合并已投事件后删除，重启不重投。
+export function wakeSentFile(directory) {
+  const file = path.join(path.dirname(directory), `${path.basename(directory)}-wake-sent.json`);
+  const legacy = path.join(directory, 'wake-sent.json');
+  if (existsSync(legacy)) try {
+    const ids = file => { try { const raw = JSON.parse(readFileSync(file, 'utf8')); const list = Array.isArray(raw) ? raw : raw?.sent; return Array.isArray(list) ? list.filter(id => typeof id === 'string') : []; } catch { return []; } };
+    const merged = [...new Set([...(existsSync(file) ? ids(file) : []), ...ids(legacy)])];
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ sent: merged }), { mode: 0o600 });
+    renameSync(tmp, file);
+    rmSync(legacy, { force: true });
+  } catch { /* 迁移失败不阻断启动：保留旧文件，下次启动再迁；去重表按新位置继续工作 */ }
+  return file;
+}
 
 /** 已投递唤醒事件的持久化去重表：读文件惰性加载，add 时先重读磁盘合并再原子写回。
  *  解决「sent 只在进程内存、服务重启后重投同批 blocked/gated/完成事件」导致的重复烧钱。
@@ -200,8 +217,8 @@ export function createDagStallSweeper({ config, directory = path.join(config.roo
   thresholdMs = STALL_THRESHOLD_MS, hub = hubRequest, log = console.log, setTimer = setInterval, clearTimer = clearInterval,
   sent = null } = {}) {
   const store = createRunStore({ directory });
-  // sent 持久化到 dag-runs 旁的文件；服务重启不重投已发过的卡住/恢复事件。可由调用方注入（共享给进度唤醒）。
-  const sentStore = sent || createSentStore({ file: path.join(directory, 'wake-sent.json') });
+  // sent 持久化到 dag-runs 旁的文件（wakeSentFile）；服务重启不重投已发过的卡住/恢复事件。可由调用方注入（共享给进度唤醒）。
+  const sentStore = sent || createSentStore({ file: wakeSentFile(directory) });
   const post = event => hub(config, '/v1/events', { method: 'POST', body: event, auth: 'source' });
   let timer = null; let running = false;
   const tick = async () => {
