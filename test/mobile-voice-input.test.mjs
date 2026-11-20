@@ -2,11 +2,12 @@
 // 所有会话输入框的语音转文字 → 可编辑草稿、停顿不自动发送、失败/无权限/无网络回退键盘。
 // 纯逻辑：feature 不碰 DOM、不依赖 node: 内置模块；状态机无隐藏状态，纯函数返回新对象。
 // 上游文本全程是纯字符串，由调用方用 textContent 之类安全方式渲染。
-import test from 'node:test';
+import test, { after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   VOICE_STATES, VOICE_STATE_LABELS, voiceStateLabel,
   VOICE_KEYBOARD_FALLBACK_STATES, isKeyboardFallbackState, voiceFallbackHint,
@@ -15,6 +16,7 @@ import {
   createVoiceInput, createVoiceInputs, canStartVoice, startVoice,
   setInterim, pauseVoice, resumeVoice, stopVoice, beginTranscribe, commitVoice,
   failVoice, appendToDraft, setDraft, undoVoice, buildVoiceInputBinding,
+  failWithCode, previewDraft,
 } from '../mobile/src/features/voice-input/index.mjs';
 
 const FEATURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'mobile', 'src', 'features', 'voice-input');
@@ -257,4 +259,160 @@ test('上游文本全程是纯字符串：视图模型可安全渲染，不拼�
   assert.equal(Object.hasOwn(binding, 'html'), false, '视图模型不产出 html 字段');
   assert.ok(!dump.includes('<script') && !dump.includes('</div>') && !dump.includes('onerror='));
   assert.ok(!dump.includes('deviceToken') && !dump.includes('server-secret') && !dump.includes('apiKey'));
+});
+
+// ---------------------------------------------------------------------------
+// RED voice-wiring：原生错误码分流（无权限/无网络/其他）与预览只用于显示
+// ---------------------------------------------------------------------------
+test('原生错误码分流：无权限回 no-permission，无网络回 offline，其余回 failed，草稿保留', () => {
+  const base = { ...createVoiceInput({ id: 's', draft: '已有草稿' }), state: 'listening', interim: '预览' };
+  const denied = failWithCode(base, { code: 'AUTOLOOP_SPEECH_PERMISSION_DENIED', message: 'x' });
+  assert.equal(denied.state, 'no-permission');
+  assert.equal(denied.draft, '已有草稿');
+  assert.equal(denied.interim, '');
+  assert.equal(failWithCode(base, { code: 'AUTOLOOP_SPEECH_NETWORK' }).state, 'offline');
+  const busy = failWithCode(base, { code: 'AUTOLOOP_SPEECH_BUSY', message: '识别器忙' });
+  assert.equal(busy.state, 'failed');
+  assert.equal(busy.error, '识别器忙');
+  assert.equal(busy.draft, '已有草稿');
+  assert.equal(failWithCode(base, { code: 'AUTOLOOP_SPEECH_TIMEOUT' }).state, 'failed');
+  assert.equal(failWithCode(base, {}).state, 'failed', '缺省错误码也回退为 failed');
+});
+
+test('预览只用于显示：previewDraft 拼接草稿与预览，不改变草稿', () => {
+  const s = { ...createVoiceInput({ id: 's', draft: '请暂停，' }), state: 'listening', interim: '规则' };
+  assert.equal(previewDraft(s), '请暂停，规则');
+  assert.equal(s.draft, '请暂停，', '预览不写入草稿');
+  assert.equal(previewDraft({ ...s, interim: '' }), '请暂停，');
+  assert.equal(previewDraft(createVoiceInput({ draft: '' })), '');
+});
+
+// ---------------------------------------------------------------------------
+// RED voice-wiring：pages/voice.mjs 把状态机接到 window.AutoloopSpeech 与输入框
+// 假桥 + 假输入框，不调用真实识别、不碰真实设备。
+// ---------------------------------------------------------------------------
+const PAGE_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'mobile', 'app', 'www', 'pages', 'voice.mjs');
+// 服务端把 /mobile/pages/* 映射到 www/pages、/mobile/src/* 映射到 mobile/src，页面用 ../src 引入 feature。
+// 本地检出没有 www/src，这里在临时目录复现同样的相对布局：pages/voice.mjs 副本 + src → mobile/src 的符号链接。
+const SERVED_ROOT = mkdtempSync(path.join(os.tmpdir(), 'voice-page-'));
+mkdirSync(path.join(SERVED_ROOT, 'pages'));
+symlinkSync(path.resolve(FEATURE_DIR, '..', '..'), path.join(SERVED_ROOT, 'src'));
+after(() => rmSync(SERVED_ROOT, { recursive: true, force: true }));
+const DEFAULT_ATTACH_VOICE = 'attachVoice(){}';
+const compact = fn => fn.toString().replace(/\s+/g, '');
+const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+
+function fakeSpeech({ available = true, startOk = true } = {}) {
+  const speech = {
+    starts: 0, stops: 0, onPartialCb: null, onFinalCb: null, onErrorCb: null,
+    isAvailable: () => Promise.resolve(available),
+    start: () => { speech.starts += 1; return Promise.resolve(startOk); },
+    stop: () => { speech.stops += 1; return Promise.resolve(true); },
+    onPartial(cb) { speech.onPartialCb = cb; },
+    onFinal(cb) { speech.onFinalCb = cb; },
+    onError(cb) { speech.onErrorCb = cb; },
+  };
+  return speech;
+}
+
+function fakeTextarea(value) {
+  const listeners = {};
+  const dispatched = [];
+  return {
+    value, title: '', dispatched,
+    addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+    dispatchEvent(ev) {
+      dispatched.push(ev.type);
+      for (const fn of listeners[ev.type] || []) fn(ev);
+      return true;
+    },
+    setAttribute(key, val) { this[key] = val; },
+  };
+}
+
+// 每个用例用 cache-busting 查询重新求值页面模块，使 window 检测生效于本次用例。
+async function mountVoicePage(speech) {
+  globalThis.window = speech ? { AutoloopSpeech: speech } : {};
+  const copy = path.join(SERVED_ROOT, 'pages', 'voice.mjs');
+  copyFileSync(PAGE_PATH, copy);
+  const page = await import(`${pathToFileURL(copy).href}?case=${Math.random()}`);
+  const ctx = { hooks: { attachVoice() {} } };
+  page.mount(ctx);
+  return { ctx, attach: el => ctx.hooks.attachVoice(el) };
+}
+
+afterEach(() => { delete globalThis.window; });
+
+test('pages/voice.mjs 无原生桥时保持默认空操作（会话页据此隐藏麦克风），有桥时才覆盖 attachVoice', async () => {
+  const none = await mountVoicePage(null);
+  assert.equal(compact(none.ctx.hooks.attachVoice), DEFAULT_ATTACH_VOICE);
+  const withBridge = await mountVoicePage(fakeSpeech());
+  assert.notEqual(compact(withBridge.ctx.hooks.attachVoice), DEFAULT_ATTACH_VOICE);
+});
+
+test('pages/voice.mjs 不拼接 HTML、不直接发送、不 import node 内置模块', () => {
+  const source = readFileSync(PAGE_PATH, 'utf8');
+  assert.doesNotMatch(source, /innerHTML|insertAdjacentHTML/);
+  assert.doesNotMatch(source, /from\s+['"]node:/);
+  assert.doesNotMatch(source, /\.submit\s*\(|requestSubmit|autoloop:send/);
+});
+
+test('点击开始听写：实时预览显示在输入框但不触发输入事件，最终结果落为草稿且绝不发送', async () => {
+  const speech = fakeSpeech();
+  const { attach } = await mountVoicePage(speech);
+  const el = fakeTextarea('请把规则，');
+  await attach(el);
+  await flush();
+  assert.equal(speech.starts, 1);
+  assert.match(el.title, /聆听中/);
+
+  speech.onPartialCb('暂停');
+  assert.equal(el.value, '请把规则，暂停', '实时转写显示在输入框');
+  assert.deepEqual(el.dispatched, [], '预览不触发输入事件，不写入草稿');
+
+  speech.onFinalCb('暂停一下');
+  await flush();
+  assert.equal(el.value, '请把规则，暂停一下');
+  assert.deepEqual(el.dispatched, ['input'], '只通知输入框内容变化，没有发送类事件');
+});
+
+test('拒权回落：无权限时保留草稿、提示键盘；键盘补充后可再次尝试', async () => {
+  const speech = fakeSpeech();
+  const { attach } = await mountVoicePage(speech);
+  const el = fakeTextarea('草稿');
+  await attach(el);
+  await flush();
+  speech.onErrorCb({ code: 'AUTOLOOP_SPEECH_PERMISSION_DENIED', message: '拒绝' });
+  await flush();
+  assert.equal(el.value, '草稿');
+  assert.match(el.title, /无麦克风权限/);
+
+  el.value = '草稿，键盘补充';
+  el.dispatchEvent({ type: 'input' });
+  await attach(el);
+  await flush();
+  assert.equal(speech.starts, 2, '回退态允许再次点击开始');
+});
+
+test('bridge 不可用时不启动识别，并提示用键盘输入', async () => {
+  const speech = fakeSpeech({ available: false });
+  const { attach } = await mountVoicePage(speech);
+  const el = fakeTextarea('草稿');
+  await attach(el);
+  await flush();
+  assert.equal(speech.starts, 0);
+  assert.equal(el.value, '草稿');
+  assert.match(el.title, /键盘/);
+});
+
+test('再次点击停止听写：调用 stop，草稿不变', async () => {
+  const speech = fakeSpeech();
+  const { attach } = await mountVoicePage(speech);
+  const el = fakeTextarea('草稿');
+  await attach(el);
+  await flush();
+  await attach(el);
+  await flush();
+  assert.equal(speech.stops, 1);
+  assert.equal(el.value, '草稿');
 });
