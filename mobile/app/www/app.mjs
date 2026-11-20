@@ -1,12 +1,14 @@
 // 移动端壳的 DOM 装配：把 shell.mjs 的状态机接到页面上。
 // 只更新已有节点的 textContent / hidden / dataset，不整块重建 DOM（避免触控与刷新竞态）。
 import { ShellState, createTokenStore, createMobileClient, createBiometricGate, shouldAutoRetry } from './shell.mjs';
+import { createScanSession, createUserMediaCamera } from './scan.mjs';
 
 function boot() {
   const $ = id => document.getElementById(id);
   const els = {
     lockScreen: $('lock-screen'), appMain: $('app-main'),
     baseUrl: $('base-url'), bindName: $('bind-name'), bindPayload: $('bind-payload'), bindSubmit: $('bind-submit'), bindStatus: $('bind-status'),
+    scanBind: $('scan-bind'), scanVideo: $('scan-video'), scanStatus: $('scan-status'),
     unlock: $('unlock'), lockError: $('lock-error'),
     deviceName: $('device-name'), connectionStatus: $('connection-status'),
     connectionError: $('connection-error'), reconnect: $('reconnect'), rebind: $('rebind'),
@@ -21,6 +23,7 @@ function boot() {
   let clientBase = null;
   let retryTimer = null;
   let bindMessage = '';
+  let scanSession = null;
 
   // 网页同源部署时用 location.origin；独立 APK 由原生桥注入控制台 HTTPS 地址，或由用户填写。
   els.baseUrl.value = window.AutoloopConsoleBase || window.location.origin;
@@ -73,23 +76,66 @@ function boot() {
     }
   }
 
-  els.bindSubmit.addEventListener('click', async () => {
+  // 手工粘贴与扫码共用同一条绑定路径：一次性载荷只在内存里流转，不写日志/存储。
+  async function doBind(payloadText) {
     els.bindSubmit.disabled = true;
     bindMessage = '';
     render();
     try {
-      await getClient().bind(els.bindPayload.value, els.bindName.value || 'Android 设备', 'Android');
+      await getClient().bind(payloadText, els.bindName.value || 'Android 设备', 'Android');
       els.bindPayload.value = ''; // 一次性二维码内容不留在输入框里
       bindMessage = '绑定成功，请通过生物识别解锁';
       state.lockError = null;
       render();
+      return true;
     } catch (error) {
       bindMessage = error?.message || '绑定失败，请检查二维码是否有效或已过期';
       render();
+      return false;
     } finally {
       els.bindSubmit.disabled = false;
     }
-  });
+  }
+
+  els.bindSubmit.addEventListener('click', () => { void doBind(els.bindPayload.value); });
+
+  const stopScan = () => {
+    if (!scanSession) return;
+    scanSession.stop();
+    scanSession = null;
+    els.scanVideo.hidden = true;
+    els.scanBind.disabled = false;
+  };
+
+  const startScan = async () => {
+    if (scanSession?.active) return;
+    els.scanStatus.textContent = '正在打开摄像头，请对准二维码…';
+    els.scanVideo.hidden = false;
+    els.scanBind.disabled = true;
+    const camera = window.AutoloopScanCamera || createUserMediaCamera({ video: els.scanVideo });
+    scanSession = createScanSession({
+      openCamera: () => camera.open(),
+      onPayload: payloadText => {
+        els.scanStatus.textContent = '已识别二维码，正在绑定…';
+        els.bindPayload.value = payloadText; // 自动填入后走同一提交路径
+        void doBind(payloadText).then(ok => {
+          els.bindPayload.value = ''; // 扫到的码无论成败都不留在输入框
+          els.scanStatus.textContent = ok ? '' : bindMessage;
+          stopScan();
+        });
+      },
+      onError: message => {
+        els.scanStatus.textContent = `${message}（可继续手工粘贴）`;
+        stopScan();
+      },
+    });
+    const started = await scanSession.start();
+    if (!started) stopScan();
+  };
+
+  els.scanBind.addEventListener('click', () => { void startScan().catch(() => { stopScan(); }); });
+  window.addEventListener('pagehide', stopScan);
+  window.addEventListener('beforeunload', stopScan);
 
   els.unlock.addEventListener('click', async () => {
     state.beginUnlock();
