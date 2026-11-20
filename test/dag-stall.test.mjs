@@ -2,11 +2,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkNode, setup } from './dag-fakes.mjs';
-import { ROOT_NODE } from '../src/dag-run.mjs';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { ROOT_NODE, createRunStore } from '../src/dag-run.mjs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createSentStore, findDagStalls, findDagGated, findDagClaimedStalls, CLAIMED_STALL_THRESHOLD_MS, buildStallEvent, sweepDagStalls, createDagStallSweeper, STALL_THRESHOLD_MS } from '../src/dag-stall.mjs';
+import { createSentStore, wakeSentFile, findDagStalls, findDagGated, findDagClaimedStalls, CLAIMED_STALL_THRESHOLD_MS, buildStallEvent, sweepDagStalls, createDagStallSweeper, STALL_THRESHOLD_MS } from '../src/dag-stall.mjs';
 
 const pushFails = s => { s.publisher.commitPr = async () => { throw new Error("git push failed: could not read Username for 'https://github.com': terminal prompts disabled"); }; };
 const toReview = async s => { await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); };
@@ -276,4 +276,33 @@ test('两个 createSentStore 实例共用同一文件：add 前重读磁盘合�
   const raw = JSON.parse(readFileSync(file, 'utf8'));
   assert.ok(raw.sent.includes('evt-1') && raw.sent.includes('evt-2'), '共享文件的写者不互相覆盖');
   assert.equal(b.has('evt-1'), true, 'b 也读到了 a 写的事件');
+});
+
+// #181 回归：去重表曾写进 dag-runs/ 目录里，listRuns 把它当 run 读、因缺 runId fail closed，DAG 控制器整体停摆。
+test('wakeSentFile 放在 run 目录之外，listRuns 不受影响', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wake-loc-'));
+  const runs = path.join(root, 'dag-runs');
+  mkdirSync(runs);
+  const file = wakeSentFile(runs);
+  assert.notEqual(path.dirname(file), runs, '去重表不得放进 run 目录');
+  createSentStore({ file }).add('evt-1');
+  assert.deepEqual(createRunStore({ directory: runs }).listRuns(), [], '空 run 目录列出空表，不抛 CORRUPT_STATE');
+});
+
+test('wakeSentFile 迁移旧位置的去重表：合并已投事件并移除旧文件', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wake-mig-'));
+  const runs = path.join(root, 'dag-runs');
+  mkdirSync(runs);
+  const legacy = path.join(runs, 'wake-sent.json');
+  writeFileSync(legacy, JSON.stringify({ sent: ['old-1'] }));
+  const file = wakeSentFile(runs);
+  assert.equal(existsSync(legacy), false, '旧文件已移出 run 目录');
+  assert.equal(createSentStore({ file }).has('old-1'), true, '迁移不丢已投事件，重启不重投');
+  // 新旧同时存在（例如旧版本进程又写了一次）：合并
+  writeFileSync(legacy, JSON.stringify({ sent: ['old-2'] }));
+  const again = wakeSentFile(runs);
+  const store = createSentStore({ file: again });
+  assert.equal(store.has('old-1') && store.has('old-2'), true);
+  assert.equal(existsSync(legacy), false);
+  assert.deepEqual(createRunStore({ directory: runs }).listRuns(), []);
 });
