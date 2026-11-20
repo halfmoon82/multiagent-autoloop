@@ -1,0 +1,2 @@
+/* devices 页面接缝样式：后续节点实现设备绑定与同步状态。 */
+.page[data-page="devices"] { min-height: 4rem; }

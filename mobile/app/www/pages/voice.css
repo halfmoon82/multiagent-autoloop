@@ -1,0 +1,2 @@
+/* voice 挂载点样式：后续节点实现语音输入绑定。 */
+#voice-root { min-height: 1px; }

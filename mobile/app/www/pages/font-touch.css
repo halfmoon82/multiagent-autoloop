@@ -1,0 +1,2 @@
+/* font-touch 挂载点样式：后续节点实现字体与触控适配。 */
+#font-touch-root { min-height: 1px; }

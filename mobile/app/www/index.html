@@ -9,14 +9,24 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
+  <!-- 页面模块各自的样式：由受限静态服务 /mobile/pages/<kebab>.css 提供 -->
+  <link rel="stylesheet" href="./pages/core.css">
+  <link rel="stylesheet" href="./pages/sessions.css">
+  <link rel="stylesheet" href="./pages/artifacts.css">
+  <link rel="stylesheet" href="./pages/dag.css">
+  <link rel="stylesheet" href="./pages/project-filter.css">
+  <link rel="stylesheet" href="./pages/notify.css">
+  <link rel="stylesheet" href="./pages/voice.css">
+  <link rel="stylesheet" href="./pages/font-touch.css">
+  <link rel="stylesheet" href="./pages/devices.css">
 </head>
 <body>
   <div class="app">
-    <!-- 锁定/绑定：生物识别失败或授权失效时始终停留在这里 -->
+    <!-- 锁屏两态：未绑定只显示绑定卡；已绑定未解锁只显示解锁卡。错误信息就近显示。 -->
     <section id="lock-screen" class="screen" aria-label="解锁与绑定">
       <div class="brand"><span class="brand-gem">N</span><div><strong>NoMoTo</strong><small>手机控制台</small></div></div>
 
-      <div id="bind-section" class="card">
+      <div id="bind-card" class="card">
         <h2>设备绑定</h2>
         <p class="hint">在电脑控制台「设备授权管理」生成一次性二维码：可点「扫码绑定」用后置摄像头扫描，也可把二维码内容手工填到下面。首次使用或授权被解除后需要重新绑定。</p>
         <label for="base-url">控制台地址</label>
@@ -33,7 +43,7 @@
         <p id="bind-status" class="status" role="status"></p>
       </div>
 
-      <div class="card">
+      <div id="unlock-card" class="card" hidden>
         <h2>打开 App 需要验证</h2>
         <p class="hint">使用系统指纹或人脸验证后进入控制台。验证失败不会进入主界面。</p>
         <button id="unlock" class="primary" type="button">使用生物识别解锁</button>
@@ -43,25 +53,54 @@
       <p class="hint">远程连接只使用 HTTPS 与设备级授权；未绑定或已解除授权的设备不能进入。控制台密钥与设备凭证不会显示在这里。</p>
     </section>
 
-    <!-- 主界面：仅生物识别通过后显示。核心页面由后续波次接入同一套控制台 API。 -->
+    <!-- 主界面：仅生物识别通过后显示。各页面模块只改自己的容器，跨页互调走 ctx.hooks。 -->
     <main id="app-main" class="screen" hidden aria-label="控制台">
       <header class="app-header">
         <div class="brand"><span class="brand-gem">N</span><div><strong>NoMoTo</strong><small id="device-name">未绑定设备</small></div></div>
         <span id="connection-status" class="status-pill" data-state="offline">未连接</span>
       </header>
+
+      <div id="project-filter-root" aria-label="全局项目筛选"></div>
+
+      <nav id="tab-bar" class="tab-bar" aria-label="主导航">
+        <button type="button" class="tab" data-tab="core" aria-selected="true">总览</button>
+        <button type="button" class="tab" data-tab="rules" aria-selected="false">规则</button>
+        <button type="button" class="tab" data-tab="rounds" aria-selected="false">轮次</button>
+        <button type="button" class="tab" data-tab="todos" aria-selected="false">待办</button>
+        <button type="button" class="tab" data-tab="sessions" aria-selected="false">会话</button>
+        <button type="button" class="tab" data-tab="artifacts" aria-selected="false">产物</button>
+        <button type="button" class="tab" data-tab="dag" aria-selected="false">DAG</button>
+        <button type="button" class="tab" data-tab="devices" aria-selected="false">设备</button>
+      </nav>
+
       <div class="content">
-        <div class="card">
-          <h2>移动端控制台壳</h2>
-          <p class="hint">已通过生物识别与安全连接。总览、规则、轮次、待办、DAG 与产物由后续波次接入同一套控制台 API，不复制业务状态。</p>
-          <p id="connection-error" class="status error" role="alert"></p>
-          <div class="row">
-            <button id="reconnect" type="button">重新连接</button>
-            <button id="rebind" type="button">重新绑定 / 退出</button>
+        <div id="page-core" class="page" data-page="core">
+          <div class="card">
+            <h2>移动端控制台壳</h2>
+            <p class="hint">已通过生物识别与安全连接。总览、规则、轮次、待办、DAG 与产物由后续波次接入同一套控制台 API，不复制业务状态。</p>
+            <p id="connection-error" class="status error" role="alert"></p>
+            <div class="row">
+              <button id="reconnect" type="button">重新连接</button>
+              <button id="rebind" type="button">重新绑定 / 退出</button>
+            </div>
           </div>
+          <p class="hint">本机控制台密钥与设备凭证不会写入页面或日志。</p>
         </div>
-        <p class="hint">本机控制台密钥与设备凭证不会写入页面或日志。</p>
+        <div id="page-rules" class="page" data-page="rules" hidden></div>
+        <div id="page-rounds" class="page" data-page="rounds" hidden></div>
+        <div id="page-todos" class="page" data-page="todos" hidden></div>
+        <div id="page-sessions" class="page" data-page="sessions" hidden></div>
+        <div id="page-artifacts" class="page" data-page="artifacts" hidden></div>
+        <div id="page-dag" class="page" data-page="dag" hidden></div>
+        <div id="page-devices" class="page" data-page="devices" hidden></div>
       </div>
+
+      <div id="notify-root" aria-label="通知"></div>
+      <div id="voice-root" aria-label="语音输入"></div>
+      <div id="font-touch-root" aria-label="字体与触控"></div>
     </main>
+
+    <div id="toast" class="toast" role="status" hidden></div>
   </div>
   <script type="module" src="./app.mjs"></script>
 </body>
