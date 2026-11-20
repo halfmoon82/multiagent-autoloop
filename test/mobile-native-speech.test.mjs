@@ -104,3 +104,71 @@ test('识别文字以纯字符串事件回传，桥做转义且不自动发送�
   // 识别结果只通过回调交给 H5，本机不替用户发送任何内容。
   assert.doesNotMatch(bridge, /fetch\s*\(|XMLHttpRequest|\.submit\s*\(|sendMessage|autoloop:send/, '不得自动发送');
 });
+
+// ---------- 审阅返工回归：主线程投递（P1）与两个 P3 ----------
+// Capacitor 6 的 @PluginMethod 默认在后台线程回调；SpeechRecognizer 启停与 WebView 调用必须切主线程。
+// 这些断言在只有正则静态检查的条件下，锁定「主线程投递」这一会真实发生的缺陷。
+
+/** 取一个方法声明到其配对右花括号之间的源码块，避免跨方法误匹配。 */
+const methodBlock = (src, signature) => {
+  const start = src.indexOf(signature);
+  assert.ok(start >= 0, `源码缺少 ${signature}`);
+  const open = src.indexOf('{', start);
+  assert.ok(open >= 0, `${signature} 缺少左花括号`);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') {
+      depth--;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  assert.fail(`${signature} 缺少右花括号`);
+};
+
+test('P1 回归：插件方法把 SpeechRecognizer 启停投递到主线程，后台线程不直接调主线程 API', () => {
+  const src = readSpeech('AutoLoopSpeech.java');
+  // 统一主线程投递助手：Activity.runOnUiThread 优先，Activity 缺失时 Handler 兜底仍在主线程。
+  const dispatcher = methodBlock(src, 'private void runOnMain(');
+  assert.match(dispatcher, /runOnUiThread\s*\(/, '必须优先用 Activity.runOnUiThread 切主线程');
+  assert.match(dispatcher, /mainHandler\.post\s*\(/, 'Activity 缺失时须由 Handler 兜底投递');
+  assert.match(src, /new Handler\s*\(\s*Looper\.getMainLooper\s*\(\s*\)\s*\)/,
+    '兜底 Handler 必须绑定主 Looper');
+
+  const start = methodBlock(src, 'public void start(');
+  assert.match(start, /runOnMain\s*\(/, 'start 必须投递到主线程后再碰 Fragment/权限 API');
+  assert.match(methodBlock(src, 'private void startOnMain('), /requestRecordAudio\s*\(/);
+
+  const doStart = methodBlock(src, 'private void doStartOnMain(');
+  assert.match(doStart, /createSpeechRecognizer\s*\(/);
+  assert.match(doStart, /setRecognitionListener\s*\(/);
+  assert.match(doStart, /startListening\s*\(/);
+  assert.match(methodBlock(src, 'private void releaseRecognizerNow('), /\.destroy\s*\(/,
+    '识别器释放必须真正 destroy');
+});
+
+test('P1 回归：WebView.evaluateJavascript 经 webView.post 投递到 UI 线程', () => {
+  const bridge = readSpeech('AutoLoopSpeechBridge.java');
+  const inUiPost = /webView\.post\s*\(\s*\(\)\s*->\s*\{[\s\S]*?evaluateJavascript\s*\(/;
+  assert.match(methodBlock(bridge, 'static void inject('), inUiPost,
+    '注入 shim 的 evaluateJavascript 必须在 webView.post 内');
+  assert.match(methodBlock(bridge, 'static void reportToJs('), inUiPost,
+    '回传识别文字/错误的 evaluateJavascript 必须在 webView.post 内');
+});
+
+test('P3 回归：申请录音权限期间重复 start 立即回执 BUSY，不覆盖 pendingCall', () => {
+  const src = readSpeech('AutoLoopSpeech.java');
+  const startOnMain = methodBlock(src, 'private void startOnMain(');
+  assert.match(startOnMain, /pendingCall\s*!=\s*null/, '权限弹窗期间需拒绝重复 start');
+  assert.match(startOnMain, /ERR_BUSY/);
+});
+
+test('P3 回归：stop 不立即 destroy，最终识别结果回传后再释放识别器', () => {
+  const src = readSpeech('AutoLoopSpeech.java');
+  const stop = methodBlock(src, 'public void stop(');
+  assert.match(stop, /stopListening\s*\(/);
+  assert.doesNotMatch(stop, /\.destroy\s*\(/, 'stop 不得同步 destroy，否则丢失尚未回传的最终文字');
+  for (const cb of ['public void onResults(', 'public void onError(']) {
+    assert.match(methodBlock(src, cb), /releaseRecognizerNow\s*\(/, `${cb} 回传后应释放识别器`);
+  }
+});
