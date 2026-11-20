@@ -1,0 +1,76 @@
+{
+  "plan_id": "2026-11-20-nomoto-app-fix",
+  "title": "NoMoTo 手机 App 改名与扫码绑定修复",
+  "nodes": [
+    {
+      "id": "nomoto-rename",
+      "title": "App 对外名称改为 NoMoTo（取 no more laptop 之意）",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "现有移动端壳：应用名「Autoloop 控制台」、页面标题「Autoloop 移动控制台」、品牌区「Autoloop / 移动控制台」",
+        "output": "安装后桌面图标名、App 内标题、品牌区、manifest 名称统一为 NoMoTo，副标题可保留「手机控制台」；包名 appId 不变（保证覆盖安装与已绑定设备不丢）",
+        "error_behavior": "不得改 appId、不得改动任何接口路径与设备授权逻辑；文案以外的行为零变化",
+        "acceptance_example": "capacitor.config.json appName=NoMoTo；index.html title 与品牌区含 NoMoTo 且不再出现「Autoloop 控制台」；manifest name/short_name=NoMoTo；mobile-shell 既有测试全绿",
+        "files": [
+          "mobile/app/capacitor.config.json",
+          "mobile/app/www/manifest.webmanifest",
+          "mobile/app/www/index.html",
+          "test/mobile-nomoto-rename.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "qr-scan-bind",
+      "title": "绑定页支持调起摄像头扫码，扫到即自动绑定",
+      "depends_on": [
+        "nomoto-rename"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "网页控制台「设备授权管理」生成的一次性二维码（载荷格式见 mobile/app/www/shell.mjs 的绑定载荷解析）；当前绑定页只能手工粘贴二维码内容",
+        "output": "绑定页新增「扫码绑定」按钮：用 getUserMedia 调起后置摄像头，解码二维码（旧版鸿蒙 WebView 不保证有 BarcodeDetector，须自带纯 JS 解码库并入库 vendor/，附许可证）；扫到合法载荷后自动填入并提交绑定；保留原手工粘贴作为兜底",
+        "error_behavior": "用户拒绝相机权限、设备无摄像头、扫到非 NoMoTo 载荷、二维码过期时，给出可读中文提示并回到手工粘贴；绝不把一次性二维码内容写入日志或存储；扫码完成或离开页面必须关闭摄像头流",
+        "acceptance_example": "单元测试覆盖：合法载荷被解码并触发 bind；非法载荷与相机拒绝走兜底；关闭时 track.stop 被调用。浏览器回归用假相机流验证完整扫码绑定。npm test 与 npm run test:browser 全绿",
+        "files": [
+          "mobile/app/www/scan.mjs",
+          "mobile/app/www/vendor/",
+          "mobile/app/www/app.mjs",
+          "mobile/app/www/styles.css",
+          "mobile/app/www/index.html",
+          "test/mobile-qr-scan.test.mjs",
+          "test/browser.spec.mjs"
+        ]
+      }
+    },
+    {
+      "id": "apk-release-script",
+      "title": "打包脚本补齐：相机权限、默认控制台地址、签名与产物输出",
+      "depends_on": [
+        "qr-scan-bind"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-3",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "现有 build-apk.mjs 只生成未签名 release 包，且 cap add android 生成的清单没有 CAMERA 权限；默认控制台地址靠手工注入",
+        "output": "脚本在 AUTOLOOP_APK_BUILD_AUTHORIZED=1 下：生成平台后向 AndroidManifest 注入 CAMERA 权限与 camera 硬件非必需声明；把 minSdk 设为 23；默认控制台地址 https://auto.socialmore.net 由 www/console-base.js 注入；用仓库外密钥库（路径与口令来自环境变量）做 zipalign 与 apksigner 签名，签名后产物与 sha256 写入 work/apk/；密钥库与口令绝不入库",
+        "error_behavior": "缺 SDK、缺密钥库环境变量、签名失败时以非零码退出并给出可读原因，不产出半成品；未授权时与现状一致只提示不改文件",
+        "acceptance_example": "测试用假命令验证：注入 CAMERA 权限、minSdk=23、console-base.js 地址、签名调用参数；缺环境变量时拒绝。npm test 全绿；真机构建由所有者另行授权执行",
+        "files": [
+          "mobile/app/build-apk.mjs",
+          "mobile/app/www/console-base.js",
+          "mobile/app/www/index.html",
+          "test/mobile-apk-build.test.mjs"
+        ]
+      }
+    }
+  ]
+}
