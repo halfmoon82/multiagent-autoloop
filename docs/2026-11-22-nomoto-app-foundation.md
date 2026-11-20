@@ -10,16 +10,13 @@
 - 原生能力不引入第三方插件：自写 Capacitor 插件（相机 WebChromeClient 授权、androidx.biometric、Keystore 存储、前台服务、语音识别桥），扫码解码复用已入库的 `vendor/qr-decoder.mjs`。
 - UI 交互唯一基线：`docs/design/2026-11-17-mobile-app/index.html`；页面逻辑复用 `mobile/src/*` 现有视图模型，不复制业务状态。
 
-## 范围
-按 `docs/dag-plans/2026-11-22-nomoto-app-foundation.json` 13 个节点执行：
-1. `native-platform`：Android 原生插件（相机权限转发/生物识别/安全存储/前台通知服务/语音桥）与 manifest 权限。
-2. `bind-ux`：备用码显示全 payload、输入端接受裸 64hex 自动补前缀。
-3. `mobile-write-api`：服务端移动端写路由最小集（卡片回答/授权、会话恢复、产物下载）+ 契约测试。
-4. `ui-shell-nav`、`ui-sessions-artifacts`、`ui-dag-rings`：把 `mobile/src/*` 视图模型接进 `www/` 的 Tab 化页面。
-5. `foreground-notify`：常驻通知 + 轮询/去重/角标 + 直复回写。
-6. `voice-input`、`font-fold`、`sync-audit`：语音输入、系统字体/折叠适配、多设备同步与审计。
-7. `apk-rebuild`：打包脚本补插件与 manifest patch。
-8. `smoke-emulator` → `smoke-device`：模拟器实测（扫码弹窗、解锁、Tab 可达、通知直复）与真机验收（真机授权独立）。
+## 范围（脚手架先行、最大并行）
+按 `docs/dag-plans/2026-11-22-nomoto-app-foundation.json` 17 个节点执行，依赖只按真实写范围设置：
+
+- **wave-0（2 并行）**：`mobile-scaffold` 一次性预留全部共享接缝——www 页面拆成 `www/pages/<name>.mjs` 独立模块（app.mjs 只装配）、`/mobile/pages/` 与 `/mobile/src/` 受限目录静态服务（取代固定白名单，后续节点不再改 server.mjs）、`src/mobile-write.mjs` 写路由钩子（挂在 GET-only 闸之前，先 501 占位）、原生源码入库 `mobile/app/native/`（MainActivity 预注册全部插件、权限一次写全，build-apk 在 cap add 后拷入合并）；`bind-ux` 后台备用码显示完整载荷+一键复制、移动端接受裸 64hex。
+- **wave-1（9 并行）**：原生 `native-auth`（相机授权转发/生物识别/Keystore）、`native-notify`（前台常驻服务/通知/RemoteInput 直复/角标）、`native-speech`（系统语音识别）；服务端 `mobile-write-api`；页面 `ui-core-pages`、`ui-sessions`、`ui-artifacts`、`ui-dag-filter`、`font-touch`。
+- **wave-2（3 并行）**：`notify-wiring`、`voice-wiring`、`sync-audit`（含管理后台审计列表）。
+- **wave-3/4/5**：`apk-verify` 打包集成校验 → `smoke-emulator` 模拟器全链路 smoke（独立 npm 脚本，不进 `npm test`）→ `smoke-device` 真机验收（另行授权）。
 
 ## 非目标
 不改设备授权协议与 Hub；不接 FCM/华为推送；不做真机安装（独立授权）；不引入第二套业务状态。
