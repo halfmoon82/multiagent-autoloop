@@ -305,3 +305,83 @@ test('CLI --publish 输出注明运行中 server 需重读/重启方生效的影
   assert.equal(res.status, 0, res.stderr);
   assert.match(res.stdout, /重启|重读|生效/);
 });
+
+// ---- 人工处理结果 → 学习样本（自我改进）----
+async function feedbackFixture({ cards, file = null } = {}) {
+  const calls = [];
+  const hub = await fakeHub((req, res) => {
+    calls.push(`${req.method} ${req.url}`);
+    if (req.url === '/v1/state') return json(res, { cards });
+    return json(res, { ok: true });
+  });
+  const root = mkdtempSync(path.join(tmpdir(), 'card-feedback-'));
+  writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ sources: {}, agents: {}, rules: [] }));
+  const routing = createCardRouting({ persistFile: file, postEvent: async () => ({}), resolveCard: async () => {}, onError: () => {} });
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'k', sourceKey: 's', root, cardRouting: routing, cardDelegateStore: createCardDelegateStore() }, false);
+  const url = await listen(server);
+  const post = (p, body = {}) => fetch(`${url}${p}`, { method: 'POST', headers: { 'x-console-request': '1', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  return { routing, post, calls, stop: async () => { await close(server); await close(hub.server); } };
+}
+
+test('反馈：手动退回后记 scheduler 强样本（manual-return），重复退回不重复记，且只存标签', async () => {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'card-fb-')), 'card-router', 'store.json');
+  const card = eng(41);
+  const f = await feedbackFixture({ cards: [card], file });
+  try {
+    await f.routing.routeOpenCards([card]); // shadow 记一条决策，不退回
+    const res = await f.post('/api/cards/41/delegate');
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).routingFeedback, 'recorded');
+    const ex = f.routing.store.examples();
+    assert.equal(ex.length, 1);
+    assert.equal(ex[0].label, 'scheduler'); assert.equal(ex[0].strength, 'strong'); assert.equal(ex[0].source, 'manual-return');
+    assert.ok(!JSON.stringify(ex).includes('修复构建报错'), '样本不含卡片原文');
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).examples.length, 1, '经 persist 落盘');
+    // 幂等：同卡同种反馈不重复
+    assert.equal((await (await f.post('/api/cards/41/delegate')).json()).routingFeedback, 'duplicate');
+    assert.equal(f.routing.store.examples().length, 1);
+  } finally { await f.stop(); }
+});
+
+test('反馈：直接回答（选项/文字）后记 human 弱样本（direct-answer），幂等', async () => {
+  const f = await feedbackFixture({ cards: [eng(42), eng(43)] });
+  try {
+    await f.routing.routeOpenCards([eng(42), eng(43)]);
+    assert.equal((await (await f.post('/api/cards/42/answer', { choice: 0 })).json()).routingFeedback, 'recorded');
+    assert.equal((await (await f.post('/api/cards/43/answer', { text: '用方案B' })).json()).routingFeedback, 'recorded');
+    await f.post('/api/cards/42/answer', { choice: 0 });
+    const ex = f.routing.store.examples();
+    assert.equal(ex.length, 2);
+    assert.ok(ex.every(item => item.label === 'human' && item.strength === 'weak' && item.source === 'direct-answer'));
+  } finally { await f.stop(); }
+});
+
+test('反馈：卡片从未被路由过 → 跳过；反馈失败不拖垮主路径', async () => {
+  const f = await feedbackFixture({ cards: [eng(44)] });
+  try {
+    const res = await f.post('/api/cards/44/delegate');
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).routingFeedback, 'skipped');
+    assert.equal(f.routing.store.examples().length, 0);
+    // 注入失败：recordFeedback 抛错，回答仍成功
+    await f.routing.routeOpenCards([eng(45)]);
+    f.routing.recordFeedback = () => { throw new Error('boom'); };
+    const ans = await f.post('/api/cards/45/answer', { choice: 1 });
+    assert.equal(ans.status, 200);
+    assert.equal((await ans.json()).routingFeedback, 'failed');
+  } finally { await f.stop(); }
+});
+
+test('反馈：routing.recordFeedback 取最新决策、支持 reescalated 映射 human 强样本', async () => {
+  const f = await feedbackFixture({ cards: [] });
+  try {
+    f.routing.store.recordDecision({ cardId: 50, route: 'unknown', features: { tags: ['eng:bug'] } });
+    f.routing.store.recordDecision({ cardId: 50, route: 'scheduler', features: { tags: ['eng:test'] } });
+    assert.equal(f.routing.recordFeedback(50, 'reescalated'), 'recorded');
+    const [ex] = f.routing.store.examples();
+    assert.equal(ex.label, 'human'); assert.equal(ex.strength, 'strong');
+    assert.deepEqual(ex.features.tags, ['eng:test'], '用最新一条决策');
+    assert.equal(f.routing.recordFeedback(50, 'reescalated'), 'duplicate');
+    assert.equal(f.routing.recordFeedback(999, 'manual-return'), 'skipped');
+  } finally { await f.stop(); }
+});

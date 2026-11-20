@@ -351,19 +351,21 @@ async function handleApi(config, req, res, url) {
         } catch { schedulingWake = 'failed'; }
       }
     }
-    return jsonResponse(res, 200, { ...result, schedulingWake });
+    const routingFeedback = action === 'answer' ? recordCardFeedback(config, id, 'direct-answer') : undefined;
+    return jsonResponse(res, 200, { ...result, schedulingWake, ...(routingFeedback ? { routingFeedback } : {}) });
   }
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/cards\/([^/]+)\/delegate$/))) {
     const id = idOf(match[1]);
     const state = await hubRequest(config, '/v1/state');
     const card = (state?.cards || []).find(item => Number(item?.id) === id);
     if (!card) throw new RequestError(404, '卡片不存在或已结案');
-    return jsonResponse(res, 200, await delegateOpenCard({
+    const delegated = await delegateOpenCard({
       card,
       store: config.cardDelegateStore,
       postEvent: event => hubRequest(config, '/v1/events', { method: 'POST', body: event, auth: 'source' }),
       resolveCard: (cardId, reason) => hubRequest(config, `/v1/cards/${cardId}/resolve`, { method: 'POST', body: { reason } }),
-    }));
+    });
+    return jsonResponse(res, 200, { ...delegated, routingFeedback: recordCardFeedback(config, id, 'manual-return') });
   }
   // 设备授权管理后台：与规则/会话写操作共用 checkWrite，不新增弱认证入口。
   if (url.pathname.startsWith('/api/devices')) {
@@ -375,6 +377,12 @@ async function handleApi(config, req, res, url) {
     if (req.method === 'POST' && (deviceMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/rename$/))) return jsonResponse(res, 200, config.deviceAuth.renameDevice(decodeURIComponent(deviceMatch[1]), body.name, { type: 'admin' }));
   }
   return false;
+}
+// 人工处理结果记成路由学习样本；失败只记日志，不影响退回/回答主路径。
+function recordCardFeedback(config, cardId, kind) {
+  if (!config.cardRouting?.recordFeedback) return 'skipped';
+  try { return config.cardRouting.recordFeedback(cardId, kind); }
+  catch (error) { console.error(`[card-router] 反馈记录失败：${error.message}`); return 'failed'; }
 }
 // 空会话管理器：不暴露 notifyCardAnswered，唤醒分支自动跳过。
 // 用于纯转发 API 测试：不装配真实管理器，也不触发 /v1/state 预读。

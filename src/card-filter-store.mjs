@@ -30,10 +30,10 @@ export function createCardFilterStore(snapshot = {}) {
   const mustVersion = version => findVersion(version) || (() => { throw new CardFilterError(`版本不存在：${version}`, 'VERSION_MISSING'); })();
 
   const store = {
-    addExample({ project = null, features, label, source, strength = 'strong', status = 'active' } = {}) {
+    addExample({ project = null, features, label, source, strength = 'strong', status = 'active', decisionId = null } = {}) {
       if (!LABELS.has(label)) throw new CardFilterError(`未知标签：${label}`, 'BAD_LABEL');
       if (!source) throw new CardFilterError('样本缺少来源', 'BAD_SOURCE');
-      const example = { sampleId: randomUUID(), project, features: sanitizeFeatures(features), label, source, strength, status, createdAt: now() };
+      const example = { sampleId: randomUUID(), project, features: sanitizeFeatures(features), label, source, strength, status, ...(decisionId ? { decisionId } : {}), createdAt: now() };
       examples.push(example);
       return example;
     },
@@ -107,7 +107,9 @@ export function createCardFilterStore(snapshot = {}) {
       if (!rule) throw new CardFilterError(`未知反馈：${kind}`, 'BAD_FEEDBACK');
       const found = decisionList.find(item => item.decisionId === decisionId);
       if (!found) throw new CardFilterError('决策记录不存在', 'DECISION_MISSING');
-      return store.addExample({ features: found.features, source: kind, ...rule });
+      // 幂等：同一决策同一种反馈只记一次（decisionId 只是内部 id，不含卡片内容）。
+      if (examples.some(item => item.decisionId === decisionId && item.source === kind)) return null;
+      return store.addExample({ features: found.features, source: kind, decisionId, ...rule });
     },
 
     snapshot: () => structuredClone({ examples, decisions: decisionList, versions: versionList, activeStack }),

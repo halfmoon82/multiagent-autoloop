@@ -130,6 +130,17 @@ export function createCardRouting({
         recentDecisions: store.decisions().slice(-RECENT_DECISIONS),
       };
     },
+    // 人工处理结果 → 学习样本：按该卡最新路由决策记反馈并经 persist 落盘。
+    // 返回 recorded | duplicate | skipped（卡从未被路由过）；不抛业务异常，调用方另行兜底。
+    recordFeedback(cardId, kind) {
+      refresh();
+      const decisions = store.decisions().filter(item => String(item.cardId) === String(cardId));
+      const latest = decisions[decisions.length - 1];
+      if (!latest) return 'skipped';
+      if (!store.recordFeedback(latest.decisionId, kind)) return 'duplicate';
+      persist();
+      return 'recorded';
+    },
     // 生产发布入口（issue #93）：评测默认规则集 → 通过才注册版本并原子落盘，不默认 activate。
     // 幂等：同规则同评测已有通过版本时不重复注册；规则变化才新建版本并链 parentVersion。
     async publish({ samples, rules, model: overrideModel } = {}) {
