@@ -48,8 +48,8 @@ if (!authorized) {
 }
 
 // 通用步骤执行器：工具失败时给出可读原因；不打印任何参数，避免把签名口令写进日志。
-const run = (command, args, exitCode = 5) => {
-  const result = spawnSync(command, args, { cwd: here, stdio: 'inherit' });
+const run = (command, args, exitCode = 5, cwd = here) => {
+  const result = spawnSync(command, args, { cwd, stdio: 'inherit' });
   if (result.error || result.status !== 0) {
     fail(exitCode, `步骤失败：${path.basename(command)}（退出码 ${result.status ?? 'N/A'}）`);
   }
@@ -283,7 +283,7 @@ function main() {
   mergeNativeSources();
   patchAndroidPlatform();
   const creds = signingCredentials();
-  run(path.join(here, 'android', 'gradlew'), ['assembleRelease']);
+  run(path.join(here, 'android', 'gradlew'), ['assembleRelease'], 5, path.join(here, 'android'));
   signRelease(creds);
 }
 

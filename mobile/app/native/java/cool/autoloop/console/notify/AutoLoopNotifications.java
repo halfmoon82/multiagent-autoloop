@@ -32,7 +32,7 @@ public class AutoLoopNotifications extends Plugin {
   private volatile String replyCallback;
 
   @Override
-  protected void load() {
+  public void load() {
     super.load();
     instance = this;
 
