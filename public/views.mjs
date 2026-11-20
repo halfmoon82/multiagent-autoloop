@@ -357,7 +357,6 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
   const openCards = (snapshot.cards || []).filter(card => card.state === 'open');
   const lines = snapshot.lines || [];
   const rows = [];
-  const chainNames = new Set(chains.map(chain => projectName(chain.project)));
 
   // 有串行状态文件的项目：完整任务条
   for (const chain of chains) {
@@ -365,28 +364,8 @@ export function renderProjectProgress({ chains: rawChains = [], sessions = [], r
     rows.push(renderChainRow(chain, sessions, rules, openCards, lines, chains, projectUsage, usageLoadError, executors));
   }
 
-  // 有活动但没有链文件的项目：只显示计数行（会话绑定项目 + 有今日活动的规则项目）
-  const candidates = new Map();
-  for (const session of sessions) { const cwd = String(session.project || '').trim(); if (cwd) candidates.set(projectName(cwd), cwd); }
-  for (const rule of rules) { const cwd = String(rule.cwd || '').trim(); if (cwd) candidates.set(projectName(cwd), cwd); }
-  for (const [name, cwd] of candidates) {
-    if (chainNames.has(name)) continue;
-    const activity = projectActivity(cwd, rules, lines);
-    const cardsHere = openCards.filter(card => matchesProject(projectForCard(card, rules), cwd)).length;
-    // 没有节点计划的项目不是任务：只有此刻真在跑、或有待用户处理的卡片才占项目进度；
-    // 等待重试与今日完成只是巡检类规则的日常计数，总览里已有，不再像未归档任务一样常驻。
-    if (!(activity.running || cardsHere)) continue;
-    const row = el('div', 'list-row');
-    row.dataset.chain = name;
-    const main = el('div', 'progress-main');
-    const head = el('div', 'progress-head');
-    head.append(el('span', 'row-title', name), badge('无节点计划', 'warn'));
-    const session = sessions.find(item => matchesProject(item.project || '', cwd));
-    if (session) head.append(badge(session.statusText || session.status || '未知', session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
-    main.append(head, el('div', 'row-meta', '该项目没有节点计划文件，仅显示计数。'), countsChips(activity, cardsHere), projectUsageChips(cwd, projectUsage, usageLoadError));
-    row.append(main);
-    rows.push(row);
-  }
+  // 没有链文件的项目不进这块面板：空壳行只有计数没有任务，随规则运行/卡片忽隐忽现，被误认为无法归档的幽灵任务。
+  // 运行中、等待重试、待处理卡片各有专门面板；DAG 进度在 DAG 视图里看。
 
   if (!rows.length) return [el('div', 'empty', loadError ? '节点进度读取失败，请刷新重试。' : '还没有节点计划。串行推进编排器写入 *-serial.json 后，这里按项目展示任务进度。')];
   return rows;
