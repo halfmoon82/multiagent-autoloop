@@ -32,12 +32,24 @@ export function initDevices({ api, notify, showView }) {
     for (const row of modules) for (const dark of row) grid.append(el('span', dark ? 'on' : ''));
     const token = el('input', 'qr-token');
     token.type = 'text'; token.readOnly = true; token.id = 'device-qr-token';
-    token.value = s.qr.token;
-    token.setAttribute('aria-label', '备用绑定码（二维码无法扫描时手输）');
+    // 手输码必须和二维码内容一致：显示完整 qrPayload，用户复制到手机直接粘贴即可。
+    token.value = s.qr.qrPayload;
+    token.setAttribute('aria-label', '绑定码（复制后在手机粘贴即可）');
+    const copy = el('button', 'button text-button', '一键复制');
+    copy.type = 'button';
+    copy.dataset.action = 'copy-bind';
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(s.qr.qrPayload);
+        notify('绑定码已复制，去手机粘贴即可');
+      } catch {
+        notify('复制失败，请长按选中上面的绑定码手动复制');
+      }
+    });
     const label = el('label', 'qr-token-label');
-    label.append(document.createTextNode('备用绑定码（手机无法扫码时可手输）'), token);
+    label.append(document.createTextNode('备用绑定码（手机无法扫码时复制粘贴）'), token, copy);
     host.append(
-      el('p', 'subtle', '用手机 App 扫描上方二维码完成绑定；二维码内容就是下面的绑定码，一次性有效，过期请重新生成。'),
+      el('p', 'subtle', '用手机 App 扫描上方二维码完成绑定；复制后在手机粘贴即可，一次性有效，过期请重新生成。'),
       grid,
       label,
       el('p', 'subtle', `失效时间：${fmtTime(s.qr.expiresAt)}`),

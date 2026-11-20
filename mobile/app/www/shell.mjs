@@ -43,11 +43,17 @@ export function mobileApiUrl(base, key) {
 }
 
 // 设备绑定结果：网页管理后台生成的一次性二维码载荷。严格格式，拒绝夹带其他参数或任意链接。
+// 既接受完整载荷，也接受从后台复制出来的裸 64hex（自动补前缀）；前后空白一并去掉。
+// 载荷内容绝不写进报错或日志，避免一次性凭证外泄。
 export function parseBindPayload(text) {
   if (typeof text !== 'string') throw new MobileShellError('INVALID_BIND', '请粘贴完整的绑定二维码内容');
-  const match = /^autoloop:\/\/bind\?token=([0-9a-f]{64})$/.exec(text.trim());
-  if (!match) throw new MobileShellError('INVALID_BIND', '请粘贴完整的绑定二维码内容（autoloop://bind?token=…）');
-  return match[1];
+  const value = text.trim();
+  const full = /^autoloop:\/\/bind\?token=([0-9a-f]{64})$/.exec(value);
+  const bare = /^([0-9a-f]{64})$/.exec(value);
+  const token = full?.[1] || bare?.[1];
+  // 沿用扫码解析与各处回归共用的固定安全提示；不复述载荷原文，避免一次性凭证外泄。
+  if (!token) throw new MobileShellError('INVALID_BIND', '请粘贴完整的绑定二维码内容（autoloop://bind?token=…）');
+  return token;
 }
 
 // 设备凭证存储：优先用 App 注入的原生安全存储（Android Keystore / Capacitor Preferences）。
@@ -164,7 +170,14 @@ export function createMobileClient({ base, state = new ShellState(), tokenStore 
     origin, state, tokenStore,
     async bind(payloadText, name = 'Android 设备', platform = 'Android') {
       const token = parseBindPayload(payloadText);
-      const result = await request(mobileBindUrl(origin), { method: 'POST', body: { token, name, platform } });
+      let result;
+      try {
+        result = await request(mobileBindUrl(origin), { method: 'POST', body: { token, name, platform } });
+      } catch (error) {
+        // 服务端对过期的一次性码返回 410；设备端只给人话提示，不复述载荷内容或服务端原文。
+        if (error.status === 410) throw new MobileShellError('BIND_EXPIRED', '绑定码已过期，请在电脑上重新生成');
+        throw error;
+      }
       if (typeof result?.deviceToken !== 'string' || !result.deviceToken) throw new MobileShellError('BIND_FAILED', '绑定失败：服务端未返回设备凭证');
       await tokenStore.set(result.deviceToken);
       state.setToken(result.deviceToken);
