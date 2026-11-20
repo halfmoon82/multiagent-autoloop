@@ -149,3 +149,32 @@ test('窗口内出现过连续命中但最新已恢复成功，不误登记绕�
   const result = scanForQuotaDetours(config, { policy, threshold: 3, now: new Date('2026-11-19T11:00:00Z'), dryRun: false });
   assert.equal(result.detours.length, 0, '末尾已恢复成功的历史 streak 不再登记');
 });
+
+test('同一个任务反复撞限（attempts 累计）也算连续命中——#8104 型：1 条记录重试 5 次', () => {
+  const config = setup();
+  mkHubDb(config.root, [
+    { id: 1, rule: '调度会话执行', agent: 'codex-full-tier-light', attempts: 5, error: hubErr },
+  ]);
+  const result = scanForQuotaDetours(config, { policy, threshold: 3, now: new Date('2026-11-19T11:00:00Z'), dryRun: false });
+  assert.equal(result.detours.length, 1, '单条 attempts=5 达到阈值 3');
+  assert.equal(result.detours[0].blockedAgent, 'codex-full-tier-light');
+  assert.match(result.detours[0].evidence, /5 次/);
+});
+
+test('单条 attempts 不足阈值时不登记（attempts=2 < 3）', () => {
+  const config = setup();
+  mkHubDb(config.root, [
+    { id: 1, rule: '调度会话执行', agent: 'codex-full-tier-light', attempts: 2, error: hubErr },
+  ]);
+  const result = scanForQuotaDetours(config, { policy, threshold: 3, now: new Date('2026-11-19T11:00:00Z'), dryRun: false });
+  assert.equal(result.detours.length, 0);
+});
+
+test('重试后成功（done 且 attempts>0）不算失败，不登记', () => {
+  const config = setup();
+  mkHubDb(config.root, [
+    { id: 1, rule: '调度会话执行', agent: 'codex-full-tier-light', attempts: 5, state: 'done', error: null },
+  ]);
+  const result = scanForQuotaDetours(config, { policy, threshold: 3, now: new Date('2026-11-19T11:00:00Z'), dryRun: false });
+  assert.equal(result.detours.length, 0);
+});

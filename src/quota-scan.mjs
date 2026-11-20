@@ -159,7 +159,7 @@ export function readHubRunFailures({ dbFile, window = 200, patterns = DEFAULT_PA
     return {
       id: String(row.id), run: Number(row.id), attempt: 1, agent: String(row.agent || ''), model: '',
       kind: classifyKind(row.rule), ruleName: String(row.rule || ''),
-      failed: failed && quota, quota, evidence: redactEvidence(errorText) || '(无错误原文)', at: row.created_at || '',
+      failed: failed && quota, quota, hits: failed && quota ? Math.max(1, Number(row.attempts) || 0) : 1, evidence: redactEvidence(errorText) || '(无错误原文)', at: row.created_at || '',
     };
   });
 }
@@ -186,8 +186,8 @@ export function scanForQuotaDetours(config, options = {}) {
     if (failure.failed && failure.quota) {
       const state = states.get(key) || { count: 0, samples: [], kind: failure.kind, at: failure.at };
       state.agent = failure.agent; state.model = failure.model;
-      state.count += 1;
-      state.samples.push(`run ${failure.id}「${failure.evidence}」`);
+      state.count += failure.hits || 1; // Hub 一条 run 重试 N 次只有一行，按 attempts 计 N 次
+      state.samples.push(`run ${failure.id}${failure.hits > 1 ? `（重试 ${failure.hits} 次）` : ''}「${failure.evidence}」`);
       state.kind = state.kind || failure.kind;
       state.at = failure.at;
       states.set(key, state);
