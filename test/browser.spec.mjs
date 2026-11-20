@@ -215,6 +215,17 @@ try {
   const filterOptions = await page.locator('#project-filter').locator('option').allInnerTexts();
   assert.ok(filterOptions.includes('全部项目'), 'project filter must offer an explicit 全部 option');
   assert.equal(await page.locator('#attention-list').count(), 1, 'overview must have one attention list');
+  // 运行环境从总览搬到管理后台的「运行环境」分区，内容仍随实时快照刷新
+  assert.equal(await page.locator('#view-overview #environment-list').count(), 0, 'overview must no longer host the runtime environment panel');
+  await page.getByRole('button', { name: '管理后台', exact: true }).click();
+  await page.locator('.admin-subnav a', { hasText: '运行环境' }).click();
+  await page.locator('#view-admin #environment-list .list-row', { hasText: '无模型 Agent' }).waitFor();
+  assert.match(await page.locator('#view-admin #environment-list').innerText(), /桌面通知[\s\S]*在线/, 'admin runtime environment lists channels with online state');
+  assert.equal(await page.locator('#admin-platform-models').isHidden(), true, 'switching to 运行环境 hides the platform/model pane');
+  assert.equal(await page.locator('.admin-subnav a[aria-current="page"]').innerText(), '运行环境');
+  await page.locator('.admin-subnav a', { hasText: '平台与模型' }).click();
+  assert.equal(await page.locator('#admin-environment').isHidden(), true, 'switching back hides the runtime environment pane');
+  await page.getByRole('button', { name: '总览', exact: true }).click();
   assert.match(await page.locator('#summary').innerText(), /今日完成/); assert.match(await page.locator('#summary').innerText(), /1,234/);
   assert.ok((await page.locator('#running-list').innerText()).includes(`项目 · ${path.basename(root)}`), 'overview task summary must show its short project name');
   assert.ok((await page.locator('#running-list').innerText()).includes('执行 · 无模型 Agent'), 'overview items must show which agent executes them');

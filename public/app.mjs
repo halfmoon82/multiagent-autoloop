@@ -247,6 +247,16 @@ function showView(name) {
 document.querySelectorAll('.nav-item').forEach(item => item.addEventListener('click', () => showView(item.dataset.view)));
 const dag = initDag({ api, notify: showNotice, showView, getProjects: () => state.projects });
 const admin = initAdmin({ api, toast: showToast });
+// 管理后台分区切换：平台与模型 / 运行环境（运行环境由 render 随快照刷新，这里只切显隐）
+document.querySelectorAll('.admin-subnav a[data-admin-pane]').forEach(link => link.addEventListener('click', event => {
+  event.preventDefault();
+  document.querySelectorAll('.admin-subnav a[data-admin-pane]').forEach(item => {
+    const active = item === link;
+    item.classList.toggle('active', active);
+    if (active) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current');
+    $(item.dataset.adminPane).hidden = !active;
+  });
+}));
 devices = initDevices({ api, notify: showNotice, showView });
 document.querySelectorAll('[data-go]').forEach(item => item.addEventListener('click', () => showView(item.dataset.go)));
 async function perform(action, id, body = {}) {
