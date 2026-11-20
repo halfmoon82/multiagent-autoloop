@@ -1,2 +1,103 @@
-/* artifacts 页面接缝样式：后续节点实现产物浏览与阅读。 */
-.page[data-page="artifacts"] { min-height: 4rem; }
+/* artifacts 页面（DAG 节点 ui-artifacts）：手机全屏单栈，折叠/宽屏左列表右阅读只刷新右侧。 */
+
+.page[data-page="artifacts"] {
+  display: flex;
+  flex-direction: column;
+  min-height: 60vh;
+  gap: 0.75rem;
+}
+
+.artifacts-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.artifacts-entry { font-size: 1.05rem; }
+.artifacts-count,
+.artifacts-layout { color: var(--muted, #6b7b74); font-size: 0.85rem; }
+
+.artifacts-error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.5rem;
+  background: #fff2f0;
+  color: #a4231b;
+}
+.artifacts-retry { margin-left: auto; }
+
+/* 列表行整行热区约 48dp，便于手指点按。 */
+.artifacts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-height: 3rem;
+}
+.artifacts-row {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.7rem 0.85rem;
+  text-align: left;
+  border: 1px solid var(--line, #d9e2dc);
+  border-radius: 0.5rem;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.artifacts-row[data-selected="1"] {
+  border-color: var(--accent, #0f3d2e);
+  background: #eef5f1;
+}
+
+/* 阅读侧：手机全屏覆盖列表点按进入；只读，不做可跳转链接。 */
+.artifacts-reader {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-height: 12rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line, #d9e2dc);
+  border-radius: 0.5rem;
+  background: #fff;
+}
+.artifacts-reader-title { margin: 0; font-size: 1.1rem; }
+.artifacts-reader-meta { margin: 0; color: var(--muted, #6b7b74); font-size: 0.85rem; overflow-wrap: anywhere; }
+.artifacts-download { align-self: flex-start; }
+
+.artifacts-back { display: flex; gap: 0.5rem; }
+
+/* 手机单栈：阅读出现时盖住列表，实现「列表 → 全屏阅读 → 逐级返回」。 */
+@media (max-width: 899px) {
+  .page[data-page="artifacts"] .artifacts-list:not([hidden]) ~ .artifacts-reader:not([hidden]) {
+    margin-top: 0;
+  }
+  .page[data-page="artifacts"] .artifacts-reader:not([hidden]) ~ .artifacts-back {
+    order: 10;
+  }
+}
+
+/* 折叠/宽屏：左列表右阅读并排；选文件只更新右侧，左侧列表与滚动位置不动。 */
+@media (min-width: 900px) {
+  .page[data-page="artifacts"] {
+    flex-direction: row;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .artifacts-head,
+  .artifacts-error,
+  .artifacts-back { flex: 1 0 100%; }
+  .artifacts-list {
+    flex: 0 0 42%;
+    max-height: 65vh;
+    overflow-y: auto;
+  }
+  .artifacts-reader {
+    flex: 1 1 55%;
+    min-height: 65vh;
+    overflow-y: auto;
+  }
+}
