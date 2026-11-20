@@ -361,7 +361,7 @@ async function scanOnce({ config, rules, chains, signature, ttlMs }) {
     const agent = cleaned(run.agent);
     if (agent) { entry.missingByAgent ||= {}; entry.missingByAgent[agent] = (entry.missingByAgent[agent] || 0) + 1; }
   };
-  const fetchState = before => hubRequest(config, '/v1/state' + (before == null ? '' : `?before=${before}`));
+  const fetchState = before => hubRequest(config, '/v1/state' + (before == null ? '' : `?before=${before}`), { cacheMs: 0 });
   const nextCursor = state => (Number.isSafeInteger(state?.nextBefore) && state.nextBefore > 0 ? state.nextBefore : null);
   const alreadyComplete = ledger.complete === true;
   // resumeCursor：最深（最小 id）的未扫描点，单调变深，绝不被浅处的游标覆盖。
