@@ -167,7 +167,7 @@ const hub = await fakeHub((req, res) => {
   if (req.url.endsWith('/resume')) { snapshot.lines[0].paused = null; return json(res, { changed: true }); }
   return json(res, { ok: true });
 });
-const consoleServer = createConsoleServer({ hubUrl: hub.url, ownerKey: 'not-returned', rulesFile, cliPath, root, projectRoots: [root] }, schedulingSessions);
+const consoleServer = createConsoleServer({ hubUrl: hub.url, ownerKey: 'not-returned', sourceKey: 'source-key', rulesFile, cliPath, root, projectRoots: [root] }, schedulingSessions);
 const url = await listen(consoleServer);
 let context;
 try {
