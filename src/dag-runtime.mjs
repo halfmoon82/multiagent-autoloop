@@ -13,6 +13,7 @@ import { createPublisher } from './dag-publish.mjs';
 import { ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
 import { createProgressNotifier, createSentStore, wakeSentFile } from './dag-stall.mjs';
 import { createSlotRuntime, seg } from './dag-slots.mjs';
+import { createSharedDeps } from './dag-deps.mjs';
 import * as wip from './dag-wip.mjs';
 import { hubRequest } from './hub.mjs';
 import { verifyDesign as defaultVerifyDesign } from './design-verify.mjs';
@@ -123,9 +124,17 @@ export function createBlockedEvidence({ request, config }) {
   };
 }
 
-export async function createDagRuntime({ rootRun, config, store, request = hubRequest, gh, runTests = defaultRunTests, verifyDesign = defaultVerifyDesign, readToken, git, now = Date.now, chooseApproach } = {}) {
+// 每个运行目录一份共享依赖缓存（进程内复用，后台安装状态跨 DAG 共享）。
+const sharedDepsByRoot = new Map();
+export function sharedDepsFor(root, options = {}) {
+  if (!root) return null;
+  if (!sharedDepsByRoot.has(root)) sharedDepsByRoot.set(root, createSharedDeps({ root, log: console.error, ...options }));
+  return sharedDepsByRoot.get(root);
+}
+
+export async function createDagRuntime({ rootRun, config, store, request = hubRequest, gh, runTests = defaultRunTests, verifyDesign = defaultVerifyDesign, readToken, git, now = Date.now, chooseApproach, sharedDeps = sharedDepsFor(config?.root) } = {}) {
   if (!rootRun.mirrorPath || !rootRun.baseCommit) throw new Error('DAG run 缺少控制器 mirror/base 快照，拒绝在 worker 可写仓库执行');
-  const rt = createSlotRuntime({ project: rootRun.mirrorPath, gitDir: rootRun.mirrorPath, runId: rootRun.runId, ...(git ? { git } : {}) });
+  const rt = createSlotRuntime({ project: rootRun.mirrorPath, gitDir: rootRun.mirrorPath, runId: rootRun.runId, ...(git ? { git } : {}), ...(sharedDeps ? { depsSource: sharedDeps.resolve } : {}) });
   await rt.ensureSlots();
   const adapter = gh || createGhAdapter({ cwd: rootRun.project });
   const publisher = createPublisher({ store, rootRunId: rootRun.runId, rt, gh: adapter, runTests, verifyDesign, baseRef: `refs/heads/${rootRun.baseBranch}`, readToken });
@@ -153,6 +162,18 @@ export function startDagControllers({ config, store, directory = path.join(confi
     catch (error) { lock.release(); controllers.delete(rootRun.runId); log(`[dag] 恢复控制器失败 ${rootRun.runId}：${msg(error)}`); }
   }
 
+  // DAG 终结（done/cancelled）后回收它的槽位 worktree：每个进程每条 run 只回收一次；
+  // 有未保存改动的槽位保留（不丢 WIP）并记日志，下次启动再试。
+  const pruned = new Set();
+  async function pruneSlots(rootRun) {
+    if (pruned.has(rootRun.runId) || !rootRun.mirrorPath) return;
+    pruned.add(rootRun.runId);
+    try {
+      const result = await (rest.removeSlots || (run => createSlotRuntime({ project: run.mirrorPath, gitDir: run.mirrorPath, runId: run.runId }).removeSlots()))(rootRun);
+      if (result?.removed?.length || result?.kept?.length) log(`[dag] 回收已终结 DAG 槽位 ${rootRun.runId}：移除 ${result.removed.length} 个${result.kept.length ? `，保留有未保存改动的槽位 ${result.kept.join(',')}` : ''}`);
+    } catch (error) { log(`[dag] 回收槽位失败 ${rootRun.runId}：${msg(error)}`); }
+  }
+
   // 同一时刻只跑一轮；重叠的调用复用在途那一轮（单写入者，重复 tick 幂等）。
   const tickOnce = () => (stopped ? Promise.resolve() : (inflight ||= runOnce().finally(() => { inflight = null; })));
   async function runOnce() {
@@ -161,7 +182,11 @@ export function startDagControllers({ config, store, directory = path.join(confi
       try { roots = runStore.listRuns().filter(run => run.nodeId === ROOT_NODE); }
       catch (error) { log(`[dag] 读取 dag-runs 失败（fail closed，本轮不推进）：${msg(error)}`); return; }
       for (const rootRun of roots) {
-        if (isTerminal(rootRun.status)) { const held = controllers.get(rootRun.runId); held?.lock?.release(); controllers.delete(rootRun.runId); continue; }
+        if (isTerminal(rootRun.status)) {
+          const held = controllers.get(rootRun.runId); held?.lock?.release(); controllers.delete(rootRun.runId);
+          await pruneSlots(rootRun);
+          continue;
+        }
         await adopt(rootRun);
         const held = controllers.get(rootRun.runId);
         if (!held?.ctl) continue;
