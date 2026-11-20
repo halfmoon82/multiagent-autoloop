@@ -52,6 +52,11 @@ progress.progress-bar::-moz-progress-bar{background:var(--accent);border-radius:
 .bubble.agent{align-self:flex-start;background:#eef2f0;border:1px solid var(--line);border-bottom-left-radius:4px}
 .bubble.streaming .bubble-text::after{content:'▍';color:var(--accent);animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
+@keyframes working-pulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
+.agent-working{display:flex;align-items:center;gap:8px;align-self:flex-start;font-size:12px;color:var(--muted);padding:4px 2px}
+.working-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:working-pulse 1.2s ease-in-out infinite}
+.working-elapsed{font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){.working-dot{animation:none}}
 form.session-message{display:flex;gap:8px}
 form.session-message input,form.session-message textarea{flex:1;min-width:0}
 .queue-list{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}

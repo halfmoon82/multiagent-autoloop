@@ -170,3 +170,41 @@ test('rules matching scheduling events through Hub wildcards are protected too (
   assert.throws(() => assertRuleAllowed('动作前缀', rules), /sched\.command/);
   assert.equal(assertRuleAllowed('无关前缀', rules).name, '无关前缀');
 });
+
+test('dag.create 走控制台 API 创建授权 run：字段校验、服务端 digest 兜底、旧 create_dag 仍禁用', async () => {
+  const { root, context } = fixture([
+    { action: 'dag.create', project: '/p', planId: 'p1', planDigest: 'd1', confirmedActionIds: ['merge', 'pr'] },
+    { action: 'dag.create', project: '/p', planId: 'p2', planDigest: 'd2' },
+    { action: 'dag.create', project: '/p', planId: 'p3', planDigest: 'd3', confirmedActionIds: ['merge'], selectedOptionalActions: ['deploy'] },
+  ]);
+  const calls = [];
+  const out = await runSchedActions({
+    context, root, rules: RULES,
+    hub: async () => ({}),
+    fetch: async (pathname, opts) => { calls.push([pathname, opts?.body]); return { runId: 'r1' }; },
+  });
+  assert.equal(calls.length, 1, '只有字段齐全且不带可选动作的一条能真正打到 /api/dag-runs');
+  const [pathname, body] = calls[0];
+  assert.equal(pathname, '/api/dag-runs');
+  const sent = body; // consoleCall 原样透传 body 对象（同 dag.revive 口径）
+  assert.equal(sent.confirm, true);
+  assert.equal(sent.planId, 'p1');
+  assert.equal(sent.planDigest, 'd1');
+  assert.deepEqual(sent.confirmedActionIds, ['merge', 'pr']);
+  assert.deepEqual(sent.selectedOptionalActions, [], '可选高风险动作恒为空，由确认页独占');
+  assert.equal(out.results[0].ok, true);
+  assert.equal(out.results[1].ok, false);
+  assert.match(out.results[1].result.error, /confirmedActionIds/, '缺授权动作清单必须拒绝');
+  assert.equal(out.results[2].ok, false);
+  assert.match(out.results[2].result.error, /selectedOptionalActions/, '可选动作只能用户确认页勾选，调度不得代选');
+});
+
+test('dag.create 成功后写幂等标记，重复同事件不重复创建', async () => {
+  const { root, context } = fixture([{ action: 'dag.create', project: '/p', planId: 'p1', planDigest: 'd1', confirmedActionIds: ['merge'] }]);
+  const calls = [];
+  const fetch = async (pathname, opts) => { calls.push(pathname); return { runId: 'r1' }; };
+  await runSchedActions({ context, root, rules: RULES, hub: async () => ({}), fetch });
+  const again = await runSchedActions({ context, root, rules: RULES, hub: async () => ({}), fetch });
+  assert.equal(calls.length, 1, '同一事件重复处理不得重复创建 DAG');
+  assert.equal(again.skipped[0].reason, '已处理（幂等）');
+});

@@ -685,5 +685,12 @@ overrideButtons.forEach(button => button.addEventListener('click', clearDialogFe
 $('project-filter').addEventListener('change', event => { state.projectFilter = event.target.value; render(); });
 $('clear-project-filter').addEventListener('click', () => { state.projectFilter = ''; render(); });
 $('refresh').addEventListener('click', refresh);
-setInterval(() => { if (!document.hidden) refresh(); }, 2000);
+// 常规 2 秒；有会话本轮在进行（turnStartedAt 有值）时每秒刷新，让「已运行时长」与实时输出及时可见。
+let pollTick = 0;
+setInterval(() => {
+  if (document.hidden) return;
+  pollTick += 1;
+  const inFlight = (state.sessions || []).some(session => session.turnStartedAt);
+  if (inFlight || pollTick % 2 === 0) refresh();
+}, 1000);
 refresh();

@@ -19,6 +19,15 @@ export function formatState(snapshot) {
   };
 }
 const LABELS = { claimed: '运行中', queued: '排队中', unknown: '失联待核实', done: '已完成', nothing: '无需处理', cancelled: '已停止', open: '待处理', decided: '已回答', closed: '已结案' };
+// 已运行时长：mm:ss，满一小时 h:mm:ss；起点缺失/非法/在未来返回空串（不编造）。
+export function formatElapsed(startedAt, nowMs = Date.now()) {
+  const start = Date.parse(startedAt || '');
+  if (!Number.isFinite(start) || start > nowMs) return '';
+  const total = Math.floor((nowMs - start) / 1000);
+  const h = Math.floor(total / 3600); const m = Math.floor((total % 3600) / 60); const sec = total % 60;
+  const pad = n => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+}
 export const statusLabel = state => LABELS[state] || state || '未知';
 export function scheduleLabel(rule) {
   if (rule.when?.cron) return `定时 · ${rule.when.cron}`;

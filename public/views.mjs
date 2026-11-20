@@ -1,4 +1,4 @@
-import { formatState, formatTime, formatDateTime, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
+import { formatState, formatTime, formatDateTime, formatElapsed, statusLabel, scheduleLabel, projectName, ruleLineStatus } from './format.mjs';
 import { splitRunSections, projectForRun, projectForCard, projectActivity, matchesProject, latestChainsByProject, ruleProject, chainUsage, chainNodeExecutors, projectUsageText, usageNotes } from './status-sections.mjs';
 import { buildSerialView, progressOverview } from './progress-view.mjs';
 export function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
@@ -139,6 +139,14 @@ export function renderSessionCard(session, { queueEditing = null, artifactsPanel
     log.append(streaming);
   }
   if (!(session.messages || []).length && !session.liveText) log.append(el('div', 'empty', session.busy ? 'Agent 正在处理首轮分析…' : '还没有对话，发一条消息开始。'));
+  // 「Agent 正在响应」：本轮进行中常驻一行（脉动点 + 最近活动 + 已运行时长），让用户确认没有卡死。
+  if (!closed && session.turnStartedAt) {
+    const elapsed = formatElapsed(session.turnStartedAt);
+    const working = el('div', 'agent-working');
+    working.setAttribute('role', 'status');
+    working.append(el('span', 'working-dot'), el('span', 'working-text', `Agent 正在响应${session.activity ? ` · ${session.activity}` : ''}`), ...(elapsed ? [el('span', 'working-elapsed', `已运行 ${elapsed}`)] : []));
+    log.append(working);
+  }
   card.append(log);
 
   if (!closed) {

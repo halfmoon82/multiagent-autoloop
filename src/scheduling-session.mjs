@@ -98,7 +98,8 @@ export function buildHubMcpServer() {
 // 调度会话指引用户在控制台操作时用的入口文字：只写界面上真实存在、任何状态下都能到达的路径。
 // CONSOLE_DAG_ENTRY_LABELS 由契约测试逐个对照 public/ 里的真实按钮文字，界面改名时测试会红。
 export const CONSOLE_DAG_ENTRY_LABELS = Object.freeze(['总览', '项目任务进度', '新建 DAG（执行授权）', '读取计划与预检', '确认并进入事件链']);
-export const CONSOLE_DAG_ENTRY_TEXT = '需要用户在控制台创建 DAG（执行授权）时，只按这条路径指引：「总览」→「项目任务进度」面板右上角「新建 DAG（执行授权）」→ 选项目、填计划编号 →「读取计划与预检」→ 勾选确认框 →「确认并进入事件链」。不要编造其他界面路径；不确定某个按钮在哪时如实说不确定，不要猜。';
+// 手工入口仅兜底：默认创建方式是调度会话里的 dag.create（见【调度动作】）。
+export const CONSOLE_DAG_ENTRY_TEXT = '需要用户在控制台手工创建 DAG（执行授权，仅兜底）时，只按这条路径指引：「总览」→「项目任务进度」面板右上角「新建 DAG（执行授权）」→ 选项目、填计划编号 →「读取计划与预检」→ 勾选确认框 →「确认并进入事件链」。不要编造其他界面路径；不确定某个按钮在哪时如实说不确定，不要猜。';
 
 export function buildSchedulingPrompt({ project, writableDir } = {}) {
   return [
@@ -114,6 +115,7 @@ export function buildSchedulingPrompt({ project, writableDir } = {}) {
     `6. 实现边界：琐碎自愈（本地调度脚本、配置、状态、规则的小修，见任务 2）由本会话直接做，不必派发；项目代码的实现一律通过独立 worker 会话执行（每个 worker 独立 worktree/分支/交付边界，模型选择见 docs/scheduling-contract.md 的模型派发规则）。禁止本会话亲自写项目代码，也禁止在本会话内派生子智能体/子会话代劳——那等同于本会话直接实施，同样违反本护栏。判别标准：worker 指按第 4 条开独立 worktree、有独立交付边界的正式派发；除此之外的一切子会话均属代劳。收到实现类需求时的标准动作：拆解任务 → 选择模型 → 按第 4 条开 worktree → 派发 worker → 审阅交付并合并结果。`,
     `【控制台入口】${CONSOLE_DAG_ENTRY_TEXT}`,
     `【工具】autoloop-hub MCP 工具：list_rules（规则与暂停状态）、list_runs（最近轮次与失败原因）、list_cards（待处理卡片）、resume_rule / pause_rule / run_rule（受控写：自愈恢复与重触发；run_rule 同规则 10 分钟冷却）；read_console_doc（按白名单路径读取控制台文档全文）。`,
+    `【调度动作】回执事件里可写 sched.command：dag.revive（复活阻塞节点）、dag.create（创建 DAG 执行授权）、run_rule / pause_rule（规则重触发/暂停）。dag.create 是默认创建方式，手工控制台入口仅作兜底；用它之前必须先：读计划 → 把执行范围（节点、授权动作、收益/代价）用用户话在会话里出示 → 用户在本会话明确同意 → 然后提交 {action:'dag.create', project, planId, planDigest, remoteUrl, confirmedActionIds}（planDigest 与 confirmedActionIds 必须来自 GET /api/dag-plan 的真实读取，服务端会校验；可选高风险动作不得代选，需要时请用户走手工确认页；未先出示执行范围一律不提交）。`,
     `【控制台文档索引】需要调度契约/架构细节时用 read_console_doc 按需读取（提示词不内联全文，以工具读到的磁盘内容为准）：`,
     `- AGENTS.md —— 控制台仓库总规则`,
     `- README.md —— 控制台概述`,
@@ -163,6 +165,9 @@ function toPublicSession(record) {
     messages: record.messages.map(message => ({ ...message })),
     liveText: record.liveText,
     busy: record.status === 'running',
+    // 「Agent 正在响应」指示：本轮开始时间（界面算已运行时长）与最近一次活动。只在本轮进行中给出，结束即清空。
+    turnStartedAt: ['running', 'unknown'].includes(record.status) ? record.turnStartedAt || null : record.status === 'initializing' ? record.createdAt : null,
+    activity: record.status === 'running' ? record.activity || '' : '',
     queuedCount: (record.queue || []).length,
     queued: (record.queue || []).map(item => ({ id: item.id, text: item.text, at: item.at })),
     createdAt: record.createdAt,
@@ -174,6 +179,19 @@ function toPublicSession(record) {
     view.hubRunId = record.hub.runId || null;
   }
   return view;
+}
+
+// 最近一次活动的人话描述（界面「Agent 正在响应」行用）：工具调用带上标题，让用户看到它在做什么。
+function activityOf(update) {
+  if (!update || typeof update !== 'object') return '';
+  if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') return '正在输出分析';
+  if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+    const title = String(update.title || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    return title ? `正在调用工具：${title}` : '正在调用工具';
+  }
+  if (update.sessionUpdate === 'plan') return '正在更新计划';
+  if (update.sessionUpdate === 'agent_thought_chunk') return '正在思考';
+  return '';
 }
 
 function summarizeUpdate(update) {
@@ -424,6 +442,7 @@ export class SchedulingSessionManager {
       .onNotification(methods.client.session.update, notification => {
         const update = notification?.params?.update || {};
         touch(summarizeUpdate(update));
+        { const activity = activityOf(update); if (activity) record.activity = activity; }
         if ((update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') && update.toolCallId) {
           record.knownCalls.set(update.toolCallId, mergeCall(record.knownCalls.get(update.toolCallId), update));
           if (record.knownCalls.size > 500) record.knownCalls.delete(record.knownCalls.keys().next().value);
@@ -571,6 +590,7 @@ export class SchedulingSessionManager {
       agent: HUB_SCHEDULING_AGENT_LABEL,
       cwd: this.#projectCwd(projectId),
       status: 'unknown',
+      turnStartedAt: nowIso,
       project: projectId,
       writableDir: null,
       continuedFrom,
@@ -642,6 +662,7 @@ export class SchedulingSessionManager {
     record.hub.turn = turn;
     record.hub.lastEventId = numericEventId(result);
     record.status = 'unknown';
+    record.turnStartedAt = this.now().toISOString();
     record.stopReason = null;
     this.#pushMessage(record, 'user', message);
     // 队列项各成一条 Hub 事件；投递失败则留回队首，不丢消息。
@@ -1044,7 +1065,7 @@ export class SchedulingSessionManager {
       this.#persist(record);
       return run;
     }
-    if (terminal) record.hub.lastAgent = agent;
+    if (terminal) { record.hub.lastAgent = agent; record.turnStartedAt = null; }
     if (run.runId) record.hub.runId = run.runId;
     record.hub.lastState = run.state ?? null;
     record.status = mapHubStateToStatus(run.state);
@@ -1056,6 +1077,8 @@ export class SchedulingSessionManager {
 
   #runTurn(record, text, extraBlocks = []) {
     record.liveText = '';
+    record.activity = '';
+    record.turnStartedAt = this.now().toISOString();
     record.status = 'running';
     record.updatedAt = this.now().toISOString();
     record.promptTurn = record.connection.agent.request(methods.agent.session.prompt, {
@@ -1065,6 +1088,8 @@ export class SchedulingSessionManager {
     const finish = (reply, stopReason, error) => {
       const interrupted = record.interruptRequested;
       record.liveText = '';
+      record.activity = '';
+      record.turnStartedAt = null;
       record.interruptRequested = false;
       if (error && !(interrupted && !record.closed)) {
         record.status = 'error';
