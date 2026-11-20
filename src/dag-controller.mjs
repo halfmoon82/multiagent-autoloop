@@ -85,6 +85,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     const lines = [
       `DAG 节点 ${id}（${run.role}，generation ${run.generation}，attempt ${run.attempt}）。`,
       `slot=${n.slot} worktree=${rt.slotPath(n.slot)} branch=${n.branch}`,
+      ...(rt.sharedDepsLinked?.(n.slot) ? ['依赖：槽位 node_modules 已软链到控制器共享依赖缓存（按锁文件管理），直接使用，不要运行 npm ci/npm install；如节点确需改依赖，照常改 package.json 与锁文件并在回执 tests 里说明，下次 prepare 会按新锁文件换用对应缓存。'] : []),
       `expectedAdvanceId=${run.expectedAdvanceId}（回执必须逐字一致，只从本事件 detail 读取，不得猜测）`,
       `节点契约：${JSON.stringify(node.contract || {})}`,
     ];
