@@ -206,12 +206,12 @@ export function renderSessionCard(session, { queueEditing = null, artifactsPanel
       panel.setAttribute('aria-label', '会话产物文件');
       if (!artifactsPanel.files.length) panel.append(el('p', 'row-meta', '没有找到 md/html 产物文件。'));
       for (const file of artifactsPanel.files) {
-        const item = el('button', 'artifact-file', file.path);
+        const item = el('button', 'artifact-file', `${file.kind === 'file' ? '⬇ ' : ''}${file.path}`);
         item.type = 'button';
-        item.dataset.action = 'artifact-view';
+        item.dataset.action = file.kind === 'file' ? 'artifact-download' : 'artifact-view';
         item.dataset.id = session.id;
         item.dataset.path = file.path;
-        item.title = `${file.name} · ${Math.max(1, Math.round(file.size / 1024))}KB · 点击打开查看`;
+        item.title = `${file.name} · ${file.size >= 1048576 ? `${Math.round(file.size / 1048576)}MB` : `${Math.max(1, Math.round(file.size / 1024))}KB`} · ${file.kind === 'file' ? '点击下载' : '点击打开查看'}`;
         panel.append(item);
       }
       card.append(panel);

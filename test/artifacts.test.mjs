@@ -59,3 +59,41 @@ test('readArtifact reads a file and rejects traversal, absolute escape and unkno
   symlinkSync('/etc/passwd', path.join(root, 'docs', 'evil.md'));
   assert.throws(() => readArtifact(root, 'docs/evil.md'), /越界/);
 });
+
+import { resolveDownload, DOWNLOAD_EXTENSIONS, MAX_DOWNLOAD_BYTES } from '../src/artifacts.mjs';
+
+function binFixture() {
+  const root = fixture();
+  mkdirSync(path.join(root, 'work', 'apk'), { recursive: true });
+  writeFileSync(path.join(root, 'work', 'apk', 'app.apk'), Buffer.from([0x50, 0x4b, 3, 4]));
+  writeFileSync(path.join(root, 'work', 'apk', 'app.apk.sha256'), 'abc  app.apk\n');
+  writeFileSync(path.join(root, 'docs', 'shot.png'), Buffer.from([0x89, 0x50]));
+  return root;
+}
+
+test('listArtifacts 默认只列文档（手机产物页口径不变），includeFiles 才带二进制交付物并标 kind', () => {
+  const root = binFixture();
+  assert.ok(listArtifacts(root).every(file => /\.(md|html)$/.test(file.path)), '默认口径不得出现 apk/png');
+  const files = listArtifacts(root, { includeFiles: true });
+  const byPath = Object.fromEntries(files.map(file => [file.path, file.kind]));
+  assert.equal(byPath['work/apk/app.apk'], 'file');
+  assert.equal(byPath['docs/shot.png'], 'file');
+  assert.equal(byPath['docs/report.md'], 'doc');
+  assert.equal(byPath['work/apk/app.apk.sha256'], undefined, '.sha256 不是交付物类型');
+  assert.equal(byPath['docs/deep.txt'], undefined, 'txt 仍不算产物');
+});
+
+test('resolveDownload 返回真实路径与大小，拒绝越界、符号链接逃逸、未知类型、过大文件', () => {
+  const root = binFixture();
+  const ok = resolveDownload(root, 'work/apk/app.apk');
+  assert.equal(ok.name, 'app.apk');
+  assert.equal(ok.size, 4);
+  assert.throws(() => resolveDownload(root, '../outside.apk'), /越界/);
+  assert.throws(() => resolveDownload(root, '/etc/hosts'), /越界/);
+  assert.throws(() => resolveDownload(root, 'docs/deep.txt'), /不支持/);
+  assert.throws(() => resolveDownload(root, 'missing.apk'), /不存在/);
+  symlinkSync('/bin/ls', path.join(root, 'work', 'evil.apk'));
+  assert.throws(() => resolveDownload(root, 'work/evil.apk'), /越界/);
+  assert.throws(() => resolveDownload(root, 'work/apk/app.apk', { maxBytes: 3 }), /过大/);
+  assert.ok(DOWNLOAD_EXTENSIONS.has('.apk') && MAX_DOWNLOAD_BYTES >= 100 * 1024 * 1024);
+});

@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createReadStream } from 'node:fs';
 import { classifySessionRequest } from './session-classify.mjs';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -131,6 +132,24 @@ async function handleApi(config, req, res, url) {
   let sessionMatch;
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/artifacts$/))) return jsonResponse(res, 200, { files: await config.schedulingSessions.listSessionArtifacts(decodeURIComponent(sessionMatch[1])) });
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/file$/))) return jsonResponse(res, 200, await config.schedulingSessions.readSessionArtifact(decodeURIComponent(sessionMatch[1]), String(url.searchParams.get('path') || '')));
+  if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/download$/))) {
+    // 二进制交付物下载：只做 attachment 流式输出（nosniff，不内联渲染），路径校验同产物读取。
+    const file = await config.schedulingSessions.resolveSessionDownload(decodeURIComponent(sessionMatch[1]), String(url.searchParams.get('path') || ''));
+    const asciiName = file.name.replace(/[^\x20-\x7e]|["\\]/g, '_');
+    res.writeHead(200, {
+      ...securityHeaders(),
+      'content-type': 'application/octet-stream',
+      'content-length': String(file.size),
+      'content-disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+    });
+    await new Promise(resolve => {
+      const stream = createReadStream(file.real);
+      stream.on('error', () => { res.destroy(); resolve(); });
+      res.on('close', () => { stream.destroy(); resolve(); });
+      stream.pipe(res);
+    });
+    return true;
+  }
   if (req.method === 'GET' && url.pathname === '/api/detours') return jsonResponse(res, 200, { detours: readDetours(config).map(publicDetour).filter(Boolean) });
   if (req.method === 'GET' && url.pathname === '/api/delegated-cards') {
     // 先按 Hub 轮次收口已被调度处理完的退回；读 Hub 失败只跳过收口，照常列出。

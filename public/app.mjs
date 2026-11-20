@@ -382,6 +382,17 @@ document.addEventListener('click', async event => {
       dialog.showModal();
       return;
     }
+    if (action === 'artifact-download') {
+      // 二进制交付物走原生下载（attachment），不进查看器；URL 直链即可，同源校验由服务端路径白名单兜底。
+      const filePath = button.dataset.path || '';
+      const link = el('a');
+      link.href = `/api/scheduling-sessions/${encodeURIComponent(id)}/download?path=${encodeURIComponent(filePath)}`;
+      link.download = '';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      return;
+    }
     if (action === 'artifact-close') { $('artifact-dialog').close(); return; }
     if (action === 'queue-clear') {
       if (!confirm('清空队列中的全部消息？')) return;

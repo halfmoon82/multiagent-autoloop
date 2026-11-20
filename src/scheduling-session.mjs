@@ -9,7 +9,7 @@ import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 import { SessionArchive } from './session-archive.mjs';
-import { listArtifacts, readArtifact } from './artifacts.mjs';
+import { listArtifacts, readArtifact, resolveDownload } from './artifacts.mjs';
 import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
 import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_LABEL, HUB_RECONCILE_INTERVAL_MS, schedulingSubject, schedulingEventId, mapHubStateToStatus, numericEventId, readHubRun } from './hub-scheduling-session.mjs';
@@ -807,9 +807,20 @@ export class SchedulingSessionManager {
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
     try {
       // 只列本会话开始后新建/修改的文件：同项目的会话共用一个工作目录，不按时间界会把整个仓库的旧文档当成本会话产物。
-      return listArtifacts(record.cwd, { since: record.createdAt });
+      return listArtifacts(record.cwd, { since: record.createdAt, includeFiles: true });
     } catch (error) {
       throw new SchedulingSessionError(`产物目录不可读：${safeMessage(error)}`, { status: 404 });
+    }
+  }
+
+  // 下载：返回已校验的真实路径与元信息；调用方（server）流式输出，不整文件读入内存。
+  async resolveSessionDownload(id, relPath) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
+    try {
+      return resolveDownload(record.cwd, relPath);
+    } catch (error) {
+      throw new SchedulingSessionError(error.message, { status: /越界|不支持|过大/.test(error.message) ? 400 : 404 });
     }
   }
 
