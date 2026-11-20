@@ -20,8 +20,8 @@
         <h2>设备绑定</h2>
         <p class="hint">在电脑控制台「设备授权管理」生成一次性二维码：可点「扫码绑定」用后置摄像头扫描，也可把二维码内容手工填到下面。首次使用或授权被解除后需要重新绑定。</p>
         <label for="base-url">控制台地址</label>
-        <input id="base-url" type="url" placeholder="https://控制台地址" autocomplete="off" autocapitalize="off" spellcheck="false">
-        <p class="hint">任意移动网络或外部 Wi-Fi 下填写控制台的 HTTPS 地址；只有本机回环允许 http。</p>
+        <input id="base-url" type="url" value="https://auto.socialmore.net" placeholder="https://auto.socialmore.net" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <p class="hint">打包版直接加载 https://auto.socialmore.net/mobile/ 与控制台同源，无需手工注入地址；仅自建控制台时才改这里。任意移动网络或外部 Wi-Fi 下使用 HTTPS 地址，只有本机回环允许 http。</p>
         <label for="bind-name">设备名称</label>
         <input id="bind-name" type="text" value="Android 设备" maxlength="80" autocomplete="off">
         <label for="bind-payload">绑定二维码内容</label>
