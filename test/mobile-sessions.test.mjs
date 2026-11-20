@@ -13,6 +13,11 @@ import {
   SESSION_KINDS, SESSION_KIND_LABELS, sessionKindLabel, END_STATUS_LABELS, endStatusLabel,
   SESSION_KIND_FILTERS, RESTORE_INJECTED_TURNS,
   buildSessionList, buildNewSessionForm, buildArchiveDetail, buildRestoreRequest, applyRestoreResult,
+  SESSION_READ_PATHS, createSessionsReader, createSessionsWrite,
+  visibleRange, mergeStreamFrames, shouldFollowScroll, hasVoiceHook,
+  mobileSessionSummaries as browserSessionSummaries,
+  mobileArchiveSummaries as browserArchiveSummaries,
+  mobileArchiveTranscript as browserArchiveTranscript,
 } from '../mobile/src/features/sessions/index.mjs';
 import {
   SESSION_KIND_LABELS as BACKEND_KIND_LABELS,
@@ -289,4 +294,138 @@ test('上游文本全程是纯字符串：视图模型可安全渲染，不泄�
   });
   assert.ok(!dump.includes('<script') && !dump.includes('</div>') && !dump.includes('onerror='));
   assert.ok(!dump.includes('deviceToken') && !dump.includes('ownerKey') && !dump.includes('server-secret'));
+});
+
+// ---------------------------------------------------------------------------
+// RED 9：浏览器侧投影与后端同源（页面拿真实接口数据，口径不漂移）
+// ---------------------------------------------------------------------------
+test('浏览器侧会话/存档/转录投影与后端同源，缺失不编造', () => {
+  assert.deepEqual(browserSessionSummaries(ACTIVE), mobileSessionSummaries(ACTIVE));
+  assert.deepEqual(browserSessionSummaries(null), []);
+  assert.deepEqual(browserSessionSummaries([null, 3, {}]), []);
+  assert.deepEqual(browserArchiveSummaries(ARCHIVED), mobileArchiveSummaries(ARCHIVED));
+  assert.deepEqual(browserArchiveSummaries(undefined), []);
+  assert.deepEqual(browserArchiveTranscript(ARCHIVED[0]), mobileArchiveTranscript(ARCHIVED[0]));
+  assert.equal(browserArchiveTranscript(null).empty, true);
+});
+
+// ---------------------------------------------------------------------------
+// RED 10：只读读取器——固定路径、同源校验、组装快照与错误态
+// ---------------------------------------------------------------------------
+test('createSessionsReader 走固定只读路径、同源校验，并组装列表快照', async () => {
+  assert.deepEqual([...SESSION_READ_PATHS], ['/api/scheduling-sessions', '/api/session-archives']);
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push([url, init]);
+    const path = new URL(url).pathname;
+    return { ok: true, json: async () => (path === '/api/scheduling-sessions' ? ACTIVE : { sessions: ARCHIVED }) };
+  };
+  const reader = createSessionsReader({ origin: 'https://auto.socialmore.net', fetchImpl });
+  const { snapshot, list } = await reader.load();
+  assert.equal(calls.length, 2);
+  for (const [url] of calls) assert.equal(new URL(url).origin, 'https://auto.socialmore.net');
+  assert.equal(snapshot.sessions.length, 2);
+  assert.equal(snapshot.archives.length, 1);
+  assert.equal(snapshot.currentId, ACTIVE[0].id);
+  assert.equal(list.sessions.items.length, 2);
+  assert.equal(list.archived.count, 1);
+});
+
+test('createSessionsReader 读取失败给出明确错误态，不编造会话', async () => {
+  const fetchImpl = async url => {
+    if (new URL(url).pathname === '/api/scheduling-sessions') throw new Error('网络断开');
+    return { ok: true, json: async () => ({ sessions: [] }) };
+  };
+  const { snapshot, list } = await createSessionsReader({ origin: 'https://auto.socialmore.net', fetchImpl }).load();
+  assert.equal(list.ready, false);
+  assert.match(snapshot.sessionsError, /无法连接控制台/);
+  assert.equal(list.sessions.empty, true);
+  assert.equal(list.current, null);
+});
+
+// ---------------------------------------------------------------------------
+// RED 11：写助手——只打固定写路由、设备凭证在头、失败可读
+// ---------------------------------------------------------------------------
+test('createSessionsWrite 只打固定写路由：继续调度与卡片作答', async () => {
+  const calls = [];
+  const client = { origin: 'https://auto.socialmore.net', tokenStore: { get: async () => 'device-token' } };
+  const fetchImpl = async (url, init) => {
+    calls.push([url, init]);
+    return { ok: true, json: async () => ({ ok: true }) };
+  };
+  const write = createSessionsWrite(client, { fetchImpl });
+  await write.continueSession('arch-1');
+  await write.answerCard(8, { choice: 1 });
+  await write.answerCard(9, { text: '补充说明' });
+  assert.equal(new URL(calls[0][0]).pathname, '/api/mobile/sessions/arch-1/continue');
+  assert.deepEqual(JSON.parse(calls[0][1].body), {});
+  assert.equal(new URL(calls[1][0]).pathname, '/api/mobile/cards/8/answer');
+  assert.deepEqual(JSON.parse(calls[1][1].body), { choice: 1 });
+  assert.deepEqual(JSON.parse(calls[2][1].body), { text: '补充说明' });
+  for (const [, init] of calls) {
+    assert.equal(init.headers['x-device-token'], 'device-token');
+    assert.equal(init.headers['x-console-request'], '1');
+    assert.equal(init.headers['content-type'], 'application/json');
+  }
+});
+
+test('createSessionsWrite 未绑定拒绝、跨域拒绝、错误转成可读文案', async () => {
+  const client = { origin: 'https://auto.socialmore.net', tokenStore: { get: async () => null } };
+  const fetchImpl = async () => { throw new Error('不应发出请求'); };
+  await assert.rejects(() => createSessionsWrite(client, { fetchImpl }).continueSession('x'), /尚未绑定设备/);
+  const bound = { origin: 'https://auto.socialmore.net', tokenStore: { get: async () => 't' } };
+  const failing = async () => ({ ok: false, status: 409, json: async () => ({ error: '事项已失效' }) });
+  await assert.rejects(
+    () => createSessionsWrite(bound, { fetchImpl: failing }).answerCard(8, { choice: 0 }),
+    /事项已失效/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// RED 12：聊天体验纯逻辑——虚拟列表窗口、流式按帧合并、跟随判定、语音钩子
+// ---------------------------------------------------------------------------
+test('虚拟列表只计算可视区附近的窗口，避免长会话整表渲染', () => {
+  assert.deepEqual(
+    visibleRange({ scrollTop: 600, viewportHeight: 300, itemHeight: 60, total: 500, overscan: 2 }),
+    { start: 8, end: 17 },
+  );
+  assert.deepEqual(
+    visibleRange({ scrollTop: 0, viewportHeight: 0, itemHeight: 60, total: 3 }),
+    { start: 0, end: 3 },
+  );
+  assert.deepEqual(
+    visibleRange({ scrollTop: 100000, viewportHeight: 300, itemHeight: 60, total: 3, overscan: 2 }),
+    { start: 3, end: 3 },
+  );
+});
+
+test('流式分片合并且上翻时不被拉回底部', () => {
+  assert.equal(mergeStreamFrames(['你', '好', '，', '世界']), '你好，世界');
+  assert.equal(mergeStreamFrames([]), '');
+  assert.equal(shouldFollowScroll({ scrollTop: 920, scrollHeight: 1000, clientHeight: 100 }), true);
+  assert.equal(shouldFollowScroll({ scrollTop: 300, scrollHeight: 1000, clientHeight: 100 }), false);
+  assert.equal(shouldFollowScroll({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 }), true);
+});
+
+test('语音钩子为空操作时无麦克风按钮，真实实现才显示', () => {
+  assert.equal(hasVoiceHook({ attachVoice() {} }), false);
+  assert.equal(hasVoiceHook({ attachVoice: () => {} }), false);
+  assert.equal(hasVoiceHook({}), false);
+  assert.equal(hasVoiceHook({ attachVoice(el) { return el; } }), true);
+});
+
+test('createSessionsWrite 新建会话与语义分类复用同源 web 接口', async () => {
+  const calls = [];
+  const client = { origin: 'https://auto.socialmore.net', tokenStore: { get: async () => 't' } };
+  const fetchImpl = async (url, init) => {
+    calls.push([url, init]);
+    return { ok: true, json: async () => ({ kind: 'scheduling', reason: '恢复规则' }) };
+  };
+  const write = createSessionsWrite(client, { fetchImpl });
+  await write.classify('请调度失败任务');
+  await write.createSession({ project: '/work/A 项目', prompt: '请调度失败任务', kind: 'scheduling' });
+  assert.equal(new URL(calls[0][0]).pathname, '/api/session-classify');
+  assert.deepEqual(JSON.parse(calls[0][1].body), { text: '请调度失败任务' });
+  assert.equal(new URL(calls[1][0]).pathname, '/api/scheduling-sessions');
+  assert.deepEqual(JSON.parse(calls[1][1].body), { project: '/work/A 项目', prompt: '请调度失败任务', kind: 'scheduling' });
 });
