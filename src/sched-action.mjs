@@ -1,7 +1,7 @@
 // 调度动作执行器：调度会话回执 events 写 sched.command，command 规则跑本模块落地。
-// 只做受控、可自愈的本地动作：DAG 节点复活、规则立即运行/限时暂停。
-// 不做 DAG 创建：执行授权只来自用户在确认页的确认（确认即由服务端创建 run，控制器随后自动
-// 派发 dag.auto.dev），调度会话没有可信的授权凭据可以「重放」，因此 create_dag 一律 fail closed。
+// 只做受控动作：DAG 节点复活/创建、规则立即运行/限时暂停。
+// DAG 创建经 dag.create → POST /api/dag-runs：planDigest/planOptionalActions 由服务端
+// 校验（调度会话不能伪造授权），且要求会话已在会话里向用户逐字出示执行范围（见调度提示词）。
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -10,10 +10,11 @@ export class SchedActionError extends Error {
   constructor(message, { status = 400, permanent = true } = {}) { super(message); this.status = status; this.permanent = permanent; }
 }
 
-export const ACTION_TYPES = ['dag.revive', 'run_rule', 'pause_rule'];
+export const ACTION_TYPES = ['dag.revive', 'dag.create', 'run_rule', 'pause_rule'];
 // 显式拒绝（带可读原因）的动作：不是白名单外的乱写，而是有意关闭的能力。
 export const DISABLED_ACTIONS = {
-  create_dag: 'create_dag 已关闭：DAG 只能由用户在确认页确认创建（确认后控制器自动派发开发节点），调度会话无权代为授权',
+  // 旧名字 create_dag 永久禁用：历史/注入动作不得绕过新白名单 dag.create 的服务端校验。
+  create_dag: 'create_dag 已关闭：请改用 dag.create（planDigest 由服务端校验，且必须先向用户出示执行范围）',
   'dag.requeue': 'dag.requeue 已并入 dag.revive，请改用 dag.revive',
 };
 // 调度链自身的规则不可被调度动作暂停或立即运行：防止自我禁用与绕过 Hub hops 循环保护。
@@ -92,6 +93,27 @@ async function consoleFetch(pathname, { method = 'POST', body } = {}) {
   return data;
 }
 
+async function dagCreate({ params, consoleCall }) {
+  const required = ['project', 'planId', 'planDigest'];
+  const missing = required.filter(key => !String(params[key] || '').trim());
+  if (missing.length) throw new SchedActionError(`dag.create 缺参数：${missing.join('、')}`);
+  // 可选高风险动作（部署/发布/生产数据等）只能由用户在确认页逐项勾选，调度会话不得代选。
+  if (Array.isArray(params.selectedOptionalActions) && params.selectedOptionalActions.length) {
+    throw new SchedActionError('dag.create 不能携带 selectedOptionalActions：可选高风险动作只能由用户在控制台确认页勾选');
+  }
+  if (!Array.isArray(params.confirmedActionIds) || !params.confirmedActionIds.length) throw new SchedActionError('dag.create 缺 confirmedActionIds（须来自 GET /api/dag-plan 的 allowedActions）');
+  // 服务端强制 confirm=true + planDigest/confirmedActionIds 与计划一致，伪造的授权快照过不去。
+  return consoleCall('/api/dag-runs', { body: {
+    project: String(params.project),
+    planId: String(params.planId),
+    planDigest: String(params.planDigest),
+    remoteUrl: String(params.remoteUrl || ''),
+    confirm: true,
+    confirmedActionIds: params.confirmedActionIds,
+    selectedOptionalActions: [],
+  } });
+}
+
 async function dagRevive({ params, consoleCall }) {
   const runId = String(params.runId || '').trim();
   const nodeId = String(params.nodeId || '').trim();
@@ -133,7 +155,7 @@ async function pauseRule({ params, hub, rules, now }) {
   return hub(`/v1/rules/${encodeURIComponent(name)}/pause`, { method: 'POST', body: { reason: String(params.reason || '调度会话 sched.command 暂停'), until: String(params.until) } });
 }
 
-const HANDLERS = { 'dag.revive': dagRevive, run_rule: runRule, pause_rule: pauseRule };
+const HANDLERS = { 'dag.revive': dagRevive, 'dag.create': dagCreate, run_rule: runRule, pause_rule: pauseRule };
 
 /**
  * 执行一轮 sched.command：逐动作校验白名单→幂等去重→调用对应实现→写审计。

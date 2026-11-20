@@ -404,6 +404,12 @@ try {
   assert.equal(await page.locator('.session-kind-tabs [data-kind="scheduling"]').getAttribute('aria-selected'), 'true', 'creating a scheduling session must activate the scheduling kind tab');
   assert.deepEqual(schedulingSessions.startCalls, [{ prompt: '排查失败任务并恢复调度规则', project: demoRepo, kind: 'scheduling' }], 'first turn must be sent once with the confirmed kind');
   assert.ok((await sessionCard.innerText()).includes('项目 · demo-repo'), 'scheduling session must show its bound project name');
+  // 「Agent 正在响应」指示：本轮进行中（turnStartedAt 有值）显示活动与已运行时长，结束后消失。
+  const liveRecord = schedulingSessions.records.find(item => item.id === 'browser-session');
+  liveRecord.turnStartedAt = new Date(Date.now() - 65000).toISOString(); liveRecord.activity = '正在调用工具：list_runs';
+  await page.waitForFunction(() => /Agent 正在响应 · 正在调用工具：list_runs/.test(document.querySelector('.agent-working')?.textContent || '') && /已运行 01:0\d/.test(document.querySelector('.agent-working')?.textContent || ''), null, { timeout: 5000 });
+  liveRecord.turnStartedAt = null; liveRecord.activity = '';
+  await page.waitForFunction(() => !document.querySelector('.agent-working'), null, { timeout: 5000 });
   const chatInput = page.getByLabel('发消息给会话 browser-session');
   await chatInput.fill('草稿在，节点就要在'); // 有草稿才钉住卡片；空输入框按期重建不损失任何东西
   await chatInput.click(); // 真实鼠标点击（而非程序化 focus），更贴近用户实际交互

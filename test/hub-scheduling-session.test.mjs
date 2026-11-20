@@ -884,3 +884,18 @@ test('notifyCardAnswered 没有 lane、或 lane 没有对应活跃会话时返�
   assert.equal(await manager.notifyCardAnswered({ card: { id: 1, title: 't', lane: 'scheduling:other' }, answerText: 'x' }), null);
   assert.equal(posts(client), before);
 });
+
+test('进行中的 Hub 会话暴露 turnStartedAt，终态后清空（界面据此显示「已运行」）', async () => {
+  const client = fakeHubClient({ state: 'running' });
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = newManager(adapter, { hubReconcileMs: 0, now: () => new Date('2026-11-20T10:00:00Z') });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮' });
+  assert.equal(started.turnStartedAt, '2026-11-20T10:00:00.000Z', '首轮开始时间');
+  assert.equal(started.activity, '', 'Hub 会话没有逐步活动，不编造');
+
+  const doneClient = fakeHubClient({ state: 'done' });
+  const doneManager = newManager(new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: doneClient }), { hubReconcileMs: 0 });
+  const finished = await doneManager.start({ project: fixtureProject(), prompt: '首轮' });
+  assert.equal(finished.status, 'idle');
+  assert.equal(finished.turnStartedAt, null, '本轮已结束不应再显示进行中');
+});
