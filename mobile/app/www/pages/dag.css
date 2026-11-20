@@ -1,2 +1,61 @@
-/* dag 页面接缝样式：后续节点实现进度环与节点详情。 */
+/* 项目 DAG 页面：环形进度（分段=节点、中心=总进度）、波次/节点清单与节点契约详情。
+   沿用品牌绿与卡片式信息架构；字体跟随系统度量，窄屏与 160% 字体纵向滚动不横向溢出。 */
 .page[data-page="dag"] { min-height: 4rem; }
+
+.dag-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+  padding: 0.7rem 0.9rem; margin: 0 0 1rem;
+  background: #fbe9e7; border: 1px solid var(--danger); border-radius: 0.7rem; color: var(--danger);
+}
+.dag-banner-text { flex: 1 1 12rem; }
+.dag-retry { min-height: 44px; margin: 0; color: var(--danger); border-color: var(--danger); }
+
+.dag-rings { display: grid; gap: 0.9rem; }
+.dag-ring-card {
+  display: flex; align-items: center; gap: 0.9rem; width: 100%;
+  margin: 0; padding: 0.9rem; text-align: left;
+  background: var(--card); border: 1px solid var(--line); border-radius: 0.9rem;
+  box-shadow: 0 1px 3px rgba(15, 61, 46, 0.06);
+}
+.dag-ring-card[aria-pressed="true"] { border-color: var(--ink-soft); box-shadow: 0 0 0 2px var(--mint); }
+.dag-ring-visual { position: relative; flex: 0 0 5.5rem; width: 5.5rem; height: 5.5rem; }
+.dag-ring-grad {
+  position: absolute; inset: 0; border-radius: 50%;
+  background-color: var(--line);
+  -webkit-mask: radial-gradient(circle, transparent 56%, #000 57%);
+  mask: radial-gradient(circle, transparent 56%, #000 57%);
+}
+.dag-ring-center {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+}
+.dag-ring-center strong { font-size: 1.35rem; line-height: 1.1; }
+.dag-ring-center small { color: var(--ink-soft); font-size: 0.72rem; }
+.dag-ring-info { flex: 1 1 10rem; min-width: 0; }
+.dag-ring-title { display: block; overflow-wrap: anywhere; }
+.dag-ring-status {
+  display: inline-block; margin: 0.3rem 0; padding: 0.12rem 0.6rem;
+  border-radius: 999px; background: var(--mint); font-size: 0.85rem;
+}
+.dag-ring-meta { display: block; color: var(--ink-soft); font-size: 0.85rem; }
+.dag-ring-waves { margin: 0.4rem 0 0; }
+.dag-wave { margin: 0.15rem 0; font-size: 0.85rem; color: var(--ink-soft); }
+
+.dag-detail { display: grid; gap: 0.9rem; margin-top: 1rem; }
+.dag-detail-card h3, .dag-node-detail h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.dag-node-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.dag-node {
+  flex: 1 1 9rem; min-height: 48px; margin: 0; padding: 0.5rem 0.7rem;
+  font-size: 0.95rem; color: var(--ink); background: #fff;
+  border: 1px solid var(--line); border-radius: 0.6rem;
+}
+.dag-node[aria-pressed="true"] { background: var(--mint); border-color: var(--ink-soft); font-weight: 600; }
+.dag-node-meta { margin: 0.3rem 0; color: var(--ink-soft); font-size: 0.9rem; overflow-wrap: anywhere; }
+.dag-node-detail h4 { margin: 0.8rem 0 0.4rem; font-size: 0.9rem; }
+.dag-contract-row, .dag-evidence-row {
+  display: flex; flex-wrap: wrap; gap: 0.2rem 0.5rem;
+  padding: 0.4rem 0; border-bottom: 1px solid var(--line); font-size: 0.95rem;
+}
+.dag-contract-row:last-child, .dag-evidence-row:last-child { border-bottom: 0; }
+.dag-contract-row strong { flex: 0 0 5rem; }
+.dag-contract-row span, .dag-evidence-row span { flex: 1 1 10rem; overflow-wrap: anywhere; }
