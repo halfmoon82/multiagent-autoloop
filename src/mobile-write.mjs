@@ -8,6 +8,7 @@ import { createReadStream } from 'node:fs';
 import { hubRequest, HubError } from './hub.mjs';
 import { discoverGitProjects } from './projects.mjs';
 import { readRuleOptions } from './rules.mjs';
+import { reconcile, syncPrompt, createSyncState } from '../mobile/src/features/device-sync/index.mjs';
 
 function securityHeaders() {
   return {
@@ -36,6 +37,7 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
 ]);
 
 const NOT_IMPLEMENTED = Object.freeze({
+  // 同步路由已实现；仅 scaffold 兼容路径（ctx 无 config/device）仍返回占位。
   sync: '设备同步尚未实现',
 });
 
@@ -70,8 +72,8 @@ const SAFE_ERRORS = Object.freeze({
   413: '请求内容过大',
   415: '操作内容必须是 JSON',
 });
-class WriteError extends Error { constructor(status) { super(SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试'); this.status = status; } }
-const fail = status => { throw new WriteError(status); };
+class WriteError extends Error { constructor(status, message) { super(message || SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试'); this.status = status; } }
+const fail = (status, message) => { throw new WriteError(status, message); };
 
 function parseId(text) {
   if (!/^[1-9][0-9]*$/.test(text)) fail(404);
@@ -97,7 +99,18 @@ function writeError(res, error) {
     : error instanceof HubError && error.status >= 400 && error.status < 500 ? error.status
       : error?.status >= 400 && error?.status < 500 ? error.status
         : 502;
-  jsonResponse(res, status, { error: SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试' });
+  jsonResponse(res, status, { error: error instanceof WriteError ? error.message : (SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试') });
+}
+
+// 关键操作审计：来源设备、时间、结果由设备台账写入。成功路径写失败要报错（不吞为成功）；
+// 失败路径是尽力留痕，不覆盖原始错误。
+function audit(ctx, req, action, fields, result = 'ok') {
+  const store = ctx.config.deviceAuth;
+  if (typeof store?.recordDeviceEvent !== 'function') return;
+  store.recordDeviceEvent(req.headers['x-device-token'], action, fields, result);
+}
+function auditFailure(ctx, req, action, fields) {
+  try { audit(ctx, req, action, fields, 'failed'); } catch { /* 保留原始错误 */ }
 }
 
 async function cardWrite(route, req, res, url, ctx, body) {
@@ -120,7 +133,12 @@ async function cardWrite(route, req, res, url, ctx, body) {
     if (body.choice === undefined && typeof body.text !== 'string') fail(400);
     payload = body.choice !== undefined ? { choice: Number(body.choice) } : { text: String(body.text) };
   }
-  const result = await hubRequest(config, `/v1/cards/${cardId}/answer`, { method: 'POST', body: { ...payload, sourceDeviceId: device.id } });
+  const auditAction = route.key === 'card-authorize' ? 'card.authorize' : 'card.answer';
+  let result;
+  try {
+    result = await hubRequest(config, `/v1/cards/${cardId}/answer`, { method: 'POST', body: { ...payload, sourceDeviceId: device.id } });
+  } catch (error) { auditFailure(ctx, req, auditAction, { cardId: String(cardId) }); throw error; }
+  audit(ctx, req, auditAction, { cardId: String(cardId) });
   // 唤醒调度会话：与网页 answer 同一会话管理器与判定，失败不影响卡片已结案。
   let schedulingWake = 'skipped';
   if (typeof config.schedulingSessions?.notifyCardAnswered === 'function') {
@@ -168,7 +186,7 @@ async function sessionDownload(res, url, route, ctx) {
   });
 }
 
-async function ruleAction(res, url, route, ctx, body) {
+async function ruleAction(req, res, url, route, ctx, body) {
   const match = url.pathname.match(route.pattern);
   const name = decodeURIComponent(match[1]);
   const action = match[2];
@@ -176,24 +194,60 @@ async function ruleAction(res, url, route, ctx, body) {
   const payload = action === 'run'
     ? { ...(body.subject ? { subject: String(body.subject) } : {}), ...(body.reason ? { reason: String(body.reason) } : {}) }
     : action === 'pause' ? { ...(body.reason ? { reason: String(body.reason) } : {}) } : {};
-  const result = await hubRequest(ctx.config, `/v1/rules/${encodeURIComponent(name)}/${action}`, {
-    method: 'POST', body: { ...payload, sourceDeviceId: ctx.device.id },
-  });
+  const fields = { ruleName: name, ruleAction: action };
+  let result;
+  try {
+    result = await hubRequest(ctx.config, `/v1/rules/${encodeURIComponent(name)}/${action}`, {
+      method: 'POST', body: { ...payload, sourceDeviceId: ctx.device.id },
+    });
+  } catch (error) { auditFailure(ctx, req, 'rule.action', fields); throw error; }
+  audit(ctx, req, 'rule.action', fields);
   jsonResponse(res, 200, result);
+}
+
+// 多设备同步：GET 取最新一致状态（含 since 增量判定），POST 提交结论；版本号/冲突按 device-sync reconcile，
+// 冲突取最新一次提交、重复提交不双写。移动端只能操作自身设备：指定他人 deviceId 一律 403 并留痕。
+async function syncRoute(req, res, url, ctx, body) {
+  const store = ctx.config.deviceAuth;
+  if (typeof store?.getSyncState !== 'function' || typeof store?.submitDecision !== 'function') fail(503);
+  const token = req.headers['x-device-token'];
+  const { device } = ctx;
+  const requested = req.method === 'GET' ? url.searchParams.get('deviceId') : body.deviceId;
+  if (requested !== undefined && requested !== null && requested !== device.id) {
+    auditFailure(ctx, req, 'sync.denied', { targetDeviceId: String(requested) });
+    fail(403, '移动端只能访问本机设备的同步信息');
+  }
+  const asRevision = (value, label) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 0) fail(400, `${label}无效`);
+    return n;
+  };
+  const before = store.getSyncState(token);
+  if (req.method === 'GET') {
+    const since = asRevision(url.searchParams.get('since'), '版本号');
+    const changed = since === undefined ? true : reconcile({ ...createSyncState(), revision: since }, before).revision > since;
+    jsonResponse(res, 200, { device, state: before, changed, prompt: syncPrompt(before) });
+    return;
+  }
+  const baseRevision = asRevision(body.baseRevision, '基准版本号');
+  const cardKey = String(body.cardId ?? '').trim();
+  const prev = before.decisions[cardKey];
+  const state = store.submitDecision(token, { cardId: body.cardId, decision: body.decision });
+  const conflict = baseRevision !== undefined && before.revision > baseRevision && Boolean(prev)
+    && (prev.value !== body.decision || prev.byDevice !== device.id);
+  jsonResponse(res, 200, { device, state, conflict, prompt: syncPrompt(state) });
 }
 
 // 实际业务处理；由同步 handleMobileWrite 以 fire-and-forget 方式调用，自行捕获全部错误。
 async function executeWrite(route, req, res, url, ctx) {
   try {
-    if (route.key === 'sync') {
-      jsonResponse(res, 501, { error: NOT_IMPLEMENTED.sync, route: route.key, declared: true });
-      return;
-    }
     const body = req.method === 'GET' ? {} : await readJson(req);
+    if (route.key === 'sync') return await syncRoute(req, res, url, ctx, body);
     if (route.key === 'card-answer' || route.key === 'card-authorize') return await cardWrite(route, req, res, url, ctx, body);
     if (route.key === 'session-continue') return await sessionContinue(res, url, route, ctx);
     if (route.key === 'session-download') return await sessionDownload(res, url, route, ctx);
-    if (route.key === 'rule-action') return await ruleAction(res, url, route, ctx, body);
+    if (route.key === 'rule-action') return await ruleAction(req, res, url, route, ctx, body);
     jsonResponse(res, 501, { error: '该写操作尚未实现', route: route.key, declared: true });
   } catch (error) {
     writeError(res, error);
