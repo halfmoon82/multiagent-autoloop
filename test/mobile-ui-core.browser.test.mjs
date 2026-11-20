@@ -2,7 +2,7 @@
 // 回答成功后列表更新、待办数同步角标。不调用真实模型、不操作真实规则。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
@@ -15,7 +15,20 @@ import { fakeHub, json, listen, close } from './helpers.mjs';
 const ALLOWED = ['worktree', 'run-tests', 'push-branch', 'create-pr'];
 const DENIED = ['deploy', 'release', 'production-write'];
 
-test('浏览器：五页渲染真实字段，回答一条待办后列表更新，501 时草稿保留', async t => {
+// CI 在 npm test 阶段尚未安装 Playwright 浏览器（npx playwright install 在 test:browser 之前才执行），
+// 此时 chromium.launch 会因找不到可执行文件而失败。没有浏览器时显式跳过，不把环境缺失误判成功能回归；
+// 一旦浏览器可用（本地开发，或安装浏览器后的阶段）这条回归仍会真实执行。
+const browserSkip = (() => {
+  try {
+    return existsSync(chromium.executablePath())
+      ? false
+      : 'npm test 阶段未安装 Playwright Chromium，跳过浏览器回归（安装浏览器后本地会真实执行）';
+  } catch {
+    return '无法探测 Playwright Chromium，跳过浏览器回归';
+  }
+})();
+
+test('浏览器：五页渲染真实字段，回答一条待办后列表更新，501 时草稿保留', { skip: browserSkip }, async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'mobile-ui-core-'));
   const profile = mkdtempSync(path.join(tmpdir(), 'mobile-ui-core-profile-'));
   const hubState = {

@@ -511,3 +511,14 @@ test('core 页面模块：安全 DOM 渲染五页、接写路由与角标，接�
   assert.ok(!/innerHTML|insertAdjacentHTML/.test(code), '不得拼接不可信 HTML');
   assert.ok(!/\bfetch\s*\(/.test(code.replace(/\/\/.*$/gm, '')), '页面不直接发请求，写操作走 write 助手');
 });
+
+// ---------------------------------------------------------------------------
+// RED 11：浏览器回归必须在无浏览器环境显式跳过——CI 的 npm test 阶段尚未安装
+// Playwright（浏览器在 test:browser 之前才装），直接 chromium.launch 会让整条 CI 失败。
+// ---------------------------------------------------------------------------
+test('浏览器回归在无浏览器环境下显式跳过，不在 npm test 阶段直接 launch', () => {
+  const src = readFileSync(path.join(ROOT, 'test', 'mobile-ui-core.browser.test.mjs'), 'utf8');
+  assert.match(src, /existsSync\(chromium\.executablePath\(\)\)/, '以浏览器可执行文件是否存在来判定');
+  assert.match(src, /skip:\s*browserSkip/, '测试声明 skip，缺浏览器时跳过而不是失败');
+  assert.match(src, /chromium\.launch/, '浏览器可用时仍执行真实浏览器回归');
+});
