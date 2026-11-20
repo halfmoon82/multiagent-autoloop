@@ -126,6 +126,38 @@ export async function sweepChainCloseouts({ root, rules = [], config, now = Date
   return result;
 }
 
+// 无限期暂停规则的幽灵排队 run：暂停前已排上或暂停后由 timer/卡片事件补排的 run 都永远不会被领走，
+// 却一直计入「等待重试」。排队时间已过宽限（给手滑暂停留出恢复窗口）、且未被 claim/stopping 的才取消。
+export const PAUSED_RUN_GRACE_MS = 60 * 60 * 1000;
+export async function sweepPausedQueuedRuns({ root, config, now = Date.now(), graceMs = PAUSED_RUN_GRACE_MS, hub = hubRequest, log = () => {} } = {}) {
+  const result = { cancelled: [], errors: [] };
+  let state;
+  try { state = await hub(config, '/v1/state'); }
+  catch (error) { result.errors.push(`state 获取失败：${error.message}`); return result; }
+  const paused = new Map();
+  for (const p of state?.pauses || []) {
+    if (p?.until == null && p?.since && !paused.has(p.name)) paused.set(p.name, Date.parse(p.since));
+  }
+  if (!paused.size) return result;
+  for (const run of state?.runs || []) {
+    if (run?.state !== 'queued' || run.claimedAt || run.stopping) continue;
+    const pauseSince = paused.get(run.rule);
+    if (!Number.isFinite(pauseSince) || now - pauseSince < graceMs) continue;
+    const createdAt = Date.parse(run.createdAt || '');
+    if (!Number.isFinite(createdAt)) continue;
+    if (now - createdAt < graceMs) continue;
+    try {
+      await hub(config, `/v1/runs/${encodeURIComponent(run.id)}/cancel`, { method: 'POST', body: {} });
+      result.cancelled.push({ run: run.id, rule: run.rule });
+      if (root) audit(root, { at: new Date(now).toISOString(), rule: run.rule, run: run.id, reason: '暂停规则的幽灵排队轮次，自动取消（控制台收口巡检）' });
+      log(`收口巡检：取消暂停规则 ${run.rule} 的幽灵排队 run #${run.id}`);
+    } catch (error) {
+      result.errors.push(`run ${run.id}：${error.message}`);
+    }
+  }
+  return result;
+}
+
 // 周期巡检器：照 notifier.mjs 的模式，仅在显式 start 后轮询，stop 即安静；
 // 句柄 unref，绝不阻止进程退出；单轮未结束不重叠执行。rules 传函数以每轮读到最新规则。
 export function createChainCloseoutSweeper({ root, rules, config, intervalMs = 5 * 60 * 1000, graceMs = CLOSEOUT_GRACE_MS, hub = hubRequest, log = console.log, setTimer = setInterval, clearTimer = clearInterval, delayFirstMs = 15 * 1000, setDelay = setTimeout, clearDelay = clearTimeout } = {}) {
@@ -139,6 +171,8 @@ export function createChainCloseoutSweeper({ root, rules, config, intervalMs = 5
       const fresh = typeof rules === 'function' ? rules() : rules;
       const result = await sweepChainCloseouts({ root, rules: fresh || [], config, graceMs, hub, log });
       if (result.errors.length) log(`收口巡检异常：${result.errors.join('；')}`);
+      const queued = await sweepPausedQueuedRuns({ root, config, hub, log });
+      if (queued.errors.length) log(`幽灵排队巡检异常：${queued.errors.join('；')}`);
     } catch (error) { log(`收口巡检失败：${error.message}`); }
     finally { running = false; }
   };
