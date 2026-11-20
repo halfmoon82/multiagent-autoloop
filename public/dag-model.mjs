@@ -45,6 +45,30 @@ function depths(list) {
   return memo;
 }
 
+// 终审结果：取该节点最新一轮独立审阅。只展示回执里真实上报的结论与分级，缺项如实写「未上报」，不编造。
+const PASS_OUTCOMES = new Set(['accepted', 'done', 'merged']);
+const ACTIVE_RUN = new Set(['queued', 'claimed']);
+const roundOrder = item => [Number(item.generation) || 0, Number(item.attempt) || 0, String(item.createdAt || '')];
+const byRound = (a, b) => { const x = roundOrder(a); const y = roundOrder(b); return x[0] - y[0] || x[1] - y[1] || x[2].localeCompare(y[2]); };
+export function reviewResult(nodeRuns = []) {
+  const reviews = nodeRuns.filter(item => item.role === 'review').sort(byRound);
+  const rounds = reviews.length;
+  const latest = reviews.at(-1);
+  if (!latest) return { text: '尚未审阅', rounds: 0 };
+  const result = latest.appliedAdvance?.result;
+  if (!result) {
+    return { text: ACTIVE_RUN.has(latest.status) ? `审阅中（第 ${rounds} 轮）` : `第 ${rounds} 轮未回执（${latest.status || '状态未知'}）`, rounds };
+  }
+  const d = result.detail && typeof result.detail === 'object' ? result.detail : {};
+  const parts = [PASS_OUTCOMES.has(result.outcome) ? '通过' : '打回返工'];
+  const counts = ['p0', 'p1', 'p2', 'p3'];
+  parts.push(counts.every(key => Number.isInteger(d[key])) ? counts.map(key => `${key.toUpperCase()} ${d[key]}`).join(' / ') : '分级未上报');
+  if (Number.isInteger(d.pr) && d.pr > 0) parts.push(`PR #${d.pr}`);
+  if (typeof d.head === 'string' && /^[0-9a-f]{7,40}$/i.test(d.head)) parts.push(`提交 ${d.head.slice(0, 7)}`);
+  if (typeof d.tests === 'string' && d.tests.trim()) parts.push(`测试：${d.tests.trim()}`);
+  return { text: parts.join(' · '), rounds };
+}
+
 export function buildDagNodes(detail) {
   const run = detail?.run || {}; const planNodes = (run.nodes || []).filter(node => node.id !== '__root__');
   const runtime = run.publish?.nodes || {}; const nodeRuns = detail?.nodeRuns || [];
@@ -74,7 +98,7 @@ export function buildDagNodes(detail) {
       contract: node.contract || {}, summary,
       agent: latest ? (latest.agent || '未上报') : '待派发',
       model: latest ? (saved.model || latest.model || '未上报') : '模型待选择',
-      prUrl: prs.at(-1)?.prUrl || '', usage: { ...sumUsage(mine), unreportable: mine.some(item => item.usageUnreportable), noModel: mine.some(item => item.usageNoModel) }, warnings, lastError: saved.lastError || '',
+      prUrl: prs.at(-1)?.prUrl || '', usage: { ...sumUsage(mine), unreportable: mine.some(item => item.usageUnreportable), noModel: mine.some(item => item.usageNoModel) }, warnings, lastError: saved.lastError || '', review: reviewResult(mine),
     };
   });
 }

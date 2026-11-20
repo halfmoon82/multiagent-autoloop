@@ -45,13 +45,27 @@ export function triggeringEvent(run) {
 // #75 主人强制需求：在途轮次必须有任务摘要 + 任务编号。
 // run 文本（error/summary）优先；为空时用触发事件 summary；事件也无摘要则如实显示规则名，不编造。
 // 任务编号 = 触发事件 subject（稳定任务编号）；subject 为空时用可见的轮次 #id，不虚构成别的任务。
+// DAG 派发事件类型为 dag.<项目>.<角色>[.<分档>]（src/dag-runtime.mjs dagEventType）；
+// 只认 dev/review 两种派发角色，回执（dag.*.advance）等其他事件不加标签。
+const DAG_ROLE_LABELS = { dev: '开发', review: '审阅' };
+export function dagRoleLabel(run) {
+  for (const event of Array.isArray(run?.events) ? run.events : []) {
+    const match = /^dag\.[^.]+\.(dev|review)(?:\.[a-z0-9-]+)?$/.exec(String(event?.type || ''));
+    if (match) return DAG_ROLE_LABELS[match[1]];
+  }
+  return '';
+}
+
 export function runTaskInfo(run) {
   const event = triggeringEvent(run);
   const runText = String(run?.error || '').trim() || String(run?.summary || '').trim();
   const eventSummary = String(event.summary || '').trim();
   const subject = String(event.subject || '').trim();
+  const roleLabel = dagRoleLabel(run);
+  const summary = runText || eventSummary || String(run?.rule || '').trim() || '暂无概要';
   return {
-    taskSummary: runText || eventSummary || String(run?.rule || '').trim() || '暂无概要',
+    roleLabel,
+    taskSummary: roleLabel ? `【${roleLabel}】${summary}` : summary,
     taskNumber: subject || String(run?.id ?? ''),
   };
 }
@@ -61,7 +75,7 @@ export function runLine(run, models = {}, rules = [], agentNames = {}) {
   const project = projectForRun(run, rules);
   const agentId = String(run.agent || '').trim();
   const agent = agentId ? (agentNames[agentId] || agentId) : '';
-  return { id: run.id, rule: run.rule, project, projectName: projectName(project), state: run.state, status: run.state === 'queued' && run.attempts > 0 ? '等待重试' : statusLabel(run.state), text: task.taskSummary, taskSummary: task.taskSummary, taskNumber: task.taskNumber, attempts: run.attempts || 0, agent, model: models[run.agent] || '未配置', billing: billingText(run) };
+  return { id: run.id, rule: run.rule, project, projectName: projectName(project), state: run.state, status: run.state === 'queued' && run.attempts > 0 ? '等待重试' : statusLabel(run.state), text: task.taskSummary, taskSummary: task.taskSummary, roleLabel: task.roleLabel, taskNumber: task.taskNumber, attempts: run.attempts || 0, agent, model: models[run.agent] || '未配置', billing: billingText(run) };
 }
 const sameLocalDay = (iso, now = new Date()) => {
   if (!iso) return false;
