@@ -612,8 +612,7 @@ try {
   assert.equal(await page.locator('#progress-list .list-row').count(), 1, 'project filter keeps only the matching chain row');
   await page.locator('#project-filter').selectOption('');
   await page.waitForTimeout(300);
-  const betaRow = page.locator('#progress-list .list-row').filter({ hasText: 'beta' }).filter({ hasText: '无节点计划' });
-  assert.equal(await betaRow.count(), 0, 'a project with no node plan and only retrying/done activity must not stay in project progress as an unarchived task');
+  assert.equal(await page.locator('#progress-list').getByText('无节点计划').count(), 0, 'projects without a node plan must never appear in project progress');
   await page.locator('#project-filter').selectOption('beta');
   await page.waitForTimeout(200);
   await page.locator('#clear-project-filter').click();

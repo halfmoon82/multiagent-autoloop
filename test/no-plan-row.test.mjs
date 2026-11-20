@@ -1,5 +1,6 @@
-// 没有节点计划的项目行：只有此刻真在跑或有待处理卡片才显示；
-// 仅有等待重试/今日完成的巡检活动不再像未归档任务一样常驻项目进度。
+// 没有节点计划的项目不再出现在项目任务进度：这块面板只画有真实进度（串行链）的项目。
+// 无计划的空壳行只有计数、没有任务，随规则运行/卡片忽隐忽现，被误认为无法归档的幽灵任务；
+// 运行中、等待重试、待处理卡片在「正在运行 / 等待重试 / 待调度处理」等面板里各有归处。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -18,15 +19,16 @@ const rowsFor = (totals, extra = {}) => renderProjectProgress({ rules, snapshot:
   .filter(node => node.dataset?.chain);
 const base = { running: 0, queued: 0, retrying: 0, unknown: 0, done: 0, nothing: 0, doneToday: 0 };
 
-test('只有等待重试与今日完成的无计划项目不显示', () => {
-  assert.equal(rowsFor({ ...base, queued: 9, doneToday: 75 }).length, 0);
-});
-
-test('无计划项目此刻有任务在跑时显示', () => {
-  assert.equal(rowsFor({ ...base, running: 1, doneToday: 75 }).length, 1);
-});
-
-test('无计划项目有待处理卡片时显示', () => {
+test('无计划项目不论有何活动都不显示', () => {
+  assert.equal(rowsFor({ ...base, queued: 9, doneToday: 75 }).length, 0, '只有排队/今日完成');
+  assert.equal(rowsFor({ ...base, running: 1, doneToday: 75 }).length, 0, '有任务在跑');
   const cards = [{ id: 1, state: 'open', title: 't', rule: '巡检', options: [] }];
-  assert.equal(rowsFor({ ...base, queued: 2 }, { cards }).length, 1);
+  assert.equal(rowsFor({ ...base, queued: 2 }, { cards }).length, 0, '有待处理卡片');
+});
+
+test('有串行链的项目照常显示，无计划项目全部不显示时给出空态', () => {
+  const nodes = renderProjectProgress({ rules, snapshot: { lines: [lineOf({ ...base, running: 1 })], cards: [], runs: [] } });
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].dataset?.chain, undefined, '只剩空态提示');
+  assert.ok(String(nodes[0].textContent).includes('还没有节点计划'));
 });
