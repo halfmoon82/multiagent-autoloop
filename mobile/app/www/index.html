@@ -18,7 +18,7 @@
 
       <div id="bind-section" class="card">
         <h2>设备绑定</h2>
-        <p class="hint">在电脑控制台「设备授权管理」生成一次性二维码，把二维码内容填到下面。首次使用或授权被解除后需要重新绑定。</p>
+        <p class="hint">在电脑控制台「设备授权管理」生成一次性二维码：可点「扫码绑定」用后置摄像头扫描，也可把二维码内容手工填到下面。首次使用或授权被解除后需要重新绑定。</p>
         <label for="base-url">控制台地址</label>
         <input id="base-url" type="url" placeholder="https://控制台地址" autocomplete="off" autocapitalize="off" spellcheck="false">
         <p class="hint">任意移动网络或外部 Wi-Fi 下填写控制台的 HTTPS 地址；只有本机回环允许 http。</p>
@@ -26,6 +26,9 @@
         <input id="bind-name" type="text" value="Android 设备" maxlength="80" autocomplete="off">
         <label for="bind-payload">绑定二维码内容</label>
         <input id="bind-payload" type="text" placeholder="autoloop://bind?token=…" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button id="scan-bind" type="button">扫码绑定</button>
+        <video id="scan-video" playsinline muted autoplay hidden aria-label="扫码取景"></video>
+        <p id="scan-status" class="status" role="status"></p>
         <button id="bind-submit" class="primary" type="button">绑定设备</button>
         <p id="bind-status" class="status" role="status"></p>
       </div>
