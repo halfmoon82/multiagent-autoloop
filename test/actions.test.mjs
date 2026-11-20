@@ -6,7 +6,8 @@ import { fakeHub, json, listen, close } from './helpers.mjs';
 
 async function setup() {
   const hub = await fakeHub((req, res) => json(res, { ok: true }));
-  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'private', host: '127.0.0.1' });
+  // 传 false 显式关闭会话装配：本文件只验证 API→Hub 的转发，answer 的额外 /v1/state 查询会破坏请求序号断言。
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'private', host: '127.0.0.1' }, false);
   const url = await listen(server);
   return { hub, server, url };
 }

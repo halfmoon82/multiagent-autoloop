@@ -823,6 +823,22 @@ export class SchedulingSessionManager {
     }
   }
 
+  // 卡片答复唤醒：卡片结案后给卡片所在事项（card.lane）发一条 scheduling.message，
+  // 内容固定为「用户答复 + 卡面信息」，让调度会话继续推进并回执结论。
+  // 只处理 Hub 调度会话（有事项 subject）；ACP 会话/无 lane 卡片返回 null。
+  async notifyCardAnswered({ card, answerText = '' } = {}) {
+    const lane = String(card?.lane || '').trim();
+    if (!lane) return null;
+    const target = [...this.sessions.values()]
+      .find(session => session.hub && session.hub.subject === lane && !['closing', 'closed'].includes(session.status));
+    if (!target) return null;
+    const answer = String(answerText ?? '').trim();
+    const cardId = Number.isSafeInteger(Number(card.id)) ? Number(card.id) : String(card.id ?? '');
+    const title = String(card.title || '').trim() || `卡片 ${cardId}`;
+    const text = `用户已回答卡片 ${cardId}《${title}》：${answer || '（未记录答复内容）'}。请继续推进并在本轮给出结论。`;
+    return this.send(target.id, text);
+  }
+
   async close(id) {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
