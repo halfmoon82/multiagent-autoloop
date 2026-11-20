@@ -14,3 +14,9 @@
 
 ## 验收
 `npm test`、`npm run test:browser` 全绿；每个节点独立审阅 P0–P2 清零后合并。重新打包与真机验证由所有者另行授权。
+
+## 补充根因：手工输入备用码仍提示「无法连接控制台」（2026-11-20）
+- 复现（公网实测 `https://auto.socialmore.net`）：同源请求可达服务端，回「绑定令牌无效」；带 `Origin: https://localhost` 且 `Sec-Fetch-Site: cross-site` 的绑定请求被服务端 403 拒绝；带自定义头的预检（OPTIONS）返回 404、无 CORS 头。
+- 根因：APK 内置页面源是 `https://localhost`，请求控制台域名属跨站；`/api/mobile/bind` 按设计拒绝跨站、且无预检放行，真机一律失败，与备用码对错无关，App 只显示「无法连接」。
+- 处理：`apk-release-script` 节点让 App 直接加载 `https://auto.socialmore.net/mobile/`（同源），服务端安全规则不放宽。
+- 边界：根因由公网请求复现与代码核对得出，未在真机上复现；真机验证由所有者另行授权。
