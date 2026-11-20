@@ -5,6 +5,14 @@
 // 不调用真实模型、不操作真实规则；全部为纯函数，可在 Node 里直接做边界测试。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { chromium } from '@playwright/test';
+import { createConsoleServer } from '../src/server.mjs';
+import { createDeviceStore } from '../src/device-auth.mjs';
+import { createDagService } from '../src/dag-service.mjs';
+import { fakeHub, json, listen, close } from './helpers.mjs';
 import { buildDagRing } from '../src/dag-model.mjs';
 import { mobileDagSummaries } from '../src/dag-service.mjs';
 import {
@@ -141,4 +149,124 @@ test('selectRing：切换选中环只改选中态，节点明细可点击查看�
   assert.match(detail.contract.find(row => row.label === '输入').value, /账户需求/);
   assert.ok(detail.evidence.some(row => row.value === 'https://example.com/pr/9'));
   assert.ok(detail.evidence.every(row => typeof row.value === 'string'), '全部证据为可安全渲染的纯字符串');
+});
+
+// ---------------------------------------------------------------------------
+// RED 4：浏览器回归——环渲染（中心进度/波次/节点）、点节点看契约、切项目同步过滤
+// ---------------------------------------------------------------------------
+const browserSkip = (() => {
+  try {
+    return existsSync(chromium.executablePath())
+      ? false
+      : 'npm test 阶段未安装 Playwright Chromium，跳过浏览器回归';
+  } catch {
+    return '无法探测 Playwright Chromium，跳过浏览器回归';
+  }
+})();
+
+test('浏览器：DAG 环中心进度与节点契约、切项目后各页同步过滤', { skip: browserSkip }, async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'mobile-dag-filter-'));
+  const profile = mkdtempSync(path.join(tmpdir(), 'mobile-dag-filter-profile-'));
+  const projectA = path.join(root, 'proj-alpha');
+  const projectB = path.join(root, 'proj-beta');
+  mkdirSync(path.join(projectA, '.git'), { recursive: true });
+  mkdirSync(path.join(projectB, '.git'), { recursive: true });
+
+  const hubState = { runs: [], cards: [], lines: [], spending: { today: {} } };
+  const hub = await fakeHub((req, res) => {
+    if (req.url === '/v1/state') return json(res, hubState);
+    return json(res, { ok: true });
+  });
+  const rulesFile = path.join(root, 'rules.json');
+  writeFileSync(rulesFile, JSON.stringify({
+    sources: {}, agents: { codex: { name: 'Codex', use: 'acp', access: 'edit' } },
+    rules: [{ name: 'A 计划', when: { cron: '*/10 * * * *' }, to: 'codex', cwd: projectA, prompt: '推进' }],
+  }));
+
+  const mkRun = (runId, project, planId, nodeId) => ({
+    runId, nodeId: '__root__', project, planId, status: 'running',
+    createdAt: '2026-11-20T09:00:00+08:00',
+    authorizationSnapshot: { schema: 2, planDigest: 'a'.repeat(64), allowedActions: ['worktree'], deniedActions: ['deploy'] },
+    nodes: [{
+      id: nodeId, title: `${nodeId} 标题`, depends_on: [], contract: {
+        input: `${nodeId} 输入需求`, output: `${nodeId} 输出`,
+        error_behavior: `${nodeId} 失败保留状态`, acceptance_example: `${nodeId} 验收示例`,
+      },
+    }],
+    publish: { nodes: { [nodeId]: { state: 'accepted', slot: 1, branch: `feat/${nodeId}`, model: 'K3', mergeCommit: 'abc123' } } },
+  });
+  const rootA = mkRun('dagrun-alpha', projectA, 'plan-a', 'node-a');
+  const rootB = mkRun('dagrun-beta', projectB, 'plan-b', 'node-b');
+  const nodeRunA = { runId: 'n-a', nodeId: 'node-a', project: projectA, planId: 'plan-a', role: 'dev', status: 'done', agent: 'Codex', usage: { cost: 1 } };
+  const nodeRunB = { runId: 'n-b', nodeId: 'node-b', project: projectB, planId: 'plan-b', role: 'dev', status: 'done', agent: 'Codex', usage: { cost: 1 } };
+  const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
+  const server = createConsoleServer({
+    hubUrl: hub.url, ownerKey: 'server-secret', host: '127.0.0.1', root, rulesFile, deviceAuth,
+    projectRoots: [projectA, projectB],
+    dagService: createDagService({ root, store: { listRuns: () => [rootA, rootB, nodeRunA, nodeRunB] } }),
+  });
+  const url = await listen(server);
+  let browser;
+  t.after(async () => {
+    if (browser) await browser.close();
+    await close(server); await close(hub.server);
+    rmSync(root, { recursive: true, force: true });
+    rmSync(profile, { recursive: true, force: true });
+  });
+
+  const qr = deviceAuth.createBinding();
+  browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    let stored = null;
+    window.AutoloopSecureStorage = {
+      async get() { return stored; }, async set(value) { stored = value; }, async remove() { stored = null; },
+    };
+    window.AutoloopBiometric = { async verify() { return true; } };
+  });
+  await page.goto(`${url}/mobile/`);
+  await page.waitForFunction(() => Boolean(window.AutoloopHooks));
+  await page.locator('#bind-payload').fill(qr.qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.querySelector('#connection-status')?.textContent?.includes('已安全连接'));
+
+  // 头部全局筛选：「全部」+ 两个真实项目，挂载在 scaffold 预留点。
+  await page.waitForFunction(() => document.querySelectorAll('#project-filter option').length >= 3);
+  const options = await page.locator('#project-filter option').evaluateAll(list => list.map(o => o.value));
+  assert.equal(options.length, 3);
+  assert.equal(options[0], '全部');
+
+  await page.locator('[data-tab="dag"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('#page-dag [data-ring-task-id]').length === 2);
+  const ring = page.locator('#page-dag [data-ring-task-id]').first();
+  assert.match(await ring.locator('.dag-ring-grad').getAttribute('style'), /conic-gradient/);
+  assert.match(await ring.locator('.dag-ring-center').innerText(), /%/);
+  assert.match(await ring.innerText(), /node-a/);
+
+  // 点环 → 点节点看契约四段（输入/输出/异常行为/验收示例）。
+  await ring.click();
+  await page.waitForFunction(() => Boolean(document.querySelector('#page-dag [data-node-id]')));
+  await page.locator('#page-dag [data-node-id]').first().click();
+  await page.waitForFunction(() => document.querySelectorAll('#page-dag [data-contract-key]').length >= 4);
+  const detail = await page.locator('#page-dag .dag-node-detail').innerText();
+  for (const label of ['输入', '输出', '异常行为', '验收示例']) assert.match(detail, new RegExp(label));
+  assert.match(detail, /node-a 输入需求/);
+
+  // 切项目：订阅页面收到广播，DAG 页只显示该项目的环。
+  await page.evaluate(() => {
+    window.__filterEvents = [];
+    window.AutoloopHooks.projectFilter.onChange(f => window.__filterEvents.push(f.selectedId));
+  });
+  await page.locator('#project-filter').selectOption(projectB);
+  await page.waitForFunction(() => document.querySelectorAll('#page-dag [data-ring-task-id]').length === 1);
+  assert.equal(await page.locator('#page-dag [data-ring-task-id]').first().getAttribute('data-project'), projectB);
+  assert.deepEqual(await page.evaluate(() => window.__filterEvents.at(-1)), projectB);
+  assert.equal(await page.evaluate(() => window.AutoloopHooks.projectFilter.current().selectedId), projectB);
+  assert.deepEqual(pageErrors, []);
 });
