@@ -495,3 +495,46 @@ test('老台账（建账时未记节点）只补翻一次历史补齐节点记�
     assert.ok(hub.requests.length - before <= 2, `补翻完成后回到稳态，实测 ${hub.requests.length - before} 页`);
   } finally { await close(server); await close(hub.server); }
 });
+
+// 不跑模型的通道（command 等）本来就没有费用可报：不得计入「N 轮未上报费用」。
+// 只有跑模型（acp 等）却没读到费用的轮次才算缺费用。
+function writeAgents(root) {
+  const file = path.join(root, 'rules.json');
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  raw.agents = { claude: { use: 'acp' }, patrol: { use: 'command' }, notify: { use: 'feishu' } };
+  writeFileSync(file, JSON.stringify(raw));
+}
+
+test('不需要模型的通道轮次不计未上报费用，跑模型读不到费用的照旧计', async () => {
+  const { root, store, hub, server, chainUsageOf } = await setup();
+  try {
+    writeAgents(root);
+    store.runs = [
+      { ...finished(4, 'V6串行推进', null), agent: 'patrol' },   // command：不需要模型
+      { ...finished(3, 'V6串行推进', null), agent: 'notify' },   // feishu：不需要模型
+      { ...finished(2, 'V6串行推进', null), agent: 'claude' },   // acp：跑模型却没读到
+      finished(1, 'V6串行推进', { input: 10, output: 5, cost: 1 }),
+    ];
+    const usage = await chainUsageOf();
+    assert.equal(usage.rounds, 4, '不需要模型的轮次照样数轮次');
+    assert.equal(usage.missingCostRounds, 1, '只有 acp 那一轮算缺费用');
+  } finally { await close(server); await close(hub.server); }
+});
+
+test('旧台账里已把不需要模型的轮次记成缺费用时，自动重算而不是永久背着旧数', async () => {
+  const { root, store, hub, server, chainUsageOf } = await setup();
+  try {
+    writeAgents(root);
+    writeFileSync(path.join(root, 'chain-usage.json'), JSON.stringify({
+      version: 2, complete: true, updatedAt: isoToday(), seen: [2, 1], nodesTracked: true,
+      rules: { 'V6串行推进': { counted: [2, 1], pending: [], unsettled: [], unresolved: 0, input: 0, output: 0, cost: 0, costReported: false, rounds: 2, missingCostRounds: 2 } },
+    }));
+    store.runs = [
+      { ...finished(2, 'V6串行推进', null), agent: 'patrol' },
+      { ...finished(1, 'V6串行推进', null), agent: 'patrol' },
+    ];
+    const usage = await chainUsageOf();
+    assert.equal(usage.rounds, 2);
+    assert.equal(usage.missingCostRounds, 0, '旧台账的 2 轮缺费用应被重算掉');
+  } finally { await close(server); await close(hub.server); }
+});
