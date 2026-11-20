@@ -50,11 +50,25 @@ test('移动端 API 地址只由固定允许列表拼出，不接受任意 key �
   }
 });
 
-test('parseBindPayload 只接受一次性二维码的严格格式', () => {
+test('parseBindPayload 接受完整载荷、裸 64hex 与前后空格；网址/多余参数/userinfo 一律拒', () => {
   const token = 'a'.repeat(64);
-  assert.equal(parseBindPayload(`autoloop://bind?token=${token}`), token);
-  assert.equal(parseBindPayload(`  autoloop://bind?token=${token}\n`), token);
-  for (const bad of ['autoloop://bind?token=abc', `https://evil/?token=${token}`, `autoloop://bind?token=${token}&base=http://evil`, `autoloop://bind?token=${'z'.repeat(64)}`, 'random', '', null]) {
+  const full = `autoloop://bind?token=${token}`;
+  assert.equal(parseBindPayload(full), token);
+  assert.equal(parseBindPayload(`  ${full}\n`), token);
+  assert.equal(parseBindPayload(token), token, '裸 64hex 自动补前缀');
+  assert.equal(parseBindPayload(` \t${token}\n `), token, '裸 hex 前后带空格也能解析');
+  for (const bad of [
+    'autoloop://bind?token=abc',
+    `https://evil/?token=${token}`,
+    `autoloop://bind?token=${token}&base=http://evil`,
+    `autoloop://bind?token=${token}&x=1`,
+    `autoloop://bind?token=${token}#frag`,
+    `autoloop://user@bind?token=${token}`,
+    `http://autoloop/bind?token=${token}`,
+    `autoloop://bind?token=${'z'.repeat(64)}`,
+    `autoloop://bind?token=${'A'.repeat(64)}`,
+    'random', '', '   ', null,
+  ]) {
     assert.throws(() => parseBindPayload(bad), error => error instanceof MobileShellError && error.code === 'INVALID_BIND', String(bad));
   }
 });
@@ -214,6 +228,26 @@ test('createMobileClient.bind 走 /api/mobile/bind，凭证只进安全存储、
   assert.equal(await tokenStore.get(), 'device-secret');
   assert.ok(!ff.calls[0].url.includes(token), '一次性二维码令牌不得出现在 URL 里');
   assert.ok(!JSON.stringify(ff.calls[0].init.headers).includes(token));
+});
+
+test('createMobileClient.bind 用裸 64hex 也能绑定，发到服务端的仍是同一 token', async () => {
+  const token = 'c'.repeat(64);
+  const ff = fakeFetch((url, init) => {
+    assert.deepEqual(JSON.parse(init.body), { token, name: 'Pixel', platform: 'Android' });
+    return okResponse({ device: { id: 'dev_1' }, deviceToken: 'device-secret' });
+  });
+  const client = createMobileClient({ base: 'https://console.example.com', tokenStore: createTokenStore(), fetchImpl: ff.impl });
+  await client.bind(`  ${token}\n`, 'Pixel', 'Android');
+  assert.equal(ff.calls.length, 1);
+});
+
+test('createMobileClient.bind 遇到过期码给人话提示，不暴露服务端原文', async () => {
+  const ff = fakeFetch(() => errResponse(410, { error: '绑定二维码已过期' }));
+  const client = createMobileClient({ base: 'https://console.example.com', tokenStore: createTokenStore(), fetchImpl: ff.impl });
+  await assert.rejects(
+    client.bind(`autoloop://bind?token=${'d'.repeat(64)}`),
+    error => error instanceof MobileShellError && error.code === 'BIND_EXPIRED' && error.message === '绑定码已过期，请在电脑上重新生成',
+  );
 });
 
 test('createMobileClient.session 带设备级授权头；401 清除凭据并回锁定', async () => {
