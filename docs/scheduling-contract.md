@@ -91,6 +91,12 @@ Agent 或改写成只读提示词。否定豁免只认紧邻动词的禁止（�
 4. 动作记入 `<运行目录>/closeouts.jsonl`，控制台 `GET /api/closeouts` 可查；
 5. 中台暂停失败则不归档，下轮重试；链若复活（同名文件重建），不自动 resume，由调度方按审计记录里的命令恢复。
 
+同一巡检顺带清「幽灵排队轮次」（2026-11-20 补，起因 #5222/#7762 两条永远无法归档的排队 run）：
+被无限期暂停（`until: null`）规则的 `queued` run 永远不会被领走，却一直计入「等待重试」。
+暂停时刻与 run 排队时刻都满 1 小时宽限（给手滑暂停/恢复留窗口），且未被 claim、非 stopping 的，
+调用 Hub `POST /v1/runs/<id>/cancel` 取消并记入 closeouts.jsonl（字段 rule/run/reason，无 chain）。
+有截止时间的暂停（until 非空）不处理——到期会自动恢复派发。
+
 ## 节点进度上报（2026-11-15）
 
 串行推进编排器维护 `<AGENT_AUTOLOOP_HOME>/<链名>-serial.json`（既有约定），控制台总览

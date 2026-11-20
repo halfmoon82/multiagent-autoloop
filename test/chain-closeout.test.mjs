@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, existsSync, readdirSync, readFileSync, utim
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { isChainComplete, sweepChainCloseouts, archiveTarget, readCloseouts } from '../src/chain-closeout.mjs';
+import { isChainComplete, sweepChainCloseouts, sweepPausedQueuedRuns, archiveTarget, readCloseouts } from '../src/chain-closeout.mjs';
 import { loadChains, chainRuleNames } from '../src/serial-progress.mjs';
 import { fakeHub, json, close } from './helpers.mjs';
 
@@ -221,4 +221,79 @@ test('GET /api/closeouts serves the audit tail', async () => {
     await close(server);
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// 幽灵排队轮次：规则被无限期暂停后，已排队（或暂停后由 timer/卡片事件补排）的 run 永远不会被领走，
+// 却一直计入「等待重试」。收口巡检把它们取消并留痕。
+const NOW = Date.parse('2026-11-20T08:00:00Z');
+const ago = minutes => new Date(NOW - minutes * 60 * 1000).toISOString();
+function stateHub(state) {
+  const calls = [];
+  const hub = async (config, url, opts = {}) => {
+    calls.push({ url, method: opts.method || 'GET' });
+    if (url === '/v1/state') return state;
+    if (/^\/v1\/runs\/\d+\/cancel$/.test(url)) return { ok: true };
+    throw new Error(`unexpected ${url}`);
+  };
+  return { hub, calls };
+}
+const queued = (id, rule, createdMinutesAgo, extra = {}) => ({ id, rule, state: 'queued', attempts: 0, createdAt: ago(createdMinutesAgo), claimedAt: null, stopping: false, ...extra });
+
+test('queued runs of an indefinitely paused rule are cancelled and audited', async () => {
+  const root = rootWith({});
+  const { hub, calls } = stateHub({
+    pauses: [{ name: '并行DAG收尾推进', reason: '归档', since: ago(240), until: null }],
+    runs: [queued(7762, '并行DAG收尾推进', 200), queued(5222, '并行DAG收尾推进', 300), { id: 7000, rule: '并行DAG收尾推进', state: 'done' }],
+  });
+  const result = await sweepPausedQueuedRuns({ root, config: HUB_CONFIG, now: NOW, hub });
+  // 暂停后补排的（7762）与暂停前就已排队的（5222）同样永远不会被领走
+  assert.deepEqual(result.cancelled, [{ run: 7762, rule: '并行DAG收尾推进' }, { run: 5222, rule: '并行DAG收尾推进' }]);
+  assert.deepEqual(calls.filter(c => c.method === 'POST').map(c => c.url), ['/v1/runs/7762/cancel', '/v1/runs/5222/cancel']);
+  const lines = readCloseouts(root);
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].run, 7762);
+  assert.equal(lines[0].rule, '并行DAG收尾推进');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('queued runs that may still legitimately run are left alone', async () => {
+  const root = rootWith({});
+  const { hub, calls } = stateHub({
+    pauses: [
+      { name: '暂停到明天', since: ago(240), until: '2026-11-21T00:00:00Z' },
+      { name: '刚暂停', since: ago(5), until: null }, // 留出手滑暂停后恢复的窗口
+      { name: '已归档', since: ago(240), until: null },
+      { name: '重新暂停', since: ago(240), until: null },
+      { name: '重新暂停', since: ago(5), until: null },
+    ],
+    runs: [
+      queued(1, '没暂停', 200),
+      queued(2, '暂停到明天', 200),
+      queued(3, '刚暂停', 200),
+      queued(4, '已归档', 5),
+      queued(5, '已归档', 200, { claimedAt: ago(1) }),
+      queued(6, '已归档', 200, { stopping: true }),
+      queued(7, '重新暂停', 200),
+    ],
+  });
+  const result = await sweepPausedQueuedRuns({ root, config: HUB_CONFIG, now: NOW, hub });
+  assert.deepEqual(result.cancelled, []);
+  assert.equal(calls.some(c => c.method === 'POST'), false, '不取消任何一条');
+  assert.equal(readCloseouts(root).length, 0);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('hub failures surface as errors without throwing', async () => {
+  const root = rootWith({});
+  const down = await sweepPausedQueuedRuns({ root, config: HUB_CONFIG, now: NOW, hub: async () => { throw new Error('ECONNREFUSED'); } });
+  assert.deepEqual(down.cancelled, []);
+  assert.match(down.errors[0], /ECONNREFUSED/);
+  const flaky = async (config, url) => {
+    if (url === '/v1/state') return { pauses: [{ name: 'R', since: ago(240), until: null }], runs: [queued(9, 'R', 200)] };
+    throw new Error('cancel 500');
+  };
+  const failed = await sweepPausedQueuedRuns({ root, config: HUB_CONFIG, now: NOW, hub: flaky });
+  assert.deepEqual(failed.cancelled, []);
+  assert.match(failed.errors[0], /9.*cancel 500/);
+  rmSync(root, { recursive: true, force: true });
 });
