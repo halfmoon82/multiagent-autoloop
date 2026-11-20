@@ -285,19 +285,21 @@ async function issueDevice(url, store, name = 'Pixel') {
 
 test('移动端静态壳由固定白名单提供，带安全响应头，不提供目录遍历和构建文件', async t => {
   const { url } = await setup(t);
-  const allowed = ['/mobile/', '/mobile/index.html', '/mobile/app.mjs', '/mobile/shell.mjs', '/mobile/styles.css', '/mobile/manifest.webmanifest', '/mobile/icon.svg'];
+  const allowed = ['/mobile/', '/mobile/index.html', '/mobile/app.mjs', '/mobile/shell.mjs', '/mobile/scan.mjs', '/mobile/vendor/qr-decoder.mjs', '/mobile/styles.css', '/mobile/manifest.webmanifest', '/mobile/icon.svg'];
   for (const p of allowed) {
     const response = await fetch(`${url}${p}`);
     assert.equal(response.status, 200, p);
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.match(response.headers.get('content-security-policy'), /default-src 'self'/);
   }
-  for (const p of ['/mobile/../src/server.mjs', '/mobile/package.json', '/mobile/capacitor.config.json', '/mobile/build-apk.mjs', '/mobile/%2e%2e/src/server.mjs']) {
+  for (const p of ['/mobile/../src/server.mjs', '/mobile/package.json', '/mobile/capacitor.config.json', '/mobile/build-apk.mjs', '/mobile/%2e%2e/src/server.mjs', '/mobile/vendor/%2e%2e/%2e%2e/src/server.mjs', '/mobile/vendor/LICENSE', '/mobile/vendor/evil.mjs']) {
     assert.equal((await fetch(`${url}${p}`)).status, 404, `${p} 不得被静态服务提供`);
   }
   const html = await (await fetch(`${url}/mobile/`)).text();
   assert.match(html, /id="lock-screen"/);
   assert.match(html, /id="app-main"[^>]*hidden/);
+  assert.match(html, /id="scan-bind"/);
+  assert.match(html, /id="scan-video"/);
   assert.ok(!html.includes('server-secret'));
 });
 

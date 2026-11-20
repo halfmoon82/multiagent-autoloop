@@ -43,6 +43,8 @@ const MOBILE_FILES = new Map([
   ['/mobile/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/mobile/app.mjs', ['app.mjs', 'text/javascript; charset=utf-8']],
   ['/mobile/shell.mjs', ['shell.mjs', 'text/javascript; charset=utf-8']],
+  ['/mobile/scan.mjs', ['scan.mjs', 'text/javascript; charset=utf-8']],
+  ['/mobile/vendor/qr-decoder.mjs', ['vendor/qr-decoder.mjs', 'text/javascript; charset=utf-8']],
   ['/mobile/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/mobile/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json; charset=utf-8']],
   ['/mobile/icon.svg', ['icon.svg', 'image/svg+xml']],

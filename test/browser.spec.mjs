@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { createConsoleServer } from '../src/server.mjs';
-import { decodeQr } from '../public/qr.mjs';
+import { decodeQr, encodeQr } from '../public/qr.mjs';
 import { fakeHub, json, listen, close } from './helpers.mjs';
 
 const root = mkdtempSync(path.join(tmpdir(), 'console-browser-data-'));
@@ -1041,6 +1041,60 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '移动端壳无横向溢出');
   assert.deepEqual(errors, [], '移动端壳不得产生脚本错误');
   console.log('PASS browser: mobile shell bind, biometric gate, secure connection, reconnect, revoke rebind');
+
+  // ===== 扫码绑定（qr-scan-bind）：假相机流喂真实 QR 帧 → 自带 vendor 解码 → 自动填入并提交绑定 =====
+  const scanBinding = await fetch(`${url}/api/devices/bindings`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-console-request': '1' }, body: '{}',
+  });
+  assert.equal(scanBinding.status, 201);
+  const scanQr = await scanBinding.json();
+  assert.match(scanQr.qrPayload, /^autoloop:\/\/bind\?token=[0-9a-f]{64}$/);
+  const scanMatrix = encodeQr(scanQr.qrPayload);
+
+  // 假相机桥用页面里的模块矩阵画黑白帧；用 addInitScript 注入后重新导航到 /mobile/ 让其生效。
+  await page.addInitScript(() => {
+    window.AutoloopScanCamera = {
+      async open() {
+        return {
+          read() {
+            const matrix = window.__scanMatrix;
+            if (!matrix) return null;
+            const { size, modules } = matrix;
+            const scale = 6; const quiet = 4;
+            const dim = (size + quiet * 2) * scale;
+            const canvas = document.createElement('canvas');
+            canvas.width = dim; canvas.height = dim;
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            context.fillStyle = '#fff'; context.fillRect(0, 0, dim, dim);
+            context.fillStyle = '#000';
+            for (let y = 0; y < size; y++) {
+              for (let x = 0; x < size; x++) {
+                if (modules[y][x]) context.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale);
+              }
+            }
+            return context.getImageData(0, 0, dim, dim);
+          },
+          close() { window.__scanClosed = true; },
+        };
+      },
+    };
+  });
+
+  await page.goto(`${url}/mobile/`);
+  await page.locator('#scan-bind').waitFor();
+  await page.evaluate(matrix => { window.__scanMatrix = matrix; }, { size: scanMatrix.size, modules: scanMatrix.modules });
+  assert.equal(await page.locator('#scan-video').isVisible(), false, '未扫码时取景框应隐藏');
+  await page.locator('#scan-bind').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  assert.equal(await page.locator('#bind-payload').inputValue(), '', '扫到的码绑定后不留输入框');
+  assert.equal(await page.evaluate(() => window.__scanClosed === true), true, '扫码完成必须关闭摄像头流');
+  assert.equal(await page.locator('#scan-video').isVisible(), false, '扫码完成后取景框收起');
+  assert.equal(await page.locator('#scan-status').innerText(), '', '扫码成功后不留状态文案');
+  const scanText = await page.locator('body').innerText();
+  assert.ok(!scanText.includes(scanQr.token), '一次性二维码令牌不得留在页面');
+  assert.ok(!/deviceToken|tokenHash|server-secret/.test(scanText), '页面不得出现密钥或设备凭证');
+  assert.deepEqual(errors, [], '扫码绑定不得产生脚本错误');
+  console.log('PASS browser: qr scan bind — fake camera frame decoded, bound, camera closed');
 } finally {
   if (context) await context.close(); await close(consoleServer); await close(hub.server); rmSync(root, { recursive: true, force: true }); rmSync(profile, { recursive: true, force: true });
 }
