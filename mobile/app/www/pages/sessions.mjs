@@ -11,7 +11,6 @@ const loadQuestionModel = typeof window === 'undefined'
 export { loadViewModel };
 
 const CONTEXT_KEY = 'nomoto-sessions-context';
-const ITEM_HEIGHT = 72;
 
 const node = (tag, { className, text, attrs = {} } = {}, children = []) => {
   const element = document.createElement(tag);
@@ -38,7 +37,7 @@ export function mount(ctx) {
   const state = {
     kind: 'all', query: '', archivedExpanded: false, error: '',
     view: 'list', session: null, group: null, messages: [],
-    follow: true, listScroll: 0, detailScroll: 0,
+    follow: true, listScroll: 0, promptExpanded: false,
     drafts: { composer: '', question: '' },
     projects: [], cards: [], newPrompt: '', selectedKind: null, classification: null,
     list: null, rawArchives: [], menuText: '',
@@ -52,7 +51,6 @@ export function mount(ctx) {
       state.query = saved.query || '';
       state.archivedExpanded = saved.archivedExpanded === true;
       state.listScroll = Number(saved.listScroll) || 0;
-      state.detailScroll = Number(saved.detailScroll) || 0;
       state.drafts = { composer: String(saved.drafts?.composer || ''), question: String(saved.drafts?.question || '') };
       state.savedGroup = saved.group || null;
       state.savedSessionId = saved.sessionId || null;
@@ -63,8 +61,8 @@ export function mount(ctx) {
     try {
       if (typeof sessionStorage === 'undefined') return;
       const payload = {
-        kind: state.kind, query: state.query, archivedExpanded: state.archivedExpanded,
-        listScroll: state.listScroll, detailScroll: state.detailScroll,
+        kind: state.kind, query: state.query, archivedExpanded: state.archivedExpanded, promptExpanded: state.promptExpanded,
+        listScroll: state.listScroll, promptExpanded: state.promptExpanded,
         drafts: state.drafts, sessionId: state.session?.id || null,
         group: qmodel && state.group ? qmodel.snapshotGroup(state.group) : null,
       };
@@ -97,16 +95,13 @@ export function mount(ctx) {
   ]);
 
   const detailTitle = node('strong', { className: 'sessions-detail-title' });
-  const detailPrompt = node('div', { className: 'sessions-detail-prompt', attrs: { hidden: '' } });
+  const detailPrompt = node('button', { type: 'button', className: 'sessions-detail-prompt', attrs: { hidden: '' } });
   const artifactsBtn = node('button', { type: 'button', className: 'sessions-artifacts-btn', text: '本会话产物' });
   const detailBack = node('button', { type: 'button', className: 'sessions-back', text: '‹ 会话列表' });
   const questionBox = node('div', { className: 'sessions-question' });
-  const messageTop = node('div', { className: 'sessions-spacer-top' });
+  // 消息区：整页自然滚动（与列表/其他页面同一滚动面），不做嵌套滚动区——
+  // 嵌套滚动区在手机上容易被提示词块等挤压、且与页面争抢触摸，表现为「拉不动」。
   const messageWindow = node('div', { className: 'sessions-message-window' });
-  const messageBottom = node('div', { className: 'sessions-spacer-bottom' });
-  const scroller = node('div', { className: 'sessions-scroller', attrs: { tabindex: '0' } }, [
-    messageTop, messageWindow, messageBottom,
-  ]);
   const backBottom = node('button', { type: 'button', className: 'sessions-back-bottom', text: '回到底部 ↓', attrs: { hidden: '' } });
   const composerInput = node('textarea', {
     className: 'sessions-composer-input',
@@ -117,7 +112,7 @@ export function mount(ctx) {
   const composerRow = node('div', { className: 'sessions-composer' }, [composerInput, micBtn, composerSend]);
   const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
     node('div', { className: 'sessions-detail-head' }, [detailBack, detailTitle, artifactsBtn]),
-    detailPrompt, questionBox, scroller, backBottom, composerRow,
+    detailPrompt, questionBox, messageWindow, backBottom, composerRow,
   ]);
 
   const archiveBody = node('div', { className: 'sessions-archive-body' });
@@ -146,11 +141,19 @@ export function mount(ctx) {
 
   const views = { list: listView, detail: detailView, archive: archiveView, new: newView };
   let detailTimer = null;
+  // 详情跟随/滚底基于整页滚动（与其他页面同一滚动面）。
+  const pageMetrics = () => ({
+    scrollTop: window.scrollY,
+    scrollHeight: document.documentElement.scrollHeight,
+    clientHeight: window.innerHeight,
+  });
+  const scrollToBottom = behavior => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: behavior || 'auto' });
+
   const showView = name => {
     state.view = name;
     if (name !== 'detail' && detailTimer) { clearInterval(detailTimer); detailTimer = null; }
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
-    if (name === 'detail' && state.follow) scroller.scrollTop = scroller.scrollHeight;
+    if (name === 'detail' && state.follow) scrollToBottom();
   };
 
   const showBanner = text => {
@@ -240,12 +243,8 @@ export function mount(ctx) {
   async function openSession(session) {
     state.session = session;
     state.messages = mapMessages(session);
-    // 标题只截前 120 字，详情里展示完整首轮提示词，避免「被系统拼装的提示词」看不清全貌。
-    const promptText = String(session.prompt || '').trim();
-    detailPrompt.textContent = promptText ? `首轮提示词：${promptText}` : '';
-    detailPrompt.hidden = !promptText;
+    renderPrompt(session);
     state.follow = true;
-    state.detailScroll = 0;
     const cards = Array.isArray(state.cards) ? state.cards.filter(card => !card?.project || card.project === session.project) : [];
     state.group = qmodel ? qmodel.cardsToQuestionGroup(cards, { id: 'session-cards', sessionId: session.id }) : null;
     if (qmodel && state.savedGroup && state.savedSessionId === session.id) {
@@ -259,6 +258,17 @@ export function mount(ctx) {
     state.detailSessionId = session.id;
     startDetailPolling();
     saveContext();
+  }
+
+  // 提示词默认折叠成一行（不再钉在顶部挤压转录区），点按展开/收起全文。
+  function renderPrompt(session) {
+    const promptText = String(session?.prompt || '').trim();
+    if (!promptText) { detailPrompt.hidden = true; return; }
+    detailPrompt.hidden = false;
+    detailPrompt.classList.toggle('expanded', state.promptExpanded === true);
+    detailPrompt.textContent = state.promptExpanded
+      ? `首轮提示词（点按收起）：\n${promptText}`
+      : `首轮提示词：${promptText.slice(0, 60)}${promptText.length > 60 ? '…' : ''}（点按展开全文）`;
   }
 
   function mapMessages(session) {
@@ -288,7 +298,7 @@ export function mount(ctx) {
       if (JSON.stringify(messages) !== JSON.stringify(state.messages)) {
         state.messages = messages;
         renderMessages();
-        if (state.follow) scroller.scrollTop = scroller.scrollHeight;
+        if (state.follow) scrollToBottom();
       }
       detailTitle.textContent = session.title || '会话';
     } catch { /* 轮询静默失败，等下一轮 */ }
@@ -416,42 +426,29 @@ export function mount(ctx) {
 
   function renderMessages() {
     const total = state.messages.length;
-    const range = smodel ? smodel.visibleRange({
-      scrollTop: state.detailScroll,
-      viewportHeight: scroller.clientHeight || 400,
-      itemHeight: ITEM_HEIGHT,
-      total,
-      overscan: 4,
-    }) : { start: 0, end: total };
-    messageTop.style.height = `${range.start * ITEM_HEIGHT}px`;
-    messageBottom.style.height = `${Math.max(0, total - range.end) * ITEM_HEIGHT}px`;
     messageWindow.replaceChildren();
     if (!total) messageWindow.appendChild(node('p', { className: 'hint', text: '暂无在线转录；可查看归档会话或等待新消息' }));
-    else for (const message of state.messages.slice(range.start, range.end)) messageWindow.appendChild(messageNode(message));
+    else for (const message of state.messages) messageWindow.appendChild(messageNode(message));
     backBottom.hidden = state.follow;
   }
 
-  let messageFrame = null;
-  scroller.addEventListener('scroll', () => {
-    state.detailScroll = scroller.scrollTop;
-    if (smodel) state.follow = smodel.shouldFollowScroll(scroller);
+  // 整页滚动跟随：滚离底部时显示「回到底部」，停止跟随；回到底部恢复跟随。
+  window.addEventListener('scroll', () => {
+    if (state.view !== 'detail') return;
+    if (smodel) state.follow = smodel.shouldFollowScroll(pageMetrics());
     backBottom.hidden = state.follow;
-    if (!messageFrame) {
-      messageFrame = requestAnimationFrame(() => { messageFrame = null; renderMessages(); });
-    }
-    saveContext();
   }, { passive: true });
   backBottom.addEventListener('click', () => {
     state.follow = true;
-    scroller.scrollTop = scroller.scrollHeight;
-    renderMessages();
+    backBottom.hidden = true;
+    scrollToBottom('smooth');
   });
 
   let streamFrames = [];
   let streamScheduled = false;
   function appendStream(text) {
     if (!text) return;
-    const follow = !smodel || smodel.shouldFollowScroll(scroller);
+    const follow = !smodel || smodel.shouldFollowScroll(pageMetrics());
     streamFrames.push(String(text));
     if (streamScheduled) return;
     streamScheduled = true;
@@ -464,7 +461,7 @@ export function mount(ctx) {
       else state.messages.push({ role: '会话', text: merged, at: '', streaming: true });
       state.follow = follow;
       renderMessages();
-      if (follow) scroller.scrollTop = scroller.scrollHeight;
+      if (follow) scrollToBottom();
     });
   }
 
@@ -494,10 +491,15 @@ export function mount(ctx) {
     state.follow = true;
     ctx.hooks?.haptic?.tap?.();
     renderMessages();
-    scroller.scrollTop = scroller.scrollHeight;
+    scrollToBottom();
     saveContext();
   });
 
+  detailPrompt.addEventListener('click', () => {
+    state.promptExpanded = state.promptExpanded !== true;
+    renderPrompt(state.session);
+    saveContext();
+  });
   detailBack.addEventListener('click', goList);
   artifactsBtn.addEventListener('click', () => { ctx.hooks?.openSessionArtifacts?.(state.session?.id); });
 

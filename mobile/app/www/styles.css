@@ -92,16 +92,3 @@ button:disabled { opacity: 0.6; cursor: default; }
   font-size: 0.9rem; z-index: 10; max-width: 90vw; text-align: center;
 }
 
-/* 会话详情：完整首轮提示词块（标题只截前 120 字，此处看全文） */
-.sessions-detail-prompt {
-  margin: 8px 12px 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: rgba(127, 127, 127, 0.08);
-  font-size: 12px;
-  line-height: 1.5;
-  word-break: break-all;
-  white-space: pre-wrap;
-  max-height: 28vh;
-  overflow-y: auto;
-}
