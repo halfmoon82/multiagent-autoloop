@@ -1,0 +1,157 @@
+{
+  "plan_id": "2026-11-21-nomoto-app-6tab-voice-composer",
+  "title": "NoMoTo App：6 Tab（新增管理后台）+ 滑动切 Tab + Whisper 语音 + 悬浮自适应输入栏",
+  "nodes": [
+    {
+      "id": "nav-collapse",
+      "title": "导航收敛：8→6 Tab（新增管理后台）+ 头部齿轮设置入口 + 基线修订",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "mobile/app/www/index.html:66-73 有 8 个 Tab（总览/规则/轮次/待办/会话/产物/DAG/设备）；app.mjs 无管理后台/设置路由；DESIGN_REVIEW.md:99 基线为底部五栏；网页版 public/ 已有管理后台（data-view=admin，平台与模型/运行环境两分区，admin-platform-models.mjs，保存前确认+自动备份）可作对齐参照。共享壳文件只能串行改，故独占 wave-0。",
+        "output": "1) index.html tab-bar 8→6：总览/规则/会话/轮次/待办/管理后台，按设计稿顺序，aria-selected 语义不变；移除产物/DAG/设备三个 Tab 按钮但保留其页面模块与路由可达。2) 头部加齿轮按钮→「设备与偏好」设置页（新建 pages/settings.mjs+css），页内三分区（设备绑定/通知偏好/系统字体），复用现有 pages/{devices,notify,font-touch}.mjs 的 mount 挂进分区，不编辑这三个文件本身。3) 新建 pages/admin.mjs+css 骨架：管理后台页含分区导航（平台与模型/运行环境两 pane），mount 点与数据契约对齐 public/admin-platform-models.mjs + public/app.mjs:240-259（加载/显隐切换模式），具体表单渲染留给 content-align；保存前确认与自动备份语义沿用网页版。4) app.mjs 路由与页面栈适配：settings/admin 进入页面栈（返回键逐级返回，Tab 根页二次确认退出语义不变）。5) DESIGN_REVIEW.md §4 基线由五栏修订为六栏并记录主人 2026-11-21 决策。",
+        "error_behavior": "旧占位 Tab（产物/DAG/设备）入口移除后其页面仍经新入口可达，不得 404；未加载分区显示加载态与重试，不白屏。",
+        "acceptance_example": "单测：恰 6 个 .tab、顺序与文案、齿轮设置入口存在、无产物/DAG/设备 Tab、admin/settings 路由可进出；DESIGN_REVIEW 基线文本为六栏。npm test 全绿。",
+        "files": [
+          "mobile/app/www/index.html",
+          "mobile/app/www/app.mjs",
+          "mobile/app/www/styles.css",
+          "mobile/app/www/pages/admin.mjs",
+          "mobile/app/www/pages/admin.css",
+          "mobile/app/www/pages/settings.mjs",
+          "mobile/app/www/pages/settings.css",
+          "docs/design/2026-11-17-mobile-app/DESIGN_REVIEW.md",
+          "test/mobile-nav-structure.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "content-align",
+      "title": "内容对齐：6 Tab 全量逐页对齐最新网页版 public/ 输出",
+      "depends_on": [
+        "nav-collapse"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "nav-collapse 已收敛为 6 Tab。mobile/src/core/pages.mjs 与各 feature 视图模型（artifacts/dag-ring/question-group/project-filter/device-sync 等）可能与 public/ 最新输出漂移；总览需补「项目 DAG」入口（content-align 拥有 pages/core.mjs，nav-collapse 不碰）。会话页/新建表单（features/sessions、pages/sessions.mjs）归 session-inputs 所有，本节点不编辑。",
+        "output": "逐页核对并对齐 public/ 实际输出：总览四组（正在运行/等待重试/今日完成/待调度处理，各最近 5 条）+ 待调度处理口径、规则、轮次、待办、产物、DAG、管理后台（把 admin 骨架填成与网页版一致的只读字段+可编辑表单：平台与模型、运行环境，保存前确认+自动备份，调用既有 API 不新增服务端路由）；总览项目卡加「项目 DAG」入口（经既有 dag 路由）。只取真实字段，费用/Token 口径与网页版一致（已上报费用/仅 Token/未上报三态如实标注），不编造。",
+        "error_behavior": "字段缺失时显示网页版同款空态文案；管理后台保存失败回显错误并保留表单内容。",
+        "acceptance_example": "逐页快照/契约单测对照 public/ 渲染输出（含费用三态、空态文案）；浏览器回归抽查管理后台分区切换与保存确认流。npm test + npm run test:browser 全绿。",
+        "files": [
+          "mobile/src/core/",
+          "mobile/src/features/artifacts/",
+          "mobile/src/features/dag-ring/",
+          "mobile/src/features/question-group/",
+          "mobile/src/features/project-filter/",
+          "mobile/src/features/device-sync/",
+          "mobile/app/www/pages/core.mjs",
+          "mobile/app/www/pages/artifacts.mjs",
+          "mobile/app/www/pages/dag.mjs",
+          "mobile/app/www/pages/project-filter.mjs",
+          "mobile/app/www/pages/admin.mjs",
+          "test/mobile-content-align.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "tab-swipe",
+      "title": "手势：主内容区左右滑动切换 Tab",
+      "depends_on": [
+        "nav-collapse"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "nav-collapse 已落地 6 Tab；app.mjs 当前只有 click 监听切换，无任何 touch/pointer 手势；app.mjs 在本节点开始时已归本节点可改（wave 顺序保证）。",
+        "output": "新建纯逻辑模块 mobile/src/features/tab-swipe/（手势判定可单测）：touchstart/pointerdown 记录起点，主内容区跟手偏移（translateX 过渡），水平位移越阈（如 56px）或速度达标即切相邻 Tab，未越阈回弹，首/末页阻尼；gesture 起始点落在可横向滚动容器（代码段、表格、横向列表）内不拦截；点按与滑动互斥（位移小于阈值视为点击）。接入 app.mjs selectTab：滑动切页与点击切页都走同一入口，aria-selected/aria-hidden 语义不变，路由与页面栈状态一致。",
+        "error_behavior": "浏览器不支持 PointerEvent 时退化为无手势（纯点击），不得报错；滑动中打断（来电式 blur）回弹到当前页。",
+        "acceptance_example": "单测：阈值内回弹、越阈切页、末页阻尼、滚动容器内不拦截、点击仍可用；浏览器回归派发合成 touch 事件验证双向滑动与 aria 语义。遵循 browser-atomic-lint。npm test + npm run test:browser 全绿。",
+        "files": [
+          "mobile/src/features/tab-swipe/",
+          "mobile/app/www/app.mjs",
+          "mobile/app/www/styles.css",
+          "test/mobile-tab-swipe.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "whisper-endpoint",
+      "title": "控制台：本机 whisper 转写端点 /api/speech/transcribe",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "本机已有 whisper CLI（/Users/macmini/.local/bin/whisper，openai-whisper，已验证可运行；faster_whisper Python 模块不可用故不采用）；控制台 src/server.mjs 路由走允许列表，写操作已有 Host/Origin/自定义头校验与设备鉴权（checkWrite、x-device-token）可复用；App 端 session-inputs 与本节点仅通过 HTTP 契约解耦（软依赖，并行无冲突）。",
+        "output": "新建 src/whisper-transcribe.mjs + src/server.mjs 路由允许列表项：POST /api/speech/transcribe（鉴权后受理）。请求体为音频（Content-Type audio/* 或 multipart，≤2MB、≤60s，超限 413），落临时文件后调用本机 whisper CLI——路径与模型经 src/config.mjs 配置（默认 /Users/macmini/.local/bin/whisper、--model small），参数全部白名单拼接防注入，子进程超时 60s（超时杀进程回 504），stderr 不回传客户端；识别完成清理临时文件，返回 JSON {text}。同会话冷却（如 3s 内重复请求 429）防滥用。路由保持默认仅 127.0.0.1/设备鉴权可达，密钥与路径不进日志前端。",
+        "error_behavior": "未鉴权 401、超限 413、冷却 429、whisper 非零退出/超时 502/504（统一文案「转写失败，请重试」），临时文件在 finally 清理；whisper 缺失（配置路径不可执行）返回 503 使客户端走降级。",
+        "acceptance_example": "单测：鉴权拒绝、非 audio 类型拒绝、超限 413、冷却 429、假 whisper 命令替身验证参数白名单/超时/清理/成功返回 text/失败 502；配置路径不可执行时 503。npm test 全绿。",
+        "files": [
+          "src/whisper-transcribe.mjs",
+          "src/server.mjs",
+          "src/config.mjs",
+          "test/whisper-endpoint.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "session-inputs",
+      "title": "会话输入升级：Whisper 语音链路 + 输入框自动长高 + 悬浮底部",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "当前 composer 为 rows=2 固定 textarea + min-height 3.5rem + 手动 resize（pages/sessions.mjs:106-112、sessions.css:63-67/113-114），不自动长高、随消息流滚动离开视野；语音走原生系统识别器桥（pages/voice.mjs + voice-input 状态机），新建会话表单（features/sessions/views.mjs buildNewSessionForm）无麦克风；whisper-endpoint 并行开发，本节点只依赖其 HTTP 契约（POST /api/speech/transcribe 返回 {text}），不可用时按降级链处理。",
+        "output": "1) 语音：voice 链路新增「控制台转写」提供者——getUserMedia + MediaRecorder（audio/webm）录音，结束上传 transcribe 端点，最终文本喂既有 voice-input 状态机（实时预览/落草稿/绝不自动发送，语义不变）；端点 503/网络失败降级回原生 AutoloopSpeech 系统识别器，双不可用隐藏麦克风（现有逻辑）。新建会话表单渲染同款麦克风按钮，复用同一 attachVoice 链路（features/sessions 与 voice-input 目录内实现）。2) 自动长高：新建纯逻辑模块 composer-autogrow（按行高算目标行数：min 2 行→max 5 行或主区 38%，超出内部滚动；发送后回弹 min；空内容禁用发送），应用到会话 composer、新建会话 prompt、待回答输入三处；font-size 16px 防聚焦缩放；移除手动 resize；voice 落草稿派发的 input 事件触发同一 auto-grow。3) 悬浮底部：会话详情视图改 flex 列布局——消息窗 flex:1 min-height:0 overflow:auto，composer flex:none 常驻底部（position:sticky bottom:0 或等价 flex 布局），软键盘弹出时经既有 adjustResize+visualViewport 键盘高度 CSS 变量把 composer 顶在键盘上方，不被遮挡、不被消息流推走。4) 顺手对齐：本会话页与新建表单字段对齐网页版（本节点拥有 features/sessions/** 与 pages/sessions.mjs，content-align 不碰）。",
+        "error_behavior": "录音权限拒绝/无麦克风：隐藏麦克风按钮，键盘输入不受影响；上传失败保留草稿并提示；auto-grow 在任何输入源（键盘/语音/粘贴）行为一致；悬浮布局在折叠屏分栏下不遮挡消息内容。",
+        "acceptance_example": "单测：auto-grow 行数边界/上限截断/发送回弹/空内容禁用；语音状态机对 transcribe 成功/503 降级/双不可用三分支；composer 悬浮布局 CSS 结构断言。浏览器回归：输入多行验证长高与内部滚动、发送回弹与悬浮、键盘高度变量下 composer 位置、麦克风在端点缺失时隐藏。遵循 browser-atomic-lint。npm test + npm run test:browser 全绿。",
+        "files": [
+          "mobile/src/features/voice-input/",
+          "mobile/src/features/sessions/",
+          "mobile/src/features/composer-autogrow/",
+          "mobile/app/www/pages/sessions.mjs",
+          "mobile/app/www/pages/sessions.css",
+          "mobile/app/www/pages/voice.mjs",
+          "mobile/app/www/pages/voice.css",
+          "test/mobile-session-inputs.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "integration-verify",
+      "title": "集成验证：全量单测 + 浏览器回归 + APK 打包 + design-baseline 快照",
+      "depends_on": [
+        "content-align",
+        "tab-swipe",
+        "whisper-endpoint",
+        "session-inputs"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "wave-1 四节点全部合入；需端到端验证并发改动叠加后的行为与打包产物完整。",
+        "output": "浏览器回归：6 Tab 点击+滑动双向切换、设置入口进出、管理后台分区与保存确认流、DAG/产物入口、语音全链路（transcribe 成功→草稿→发送；端点关闭→降级/隐藏）、composer 长高+悬浮+键盘遮挡场景、各页与网页版一致性抽查；APK 打包结构校验（mobile-apk-build 测试，含新页面资源）；design-baseline 按六栏新基线走一次批准流程、产出不可变 run 快照；汇总全量测试通过率与未覆盖边界。",
+        "error_behavior": "任一项回归红即打回对应 wave-1 节点修复，不在本节点顺手改业务代码。",
+        "acceptance_example": "npm test、npm run test:browser 全绿；APK 结构测试通过；design-baseline run 快照落盘；汇报实际运行命令与通过数量。",
+        "files": [
+          "test/browser-*.test.mjs",
+          "test/mobile-apk-build.test.mjs",
+          "docs/design/（基线批准记录）"
+        ]
+      }
+    }
+  ]
+}
