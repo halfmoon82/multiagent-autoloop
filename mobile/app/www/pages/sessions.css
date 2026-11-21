@@ -73,13 +73,23 @@
 .sessions-answered-row > strong { flex: 1 1 10rem; font-weight: 500; }
 .sessions-answered-row button { min-height: 44px; margin: 0; }
 
-/* 虚拟列表：只渲染窗口内消息，上下占位撑出真实滚动高度。 */
-.sessions-scroller {
-  height: 55vh; min-height: 14rem; overflow-y: auto; overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+/* 消息区：整页自然滚动（与列表/其他页面同一滚动面），全量渲染，不做嵌套滚动区。 */
+.sessions-message-window {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  padding: 0.6rem 0; border-top: 1px solid var(--line);
 }
-.sessions-spacer-top, .sessions-spacer-bottom { width: 100%; flex: 0 0 auto; }
-.sessions-message-window { display: flex; flex-direction: column; gap: 0.6rem; }
+/* 首轮提示词：默认折叠一行，点按展开全文；不再钉在顶部挤压转录区。 */
+.sessions-detail-prompt {
+  display: block; width: 100%; margin: 0 0 0.6rem; padding: 0.5rem 0.7rem;
+  min-height: 44px; border-radius: 0.6rem; cursor: pointer; text-align: left;
+  background: rgba(127, 127, 127, 0.08); border: 1px solid var(--line);
+  font: inherit; font-size: 0.85rem; line-height: 1.5; color: var(--ink-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sessions-detail-prompt.expanded {
+  white-space: pre-wrap; word-break: break-all; overflow: visible; text-overflow: unset;
+  color: var(--ink); background: var(--card); cursor: pointer;
+}
 .sessions-message { display: flex; flex-direction: column; gap: 0.2rem; }
 .sessions-message.user { align-items: flex-end; }
 .sessions-role, .sessions-time { color: var(--ink-soft); font-size: 0.8rem; }

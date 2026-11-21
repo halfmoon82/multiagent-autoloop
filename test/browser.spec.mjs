@@ -1129,6 +1129,56 @@ try {
   assert.ok(!/deviceToken|tokenHash|server-secret/.test(scanText), '页面不得出现密钥或设备凭证');
   assert.deepEqual(errors, [], '扫码绑定不得产生脚本错误');
   console.log('PASS browser: qr scan bind — fake camera frame decoded, bound, camera closed');
+
+  // ===== 会话详情整页滚动回归（2026-11-21 真机事故：嵌套滚动区被提示词块挤压，详情拉不动）=====
+  schedulingSessions.records.push({
+    id: 'browser-scroll', sessionId: 'acp-browser-scroll', kind: 'scheduling', status: 'running',
+    project: demoRepo, agent: 'Codex ACP', prompt: '完整首轮提示词：'.concat('具体要求。'.repeat(30)),
+    messages: [...Array.from({ length: 10 }, (_, index) => [{ role: 'user', text: `第 ${index + 1} 轮指令`, at: '2026-11-15T00:00:00Z' }, { role: 'agent', text: `第 ${index + 1} 轮回复：` + '长内容需要换行展示。'.repeat(40), at: '2026-11-15T00:05:00Z' }]).flat()],
+    liveText: '', busy: false, queuedCount: 0,
+    createdAt: '2026-11-21T08:00:00Z', updatedAt: '2026-11-21T08:30:00Z',
+  });
+  await page.evaluate(() => { window.__autoloopBiometricOutcome = 'success'; });
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  await page.locator('[data-tab="sessions"]').click();
+  await page.waitForFunction(() => document.querySelector('.sessions-item'), null, { timeout: 15000 });
+  await page.locator('.sessions-item').first().click();
+  await page.waitForFunction(() => !document.querySelector('[data-view="detail"]').hidden);
+  assert.equal(await page.locator('.sessions-scroller').count(), 0, '详情不得再有嵌套滚动区（真机拉不动的根因）');
+  assert.equal(await page.locator('.sessions-message').count(), 20, '详情全量渲染转录');
+  await page.waitForTimeout(300);
+  const openedAtBottom = await page.evaluate(() => window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 8);
+  assert.equal(openedAtBottom, true, '打开详情必须定位到最新一条（底部），不得停在顶部');
+  assert.equal(await page.locator('.sessions-detail-prompt').isVisible(), true, '提示词入口可见');
+  assert.equal(await page.locator('.sessions-detail-prompt.expanded').count(), 0, '提示词默认折叠成一行');
+  await page.locator('.sessions-detail-prompt').click();
+  assert.equal(await page.locator('.sessions-detail-prompt.expanded').count(), 1, '点按展开完整提示词');
+  await page.locator('.sessions-detail-prompt').click();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight + 100), true, '详情内容应超出视口（可滚动）');
+  // 真实触摸上滑必须移动整页滚动条（CDP 触摸事件，真机事故的精确复现路径）。
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const touchCdp = await context.newCDPSession(page);
+  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 200, y: 500, id: 1 }] });
+  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 200, y: 280, id: 1 }] });
+  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await page.waitForTimeout(300);
+  const scrolledByTouch = await page.evaluate(() => window.scrollY);
+  assert.ok(scrolledByTouch > 30, `触摸上滑必须滚动整页（实际 ${scrolledByTouch}px）`);
+  // 阅读中追新不得拽走位置：追加一条消息后滚动位置应保持。
+  await page.waitForTimeout(600);
+  await page.evaluate(() => window.scrollTo(0, 120));
+  await page.waitForFunction(() => window.scrollY === 120, null, { timeout: 5000 });
+  schedulingSessions.records.find(item => item.id === 'browser-scroll').messages.push({ role: 'agent', text: '追加的新回复', at: '2026-11-15T01:02:00Z' });
+  await page.waitForFunction(() => window.scrollY !== 120 || document.body.innerText.includes('追加的新回复'), null, { timeout: 12000 });
+  const keptPosition = await page.evaluate(() => window.scrollY);
+  assert.ok(keptPosition > 30 && keptPosition <= 130, `阅读中追新后滚动位置应保持（实际 ${keptPosition}px）`);
+  await page.locator('.sessions-back-bottom').waitFor({ state: 'visible' });
+  await page.locator('.sessions-back-bottom').click();
+  await page.waitForTimeout(400);
+  assert.equal(await page.evaluate(() => window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 8), true, '回到底部应恢复跟随');
+  assert.deepEqual(errors, [], '会话详情滚动回归不得产生脚本错误');
+  console.log('PASS browser: session detail full-page scroll, collapsed prompt, touch swipe, back-to-bottom');
 } finally {
   if (context) await context.close(); await close(consoleServer); await close(hub.server); rmSync(root, { recursive: true, force: true }); rmSync(profile, { recursive: true, force: true });
 }
