@@ -19,6 +19,8 @@
   <link rel="stylesheet" href="./pages/voice.css">
   <link rel="stylesheet" href="./pages/font-touch.css">
   <link rel="stylesheet" href="./pages/devices.css">
+  <link rel="stylesheet" href="./pages/admin.css">
+  <link rel="stylesheet" href="./pages/settings.css">
 </head>
 <body>
   <div class="app">
@@ -58,6 +60,7 @@
       <header class="app-header">
         <div class="brand"><span class="brand-gem">N</span><div><strong>NoMoTo</strong><small id="device-name">未绑定设备</small></div></div>
         <span id="connection-status" class="status-pill" data-state="offline">未连接</span>
+        <button id="open-settings" type="button" class="gear-btn" aria-label="设备与偏好">&#9881;</button>
       </header>
 
       <div id="project-filter-root" aria-label="全局项目筛选"></div>
@@ -65,12 +68,10 @@
       <nav id="tab-bar" class="tab-bar" aria-label="主导航">
         <button type="button" class="tab" data-tab="core" aria-selected="true">总览</button>
         <button type="button" class="tab" data-tab="rules" aria-selected="false">规则</button>
+        <button type="button" class="tab" data-tab="sessions" aria-selected="false">会话</button>
         <button type="button" class="tab" data-tab="rounds" aria-selected="false">轮次</button>
         <button type="button" class="tab" data-tab="todos" aria-selected="false">待办</button>
-        <button type="button" class="tab" data-tab="sessions" aria-selected="false">会话</button>
-        <button type="button" class="tab" data-tab="artifacts" aria-selected="false">产物</button>
-        <button type="button" class="tab" data-tab="dag" aria-selected="false">DAG</button>
-        <button type="button" class="tab" data-tab="devices" aria-selected="false">设备</button>
+        <button type="button" class="tab" data-tab="admin" aria-selected="false">管理后台</button>
       </nav>
 
       <div class="content">
@@ -92,12 +93,32 @@
         <div id="page-sessions" class="page" data-page="sessions" hidden></div>
         <div id="page-artifacts" class="page" data-page="artifacts" hidden></div>
         <div id="page-dag" class="page" data-page="dag" hidden></div>
-        <div id="page-devices" class="page" data-page="devices" hidden></div>
+        <div id="page-admin" class="page" data-page="admin" hidden>
+          <nav class="admin-subnav" aria-label="管理后台分区">
+            <a href="#" data-admin-pane="admin-pane-platform" class="active" aria-current="page">平台与模型</a>
+            <a href="#" data-admin-pane="admin-pane-runtime">运行环境</a>
+          </nav>
+          <section id="admin-pane-platform" class="admin-pane" aria-label="平台与模型"></section>
+          <section id="admin-pane-runtime" class="admin-pane" aria-label="运行环境" hidden></section>
+        </div>
+        <div id="page-settings" class="page" data-page="settings" hidden>
+          <h2 class="settings-title">设备与偏好</h2>
+          <section class="settings-section" aria-label="设备绑定">
+            <h3>设备绑定</h3>
+            <div id="page-devices"></div>
+          </section>
+          <section class="settings-section" aria-label="通知偏好">
+            <h3>通知偏好</h3>
+            <div id="notify-root"></div>
+          </section>
+          <section class="settings-section" aria-label="系统字体">
+            <h3>系统字体</h3>
+            <div id="font-touch-root"></div>
+          </section>
+        </div>
       </div>
 
-      <div id="notify-root" aria-label="通知"></div>
       <div id="voice-root" aria-label="语音输入"></div>
-      <div id="font-touch-root" aria-label="字体与触控"></div>
     </main>
 
     <div id="toast" class="toast" role="status" hidden></div>

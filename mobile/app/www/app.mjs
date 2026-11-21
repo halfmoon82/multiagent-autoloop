@@ -12,14 +12,16 @@ import * as notifyPage from './pages/notify.mjs';
 import * as voicePage from './pages/voice.mjs';
 import * as fontTouchPage from './pages/font-touch.mjs';
 import * as devicesPage from './pages/devices.mjs';
+import * as adminPage from './pages/admin.mjs';
+import * as settingsPage from './pages/settings.mjs';
 
 export const MOBILE_PAGES = Object.freeze([
-  'core', 'sessions', 'artifacts', 'dag', 'project-filter', 'notify', 'voice', 'font-touch', 'devices',
+  'core', 'sessions', 'artifacts', 'dag', 'project-filter', 'notify', 'voice', 'font-touch', 'devices', 'admin', 'settings',
 ]);
 const PAGE_MODULES = {
   core: corePage, sessions: sessionsPage, artifacts: artifactsPage, dag: dagPage,
   'project-filter': projectFilterPage, notify: notifyPage, voice: voicePage,
-  'font-touch': fontTouchPage, devices: devicesPage,
+  'font-touch': fontTouchPage, devices: devicesPage, admin: adminPage, settings: settingsPage,
 };
 
 // 默认钩子全部是空操作：未就绪时调用不抛错，后续节点只覆盖自己的钩子。
@@ -33,6 +35,8 @@ export function createDefaultHooks() {
     popView() {},
     haptic: { tap() {}, success() {} },
     download() {},
+    openSettings() {},
+    admin: { onShow() {} },
   };
 }
 
@@ -137,19 +141,31 @@ function boot() {
   const tabs = tabBar ? [...tabBar.querySelectorAll('.tab')] : [];
   const pageEls = new Map([...document.querySelectorAll('.content .page')].map(el => [el.dataset.page, el]));
   let activeTab = 'core';
+  // 设置页不是 Tab，经页面栈进入：栈顶是 settings 时显示设置页，弹出后回到当前 Tab 根页。
+  const visiblePage = () => (stack.current()?.id === 'settings' ? 'settings' : activeTab);
   const renderViewState = () => {
     els.appMain.dataset.activeTab = activeTab;
     els.appMain.dataset.viewDepth = String(stack.depth);
+    const shown = visiblePage();
+    for (const [key, el] of pageEls) el.hidden = key !== shown;
   };
+  // 页面可达但不在 Tab 栏的页（产物/DAG）也走 selectTab：不高亮任何 Tab，页面照常显示。
   function selectTab(name) {
-    if (!pageEls.has(name)) return;
+    if (!pageEls.has(name) || name === 'settings') return;
     activeTab = name;
     stack.clear();
     guard.reset();
     for (const tab of tabs) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
-    for (const [key, el] of pageEls) el.hidden = key !== name;
+    if (name === 'admin') hooks.admin?.onShow?.();
     renderViewState();
   }
+  function openSettings() {
+    if (stack.current()?.id === 'settings') return;
+    guard.reset();
+    stack.push({ id: 'settings' });
+    renderViewState();
+  }
+  hooks.openSettings = openSettings;
   for (const tab of tabs) tab.addEventListener('click', () => selectTab(tab.dataset.tab));
 
   hooks.pushView = view => { stack.push(view); renderViewState(); };

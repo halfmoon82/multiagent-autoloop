@@ -1,0 +1,10 @@
+/* 管理后台页：分区导航 + 加载态。 */
+.admin-subnav { display: flex; gap: 0.4rem; margin: 0 0 0.8rem; }
+.admin-subnav a {
+  flex: 1 1 0; min-height: 48px; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 0.6rem; color: var(--ink-soft); text-decoration: none; font-size: 0.9rem;
+}
+.admin-subnav a.active { background: var(--mint); color: var(--ink); font-weight: 600; }
+.admin-pane { padding: 0.2rem 0; }
+.admin-state { margin: 0 0 0.6rem; color: var(--ink-soft); font-size: 0.9rem; }
+.admin-state[data-state="error"] { color: var(--danger); }

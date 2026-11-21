@@ -242,7 +242,7 @@ test('浏览器：DAG 环中心进度与节点契约、切项目后各页同步�
   assert.equal(options.length, 3);
   assert.equal(options[0], '全部');
 
-  await page.locator('[data-tab="dag"]').click();
+  await page.evaluate(() => window.AutoloopNav.selectTab('dag')); // DAG 不再是 Tab，经路由进入
   await page.waitForFunction(() => document.querySelectorAll('#page-dag [data-ring-task-id]').length === 2);
   const ring = page.locator('#page-dag [data-ring-task-id]').first();
   assert.match(await ring.locator('.dag-ring-grad').getAttribute('style'), /conic-gradient/);

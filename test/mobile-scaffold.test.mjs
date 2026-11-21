@@ -153,8 +153,8 @@ test('返回键二次确认只在短时间窗内生效', () => {
 });
 
 // ---------- 页面模块化结构 ----------
-test('app.mjs 按固定列表 import 9 个页面模块', () => {
-  const expected = ['core', 'sessions', 'artifacts', 'dag', 'project-filter', 'notify', 'voice', 'font-touch', 'devices'];
+test('app.mjs 按固定列表 import 11 个页面模块', () => {
+  const expected = ['core', 'sessions', 'artifacts', 'dag', 'project-filter', 'notify', 'voice', 'font-touch', 'devices', 'admin', 'settings'];
   assert.deepEqual(MOBILE_PAGES, expected);
   const code = read('mobile/app/www/app.mjs');
   for (const name of expected) assert.match(code, new RegExp(`pages/${name}\\.mjs`));
@@ -173,10 +173,10 @@ test('页面通过相对路径 ../src/... 引用视图模型', () => {
   assert.match(core, /['"]\.\.\/src\//);
 });
 
-test('index.html 有 8 个 Tab 容器与锁屏两态挂载点', () => {
+test('index.html 有 6 个 Tab、页面容器与锁屏两态挂载点', () => {
   const html = read('mobile/app/www/index.html');
-  for (const tab of ['总览', '规则', '轮次', '待办', '会话', '产物', 'DAG', '设备']) assert.ok(html.includes(tab), `缺少 Tab ${tab}`);
-  for (const id of ['page-core', 'page-rules', 'page-rounds', 'page-todos', 'page-sessions', 'page-artifacts', 'page-dag', 'page-devices']) {
+  for (const tab of ['总览', '规则', '会话', '轮次', '待办', '管理后台']) assert.ok(html.includes(tab), `缺少 Tab ${tab}`);
+  for (const id of ['page-core', 'page-rules', 'page-rounds', 'page-todos', 'page-sessions', 'page-artifacts', 'page-dag', 'page-devices', 'page-admin', 'page-settings']) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(html, /id="bind-card"/);
