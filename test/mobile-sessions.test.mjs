@@ -414,7 +414,7 @@ test('语音钩子为空操作时无麦克风按钮，真实实现才显示', ()
   assert.equal(hasVoiceHook({ attachVoice(el) { return el; } }), true);
 });
 
-test('createSessionsWrite 新建会话与语义分类复用同源 web 接口', async () => {
+test('createSessionsWrite 新建会话与语义分类只走移动端已登记写路由', async () => {
   const calls = [];
   const client = { origin: 'https://auto.socialmore.net', tokenStore: { get: async () => 't' } };
   const fetchImpl = async (url, init) => {
@@ -424,8 +424,8 @@ test('createSessionsWrite 新建会话与语义分类复用同源 web 接口', a
   const write = createSessionsWrite(client, { fetchImpl });
   await write.classify('请调度失败任务');
   await write.createSession({ project: '/work/A 项目', prompt: '请调度失败任务', kind: 'scheduling' });
-  assert.equal(new URL(calls[0][0]).pathname, '/api/session-classify');
+  assert.equal(new URL(calls[0][0]).pathname, '/api/mobile/session-classify');
   assert.deepEqual(JSON.parse(calls[0][1].body), { text: '请调度失败任务' });
-  assert.equal(new URL(calls[1][0]).pathname, '/api/scheduling-sessions');
+  assert.equal(new URL(calls[1][0]).pathname, '/api/mobile/sessions');
   assert.deepEqual(JSON.parse(calls[1][1].body), { project: '/work/A 项目', prompt: '请调度失败任务', kind: 'scheduling' });
 });
