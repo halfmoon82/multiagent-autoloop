@@ -62,8 +62,11 @@
 .sessions-option[aria-pressed="true"] { background: var(--mint); border-color: var(--ink-soft); font-weight: 600; }
 .sessions-question-input, .sessions-composer-input, .sessions-new-prompt {
   width: 100%; min-height: 3.5rem; margin: 0.5rem 0; padding: 0.6rem 0.7rem;
-  font: inherit; font-size: 1rem; color: var(--ink); background: #fff;
-  border: 1px solid var(--line); border-radius: 0.6rem; resize: vertical;
+  font: inherit; font-size: 16px; /* 16px：移动端聚焦不触发页面缩放 */
+  color: var(--ink); background: #fff;
+  border: 1px solid var(--line); border-radius: 0.6rem;
+  resize: none; /* 高度由 composer-autogrow 自动管理，不提供手动拖拽 */
+  overflow-y: hidden;
 }
 .sessions-question-submit { width: 100%; margin-top: 0.4rem; }
 .sessions-answered-row {
@@ -73,8 +76,16 @@
 .sessions-answered-row > strong { flex: 1 1 10rem; font-weight: 500; }
 .sessions-answered-row button { min-height: 44px; margin: 0; }
 
-/* 消息区：整页自然滚动（与列表/其他页面同一滚动面），全量渲染，不做嵌套滚动区。 */
+/* 详情页 flex 列：顶部固定、消息窗唯一滚动、输入栏常驻底部。高度由页面脚本按 visualViewport 精确设定，
+   100dvh 减去外壳占位只作兜底。 */
+.sessions-view[data-view="detail"]:not([hidden]) {
+  display: flex; flex-direction: column;
+  height: calc(100dvh - 12rem); min-height: 15rem; overflow: hidden;
+}
+.page.sessions-detail-open { padding-bottom: 0; }
+.sessions-detail-top { flex: none; max-height: 42%; overflow-y: auto; }
 .sessions-message-window {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; gap: 0.6rem;
   padding: 0.6rem 0; border-top: 1px solid var(--line);
 }
@@ -100,14 +111,13 @@
 .sessions-message.user .sessions-bubble { background: #fff; border: 1px solid var(--line); }
 .sessions-image { max-width: 100%; height: auto; border-radius: 0.6rem; }
 .sessions-back-bottom {
-  position: sticky; bottom: calc(var(--keyboard-height) + 4.5rem); z-index: 2;
-  display: block; min-height: 44px; margin: 0.4rem 0 0 auto;
+  flex: none; align-self: flex-end; min-height: 44px; margin: 0.3rem 0 0;
 }
 
-/* 输入栏跟随软键盘高度：弹起不遮挡、收起不留白。 */
+/* 输入栏：flex:none 常驻消息窗下方；详情视图已按软键盘后的可视高度定高，键盘弹出时被顶在键盘上方，
+   既不被遮挡也不被消息流推走。折叠屏分栏下它占自己那一行，不覆盖消息内容。 */
 .sessions-composer {
-  position: sticky; bottom: calc(var(--keyboard-height) + env(safe-area-inset-bottom, 0px));
-  z-index: 3; display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0.5rem;
+  flex: none; display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0.5rem;
   padding: 0.5rem 0; background: var(--card);
 }
 .sessions-composer-input { flex: 1 1 12rem; margin: 0; }
@@ -131,3 +141,7 @@
   box-shadow: 0 4px 16px rgba(15, 61, 46, 0.18);
 }
 .sessions-menu button { min-height: 44px; margin: 0; }
+
+/* 新建会话：提示词与麦克风同行，复用会话输入框同一套语音链路。 */
+.sessions-new-prompt-row { display: flex; align-items: flex-end; gap: 0.5rem; }
+.sessions-new-prompt-row .sessions-new-prompt { flex: 1 1 auto; width: auto; }
