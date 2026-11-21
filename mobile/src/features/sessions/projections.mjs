@@ -17,13 +17,15 @@ const statusLabel = value => SESSION_STATUS_LABELS[value] || value;
 // 截掉上下文注入段、取首行、压空白、45 字截断。
 export function compactSessionTitle(prompt) {
   let text = String(prompt ?? '').replace(/\r/g, '');
-  const injected = text.indexOf('本轮完整资料');
+  // 上下文注入 trailer 有固定形态，锚定完整前缀防止误伤用户原文里碰巧出现的短语。
+  const injected = text.indexOf('本轮完整资料（项目规则、状态快照与上一轮结论）：');
   if (injected > 0) text = text.slice(0, injected);
   text = text.replace(/^项目：[^\n]*\n/, '').trim();
-  // 设计会话的 prompt 会被整体改写为角色设定（"你是 <路径> 上的设计会话，负责……"），
-  // 用户原话不在里面；取"负责"之后的职责描述，比角色抬头更能辨认这条会话在做什么。
+  // 设计会话的 prompt 被整体改写为角色设定（"你是 <路径> 上的设计会话，负责……\n【协作方式】…\n【本次附加说明】\n<用户原话>"），
+  // 用户原话在【本次附加说明】段；优先取它，其次取"负责"后的职责描述，都比角色抬头更能辨认这条会话。
+  const designNote = /【本次附加说明】\s*([\s\S]+)$/.exec(text);
   const designRole = /上的设计会话，负责(.+)$/s.exec(text);
-  const body = designRole ? designRole[1].trim() : text;
+  const body = (designNote ? designNote[1] : designRole ? designRole[1] : text).trim();
   const firstLine = (body.split('\n').find(line => line.trim()) || '').trim().replace(/\s+/g, ' ');
   if (!firstLine) return '会话';
   return firstLine.length > 45 ? `${firstLine.slice(0, 45)}…` : firstLine;
