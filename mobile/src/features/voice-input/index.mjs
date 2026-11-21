@@ -2,3 +2,4 @@
 export * from './contract.mjs';
 export * from './voice.mjs';
 export * from './views.mjs';
+export * from './console-transcribe.mjs';

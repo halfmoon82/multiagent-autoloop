@@ -8,6 +8,10 @@ const loadQuestionModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/question-group/index.mjs');
 
+const loadAutogrow = typeof window === 'undefined'
+  ? () => Promise.resolve(null)
+  : () => import('../src/features/composer-autogrow/index.mjs');
+
 export { loadViewModel };
 
 const CONTEXT_KEY = 'nomoto-sessions-context';
@@ -28,6 +32,17 @@ export function mount(ctx) {
   if (!host) return;
 
   const modelPromise = Promise.all([loadViewModel(), loadQuestionModel()]);
+  // 自动长高模块与视图模型并行加载；到位前输入框保持 CSS 最小高度，到位后统一接管。
+  let autogrow = null;
+  const growers = [];
+  // 主区高度：详情页以消息+输入栏所在视图为准，其余取可视视口。
+  const mainHeight = () => (typeof window.visualViewport?.height === 'number' ? window.visualViewport.height : window.innerHeight);
+  const grow = el => {
+    if (!autogrow || !el) return;
+    growers.push(autogrow.attachAutogrow(el, { getMainHeight: mainHeight }));
+  };
+  const regrow = () => { for (const item of growers) item.refresh(); };
+  const growLater = el => { void loadAutogrow().then(module => { autogrow = module; grow(el); }); };
   let smodel = null;
   let qmodel = null;
   let reader = null;
@@ -99,20 +114,23 @@ export function mount(ctx) {
   const artifactsBtn = node('button', { type: 'button', className: 'sessions-artifacts-btn', text: '本会话产物' });
   const detailBack = node('button', { type: 'button', className: 'sessions-back', text: '‹ 会话列表' });
   const questionBox = node('div', { className: 'sessions-question' });
-  // 消息区：整页自然滚动（与列表/其他页面同一滚动面），不做嵌套滚动区——
-  // 嵌套滚动区在手机上容易被提示词块等挤压、且与页面争抢触摸，表现为「拉不动」。
+  // 消息区：详情页 flex 列中唯一的滚动区（flex:1; min-height:0; overflow:auto），顶部与输入栏不随消息流滚走。
   const messageWindow = node('div', { className: 'sessions-message-window' });
   const backBottom = node('button', { type: 'button', className: 'sessions-back-bottom', text: '回到底部 ↓', attrs: { hidden: '' } });
   const composerInput = node('textarea', {
     className: 'sessions-composer-input',
-    attrs: { rows: '2', placeholder: '输入回答或消息…', 'aria-label': '输入回答或消息' },
+    attrs: { rows: '2', placeholder: '输入回答或消息…', 'aria-label': '输入回答或消息', enterkeyhint: 'send' },
   });
   const micBtn = node('button', { type: 'button', className: 'sessions-mic', text: '🎤', attrs: { 'aria-label': '语音输入', hidden: '' } });
-  const composerSend = node('button', { type: 'button', className: 'sessions-send', text: '发送' });
+  const composerSend = node('button', { type: 'button', className: 'sessions-send', text: '发送', attrs: { disabled: '' } });
   const composerRow = node('div', { className: 'sessions-composer' }, [composerInput, micBtn, composerSend]);
-  const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
+  // 详情页是 flex 列：顶部（标题/提示词/待回答）与输入栏固定，只有消息窗在中间滚动；输入栏常驻底部。
+  const detailTop = node('div', { className: 'sessions-detail-top' }, [
     node('div', { className: 'sessions-detail-head' }, [detailBack, detailTitle, artifactsBtn]),
-    detailPrompt, questionBox, messageWindow, backBottom, composerRow,
+    detailPrompt, questionBox,
+  ]);
+  const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
+    detailTop, messageWindow, backBottom, composerRow,
   ]);
 
   const archiveBody = node('div', { className: 'sessions-archive-body' });
@@ -125,14 +143,16 @@ export function mount(ctx) {
   const newProjects = node('select', { className: 'sessions-project-select', attrs: { 'aria-label': '项目工作区' } });
   const newPrompt = node('textarea', {
     className: 'sessions-new-prompt',
-    attrs: { rows: '4', placeholder: '例如：设计移动端控制台并拆解产品需求…', 'aria-label': '首轮提示词' },
+    attrs: { rows: '2', placeholder: '例如：设计移动端控制台并拆解产品需求…', 'aria-label': '首轮提示词' },
   });
+  const newMic = node('button', { type: 'button', className: 'sessions-mic sessions-new-mic', text: '🎤', attrs: { 'aria-label': '语音输入', hidden: '' } });
+  const newPromptRow = node('div', { className: 'sessions-new-prompt-row' }, [newPrompt, newMic]);
   const newKinds = node('div', { className: 'sessions-new-kinds' });
   const newRecommend = node('p', { className: 'hint sessions-recommend' });
   const newSubmit = node('button', { type: 'button', className: 'primary sessions-new-submit', text: '创建并发送首轮' });
   const newView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'new', hidden: '' } }, [
     node('button', { type: 'button', className: 'sessions-back', text: '‹ 会话列表' }),
-    newProjects, newPrompt, newRecommend, newKinds, newSubmit,
+    newProjects, newPromptRow, newRecommend, newKinds, newSubmit,
   ]);
 
   const menuCopy = node('button', { type: 'button', text: '复制' });
@@ -141,19 +161,37 @@ export function mount(ctx) {
 
   const views = { list: listView, detail: detailView, archive: archiveView, new: newView };
   let detailTimer = null;
-  // 详情跟随/滚底基于整页滚动（与其他页面同一滚动面）。
+  // 详情跟随/滚底基于消息窗自身滚动。
   const pageMetrics = () => ({
-    scrollTop: window.scrollY,
-    scrollHeight: document.documentElement.scrollHeight,
-    clientHeight: window.innerHeight,
+    scrollTop: messageWindow.scrollTop,
+    scrollHeight: messageWindow.scrollHeight,
+    clientHeight: messageWindow.clientHeight,
   });
-  const scrollToBottom = behavior => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: behavior || 'auto' });
+  const scrollToBottom = behavior => messageWindow.scrollTo({ top: messageWindow.scrollHeight, behavior: behavior || 'auto' });
+
+  // 悬浮底部：详情视图高度 = 可视视口（已扣软键盘）减去其顶部偏移，输入栏因此始终贴在键盘上方；
+  // visualViewport 不可用时退回 CSS 的 100dvh 兜底。
+  const fitDetail = () => {
+    if (state.view !== 'detail') { detailView.style.height = ''; return; }
+    const vv = window.visualViewport;
+    if (!vv) { detailView.style.height = ''; return; }
+    const top = Math.max(0, detailView.getBoundingClientRect().top);
+    const bottomGap = Number.parseFloat(getComputedStyle(document.getElementById('app-main') || document.body).paddingBottom) || 0;
+    detailView.style.height = `${Math.max(240, Math.floor(vv.height - top - bottomGap))}px`;
+  };
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => { fitDetail(); regrow(); });
+  }
+  window.addEventListener('resize', () => { fitDetail(); regrow(); });
 
   const showView = name => {
     state.view = name;
     if (name !== 'detail' && detailTimer) { clearInterval(detailTimer); detailTimer = null; }
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
+    host.classList.toggle('sessions-detail-open', name === 'detail'); // 详情页自己按视口定高，去掉页面底部留白
+    if (name === 'detail') { window.scrollTo(0, 0); fitDetail(); }
     if (name === 'detail' && state.follow) scrollToBottom();
+    regrow();
   };
 
   const showBanner = text => {
@@ -304,11 +342,11 @@ export function mount(ctx) {
         // 追新只滚底（用户在底部附近），用户上翻阅读时原样保持滚动位置。
         const followNow = !smodel || smodel.shouldFollowScroll(pageMetrics());
         state.follow = followNow;
-        const keepScroll = followNow ? null : window.scrollY;
+        const keepScroll = followNow ? null : messageWindow.scrollTop;
         state.messages = messages;
         renderMessages();
         if (followNow) scrollToBottom();
-        else window.scrollTo(0, keepScroll);
+        else messageWindow.scrollTop = keepScroll;
       }
       detailTitle.textContent = session.title || '会话';
     } catch { /* 轮询静默失败，等下一轮 */ }
@@ -355,7 +393,7 @@ export function mount(ctx) {
       } else {
         const input = node('textarea', {
           className: 'sessions-question-input',
-          attrs: { rows: '3', placeholder: active.answerInput === 'voice' ? '输入或口述回答，文字可编辑' : '输入回答…', 'aria-label': '问题回答' },
+          attrs: { rows: '2', placeholder: active.answerInput === 'voice' ? '输入或口述回答，文字可编辑' : '输入回答…', 'aria-label': '问题回答' },
         });
         input.value = active.draft;
         input.addEventListener('input', () => {
@@ -364,6 +402,7 @@ export function mount(ctx) {
           saveContext();
         });
         card.appendChild(input);
+        grow(input);
         if (active.answerInput === 'voice') card.appendChild(node('p', { className: 'hint', text: '语音仅转写为文字，确认后才会提交' }));
       }
       const submit = node('button', {
@@ -443,7 +482,7 @@ export function mount(ctx) {
   }
 
   // 整页滚动跟随：滚离底部时显示「回到底部」，停止跟随；回到底部恢复跟随。
-  window.addEventListener('scroll', () => {
+  messageWindow.addEventListener('scroll', () => {
     if (state.view !== 'detail') return;
     if (smodel) state.follow = smodel.shouldFollowScroll(pageMetrics());
     backBottom.hidden = state.follow;
@@ -490,18 +529,26 @@ export function mount(ctx) {
   });
 
   composerInput.value = state.drafts.composer;
-  composerInput.addEventListener('input', () => { state.drafts.composer = composerInput.value; saveContext(); });
+  const updateSend = () => { composerSend.disabled = !(autogrow ? autogrow.canSend(composerInput.value) : composerInput.value.trim().length > 0); };
+  updateSend();
+  composerInput.addEventListener('input', () => { state.drafts.composer = composerInput.value; updateSend(); saveContext(); });
+  growLater(composerInput);
   micBtn.addEventListener('click', () => { ctx.hooks?.attachVoice?.(composerInput); });
+  newMic.addEventListener('click', () => { ctx.hooks?.attachVoice?.(newPrompt); });
+  growLater(newPrompt);
+  // 双不可用（无录音能力且无原生识别器）：隐藏所有麦克风，键盘输入不受影响。
+  window.addEventListener('autoloop:voice-unavailable', () => { micBtn.hidden = true; newMic.hidden = true; });
   composerSend.addEventListener('click', () => {
     void (async () => {
       const text = composerInput.value.trim();
       if (!text || !write || !state.session) return;
-      composerSend.disabled = true;
+      composerSend.disabled = true; // 发送中禁用，结束后按内容重算
       try {
         // 真正发送到控制台：此前这里只是本地回显，重开即丢（会话消息从未到达服务器）。
         await write.sendMessage(state.session.id, { text });
         state.messages.push({ role: '主人', text, at: '' });
         composerInput.value = '';
+        composerInput.dispatchEvent(new Event('autoloop-autogrow')); // 发送后回弹到最少行数
         state.drafts.composer = '';
         state.follow = true;
         ctx.hooks?.haptic?.tap?.();
@@ -512,7 +559,7 @@ export function mount(ctx) {
       } catch (error) {
         showBanner(`发送失败：${error?.message || '请重试'}（内容已保留在输入框）`);
       } finally {
-        composerSend.disabled = false;
+        updateSend();
       }
     })();
   });
@@ -621,6 +668,7 @@ export function mount(ctx) {
       return chip;
     }));
     newSubmit.disabled = !form.canSubmit;
+    regrow(); // 草稿被程序改写（如提交后清空）时同步回弹/长高
   }
 
   newSubmit.addEventListener('click', () => {
@@ -678,6 +726,8 @@ export function mount(ctx) {
       write = smodel.createSessionsWrite(ctx.client);
       micBtn.hidden = !smodel.hasVoiceHook(ctx.hooks);
       micBtn.title = micBtn.hidden ? '当前未启用语音输入' : '语音输入';
+      newMic.hidden = micBtn.hidden;
+      newMic.title = micBtn.title;
 
       const projects = await ctx.client.api('projects').catch(() => null);
       state.projects = Array.isArray(projects?.projects)
