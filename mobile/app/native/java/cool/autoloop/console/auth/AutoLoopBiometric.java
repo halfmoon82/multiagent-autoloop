@@ -1,5 +1,6 @@
 package cool.autoloop.console.auth;
 
+import android.app.Activity;
 import android.content.Context;
 
 import androidx.biometric.BiometricManager;
@@ -61,31 +62,45 @@ public class AutoLoopBiometric extends Plugin {
     final boolean allowsCredential =
         (authenticators & BiometricManager.Authenticators.DEVICE_CREDENTIAL) != 0;
 
-    Executor executor = ContextCompat.getMainExecutor(context);
-    BiometricPrompt prompt = new BiometricPrompt(getActivity(), executor, new BiometricPrompt.AuthenticationCallback() {
-      @Override
-      public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
-        call.resolve(new JSObject().put("ok", true));
-      }
+    final Activity activity = getActivity();
+    if (activity == null) {
+      call.reject(ERR_UNAVAILABLE, "当前页面不在前台，请回到 App 后重试");
+      return;
+    }
+    final int chosen = authenticators;
+    // Capacitor 默认在后台线程执行插件方法，BiometricPrompt 必须在主线程创建与展示，
+    // 否则弹窗不出或抛异常，页面只会看到「生物识别未通过」而永远进不去。
+    activity.runOnUiThread(() -> {
+      try {
+        Executor executor = ContextCompat.getMainExecutor(context);
+        BiometricPrompt prompt = new BiometricPrompt(getActivity(), executor, new BiometricPrompt.AuthenticationCallback() {
+          @Override
+          public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+            call.resolve(new JSObject().put("ok", true));
+          }
 
-      @Override
-      public void onAuthenticationError(int errorCode, CharSequence errString) {
-        call.reject(ERR_ERROR, errString == null ? "生物识别失败" : errString.toString());
-      }
+          @Override
+          public void onAuthenticationError(int errorCode, CharSequence errString) {
+            call.reject(ERR_ERROR, errString == null ? "生物识别失败" : errString.toString());
+          }
 
-      @Override
-      public void onAuthenticationFailed() {
-        // 单次指纹/人脸未匹配时系统提示框仍开着，用户可继续重试；此处不能 reject，
-        // 否则第一次没按准就把整次解锁判失败。最终结果只由 Succeeded / Error 决定。
+          @Override
+          public void onAuthenticationFailed() {
+            // 单次指纹/人脸未匹配时系统提示框仍开着，用户可继续重试；此处不能 reject，
+            // 否则第一次没按准就把整次解锁判失败。最终结果只由 Succeeded / Error 决定。
+          }
+        });
+
+        BiometricPrompt.PromptInfo.Builder builder = new BiometricPrompt.PromptInfo.Builder()
+            .setTitle("解锁 NoMoTo")
+            .setSubtitle("请使用指纹、面部或设备密码")
+            .setAllowedAuthenticators(chosen);
+        // 允许设备密码时系统自带「使用密码」入口，不能再设取消按钮文案；否则必须设置。
+        if (!allowsCredential) builder.setNegativeButtonText("取消");
+        prompt.authenticate(builder.build());
+      } catch (Exception e) {
+        call.reject(ERR_ERROR, "无法打开系统验证窗口，请稍后重试");
       }
     });
-
-    BiometricPrompt.PromptInfo.Builder builder = new BiometricPrompt.PromptInfo.Builder()
-        .setTitle("解锁 NoMoTo")
-        .setSubtitle("请使用指纹、面部或设备密码")
-        .setAllowedAuthenticators(authenticators);
-    // 允许设备密码时系统自带「使用密码」入口，不能再设取消按钮文案；否则必须设置。
-    if (!allowsCredential) builder.setNegativeButtonText("取消");
-    prompt.authenticate(builder.build());
   }
 }
