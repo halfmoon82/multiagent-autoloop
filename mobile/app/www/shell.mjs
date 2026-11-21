@@ -31,6 +31,7 @@ export function normalizeBaseUrl(raw, { allowLocalHttp = true } = {}) {
 // 不代理任意 URL；设备授权管理（/api/devices）只对网页管理后台开放，绝不出现在这里。
 export const MOBILE_API_KEYS = Object.freeze([
   'state', 'projects', 'rules', 'dag-runs', 'archive', 'closeouts', 'detours', 'serial-progress', 'project-usage',
+  'sessions', 'session-archives',
 ]);
 
 export function mobileSessionUrl(base) { return new URL('/api/mobile/session', base).toString(); }

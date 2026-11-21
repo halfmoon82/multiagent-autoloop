@@ -313,12 +313,12 @@ test('浏览器侧会话/存档/转录投影与后端同源，缺失不编造', 
 // RED 10：只读读取器——固定路径、同源校验、组装快照与错误态
 // ---------------------------------------------------------------------------
 test('createSessionsReader 走固定只读路径、同源校验，并组装列表快照', async () => {
-  assert.deepEqual([...SESSION_READ_PATHS], ['/api/scheduling-sessions', '/api/session-archives']);
+  assert.deepEqual([...SESSION_READ_PATHS], ['/api/mobile/api/sessions', '/api/mobile/api/session-archives']);
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push([url, init]);
     const path = new URL(url).pathname;
-    return { ok: true, json: async () => (path === '/api/scheduling-sessions' ? ACTIVE : { sessions: ARCHIVED }) };
+    return { ok: true, json: async () => (path === '/api/mobile/api/sessions' ? ACTIVE : { sessions: ARCHIVED }) };
   };
   const reader = createSessionsReader({ origin: 'https://auto.socialmore.net', fetchImpl });
   const { snapshot, list } = await reader.load();
@@ -333,7 +333,7 @@ test('createSessionsReader 走固定只读路径、同源校验，并组装列�
 
 test('createSessionsReader 读取失败给出明确错误态，不编造会话', async () => {
   const fetchImpl = async url => {
-    if (new URL(url).pathname === '/api/scheduling-sessions') throw new Error('网络断开');
+    if (new URL(url).pathname === '/api/mobile/api/sessions') throw new Error('网络断开');
     return { ok: true, json: async () => ({ sessions: [] }) };
   };
   const { snapshot, list } = await createSessionsReader({ origin: 'https://auto.socialmore.net', fetchImpl }).load();

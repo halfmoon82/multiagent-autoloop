@@ -4,8 +4,9 @@
 import { buildSessionList, buildArchiveDetail } from './views.mjs';
 import { mobileSessionSummaries, mobileArchiveSummaries, mobileArchiveTranscript } from './projections.mjs';
 
-// 固定只读路径：不代理任意 URL，目标始终与控制台同源。
-export const SESSION_READ_PATHS = Object.freeze(['/api/scheduling-sessions', '/api/session-archives']);
+// 固定只读路径：只打服务端 /api/mobile/api/<key> 隧道中继（允许列表见壳的 MOBILE_API_KEYS），
+// 绝不直连网页桌面接口——隧道只转发 /api/mobile/*，直连会被 ingress 404。
+export const SESSION_READ_PATHS = Object.freeze(['/api/mobile/api/sessions', '/api/mobile/api/session-archives']);
 export const SESSION_CONTEXT_KEY = 'nomoto-sessions-context';
 
 function resolveUrl(origin, path) {
