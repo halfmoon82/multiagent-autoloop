@@ -111,9 +111,9 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
       const payload = choice !== undefined ? { choice: Number(choice) } : { text: String(text ?? '') };
       return call(`/api/mobile/cards/${cardId}/answer`, payload);
     },
-    // 新建与分类复用网页控制台的同源接口；项目必须来自下拉的真实选项。
+    // 新建与分类只打移动端网关已登记写路由；项目必须来自下拉的真实选项。
     classify(text) {
-      return call('/api/session-classify', { text: String(text ?? '') });
+      return call('/api/mobile/session-classify', { text: String(text ?? '') });
     },
     createSession({ project, prompt, kind } = {}) {
       const value = String(project ?? '').trim();
@@ -121,7 +121,7 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
       if (!value || !firstTurn) throw new Error('请选择项目并输入首轮提示词');
       const payload = { project: value, prompt: firstTurn };
       if (kind) payload.kind = String(kind);
-      return call('/api/scheduling-sessions', payload);
+      return call('/api/mobile/sessions', payload);
     },
   };
 }

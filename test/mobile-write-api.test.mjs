@@ -7,12 +7,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { createConsoleServer } from '../src/server.mjs';
 import { createDeviceStore } from '../src/device-auth.mjs';
 import { fakeHub, json, listen, close } from './helpers.mjs';
 
-const WORKTREE = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const WORKTREE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function makeHub(state) {
   return (req, res, body) => {
@@ -43,6 +44,7 @@ function makeSessions(artifact) {
     calls: [],
     async listArchived() { return [{ id: 'sess-1', project: WORKTREE }, { id: 'sess-2', project: WORKTREE }]; },
     async continueSession(id) { this.calls.push(['continue', id]); return { id, continued: true }; },
+    async start(payload) { this.calls.push(['start', payload]); return { id: 'sess-new', ...payload }; },
     async resolveSessionDownload(id, requested) {
       this.calls.push(['download', id, requested]);
       if (id !== 'sess-1') { const error = new Error('会话不存在'); error.status = 404; throw error; }
@@ -214,4 +216,64 @@ test('中台内部错误不暴露内部详情，且不因移动端放宽网页�
   assert.equal((await mobileFetch(ctx.url, '/api/mobile/cards/30/answer', { method: 'POST', token: ctx.deviceToken, body: { choice: 0 }, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
   assert.equal((await mobileFetch(ctx.url, '/api/mobile/cards/30/answer', { method: 'POST', token: ctx.deviceToken, body: { choice: 0 }, headers: { 'x-console-request': '' } })).status, 403);
   assert.equal((await mobileFetch(ctx.url, '/api/mobile/cards/30/answer', { method: 'POST', token: ctx.deviceToken, body: { choice: 0 }, headers: { 'content-type': 'text/plain' } })).status, 415);
+});
+
+// ---------- 会话创建 / 语义分类（经移动端网关，修复隧道只转发 /api/mobile/* 导致 404） ----------
+test('绑定设备可经移动端网关创建会话，复用同一会话管理器并记录来源设备', async t => {
+  const ctx = await setup(t);
+  const response = await mobileFetch(ctx.url, '/api/mobile/sessions', {
+    method: 'POST', token: ctx.deviceToken,
+    body: { project: WORKTREE, prompt: '请调度失败任务', kind: 'scheduling' },
+  });
+  assert.equal(response.status, 201);
+  const payload = await response.json();
+  assert.equal(payload.id, 'sess-new');
+  assert.equal(payload.sourceDeviceId, ctx.deviceId);
+  const startCall = ctx.sessions.calls.find(call => call[0] === 'start');
+  assert.ok(startCall, '必须复用网页 /api/scheduling-sessions 的同一 sessions.start');
+  assert.deepEqual(startCall[1], { kind: 'scheduling', prompt: '请调度失败任务', project: WORKTREE });
+});
+
+test('移动端创建会话：kind 缺省按首轮语义分类，非法 kind / 缺提示词 / 未知项目 400', async t => {
+  const ctx = await setup(t);
+  const auto = await mobileFetch(ctx.url, '/api/mobile/sessions', {
+    method: 'POST', token: ctx.deviceToken, body: { project: WORKTREE, prompt: '请调度失败任务' },
+  });
+  assert.equal(auto.status, 201);
+  assert.equal(ctx.sessions.calls.at(-1)[1].kind, 'scheduling');
+
+  const badKind = await mobileFetch(ctx.url, '/api/mobile/sessions', {
+    method: 'POST', token: ctx.deviceToken, body: { project: WORKTREE, prompt: 'x', kind: 'evil' },
+  });
+  assert.equal(badKind.status, 400);
+
+  const noPrompt = await mobileFetch(ctx.url, '/api/mobile/sessions', {
+    method: 'POST', token: ctx.deviceToken, body: { project: WORKTREE, prompt: '   ' },
+  });
+  assert.equal(noPrompt.status, 400);
+
+  const unknownProject = await mobileFetch(ctx.url, '/api/mobile/sessions', {
+    method: 'POST', token: ctx.deviceToken, body: { project: '/nowhere/x', prompt: '请调度失败任务' },
+  });
+  assert.equal(unknownProject.status, 400);
+
+  const unbound = await mobileFetch(ctx.url, '/api/mobile/sessions', {
+    method: 'POST', body: { project: WORKTREE, prompt: '请调度失败任务' },
+  });
+  assert.equal(unbound.status, 401);
+  assert.equal(ctx.sessions.calls.filter(call => call[0] === 'start').length, 1, '失败路径不得创建会话');
+});
+
+test('绑定设备可经移动端网关做首轮语义分类，未绑定 401', async t => {
+  const ctx = await setup(t);
+  const bound = await mobileFetch(ctx.url, '/api/mobile/session-classify', {
+    method: 'POST', token: ctx.deviceToken, body: { text: '请调度失败任务' },
+  });
+  assert.equal(bound.status, 200);
+  assert.equal((await bound.json()).kind, 'scheduling');
+
+  const unbound = await mobileFetch(ctx.url, '/api/mobile/session-classify', {
+    method: 'POST', body: { text: '请调度失败任务' },
+  });
+  assert.equal(unbound.status, 401);
 });

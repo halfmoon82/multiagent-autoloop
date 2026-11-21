@@ -9,6 +9,7 @@ import { hubRequest, HubError } from './hub.mjs';
 import { discoverGitProjects } from './projects.mjs';
 import { readRuleOptions } from './rules.mjs';
 import { reconcile, syncPrompt, createSyncState } from '../mobile/src/features/device-sync/index.mjs';
+import { classifySessionRequest } from './session-classify.mjs';
 
 function securityHeaders() {
   return {
@@ -34,6 +35,8 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'sync', method: 'GET', pattern: /^\/api\/mobile\/sync$/ },
   { key: 'sync', method: 'POST', pattern: /^\/api\/mobile\/sync$/ },
   { key: 'rule-action', method: 'POST', pattern: /^\/api\/mobile\/rules\/([^/]+)\/(run|pause|resume)$/ },
+  { key: 'session-classify', method: 'POST', pattern: /^\/api\/mobile\/session-classify$/ },
+  { key: 'session-create', method: 'POST', pattern: /^\/api\/mobile\/sessions$/ },
 ]);
 
 const NOT_IMPLEMENTED = Object.freeze({
@@ -186,6 +189,35 @@ async function sessionDownload(res, url, route, ctx) {
   });
 }
 
+// 首轮语义分类：与网页 /api/session-classify 同一纯函数，无额外状态。
+function sessionClassifyRoute(res, body) {
+  return jsonResponse(res, 200, classifySessionRequest(body.text));
+}
+
+// 创建会话：校验口径与网页 /api/scheduling-sessions 逐条对齐（项目必须在已发现列表、
+// 首轮提示词必填、kind 只收 normal/scheduling/design，缺省按语义分类），写入复用同一
+// config.schedulingSessions.start，不另造状态；来源设备 id 随审计记录。
+async function sessionCreateRoute(res, body, ctx, req) {
+  const sessions = ctx.config.schedulingSessions;
+  if (!sessions || typeof sessions.start !== 'function') fail(503, '会话通道不可用');
+  const project = String(body.project || '');
+  const known = discoverGitProjects({ roots: ctx.config.projectRoots || [], rules: readRuleOptions(ctx.config).rules || [] }).find(item => item.path === project);
+  if (!known) fail(400, '项目不在已发现的 Git 仓库列表中，请从下拉选择');
+  const prompt = String(body.prompt ?? '').trim();
+  if (!prompt) fail(400, '请先输入首轮提示词，再创建会话');
+  const explicit = body.kind === undefined || body.kind === null || body.kind === '' ? null : String(body.kind);
+  if (explicit && !['normal', 'scheduling', 'design'].includes(explicit)) fail(400, '会话类型必须是 normal、scheduling 或 design');
+  const kind = explicit || classifySessionRequest(prompt).kind;
+  if (!kind) fail(400, '无法判定会话类型，请补充首轮提示词');
+  const fields = { project: known.path, kind, sourceDeviceId: ctx.device.id };
+  let result;
+  try {
+    result = await sessions.start({ kind, prompt, project: known.path });
+  } catch (error) { auditFailure(ctx, req, 'session.create', fields); throw error; }
+  audit(ctx, req, 'session.create', fields);
+  jsonResponse(res, 201, { ...result, sourceDeviceId: ctx.device.id });
+}
+
 async function ruleAction(req, res, url, route, ctx, body) {
   const match = url.pathname.match(route.pattern);
   const name = decodeURIComponent(match[1]);
@@ -248,6 +280,8 @@ async function executeWrite(route, req, res, url, ctx) {
     if (route.key === 'session-continue') return await sessionContinue(res, url, route, ctx);
     if (route.key === 'session-download') return await sessionDownload(res, url, route, ctx);
     if (route.key === 'rule-action') return await ruleAction(req, res, url, route, ctx, body);
+    if (route.key === 'session-classify') return sessionClassifyRoute(res, body);
+    if (route.key === 'session-create') return await sessionCreateRoute(res, body, ctx, req);
     jsonResponse(res, 501, { error: '该写操作尚未实现', route: route.key, declared: true });
   } catch (error) {
     writeError(res, error);
