@@ -212,7 +212,8 @@ test('中台内部错误不暴露内部详情，且不因移动端放宽网页�
   const text = await response.text();
   assert.doesNotMatch(text, /owner-key|password|stack|internal detail/i);
 
-  assert.equal((await mobileFetch(ctx.url, '/api/mobile/cards/30/answer', { method: 'POST', token: ctx.deviceToken, body: { choice: 0 }, headers: { origin: 'https://evil.example' } })).status, 403);
+  // 隧道形态下 Origin 不再等值 Host（见 validate 注释），但跨站 sec-fetch-site 仍拦；
+  // 直连形态伪造 Origin 的 403 由「无转发头的直连请求仍按 Host 严格校验 Origin」守门。
   assert.equal((await mobileFetch(ctx.url, '/api/mobile/cards/30/answer', { method: 'POST', token: ctx.deviceToken, body: { choice: 0 }, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
   assert.equal((await mobileFetch(ctx.url, '/api/mobile/cards/30/answer', { method: 'POST', token: ctx.deviceToken, body: { choice: 0 }, headers: { 'x-console-request': '' } })).status, 403);
   assert.equal((await mobileFetch(ctx.url, '/api/mobile/cards/30/answer', { method: 'POST', token: ctx.deviceToken, body: { choice: 0 }, headers: { 'content-type': 'text/plain' } })).status, 415);
@@ -276,4 +277,34 @@ test('绑定设备可经移动端网关做首轮语义分类，未绑定 401', a
     method: 'POST', body: { text: '请调度失败任务' },
   });
   assert.equal(unbound.status, 401);
+});
+
+// ---------- 隧道形态 Origin（cloudflared 改写 Host 后 Origin 与 Host 必然不一致） ----------
+test('隧道形态请求（x-forwarded-proto + 公网 Origin）不被误判跨站，创建会话成功', async t => {
+  const ctx = await setup(t);
+  const response = await mobileFetch(ctx.url, '/api/mobile/sessions', {
+    method: 'POST', token: ctx.deviceToken,
+    body: { project: WORKTREE, prompt: '请调度失败任务', kind: 'scheduling' },
+    headers: { origin: 'https://auto.socialmore.net' },
+  });
+  assert.equal(response.status, 201);
+});
+
+test('无转发头的直连请求仍按 Host 严格校验 Origin，伪造公网 Origin 拒绝', async t => {
+  const ctx = await setup(t);
+  const target = new URL(ctx.url);
+  const response = await fetch(ctx.url + '/api/mobile/sessions', {
+    method: 'POST',
+    headers: {
+      'x-console-request': '1',
+      'content-type': 'application/json',
+      'x-device-token': ctx.deviceToken,
+      origin: 'https://evil.example.com',
+      host: target.host,
+    },
+    body: JSON.stringify({ project: WORKTREE, prompt: '请调度失败任务' }),
+    signal: AbortSignal.timeout(6000),
+  });
+  assert.equal(response.status, 403);
+  assert.equal(ctx.sessions.calls.filter(call => call[0] === 'start').length, 0, '被拒绝请求不得创建会话');
 });
