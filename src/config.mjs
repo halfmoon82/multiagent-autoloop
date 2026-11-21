@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_WHISPER_PATH, DEFAULT_WHISPER_MODEL } from './whisper-transcribe.mjs';
 
 export function loadConsoleConfig(root = process.env.AGENT_AUTOLOOP_HOME) {
   if (!root) throw new Error('请设置 AGENT_AUTOLOOP_HOME 为试点数据目录');
@@ -20,6 +21,11 @@ export function loadConsoleConfig(root = process.env.AGENT_AUTOLOOP_HOME) {
     cliPath: path.join(root, 'app', 'bin', 'agent-autoloop.ts'),
     host: '127.0.0.1',
     port: Number(process.env.AUTOLOOP_CONSOLE_PORT || 0),
+    // 语音转写：本机 whisper CLI 路径与模型，可由 config.json 的 whisper 字段覆盖。
+    whisper: {
+      path: typeof config.whisper?.path === 'string' && config.whisper.path ? config.whisper.path : DEFAULT_WHISPER_PATH,
+      model: typeof config.whisper?.model === 'string' && config.whisper.model ? config.whisper.model : DEFAULT_WHISPER_MODEL,
+    },
     projectRoots: (process.env.AUTOLOOP_PROJECT_ROOTS || '').split(/[,:]/).map(item => item.trim()).filter(Boolean),
   };
 }

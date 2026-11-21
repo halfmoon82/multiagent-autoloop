@@ -24,6 +24,7 @@ import { CardDelegateError, createCardDelegateStore, delegateOpenCard, settleDel
 import { getCardRouting, CardFilterError } from './card-routing.mjs';
 import { createDeviceStore, DeviceAuthError } from './device-auth.mjs';
 import { handleMobileWrite } from './mobile-write.mjs';
+import { createWhisperTranscriber, audioExtension, parseMultipartAudio, WhisperError, MAX_AUDIO_BYTES } from './whisper-transcribe.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(MODULE_DIR, '..', 'public');
@@ -133,6 +134,34 @@ async function readJson(req) {
   if (!size) return {};
   try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error(); return value; }
   catch { throw new RequestError(400, '请求内容不是有效的 JSON 对象'); }
+}
+// 二进制请求体读取：超过 limit 立即中断并抛 413（不再继续接收）。
+async function readRaw(req, limit) {
+  if (Number(req.headers['content-length']) > limit) throw new RequestError(413, '音频过大');
+  let size = 0; const chunks = [];
+  for await (const chunk of req) { size += chunk.length; if (size > limit) throw new RequestError(413, '音频过大'); chunks.push(chunk); }
+  return Buffer.concat(chunks);
+}
+// 语音转写：设备级鉴权后受理；音频为 audio/* 或 multipart，校验顺序 401→415→503→429→413。
+async function handleSpeechTranscribe(config, req, res) {
+  requireSecureTransport(req);
+  const device = requireMobileDevice(req, config);
+  const transcriber = config.whisperTranscriber;
+  const contentType = req.headers['content-type'] || '';
+  const multipart = contentType.split(';')[0].trim().toLowerCase() === 'multipart/form-data';
+  if (!multipart && !audioExtension(contentType)) throw new RequestError(415, '请上传音频内容');
+  try { transcriber.assertAvailable(); transcriber.claimCooldown(device.id); }
+  catch (error) { if (error instanceof WhisperError) throw new RequestError(error.status, error.message); throw error; }
+  let audio = await readRaw(req, MAX_AUDIO_BYTES);
+  let extension = audioExtension(contentType);
+  if (multipart) {
+    const part = parseMultipartAudio(audio, contentType);
+    extension = part && audioExtension(part.type);
+    if (!extension) throw new RequestError(415, '请上传音频内容');
+    audio = part.data;
+  }
+  try { return jsonResponse(res, 200, await transcriber.transcribe(audio, extension)); }
+  catch (error) { if (error instanceof WhisperError) throw new RequestError(error.status, error.message); throw error; }
 }
 function idOf(text) { const id = Number(text); if (!/^[1-9][0-9]*$/.test(text) || !Number.isSafeInteger(id)) throw new RequestError(400, '编号无效'); return id; }
 // 模型显示映射：每个执行者自己的模型（分档执行者命令里带 --model）优先，缺失才退回宿主默认标签。
@@ -263,6 +292,7 @@ async function handleApi(config, req, res, url) {
     const body = await readJson(req);
     return jsonResponse(res, 200, classifySessionRequest(body.text));
   }
+  if (req.method === 'POST' && url.pathname === '/api/speech/transcribe') return handleSpeechTranscribe(config, req, res);
   // 移动端安全入口（Spec §5）：设备级授权 + 固定只读 API 中继 + HTTPS，不新增弱认证入口。
   // 控制台仍只监听本机；公网 HTTPS 终结与设备级网关的部署需单独授权，不在本 PR 内暴露远程访问。
   if (url.pathname.startsWith('/api/mobile/')) {
@@ -457,7 +487,8 @@ export function createConsoleServer(config, schedulingSessions) {
   // 退回记录落盘：重启后「待代理决策」列表不丢；无运行目录退回内存 store（退回行为不变）。
   const cardDelegateStore = config.cardDelegateStore || createCardDelegateStore({ file: config.root ? path.join(config.root, 'card-delegates.json') : null });
   const deviceAuth = config.deviceAuth || createDeviceStore({ file: config.root ? path.join(config.root, 'device-auth.json') : null });
-  config = { ...config, schedulingSessions, dagService, cardDelegateStore, deviceAuth, cardRouting: config.cardRouting || getCardRouting(config) };
+  const whisperTranscriber = config.whisperTranscriber || createWhisperTranscriber(config.whisper || {});
+  config = { ...config, whisperTranscriber, schedulingSessions, dagService, cardDelegateStore, deviceAuth, cardRouting: config.cardRouting || getCardRouting(config) };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const host = req.headers.host?.split(':')[0]?.toLowerCase();
