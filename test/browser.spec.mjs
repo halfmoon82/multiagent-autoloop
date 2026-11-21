@@ -1147,6 +1147,9 @@ try {
   await page.waitForFunction(() => !document.querySelector('[data-view="detail"]').hidden);
   assert.equal(await page.locator('.sessions-scroller').count(), 0, '详情不得再有嵌套滚动区（真机拉不动的根因）');
   assert.equal(await page.locator('.sessions-message').count(), 20, '详情全量渲染转录');
+  await page.waitForTimeout(300);
+  const openedAtBottom = await page.evaluate(() => window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 8);
+  assert.equal(openedAtBottom, true, '打开详情必须定位到最新一条（底部），不得停在顶部');
   assert.equal(await page.locator('.sessions-detail-prompt').isVisible(), true, '提示词入口可见');
   assert.equal(await page.locator('.sessions-detail-prompt.expanded').count(), 0, '提示词默认折叠成一行');
   await page.locator('.sessions-detail-prompt').click();
@@ -1162,6 +1165,14 @@ try {
   await page.waitForTimeout(300);
   const scrolledByTouch = await page.evaluate(() => window.scrollY);
   assert.ok(scrolledByTouch > 30, `触摸上滑必须滚动整页（实际 ${scrolledByTouch}px）`);
+  // 阅读中追新不得拽走位置：追加一条消息后滚动位置应保持。
+  await page.waitForTimeout(600);
+  await page.evaluate(() => window.scrollTo(0, 120));
+  await page.waitForFunction(() => window.scrollY === 120, null, { timeout: 5000 });
+  schedulingSessions.records.find(item => item.id === 'browser-scroll').messages.push({ role: 'agent', text: '追加的新回复', at: '2026-11-15T01:02:00Z' });
+  await page.waitForFunction(() => window.scrollY !== 120 || document.body.innerText.includes('追加的新回复'), null, { timeout: 12000 });
+  const keptPosition = await page.evaluate(() => window.scrollY);
+  assert.ok(keptPosition > 30 && keptPosition <= 130, `阅读中追新后滚动位置应保持（实际 ${keptPosition}px）`);
   await page.locator('.sessions-back-bottom').waitFor({ state: 'visible' });
   await page.locator('.sessions-back-bottom').click();
   await page.waitForTimeout(400);

@@ -61,8 +61,8 @@ export function mount(ctx) {
     try {
       if (typeof sessionStorage === 'undefined') return;
       const payload = {
-        kind: state.kind, query: state.query, archivedExpanded: state.archivedExpanded, promptExpanded: state.promptExpanded,
-        listScroll: state.listScroll, promptExpanded: state.promptExpanded,
+        kind: state.kind, query: state.query, archivedExpanded: state.archivedExpanded,
+        listScroll: state.listScroll,
         drafts: state.drafts, sessionId: state.session?.id || null,
         group: qmodel && state.group ? qmodel.snapshotGroup(state.group) : null,
       };
@@ -254,6 +254,8 @@ export function mount(ctx) {
     showView('detail');
     renderQuestion();
     renderMessages();
+    // 定位到底部必须发生在消息渲染之后：先滚后渲染会被新内容把位置顶回最上面。
+    if (state.follow) scrollToBottom();
     if (typeof ctx.hooks?.pushView === 'function') ctx.hooks.pushView({ type: 'sessions', view: 'detail', id: session.id });
     state.detailSessionId = session.id;
     startDetailPolling();
@@ -296,9 +298,15 @@ export function mount(ctx) {
       if (!session) return;
       const messages = mapMessages(session);
       if (JSON.stringify(messages) !== JSON.stringify(state.messages)) {
+        // 跟随状态以更新瞬间的实测位置为准，不信任可能滞后的 state.follow：
+        // 追新只滚底（用户在底部附近），用户上翻阅读时原样保持滚动位置。
+        const followNow = !smodel || smodel.shouldFollowScroll(pageMetrics());
+        state.follow = followNow;
+        const keepScroll = followNow ? null : window.scrollY;
         state.messages = messages;
         renderMessages();
-        if (state.follow) scrollToBottom();
+        if (followNow) scrollToBottom();
+        else window.scrollTo(0, keepScroll);
       }
       detailTitle.textContent = session.title || '会话';
     } catch { /* 轮询静默失败，等下一轮 */ }
