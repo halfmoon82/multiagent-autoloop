@@ -103,6 +103,10 @@ try {
   await page.waitForFunction(() => document.querySelector('#classification-title')?.textContent?.includes('设计会话'), null, { timeout: 5000 });
   await page.locator('#create-session').click();
   await page.locator('#session-workspace [data-action="design-authorize"]').waitFor({ timeout: 5000 });
+  // 设计会话交付契约（AGENTS.md §10）：未放行时有「确认计划 · 放行落盘」，放行后按钮消失
+  await page.locator('#session-workspace [data-action="approve-plan"]').waitFor({ timeout: 5000 });
+  sessionsFake.record.planApproved = true;
+  await page.waitForFunction(() => !document.querySelector('#session-workspace [data-action="approve-plan"]'), null, { timeout: 10000 });
   await page.locator('#session-workspace [data-action="design-authorize"]').click();
   assert.equal(await page.locator('#view-authorize').isVisible(), true);
   assert.equal(await page.locator('#view-sessions').isHidden(), true, '授权确认接管主区域，不再与导航页并列');

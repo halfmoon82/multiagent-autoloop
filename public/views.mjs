@@ -226,6 +226,7 @@ export function renderSessionCard(session, { queueEditing = null, artifactsPanel
     }
     const actions = el('div', 'actions');
     actions.append(button('产物', 'artifact-list', session.id, 'secondary'));
+    if ((session.kind || 'scheduling') === 'design' && !session.planApproved) actions.append(button('确认计划 · 放行落盘', 'approve-plan', session.id, 'primary'));
     if ((session.kind || 'scheduling') === 'design') actions.append(button('确认执行范围 →', 'design-authorize', session.id, 'secondary'));
     actions.append(button('关闭会话', 'close-session', session.id, 'danger'));
     card.append(actions);

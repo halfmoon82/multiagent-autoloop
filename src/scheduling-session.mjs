@@ -71,8 +71,8 @@ export function mobileSessionSummaries(sessions = []) {
 export function buildDesignPrompt({ project } = {}) {
   return [
     `你是 ${project} 上的设计会话，负责把产品需求收敛为可评审的 PRD、Spec 与可并行执行的 DAG。`,
-    '【协作方式】原生 Codex Plan Mode + 只读沙箱：只读取代码与文档、提问和出方案，不得直接修改文件或执行写命令；需求确认前不进入实现。',
-    '【产出约定】需求闭合后以约定 JSON 块输出 product-spec（背景、成功标准、非目标、验收命令），控制台据此计算 specDigest；主人确认后再拆解 DAG 与执行范围。',
+    '【协作方式】两阶段：规划阶段原生 Plan Mode + 只读沙箱，只读取代码与文档、提问和出方案；主人确认计划后控制台放行（退出 Plan Mode + 工作区可写）。',
+    '【产出约定】需求闭合后以约定 JSON 块输出 product-spec（背景、成功标准、非目标、验收命令），控制台据此计算 specDigest；主人确认后再拆解 DAG 与执行范围；放行后立即按 AGENTS.md §10 落盘（PRD/spec/issues 文档 + docs/dag-plans/<plan>.json）并登记 GitHub Epic/issues，两项完成才算交付。',
     '【边界】本会话只做规划与设计：不执行实现、不触碰部署、不修改真实调度规则；实现由后续事件链按授权快照派发。',
   ].join('\n');
 }
@@ -159,6 +159,7 @@ function toPublicSession(record) {
     project: record.project,
     writableDir: record.writableDir,
     continuedFrom: record.continuedFrom || null,
+    planApproved: record.planApproved === true,
     prompt: record.prompt,
     stopReason: record.stopReason,
     error: record.error,
@@ -359,10 +360,10 @@ export class SchedulingSessionManager {
     try { record = await this.archive.read(id); }
     catch (error) { throw new SchedulingSessionError(`无法继续该会话：${error.message}`, { status: error.status || 400 }); }
     const prompt = await this.archive.buildContinuation(id);
-    return this.start({ kind: record.kind || 'scheduling', prompt, project: record.project, continuedFrom: record.id });
+    return this.start({ kind: record.kind || 'scheduling', prompt, project: record.project, continuedFrom: record.id, planApproved: record.planApproved === true });
   }
 
-  async start({ kind = 'scheduling', prompt, project, continuedFrom = null } = {}) {
+  async start({ kind = 'scheduling', prompt, project, continuedFrom = null, planApproved = false } = {}) {
     const sessionKind = SESSION_KINDS.includes(kind) ? kind : 'scheduling';
     const projectId = this.#validateProject(project);
     const base = sessionKind === 'design'
@@ -416,6 +417,7 @@ export class SchedulingSessionManager {
       project: projectId,
       writableDir: this.writableDir,
       continuedFrom,
+      planApproved: sessionKind === 'design' && planApproved === true,
       prompt: text,
       queue: [],
       interruptRequested: false,
@@ -484,9 +486,12 @@ export class SchedulingSessionManager {
       });
       if (!session?.sessionId) throw new SchedulingSessionError('Codex ACP 没有返回会话 ID', { status: 502 });
       record.sessionId = session.sessionId;
-      // 设计会话：首个 prompt 前必须完成 read-only + 原生 Plan Mode 并核验，任一失败即创建失败，不降级。
-      if (sessionKind === 'design') await this.#applyDesignGuards(record);
-      else await this.#applySandboxMode(record, sessionKind === 'normal' ? 'workspace-write' : 'read-only');
+      // 设计会话：首个 prompt 前完成沙箱/协作模式核验，任一失败即创建失败，不降级。
+      // 未放行：read-only + 原生 Plan Mode（只做规划）；已放行（主人确认计划）：workspace-write + 默认协作模式（AGENTS.md §10 落盘登记）。
+      if (sessionKind === 'design') {
+        if (record.planApproved) await this.#applyApprovedDesign(record);
+        else await this.#applyDesignGuards(record);
+      } else await this.#applySandboxMode(record, sessionKind === 'normal' ? 'workspace-write' : 'read-only');
       record.status = 'idle';
 
       this.#pushMessage(record, 'user', text);
@@ -594,6 +599,7 @@ export class SchedulingSessionManager {
       project: projectId,
       writableDir: null,
       continuedFrom,
+      planApproved: false,
       prompt: text,
       queue: [],
       interruptRequested: false,
@@ -871,6 +877,21 @@ export class SchedulingSessionManager {
     return this.send(target.id, text);
   }
 
+  // 主人确认计划后放行设计会话落盘：退出 Plan Mode + 工作区可写，权限裁定切到普通会话矩阵（限本仓库工作区）。
+  // 依据 AGENTS.md §10：确认即授权，不得二次停等；会话关闭后无法在内存放行，需继续会话（planApproved 随存档恢复）。
+  async approvePlan(id) {
+    const record = this.sessions.get(String(id || ''));
+    if (!record) throw new SchedulingSessionError('会话不存在（已关闭的会话请先在已归档列表继续）', { status: 404 });
+    if ((record.kind || 'scheduling') !== 'design') throw new SchedulingSessionError('只有设计会话需要放行落盘', { status: 400 });
+    if (record.planApproved) return toPublicSession(record);
+    if (record.closed || !record.connection || !record.sessionId) throw new SchedulingSessionError('会话已关闭，无法放行；请在已归档列表继续该会话', { status: 409 });
+    await this.#applyApprovedDesign(record);
+    record.planApproved = true;
+    record.updatedAt = this.now().toISOString();
+    this.#persist(record);
+    return toPublicSession(record);
+  }
+
   async close(id) {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
@@ -901,6 +922,15 @@ export class SchedulingSessionManager {
     for (const record of this.sessions.values()) this.#destroyRecord(record);
   }
 
+  // 放行落盘（主人确认计划后）：workspace-write（经 #applySandboxMode）+ 退出 Plan Mode，逐个核验返回的 configOptions。
+  // 核验任一失败即抛错且不置 planApproved，不留半解锁状态；幂等（已放行直接返回）。
+  async #applyApprovedDesign(record) {
+    await this.#applySandboxMode(record, 'workspace-write');
+    const applied = await record.connection.agent.request(methods.agent.session.setConfigOption, { sessionId: record.sessionId, configId: 'collaboration_mode', value: 'default' });
+    const options = Array.isArray(applied?.configOptions) ? applied.configOptions : [];
+    if (!options.some(option => option.id === 'collaboration_mode' && option.currentValue === 'default')) throw new Error('无法将协作模式设置为 default');
+  }
+
   // 设计会话护栏：read-only（经 #applySandboxMode）+ 原生 Plan Mode，逐个核验返回的 configOptions。
   async #applyDesignGuards(record) {
     await this.#applySandboxMode(record, 'read-only');
@@ -922,7 +952,7 @@ export class SchedulingSessionManager {
 
   // 按 kind 的权限矩阵裁定（逻辑见 session-permission.mjs），每次裁定写审计留痕。
   #decidePermission(params, record = null) {
-    const kind = record?.kind || 'scheduling';
+    const kind = record?.planApproved ? 'normal' : (record?.kind || 'scheduling');
     let decision;
     try {
       decision = decideByKind({ kind, params, known: record?.knownCalls?.get(params?.toolCall?.toolCallId), workspace: record?.cwd, writableDir: this.writableDir });
@@ -977,6 +1007,7 @@ export class SchedulingSessionManager {
     this.archive.save({
       id: record.id,
       kind: record.kind || 'scheduling',
+      planApproved: record.planApproved === true,
       project: record.project,
       agent: record.agent,
       prompt: record.prompt,
