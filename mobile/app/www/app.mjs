@@ -217,6 +217,19 @@ function boot() {
   for (const name of MOBILE_PAGES) PAGE_MODULES[name].mount(ctx);
   selectTab('core');
 
+  // 主内容区左右滑动切相邻 Tab：与点击共用 selectTab；不支持 PointerEvent 时 feature 自行退化为纯点击。
+  // 浏览器里 ./src 指 /mobile/src（与页面模块同一受限目录规则），失败不影响点击切页。
+  const content = document.querySelector('.content');
+  import('./src/features/tab-swipe/index.mjs').then(({ attachTabSwipe }) => {
+    attachTabSwipe({
+      surface: content,
+      tabOrder: () => tabs.map(tab => tab.dataset.tab),
+      getActive: () => activeTab,
+      isEnabled: () => stack.depth === 0,
+      select: selectTab,
+    });
+  }).catch(() => {});
+
   function render() {
     const unlocked = state.canShowMain();
     els.lockScreen.hidden = unlocked;
