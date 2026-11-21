@@ -45,9 +45,14 @@ const NOT_IMPLEMENTED = Object.freeze({
 });
 
 // 与 checkWrite 同等校验；GET 路由不要求 JSON content-type。
+// 隧道形态例外：cloudflared 按 originRequest.httpHostHeader 把 Host 改写为 127.0.0.1:50761，
+// WebView 的 Origin 仍是公网控制台地址，两者必然不等。x-forwarded-proto 只可能由本机隧道
+// 终结者附加（控制台仅监听回环，公网请求必经过它），此形态下不再要求 Origin===Host；
+// 跨站浏览器请求仍被 sec-fetch-site 闸与 x-device-token 双重拦下，CSRF 防线不削弱。
 function validate(req, needsJson) {
   const origin = req.headers.origin;
-  if (origin && origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}`) {
+  const tunneled = typeof req.headers['x-forwarded-proto'] === 'string' && req.headers['x-forwarded-proto'].length > 0;
+  if (origin && !tunneled && origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}`) {
     return { status: 403, error: '拒绝跨站操作' };
   }
   if (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) {
