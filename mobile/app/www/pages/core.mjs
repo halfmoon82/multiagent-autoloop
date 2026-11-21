@@ -103,7 +103,6 @@ export function mount(ctx) {
 
   refs.usage = makeSection(overviewEl, 'usage', '今日用量');
   refs.metrics = makeSection(overviewEl, 'metrics', '任务概览');
-  refs.scheduler = makeSection(overviewEl, 'scheduler', '待调度处理');
   refs.projects = makeSection(overviewEl, 'projects', '项目 DAG 进度');
   refs.activity = makeSection(overviewEl, 'activity', '最近动态');
   refs.rules = makeSection(rulesEl, 'rules', '调度规则');
@@ -143,23 +142,37 @@ export function mount(ctx) {
   function renderOverview(page) {
     refs.usage.replaceChildren(node('p', { className: 'core-usage', text: page.usage || '用量未上报' }));
     if (!page.ready && page.error) refs.usage.appendChild(node('p', { className: 'hint', text: page.error }));
+    // 四组各自带网页版同款空态文案；待调度处理不等于待用户处理，不升级给用户。
     renderCollection(refs.metrics, page.metrics, group => {
-      const box = node('div', { className: 'core-metric' }, [
+      const box = node('div', { className: 'core-metric', attrs: { 'data-metric': group.id } }, [
         node('strong', { text: `${group.count} · ${group.label}` }),
       ]);
-      const list = node('ul', { className: 'core-list' });
-      for (const title of group.titles || []) list.appendChild(node('li', { text: title }));
-      box.appendChild(list);
+      if (group.titles?.length) {
+        const list = node('ul', { className: 'core-list' });
+        for (const title of group.titles) list.appendChild(node('li', { text: title }));
+        box.appendChild(list);
+      } else {
+        box.appendChild(node('p', { className: 'hint', text: group.emptyReason || '暂无数据' }));
+      }
+      if (group.id === 'attention') box.appendChild(node('p', { className: 'hint', text: '调度方按契约自行处理，不升级给您' }));
       return box;
     });
-    renderCollection(refs.scheduler, page.scheduler, item => node('div', { className: 'core-item' }, [
-      node('strong', { text: item.title }),
-      node('span', { className: 'core-meta', text: item.statusLabel || '状态未知' }),
-    ]));
-    renderCollection(refs.projects, page.projects, item => node('div', { className: 'core-item' }, [
-      node('strong', { text: item.projectLabel || '未识别项目' }),
-      node('span', { className: 'core-meta', text: `${item.statusLabel || '状态未知'} · ${item.nodeCount} 个节点` }),
-    ]));
+    renderCollection(refs.projects, page.projects, item => {
+      const box = node('div', { className: 'core-item', attrs: { 'data-project-run': item.runId ?? '' } }, [
+        node('strong', { text: item.projectLabel || '未识别项目' }),
+        node('span', { className: 'core-meta', text: `${item.statusLabel || '状态未知'} · ${item.nodeCount} 个节点` }),
+      ]);
+      if (item.dagEntry) {
+        const open = node('button', { type: 'button', className: 'core-action', attrs: { 'data-dag-entry': item.runId ?? '' }, text: item.dagEntry.label });
+        // 经壳的既有导航接缝进入 DAG 页（不直接依赖其他页面模块）。
+        open.addEventListener('click', () => {
+          const select = ctx.hooks?.selectTab || window.AutoloopNav?.selectTab;
+          if (typeof select === 'function') select(item.dagEntry.page);
+        });
+        box.appendChild(open);
+      }
+      return box;
+    });
     renderCollection(refs.activity, page.activity, item => node('div', { className: 'core-item' }, [
       node('strong', { text: item.title }),
       node('span', { className: 'core-meta', text: [item.statusLabel, item.at].filter(Boolean).join(' · ') }),

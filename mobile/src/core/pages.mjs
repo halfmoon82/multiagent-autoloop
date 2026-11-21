@@ -5,7 +5,7 @@
 import {
   MOBILE_PAGE_TITLES, MOBILE_NAVIGATION, statusLabel, dagStatusLabel, cardStateLabel,
   billingText, projectName, scheduleLabel, ruleStatus, collection, titleOf, formatTokens,
-  runTaskInfo, sameLocalDay, ACTION_LABELS,
+  runTaskInfo, sameLocalDay, ACTION_LABELS, OVERVIEW_GROUP_EMPTY,
 } from './contract.mjs';
 
 const array = value => (Array.isArray(value) ? value : []);
@@ -50,22 +50,24 @@ export function buildOverview(snapshot, { now } = {}) {
   const retrying = runs.filter(run => run?.state === 'queued' && (run?.attempts || 0) > 0);
   const doneToday = runs.filter(run => ['done', 'nothing'].includes(run?.state) && sameLocalDay(run?.finishedAt || run?.createdAt, reference));
   const openCards = cards.filter(card => card?.state === 'open');
+  const attention = runs.filter(run => ['unknown', 'cancelled'].includes(run?.state));
   const runTitles = list => list.slice(0, 5).map(run => runTaskInfo(run).taskSummary);
+  const group = (id, label, list) => ({ id, label, count: list.length, titles: runTitles(list), emptyReason: OVERVIEW_GROUP_EMPTY[id] });
 
+  // 四组与网页版一致：正在运行 / 等待重试 / 今日完成 / 待调度处理（待调度处理不等于待用户处理）。
   const metrics = collection(available ? [
-    { id: 'running', label: '正在运行', count: running.length, titles: runTitles(running) },
-    { id: 'retrying', label: '等待重试', count: retrying.length, titles: runTitles(retrying) },
-    { id: 'doneToday', label: '今日完成', count: doneToday.length, titles: runTitles(doneToday) },
-    { id: 'todos', label: '待我处理', count: openCards.length, titles: openCards.slice(0, 5).map(card => titleOf(card?.title, '待处理事项')) },
+    group('running', '正在运行', running),
+    group('retrying', '等待重试', retrying),
+    group('doneToday', '今日完成', doneToday),
+    group('attention', '待调度处理', attention),
   ] : [], available ? '暂无可统计的任务' : `状态数据缺失：${error || '未读取到控制台状态'}（不编造四组数字）`);
 
-  const attention = runs.filter(run => ['unknown', 'cancelled'].includes(run?.state));
   const scheduler = collection(attention.slice(0, 5).map(run => ({
     id: run?.id ?? null,
     title: runTaskInfo(run).taskSummary,
     status: run?.state ?? null,
     statusLabel: statusLabel(run?.state),
-  })), '没有等待调度处理的事。', { note: '调度方按契约自行处理，不升级给您' });
+  })), OVERVIEW_GROUP_EMPTY.attention, { note: '调度方按契约自行处理，不升级给您' });
 
   const dagAvailable = Boolean(snapshot?.available?.['dag-runs']);
   const dagError = snapshot?.errors?.['dag-runs'] || null;
@@ -80,6 +82,7 @@ export function buildOverview(snapshot, { now } = {}) {
       status, statusLabel: dagStatusLabel(status),
       nodeCount: Number.isInteger(summary.nodeCount) ? summary.nodeCount : array(run?.nodes).length,
       progressAvailable: false,
+      dagEntry: { label: '项目 DAG', page: 'dag', runId: String(summary.runId ?? run?.runId ?? '').trim() },
     };
   }).filter(item => item.runId) : [], dagAvailable ? '暂无项目 DAG 进度' : `DAG 数据缺失：${dagError || '未读取到项目 DAG 进度'}`);
 
@@ -94,6 +97,7 @@ export function buildOverview(snapshot, { now } = {}) {
 
   return page('overview', {
     ready: available, error,
+    openTodoCount: openCards.length,
     metrics, scheduler, usage: usageText(state, runs, available, error), projects, activity,
   });
 }

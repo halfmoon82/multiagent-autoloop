@@ -146,9 +146,8 @@ test('总览四组计数、最近 5 条标题、待调度处理分组与今日�
   assert.deepEqual(byId.running.titles, ['开发移动端核心页面']);
   assert.equal(byId.retrying.count, 1);
   assert.equal(byId.doneToday.count, 2);
-  assert.equal(byId.todos.count, 1);
-  assert.deepEqual(byId.todos.titles, ['移动网络的访问边界']);
-  assert.ok(byId.running.titles.length <= 5 && byId.todos.titles.length <= 5, '每组最多 5 条概要');
+  assert.equal(byId.attention.count, 1, '第四组是「待调度处理」（与网页版一致），待用户处理在待我处理页');
+  assert.ok(byId.running.titles.length <= 5 && byId.attention.titles.length <= 5, '每组最多 5 条概要');
   assert.equal(page.scheduler.items.length, 1, 'unknown 轮次归「待调度处理」，不冒充待用户处理');
   assert.match(page.scheduler.note, /不升级给您/);
   assert.match(page.usage, /费用 \$1\.20/, '已上报费用如实显示');
@@ -314,7 +313,7 @@ test('buildPages 五个页面齐全；上游文本是纯字符串，不拼接 HT
   const dump = JSON.stringify(pages);
   assert.ok(!dump.includes('<script') && !dump.includes('</div>') && !dump.includes('onerror='));
   assert.ok(!dump.includes('deviceToken') && !dump.includes('ownerKey') && !dump.includes('server-secret'));
-  assert.equal(pages.overview.metrics.items.find(g => g.id === 'todos').count, 1);
+  assert.equal(pages.overview.openTodoCount, 1);
   assert.equal(pages.todos.items.items.length, 2);
 });
 

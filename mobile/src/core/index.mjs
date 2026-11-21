@@ -3,3 +3,4 @@ export * from './contract.mjs';
 export * from './snapshot.mjs';
 export * from './pages.mjs';
 export * from './write.mjs';
+export * from './admin.mjs';
