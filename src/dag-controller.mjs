@@ -98,6 +98,10 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     lines.push(
       '回执（写在最后一条消息的 agent-autoloop 代码块）：结构逐字照抄下方 JSON，尖括号占位符与数字计数必须换成真实值，字段不得省略或改名：',
       `{"events":[{"id":"${run.expectedAdvanceId}","type":"dag.node.advance","subject":"dag-${seg(id)}","summary":"一句话结论","detail":{"advanceId":"${run.expectedAdvanceId}","runId":"${run.runId}","nodeId":"${id}","role":"${run.role}","generation":${run.generation},"attempt":${run.attempt},${receiptDetail}}}]}`,
+      // 只给通过模板时，审阅不通过的 worker 会自造 rejected/changes_requested，被判 malformed-outcome → blocked_unknown（2026-11-22 PR #243/#245）。
+      run.role === 'dev'
+        ? 'outcome 只能是：done（交付完成）或 failed（做不到，tests 里写原因）。'
+        : 'outcome 只能是：accepted（无 P0–P2，可合并）或 rework（有 P0–P2 需返工）；不得写 rejected、changes_requested 等其他值。',
     );
     if (design) lines.push(
       `设计基线：${root.designBaseline.designDigest}（冻结于本 DAG；不得读取新稿替代）`,
