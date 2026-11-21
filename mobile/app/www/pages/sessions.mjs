@@ -97,6 +97,7 @@ export function mount(ctx) {
   ]);
 
   const detailTitle = node('strong', { className: 'sessions-detail-title' });
+  const detailPrompt = node('div', { className: 'sessions-detail-prompt', attrs: { hidden: '' } });
   const artifactsBtn = node('button', { type: 'button', className: 'sessions-artifacts-btn', text: '本会话产物' });
   const detailBack = node('button', { type: 'button', className: 'sessions-back', text: '‹ 会话列表' });
   const questionBox = node('div', { className: 'sessions-question' });
@@ -116,7 +117,7 @@ export function mount(ctx) {
   const composerRow = node('div', { className: 'sessions-composer' }, [composerInput, micBtn, composerSend]);
   const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
     node('div', { className: 'sessions-detail-head' }, [detailBack, detailTitle, artifactsBtn]),
-    questionBox, scroller, backBottom, composerRow,
+    detailPrompt, questionBox, scroller, backBottom, composerRow,
   ]);
 
   const archiveBody = node('div', { className: 'sessions-archive-body' });
@@ -144,8 +145,10 @@ export function mount(ctx) {
   host.replaceChildren(banner, listView, detailView, archiveView, newView, menu);
 
   const views = { list: listView, detail: detailView, archive: archiveView, new: newView };
+  let detailTimer = null;
   const showView = name => {
     state.view = name;
+    if (name !== 'detail' && detailTimer) { clearInterval(detailTimer); detailTimer = null; }
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
     if (name === 'detail' && state.follow) scroller.scrollTop = scroller.scrollHeight;
   };
@@ -180,7 +183,7 @@ export function mount(ctx) {
         attrs: { 'data-kind': option.id, 'aria-pressed': String(option.id === list.kindFilter.selected) },
         text: option.label,
       });
-      chip.addEventListener('click', () => { state.kind = option.id; saveContext(); void reload(); });
+      chip.addEventListener('click', () => { state.kind = option.id; saveContext(); applyFilters(); });
       return chip;
     }));
 
@@ -236,13 +239,11 @@ export function mount(ctx) {
   // ---- 会话详情与待回答组 ----
   async function openSession(session) {
     state.session = session;
-    state.messages = Array.isArray(session.messages)
-      ? session.messages.map(message => ({
-        role: message?.role === 'user' ? '主人' : '会话',
-        text: String(message?.text ?? ''),
-        at: String(message?.at ?? ''),
-      }))
-      : [];
+    state.messages = mapMessages(session);
+    // 标题只截前 120 字，详情里展示完整首轮提示词，避免「被系统拼装的提示词」看不清全貌。
+    const promptText = String(session.prompt || '').trim();
+    detailPrompt.textContent = promptText ? `首轮提示词：${promptText}` : '';
+    detailPrompt.hidden = !promptText;
     state.follow = true;
     state.detailScroll = 0;
     const cards = Array.isArray(state.cards) ? state.cards.filter(card => !card?.project || card.project === session.project) : [];
@@ -255,7 +256,42 @@ export function mount(ctx) {
     renderQuestion();
     renderMessages();
     if (typeof ctx.hooks?.pushView === 'function') ctx.hooks.pushView({ type: 'sessions', view: 'detail', id: session.id });
+    state.detailSessionId = session.id;
+    startDetailPolling();
     saveContext();
+  }
+
+  function mapMessages(session) {
+    return Array.isArray(session?.messages)
+      ? session.messages.map(message => ({
+        role: message?.role === 'user' ? '主人' : '会话',
+        text: String(message?.text ?? ''),
+        at: String(message?.at ?? ''),
+      }))
+      : [];
+  }
+
+  // 详情打开期间轻轮询：会话有新输出时即时刷新，离开详情页即停。
+  function startDetailPolling() {
+    if (detailTimer) clearInterval(detailTimer);
+    detailTimer = setInterval(() => {
+      if (state.view === 'detail' && state.detailSessionId) void refreshDetail();
+    }, 5000);
+  }
+
+  async function refreshDetail() {
+    try {
+      await load({ quiet: true });
+      const session = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
+      if (!session) return;
+      const messages = mapMessages(session);
+      if (JSON.stringify(messages) !== JSON.stringify(state.messages)) {
+        state.messages = messages;
+        renderMessages();
+        if (state.follow) scroller.scrollTop = scroller.scrollHeight;
+      }
+      detailTitle.textContent = session.title || '会话';
+    } catch { /* 轮询静默失败，等下一轮 */ }
   }
 
   function renderQuestion() {
@@ -594,7 +630,7 @@ export function mount(ctx) {
   filterRow.querySelector('.sessions-search').addEventListener('input', event => {
     state.query = event.target.value;
     saveContext();
-    void reload();
+    applyFilters();
   });
   archivedToggle.addEventListener('click', () => {
     state.archivedExpanded = !state.archivedExpanded;
@@ -603,7 +639,7 @@ export function mount(ctx) {
   });
 
   // ---- 加载与生命周期 ----
-  async function load() {
+  async function load({ quiet } = {}) {
     try {
       const [sessionModel, questionModel] = await modelPromise;
       if (!sessionModel || !questionModel) return;
@@ -627,16 +663,24 @@ export function mount(ctx) {
       state.cards = Array.isArray(hubState?.cards) ? hubState.cards : [];
 
       const result = await reader.load({ kind: state.kind, query: state.query });
+      state.snapshot = result.snapshot;
       state.list = result.list;
       state.rawArchives = result.rawArchives;
       renderList(result.list);
-      showBanner('');
+      if (!quiet) showBanner('');
       ctx.hooks?.notify?.refresh?.();
     } catch (error) {
-      showBanner(`读取失败：${error?.message || error}（点「重试」再试）`);
+      if (!quiet) showBanner(`读取失败：${error?.message || error}（点「重试」再试）`);
     }
   }
   reload = load;
+
+  // 类型筛选与搜索在已缓存快照上本地即时过滤，不再每次点击都走网络（手机隧道往返数秒，反馈像没点上）。
+  function applyFilters() {
+    if (!state.snapshot || !smodel) return;
+    state.list = smodel.buildSessionList(state.snapshot, { kind: state.kind, query: state.query });
+    renderList(state.list);
+  }
 
   const main = document.getElementById('app-main');
   if (main && !main.hidden) void load();
@@ -647,7 +691,10 @@ export function mount(ctx) {
     observer.observe(main, { attributes: true, attributeFilter: ['hidden'] });
   }
   window.addEventListener('online', () => { void load(); });
-  window.addEventListener('pagehide', saveContext);
+  window.addEventListener('pagehide', () => {
+    if (detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+    saveContext();
+  });
   window.addEventListener('autoloop:view-popped', event => {
     if (event.detail?.type === 'sessions') showView('list');
   });

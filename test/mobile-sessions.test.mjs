@@ -300,7 +300,13 @@ test('上游文本全程是纯字符串：视图模型可安全渲染，不泄�
 // RED 9：浏览器侧投影与后端同源（页面拿真实接口数据，口径不漂移）
 // ---------------------------------------------------------------------------
 test('浏览器侧会话/存档/转录投影与后端同源，缺失不编造', () => {
-  assert.deepEqual(browserSessionSummaries(ACTIVE), mobileSessionSummaries(ACTIVE));
+  // 共有字段必须与后端投影逐字段同源；prompt/liveText/messages 是浏览器侧详情展示扩展，
+  // 后端摘要刻意不带（避免中继响应膨胀），从同源比对中剔除。
+  const sharedFields = item => {
+    const { prompt, liveText, messages, ...rest } = item;
+    return rest;
+  };
+  assert.deepEqual(browserSessionSummaries(ACTIVE).map(sharedFields), mobileSessionSummaries(ACTIVE));
   assert.deepEqual(browserSessionSummaries(null), []);
   assert.deepEqual(browserSessionSummaries([null, 3, {}]), []);
   assert.deepEqual(browserArchiveSummaries(ARCHIVED), mobileArchiveSummaries(ARCHIVED));
@@ -312,6 +318,47 @@ test('浏览器侧会话/存档/转录投影与后端同源，缺失不编造', 
 // ---------------------------------------------------------------------------
 // RED 10：只读读取器——固定路径、同源校验、组装快照与错误态
 // ---------------------------------------------------------------------------
+test('投影保留 messages/prompt/liveText：会话详情有输出可显示', () => {
+  const [summary] = browserSessionSummaries([{
+    id: '11111111-1111-4111-8111-111111111111', kind: 'scheduling', status: 'running',
+    prompt: '完整提示词', liveText: '正在输出……',
+    messages: [
+      { role: 'user', text: '第一条', at: '2026-11-19T09:00:00.000Z', extra: 'drop-me' },
+      { role: 'agent', text: '第二条', at: '2026-11-19T09:01:00.000Z' },
+    ],
+  }]);
+  assert.equal(summary.prompt, '完整提示词');
+  assert.equal(summary.liveText, '正在输出……');
+  assert.deepEqual(summary.messages, [
+    { role: 'user', text: '第一条', at: '2026-11-19T09:00:00.000Z' },
+    { role: 'agent', text: '第二条', at: '2026-11-19T09:01:00.000Z' },
+  ]);
+});
+
+test('读取器按更新时间倒序：新会话在列表顶部且为当前会话', async () => {
+  const oldFirst = [
+    { id: '11111111-1111-4111-8111-111111111111', kind: 'scheduling', prompt: '旧', createdAt: '2026-11-19T09:00:00.000Z', updatedAt: '2026-11-19T10:00:00.000Z' },
+    { id: '22222222-2222-4222-8222-222222222222', kind: 'normal', prompt: '新', createdAt: '2026-11-21T06:17:55.860Z', updatedAt: '2026-11-21T06:20:40.327Z' },
+  ];
+  const fetchImpl = async url => ({ ok: true, json: async () => (new URL(url).pathname.includes('session-archives') ? { sessions: [] } : oldFirst) });
+  const { snapshot, list } = await createSessionsReader({ origin: 'https://auto.socialmore.net', fetchImpl }).load();
+  assert.equal(snapshot.sessions[0].id, '22222222-2222-4222-8222-222222222222', '最新会话必须在顶部');
+  assert.equal(snapshot.currentId, '22222222-2222-4222-8222-222222222222');
+  assert.equal(list.sessions.items[0].id, '22222222-2222-4222-8222-222222222222');
+});
+
+test('类型筛选真实生效：选 design 只留设计会话', () => {
+  const snapshot = {
+    sessions: mobileSessionSummaries(ACTIVE),
+    archives: [], currentId: null,
+  };
+  const list = buildSessionList(snapshot, { kind: 'design', query: '' });
+  assert.equal(list.sessions.items.length, 1);
+  assert.equal(list.sessions.items[0].kind, 'design');
+  const all = buildSessionList(snapshot, { kind: 'all', query: '' });
+  assert.equal(all.sessions.items.length, 2);
+});
+
 test('createSessionsReader 走固定只读路径、同源校验，并组装列表快照', async () => {
   assert.deepEqual([...SESSION_READ_PATHS], ['/api/mobile/api/sessions', '/api/mobile/api/session-archives']);
   const calls = [];

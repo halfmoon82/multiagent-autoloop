@@ -56,7 +56,11 @@ export function createSessionsReader({ origin = '', fetchImpl, getToken, isActiv
         archived = Array.isArray(payload?.sessions) ? payload.sessions : (Array.isArray(payload) ? payload : []);
       } catch (error) { errors.archivesError = String(error?.message || error || '读取失败'); }
 
-      const summaries = mobileSessionSummaries(active);
+      // 新会话置顶：接口返回顺序是插入序，按更新时间倒序后取第一条作为当前会话。
+      const stamp = value => { const parsed = Date.parse(value); return Number.isNaN(parsed) ? 0 : parsed; };
+      // updatedAt 不可解析时回退 createdAt，坏时间戳沉底。
+      const recency = item => stamp(item.updatedAt) || stamp(item.createdAt);
+      const summaries = mobileSessionSummaries(active).sort((a, b) => recency(b) - recency(a));
       const snapshot = {
         sessions: active === null ? null : summaries,
         archives: archived === null ? null : mobileArchiveSummaries(archived),

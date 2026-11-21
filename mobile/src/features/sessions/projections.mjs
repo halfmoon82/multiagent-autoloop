@@ -35,6 +35,14 @@ export function mobileSessionSummaries(sessions = []) {
         kind,
         kindLabel: ({ normal: '普通会话', scheduling: '调度会话', design: '设计会话' })[kind],
         title: String(session.prompt ?? '').trim().slice(0, 120) || '会话',
+        // 详情视图要显示完整首轮提示词与在线转录；只放行 role/text/at 三个展示字段。
+        prompt: String(session.prompt ?? '').trim(),
+        liveText: typeof session.liveText === 'string' ? session.liveText : '',
+        messages: (Array.isArray(session.messages) ? session.messages : []).map(message => ({
+          role: String(message?.role ?? ''),
+          text: String(message?.text ?? ''),
+          at: String(message?.at ?? ''),
+        })),
         project,
         projectLabel: shortProjectLabel(project),
         status: String(session.status ?? '').trim() || null,
