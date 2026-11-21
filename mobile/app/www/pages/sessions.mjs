@@ -612,6 +612,8 @@ export function mount(ctx) {
       reader = smodel.createSessionsReader({
         origin: ctx.client.origin,
         getToken: () => ctx.client.tokenStore.get(),
+        // 锁屏/解除授权后停止在途读取：壳状态翻转为不可展示主界面时，后续读取全部跳过。
+        isActive: () => (typeof ctx.state?.canShowMain === 'function' ? ctx.state.canShowMain() : true),
       });
       write = smodel.createSessionsWrite(ctx.client);
       micBtn.hidden = !smodel.hasVoiceHook(ctx.hooks);

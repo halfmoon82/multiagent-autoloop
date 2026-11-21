@@ -45,6 +45,7 @@ function makeSessions(artifact) {
     async listArchived() { return [{ id: 'sess-1', project: WORKTREE }, { id: 'sess-2', project: WORKTREE }]; },
     async continueSession(id) { this.calls.push(['continue', id]); return { id, continued: true }; },
     async start(payload) { this.calls.push(['start', payload]); return { id: 'sess-new', ...payload }; },
+    async list() { this.calls.push(['list']); return [{ id: 'sess-live', kind: 'scheduling', project: WORKTREE, status: 'running' }]; },
     async resolveSessionDownload(id, requested) {
       this.calls.push(['download', id, requested]);
       if (id !== 'sess-1') { const error = new Error('会话不存在'); error.status = 404; throw error; }
@@ -307,4 +308,19 @@ test('无转发头的直连请求仍按 Host 严格校验 Origin，伪造公网 
   });
   assert.equal(response.status, 403);
   assert.equal(ctx.sessions.calls.filter(call => call[0] === 'start').length, 0, '被拒绝请求不得创建会话');
+});
+
+// ---------- 只读中继：会话列表与存档（经隧道可达，修复手机端列表 404） ----------
+test('绑定设备可经 /api/mobile/api/<key> 中继读取会话列表与存档', async t => {
+  const ctx = await setup(t);
+  const auth = { token: ctx.deviceToken };
+  const sessions = await mobileFetch(ctx.url, '/api/mobile/api/sessions', auth);
+  assert.equal(sessions.status, 200);
+  assert.equal((await sessions.json())[0].id, 'sess-live');
+  const archives = await mobileFetch(ctx.url, '/api/mobile/api/session-archives', auth);
+  assert.equal(archives.status, 200);
+  assert.equal((await archives.json()).sessions.length, 2);
+
+  const unbound = await mobileFetch(ctx.url, '/api/mobile/api/sessions');
+  assert.equal(unbound.status, 401);
 });

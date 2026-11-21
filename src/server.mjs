@@ -97,6 +97,7 @@ export function resolveMobileAsset(pathname, { www = MOBILE, src = MOBILE_SRC } 
 const MOBILE_API_ALLOWLIST = new Map([
   ['state', '/api/state'], ['projects', '/api/projects'], ['rules', '/api/rules'],
   ['dag-runs', '/api/dag-runs'], ['archive', '/api/archive'], ['closeouts', '/api/closeouts'],
+  ['sessions', '/api/scheduling-sessions'], ['session-archives', '/api/session-archives'],
   ['detours', '/api/detours'], ['serial-progress', '/api/serial-progress'], ['project-usage', '/api/project-usage'],
 ]);
 export function securityHeaders() {

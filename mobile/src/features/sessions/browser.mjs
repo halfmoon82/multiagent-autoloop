@@ -4,8 +4,9 @@
 import { buildSessionList, buildArchiveDetail } from './views.mjs';
 import { mobileSessionSummaries, mobileArchiveSummaries, mobileArchiveTranscript } from './projections.mjs';
 
-// 固定只读路径：不代理任意 URL，目标始终与控制台同源。
-export const SESSION_READ_PATHS = Object.freeze(['/api/scheduling-sessions', '/api/session-archives']);
+// 固定只读路径：只打服务端 /api/mobile/api/<key> 隧道中继（允许列表见壳的 MOBILE_API_KEYS），
+// 绝不直连网页桌面接口——隧道只转发 /api/mobile/*，直连会被 ingress 404。
+export const SESSION_READ_PATHS = Object.freeze(['/api/mobile/api/sessions', '/api/mobile/api/session-archives']);
 export const SESSION_CONTEXT_KEY = 'nomoto-sessions-context';
 
 function resolveUrl(origin, path) {
@@ -16,9 +17,13 @@ function resolveUrl(origin, path) {
 }
 
 // 只读数据：两个接口独立成功/失败；任一路失败只影响对应集合，不编造会话。
-export function createSessionsReader({ origin = '', fetchImpl, getToken } = {}) {
+export function createSessionsReader({ origin = '', fetchImpl, getToken, isActive } = {}) {
   const doFetch = fetchImpl || ((url, init) => globalThis.fetch(url, init));
+  // 活性闸：解除授权/锁屏会翻转为 false，在途加载在两次读取之间被取消，
+  // 避免拿着刚失效的令牌去打中继（401 资源噪音 + 无意义请求）。调用方注入壳状态。
+  const stillActive = () => typeof isActive !== 'function' || isActive();
   const read = async path => {
+    if (!stillActive()) throw new Error('连接已失效，跳过读取');
     const url = resolveUrl(origin, path);
     const headers = { accept: 'application/json' };
     if (typeof getToken === 'function') {
@@ -41,10 +46,12 @@ export function createSessionsReader({ origin = '', fetchImpl, getToken } = {}) 
       let active = null;
       let archived = null;
       try {
+        if (!stillActive()) throw new Error('连接已失效，跳过读取');
         const payload = await read(SESSION_READ_PATHS[0]);
         active = Array.isArray(payload) ? payload : (Array.isArray(payload?.sessions) ? payload.sessions : []);
       } catch (error) { errors.sessionsError = String(error?.message || error || '读取失败'); }
       try {
+        if (!stillActive()) throw new Error('连接已失效，跳过读取');
         const payload = await read(SESSION_READ_PATHS[1]);
         archived = Array.isArray(payload?.sessions) ? payload.sessions : (Array.isArray(payload) ? payload : []);
       } catch (error) { errors.archivesError = String(error?.message || error || '读取失败'); }
