@@ -36,6 +36,7 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'sync', method: 'POST', pattern: /^\/api\/mobile\/sync$/ },
   { key: 'rule-action', method: 'POST', pattern: /^\/api\/mobile\/rules\/([^/]+)\/(run|pause|resume)$/ },
   { key: 'session-classify', method: 'POST', pattern: /^\/api\/mobile\/session-classify$/ },
+  { key: 'session-message', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/messages$/ },
   { key: 'session-create', method: 'POST', pattern: /^\/api\/mobile\/sessions$/ },
 ]);
 
@@ -202,6 +203,22 @@ function sessionClassifyRoute(res, body) {
 // 创建会话：校验口径与网页 /api/scheduling-sessions 逐条对齐（项目必须在已发现列表、
 // 首轮提示词必填、kind 只收 normal/scheduling/design，缺省按语义分类），写入复用同一
 // config.schedulingSessions.start，不另造状态；来源设备 id 随审计记录。
+// 会话消息：与网页 /api/scheduling-sessions/:id/messages 同一 sessions.send，不另造状态。
+async function sessionMessageRoute(res, url, route, ctx, body, req) {
+  const sessions = ctx.config.schedulingSessions;
+  if (!sessions || typeof sessions.send !== 'function') fail(503, '会话通道不可用');
+  const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
+  const text = String(body.text ?? '').trim();
+  if (!text) fail(400, '消息内容不能为空');
+  const fields = { sessionId: id, sourceDeviceId: ctx.device.id };
+  let result;
+  try {
+    result = await sessions.send(id, text, { interrupt: body.interrupt === true });
+  } catch (error) { auditFailure(ctx, req, 'session.message', fields); throw error; }
+  audit(ctx, req, 'session.message', fields);
+  jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
+}
+
 async function sessionCreateRoute(res, body, ctx, req) {
   const sessions = ctx.config.schedulingSessions;
   if (!sessions || typeof sessions.start !== 'function') fail(503, '会话通道不可用');
@@ -287,6 +304,7 @@ async function executeWrite(route, req, res, url, ctx) {
     if (route.key === 'rule-action') return await ruleAction(req, res, url, route, ctx, body);
     if (route.key === 'session-classify') return sessionClassifyRoute(res, body);
     if (route.key === 'session-create') return await sessionCreateRoute(res, body, ctx, req);
+    if (route.key === 'session-message') return await sessionMessageRoute(res, url, route, ctx, body, req);
     jsonResponse(res, 501, { error: '该写操作尚未实现', route: route.key, declared: true });
   } catch (error) {
     writeError(res, error);

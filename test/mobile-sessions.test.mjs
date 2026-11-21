@@ -474,6 +474,16 @@ test('createSessionsWrite 只打固定写路由：继续调度与卡片作答', 
   }
 });
 
+test('createSessionsWrite 发送会话消息走已登记写路由', async () => {
+  const calls = [];
+  const client = { origin: 'https://auto.socialmore.net', tokenStore: { get: async () => 't' } };
+  const fetchImpl = async (url, init) => { calls.push([url, init]); return { ok: true, json: async () => ({ ok: true }) }; };
+  const write = createSessionsWrite(client, { fetchImpl });
+  await write.sendMessage('sess-1', { text: '补充需求：支持深色模式' });
+  assert.equal(new URL(calls[0][0]).pathname, '/api/mobile/sessions/sess-1/messages');
+  assert.deepEqual(JSON.parse(calls[0][1].body), { text: '补充需求：支持深色模式' });
+});
+
 test('createSessionsWrite 未绑定拒绝、跨域拒绝、错误转成可读文案', async () => {
   const client = { origin: 'https://auto.socialmore.net', tokenStore: { get: async () => null } };
   const fetchImpl = async () => { throw new Error('不应发出请求'); };
