@@ -10,6 +10,7 @@ import { discoverGitProjects } from './projects.mjs';
 import { readRuleOptions } from './rules.mjs';
 import { reconcile, syncPrompt, createSyncState } from '../mobile/src/features/device-sync/index.mjs';
 import { classifySessionRequest } from './session-classify.mjs';
+import { SchedulingSessionError } from './scheduling-session.mjs';
 
 function securityHeaders() {
   return {
@@ -36,6 +37,7 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'sync', method: 'POST', pattern: /^\/api\/mobile\/sync$/ },
   { key: 'rule-action', method: 'POST', pattern: /^\/api\/mobile\/rules\/([^/]+)\/(run|pause|resume)$/ },
   { key: 'session-classify', method: 'POST', pattern: /^\/api\/mobile\/session-classify$/ },
+  { key: 'session-message', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/messages$/ },
   { key: 'session-create', method: 'POST', pattern: /^\/api\/mobile\/sessions$/ },
 ]);
 
@@ -73,6 +75,7 @@ function validate(req, needsJson) {
 // 只向客户端返回固定的用户可读文案，绝不回显 Hub 错误体、堆栈或内部配置。
 const SAFE_ERRORS = Object.freeze({
   400: '请求无效',
+  429: '排队消息过多，请稍后再试',
   401: '设备未授权或授权已失效，请重新绑定',
   403: '拒绝跨站操作',
   404: '目标不存在或已失效',
@@ -107,7 +110,10 @@ function writeError(res, error) {
     : error instanceof HubError && error.status >= 400 && error.status < 500 ? error.status
       : error?.status >= 400 && error?.status < 500 ? error.status
         : 502;
-  jsonResponse(res, status, { error: error instanceof WriteError ? error.message : (SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试') });
+  // 本地会话态错误（已关闭/异常等）的 message 本就是给用户看的中文文案，与网页端同口径透传；
+  // 其余非 WriteError 一律回落固定文案，不回显 Hub 错误体或内部细节。
+  const passthrough = error instanceof SchedulingSessionError && status >= 400 && status < 500 && error.message;
+  jsonResponse(res, status, { error: error instanceof WriteError ? error.message : passthrough || (SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试') });
 }
 
 // 关键操作审计：来源设备、时间、结果由设备台账写入。成功路径写失败要报错（不吞为成功）；
@@ -202,6 +208,22 @@ function sessionClassifyRoute(res, body) {
 // 创建会话：校验口径与网页 /api/scheduling-sessions 逐条对齐（项目必须在已发现列表、
 // 首轮提示词必填、kind 只收 normal/scheduling/design，缺省按语义分类），写入复用同一
 // config.schedulingSessions.start，不另造状态；来源设备 id 随审计记录。
+// 会话消息：与网页 /api/scheduling-sessions/:id/messages 同一 sessions.send，不另造状态。
+async function sessionMessageRoute(res, url, route, ctx, body, req) {
+  const sessions = ctx.config.schedulingSessions;
+  if (!sessions || typeof sessions.send !== 'function') fail(503, '会话通道不可用');
+  const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
+  const text = String(body.text ?? '').trim();
+  if (!text) fail(400, '消息内容不能为空');
+  const fields = { sessionId: id, sourceDeviceId: ctx.device.id };
+  let result;
+  try {
+    result = await sessions.send(id, text, { interrupt: body.interrupt === true });
+  } catch (error) { auditFailure(ctx, req, 'session.message', fields); throw error; }
+  audit(ctx, req, 'session.message', fields);
+  jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
+}
+
 async function sessionCreateRoute(res, body, ctx, req) {
   const sessions = ctx.config.schedulingSessions;
   if (!sessions || typeof sessions.start !== 'function') fail(503, '会话通道不可用');
@@ -287,6 +309,7 @@ async function executeWrite(route, req, res, url, ctx) {
     if (route.key === 'rule-action') return await ruleAction(req, res, url, route, ctx, body);
     if (route.key === 'session-classify') return sessionClassifyRoute(res, body);
     if (route.key === 'session-create') return await sessionCreateRoute(res, body, ctx, req);
+    if (route.key === 'session-message') return await sessionMessageRoute(res, url, route, ctx, body, req);
     jsonResponse(res, 501, { error: '该写操作尚未实现', route: route.key, declared: true });
   } catch (error) {
     writeError(res, error);

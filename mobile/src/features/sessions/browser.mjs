@@ -122,6 +122,11 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
       const payload = choice !== undefined ? { choice: Number(choice) } : { text: String(text ?? '') };
       return call(`/api/mobile/cards/${cardId}/answer`, payload);
     },
+    sendMessage(id, { text } = {}) {
+      const value = encodeURIComponent(String(id ?? '').trim());
+      if (!value) throw new Error('会话不存在或已失效');
+      return call(`/api/mobile/sessions/${value}/messages`, { text: String(text ?? '') });
+    },
     // 新建与分类只打移动端网关已登记写路由；项目必须来自下拉的真实选项。
     classify(text) {
       return call('/api/mobile/session-classify', { text: String(text ?? '') });

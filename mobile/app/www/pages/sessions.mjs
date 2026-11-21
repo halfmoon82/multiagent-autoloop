@@ -296,7 +296,9 @@ export function mount(ctx) {
       await load({ quiet: true });
       const session = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
       if (!session) return;
-      const messages = mapMessages(session);
+      let messages = mapMessages(session);
+      const echo = [...state.messages].reverse().find(message => message.role === '主人' && !message.at);
+      if (echo && !messages.some(message => message.text === echo.text)) messages = [...messages, echo];
       if (JSON.stringify(messages) !== JSON.stringify(state.messages)) {
         // 跟随状态以更新瞬间的实测位置为准，不信任可能滞后的 state.follow：
         // 追新只滚底（用户在底部附近），用户上翻阅读时原样保持滚动位置。
@@ -491,16 +493,28 @@ export function mount(ctx) {
   composerInput.addEventListener('input', () => { state.drafts.composer = composerInput.value; saveContext(); });
   micBtn.addEventListener('click', () => { ctx.hooks?.attachVoice?.(composerInput); });
   composerSend.addEventListener('click', () => {
-    const text = composerInput.value.trim();
-    if (!text) return;
-    state.messages.push({ role: '主人', text, at: '' });
-    composerInput.value = '';
-    state.drafts.composer = '';
-    state.follow = true;
-    ctx.hooks?.haptic?.tap?.();
-    renderMessages();
-    scrollToBottom();
-    saveContext();
+    void (async () => {
+      const text = composerInput.value.trim();
+      if (!text || !write || !state.session) return;
+      composerSend.disabled = true;
+      try {
+        // 真正发送到控制台：此前这里只是本地回显，重开即丢（会话消息从未到达服务器）。
+        await write.sendMessage(state.session.id, { text });
+        state.messages.push({ role: '主人', text, at: '' });
+        composerInput.value = '';
+        state.drafts.composer = '';
+        state.follow = true;
+        ctx.hooks?.haptic?.tap?.();
+        renderMessages();
+        scrollToBottom();
+        saveContext();
+        setTimeout(() => { if (state.view === 'detail') void refreshDetail(); }, 1500);
+      } catch (error) {
+        showBanner(`发送失败：${error?.message || '请重试'}（内容已保留在输入框）`);
+      } finally {
+        composerSend.disabled = false;
+      }
+    })();
   });
 
   detailPrompt.addEventListener('click', () => {
