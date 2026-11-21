@@ -1,6 +1,6 @@
 # Issues：移动端 App 与网页设备授权管理后台（DAG 版）
 
-- 状态：Approved for dispatch / 待实现
+- 状态：已交付主体 / 剩余 final-acceptance 待真机授权——进展补记（2026-11-21）：节点主体已合并（PR #185–#230），本计划未建 GitHub Issue，以本文档与 PR 为事项档案；今后计划按 AGENTS.md §10 在确认时即落盘并登记。
 - 日期：2026-11-18
 - 上游 Spec：`docs/2026-11-18-mobile-device-admin-spec.md`
 - 上游 PRD：`docs/2026-11-18-mobile-device-admin-prd.md`
