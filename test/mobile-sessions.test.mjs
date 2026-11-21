@@ -303,13 +303,19 @@ test('浏览器侧会话/存档/转录投影与后端同源，缺失不编造', 
   // 共有字段必须与后端投影逐字段同源；prompt/liveText/messages 是浏览器侧详情展示扩展，
   // 后端摘要刻意不带（避免中继响应膨胀），从同源比对中剔除。
   const sharedFields = item => {
-    const { prompt, liveText, messages, ...rest } = item;
+    // title 也是客户端展示扩展：后端保留前 120 字原文，浏览器端用 compactSessionTitle 启发式
+    // 剥系统拼装（“项目：”前缀、上下文注入段），两端刻意不同源。
+    const { prompt, liveText, messages, title, updatedLabel, ...rest } = item;
     return rest;
   };
-  assert.deepEqual(browserSessionSummaries(ACTIVE).map(sharedFields), mobileSessionSummaries(ACTIVE));
+  assert.deepEqual(browserSessionSummaries(ACTIVE).map(sharedFields), mobileSessionSummaries(ACTIVE).map(sharedFields));
   assert.deepEqual(browserSessionSummaries(null), []);
   assert.deepEqual(browserSessionSummaries([null, 3, {}]), []);
-  assert.deepEqual(browserArchiveSummaries(ARCHIVED), mobileArchiveSummaries(ARCHIVED));
+  const sharedArchiveFields = item => {
+    const { title, ...rest } = item;
+    return rest;
+  };
+  assert.deepEqual(browserArchiveSummaries(ARCHIVED).map(sharedArchiveFields), mobileArchiveSummaries(ARCHIVED));
   assert.deepEqual(browserArchiveSummaries(undefined), []);
   assert.deepEqual(browserArchiveTranscript(ARCHIVED[0]), mobileArchiveTranscript(ARCHIVED[0]));
   assert.equal(browserArchiveTranscript(null).empty, true);
@@ -318,6 +324,30 @@ test('浏览器侧会话/存档/转录投影与后端同源，缺失不编造', 
 // ---------------------------------------------------------------------------
 // RED 10：只读读取器——固定路径、同源校验、组装快照与错误态
 // ---------------------------------------------------------------------------
+test('compactSessionTitle：剥系统拼装，取用户可辨认的第一句话', async () => {
+  const { compactSessionTitle } = await import('../mobile/src/features/sessions/projections.mjs');
+  assert.equal(compactSessionTitle('项目：/work/A 项目\n请用原生 DAG 计划并拆解任务'), '请用原生 DAG 计划并拆解任务', '剥“项目：”前缀行');
+  assert.equal(compactSessionTitle('扫描当前仓库找到 open 事项\n\n本轮完整资料（项目规则、状态快照与上一轮结论）：/Users/mac/state；动手前先读它。'), '扫描当前仓库找到 open 事项', '截掉上下文注入 trailer');
+  assert.equal(compactSessionTitle('第一句很短\n第二句不该出现'), '第一句很短', '只取首行');
+  assert.equal(compactSessionTitle(''.padEnd(80, '长')), ''.padEnd(45, '长') + '…', '45 字截断');
+  assert.equal(compactSessionTitle('你是 /work/B 项目上的设计会话，负责把产品需求收敛为可评审的 PRD、Spec 与可执行 DAG'), '把产品需求收敛为可评审的 PRD、Spec 与可执行 DAG', '设计会话剥角色抬头取职责描述');
+  assert.equal(compactSessionTitle('你是 /work/B 项目上的设计会话，负责收敛需求。\n【协作方式】…\n【本次附加说明】\n把登录页改成手机号一键登录'), '把登录页改成手机号一键登录', '设计会话优先取【本次附加说明】里的用户原话');
+  assert.equal(compactSessionTitle('用户说本轮完整资料四个字但无注入段 不应被截断'), '用户说本轮完整资料四个字但无注入段 不应被截断', '锚定完整 trailer 前缀，不误伤用户原文');
+  assert.equal(compactSessionTitle('请处理 本轮完整资料（项目规则、状态快照与上一轮结论）：/work/state；动手前先读它。', ), '请处理', '完整 trailer 前缀仍被截断');
+  assert.equal(compactSessionTitle('  \n '), '会话', '空回退不编造');
+});
+
+test('投影标题紧凑化 + 时间标签 + 存档标题', () => {
+  const [summary] = browserSessionSummaries([{
+    id: '11111111-1111-4111-8111-111111111111', kind: 'scheduling',
+    prompt: '项目：/work/A 项目\n请调度失败任务并恢复规则\n\n本轮完整资料（项目规则、状态快照与上一轮结论）：/work/state；动手前先读它。', updatedAt: '2026-11-21T08:30:00Z',
+  }]);
+  assert.equal(summary.title, '请调度失败任务并恢复规则');
+  assert.match(summary.updatedLabel, /^\d{2}-\d{2} \d{2}:\d{2}$/);
+  const [archive] = browserArchiveSummaries([{ version: 1, id: '33333333-3333-4333-8333-333333333333', kind: 'design', project: '/work/B', prompt: '设计一个多租户改造方案', messages: [], createdAt: '2026-11-17T09:00:00Z' }]);
+  assert.equal(archive.title, '设计一个多租户改造方案');
+});
+
 test('投影保留 messages/prompt/liveText：会话详情有输出可显示', () => {
   const [summary] = browserSessionSummaries([{
     id: '11111111-1111-4111-8111-111111111111', kind: 'scheduling', status: 'running',

@@ -12,6 +12,32 @@ const SESSION_STATUS_LABELS = Object.freeze({
   unknown: '待复核', closing: '关闭中', closed: '已关闭',
 });
 const statusLabel = value => SESSION_STATUS_LABELS[value] || value;
+// 列表标题：调度/设计会话的 prompt 会被系统拼装（注入“本轮完整资料”、加“项目：”前缀），
+// 直接截断会得到一堵无法辨认的文本墙。取用户真正的第一句话：剥“项目：”前缀行、
+// 截掉上下文注入段、取首行、压空白、45 字截断。
+export function compactSessionTitle(prompt) {
+  let text = String(prompt ?? '').replace(/\r/g, '');
+  // 上下文注入 trailer 有固定形态，锚定完整前缀防止误伤用户原文里碰巧出现的短语。
+  const injected = text.indexOf('本轮完整资料（项目规则、状态快照与上一轮结论）：');
+  if (injected > 0) text = text.slice(0, injected);
+  text = text.replace(/^项目：[^\n]*\n/, '').trim();
+  // 设计会话的 prompt 被整体改写为角色设定（"你是 <路径> 上的设计会话，负责……\n【协作方式】…\n【本次附加说明】\n<用户原话>"），
+  // 用户原话在【本次附加说明】段；优先取它，其次取"负责"后的职责描述，都比角色抬头更能辨认这条会话。
+  const designNote = /【本次附加说明】\s*([\s\S]+)$/.exec(text);
+  const designRole = /上的设计会话，负责(.+)$/s.exec(text);
+  const body = (designNote ? designNote[1] : designRole ? designRole[1] : text).trim();
+  const firstLine = (body.split('\n').find(line => line.trim()) || '').trim().replace(/\s+/g, ' ');
+  if (!firstLine) return '会话';
+  return firstLine.length > 45 ? `${firstLine.slice(0, 45)}…` : firstLine;
+}
+// MM-DD HH:MM（本地时间感知的精简格式；坏时间戳返回空串，不编造）。
+const shortStamp = value => {
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return '';
+  const d = new Date(parsed);
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
 const iso = value => (typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : null);
 const shortProjectLabel = value => {
   const text = String(value ?? '').trim().replace(/[/\\]+$/, '');
@@ -34,7 +60,8 @@ export function mobileSessionSummaries(sessions = []) {
         id: session.id,
         kind,
         kindLabel: ({ normal: '普通会话', scheduling: '调度会话', design: '设计会话' })[kind],
-        title: String(session.prompt ?? '').trim().slice(0, 120) || '会话',
+        title: compactSessionTitle(session.prompt),
+        updatedLabel: shortStamp(session.updatedAt) || shortStamp(session.createdAt),
         // 详情视图要显示完整首轮提示词与在线转录；只放行 role/text/at 三个展示字段。
         prompt: String(session.prompt ?? '').trim(),
         liveText: typeof session.liveText === 'string' ? session.liveText : '',
@@ -66,6 +93,7 @@ export function mobileArchiveSummaries(records = []) {
     return {
       id: record.id,
       shortId: record.id.slice(0, 8),
+      title: compactSessionTitle(record.prompt),
       kind: SESSION_KINDS.includes(record.kind) ? record.kind : 'scheduling',
       kindLabel: ({ normal: '普通会话', scheduling: '调度会话', design: '设计会话' })[record.kind] || '调度会话',
       project,

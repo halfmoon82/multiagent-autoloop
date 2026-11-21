@@ -171,7 +171,7 @@ export function mount(ctx) {
   function sessionItem(item) {
     const box = node('button', { type: 'button', className: 'sessions-item', attrs: { 'data-session-id': item.id } }, [
       node('strong', { text: item.title || '会话' }),
-      node('span', { className: 'sessions-meta', text: [item.projectLabel, item.statusLabel, item.kindLabel].filter(Boolean).join(' · ') }),
+      node('span', { className: 'sessions-meta', text: [item.projectLabel, item.statusLabel, item.kindLabel, item.updatedLabel].filter(Boolean).join(' · ') }),
     ]);
     box.addEventListener('click', () => { void openSession(item); });
     return box;
@@ -198,7 +198,7 @@ export function mount(ctx) {
         node('div', { className: 'sessions-current-card' }, [
           node('span', { className: 'sessions-eyebrow', text: '当前会话' }),
           node('strong', { text: list.current.title || '会话' }),
-          node('span', { className: 'sessions-meta', text: [list.current.projectLabel, list.current.statusLabel].filter(Boolean).join(' · ') }),
+          node('span', { className: 'sessions-meta', text: [list.current.projectLabel, list.current.statusLabel, list.current.kindLabel, list.current.updatedLabel].filter(Boolean).join(' · ') }),
         ]),
         open,
       );
@@ -222,8 +222,8 @@ export function mount(ctx) {
 
   function archivedItem(record) {
     const box = node('div', { className: 'sessions-archived-item', attrs: { 'data-archive-id': record.id } }, [
-      node('strong', { text: record.shortId || String(record.id).slice(0, 8) }),
-      node('span', { className: 'sessions-meta', text: [record.endStatusLabel, `${record.transcriptCount} 条转录`].filter(Boolean).join(' · ') }),
+      node('strong', { text: record.title || record.shortId || String(record.id).slice(0, 8) }),
+      node('span', { className: 'sessions-meta', text: [record.projectLabel, record.kindLabel, record.endStatusLabel, `${record.transcriptCount} 条转录`].filter(Boolean).join(' · ') }),
     ]);
     const view = node('button', { type: 'button', text: '查看' });
     view.addEventListener('click', () => {
