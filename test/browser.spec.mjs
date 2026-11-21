@@ -996,11 +996,11 @@ try {
 
   // 模拟 App 原生桥：生物识别结果可切换；设备凭证只放在安全存储桥里，不落 localStorage / DOM / 日志。
   await page.addInitScript(() => {
-    let stored = null;
+    // 用 sessionStorage 模拟原生安全存储跨「重启」（页面重载）保留凭证；真机是 Keystore。
     window.AutoloopSecureStorage = {
-      async get() { return stored; },
-      async set(value) { stored = value; },
-      async remove() { stored = null; },
+      async get() { return sessionStorage.getItem('__fake_secure_token'); },
+      async set(value) { sessionStorage.setItem('__fake_secure_token', value); },
+      async remove() { sessionStorage.removeItem('__fake_secure_token'); },
     };
     window.__autoloopBiometricOutcome = 'fail';
     window.AutoloopBiometric = { async verify() { return window.__autoloopBiometricOutcome === 'success'; } };
@@ -1036,6 +1036,16 @@ try {
   await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
   assert.equal(await page.locator('#lock-screen').isVisible(), false);
   assert.ok((await page.locator('#device-name').innerText()).includes('Mobile Shell 测试机'), '只显示自身绑定信息');
+
+  // 重启 App（页面重载）：凭证已在安全存储里，必须回到「解锁」而不是再次要求绑定。
+  await page.reload();
+  await page.locator('#lock-screen').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => !document.getElementById('unlock-card')?.hidden);
+  assert.equal(await page.locator('#bind-card').isVisible(), false, '已绑定设备重启后不得再显示绑定页');
+  await page.evaluate(() => { window.__autoloopBiometricOutcome = 'success'; });
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
 
   // 断线：标记离线；网络恢复：自动重连回安全连接。
   await page.evaluate(() => window.dispatchEvent(new Event('offline')));

@@ -80,7 +80,14 @@ function boot() {
 
   const state = new ShellState();
   // 原生桥由 Android App（Capacitor 插件）注入；网页回归注入等价的假桥。
-  const secureStorage = window.AutoloopSecureStorage || null;
+  // 原生桥可能在页面脚本之后才被注入（远程页面加载时序），所以每次调用时才去取，不在启动时一次性捕获。
+  // 没有桥（普通浏览器）时退回内存，绝不写 localStorage。
+  let memoryToken = null;
+  const secureStorage = {
+    async get() { const bridge = window.AutoloopSecureStorage; return bridge ? bridge.get() : memoryToken; },
+    async set(token) { const bridge = window.AutoloopSecureStorage; if (bridge) await bridge.set(token); else memoryToken = token; },
+    async remove() { const bridge = window.AutoloopSecureStorage; if (bridge) await bridge.remove(); else memoryToken = null; },
+  };
   const tokenStore = createTokenStore({ secureStorage });
   const biometric = createBiometricGate({ bridge: window.AutoloopBiometric || null });
   let client = null;
@@ -328,6 +335,16 @@ function boot() {
   });
 
   render();
+
+  // 重启 App：安全存储里已有设备凭证时恢复「已绑定」状态，显示解锁卡而不是再次要求绑定。
+  // 在 Capacitor 里原生桥可能稍晚注入，最多等约 3 秒；读不到凭证才保持绑定页。
+  void (async () => {
+    const inApp = Boolean(window.Capacitor);
+    for (let i = 0; inApp && !window.AutoloopSecureStorage && i < 15; i++) await new Promise(r => setTimeout(r, 200));
+    if (state.token) return; // 等待期间用户已手动绑定
+    const stored = await tokenStore.get();
+    if (typeof stored === 'string' && stored) { state.setToken(stored); render(); }
+  })().catch(() => {});
 }
 
 if (typeof document !== 'undefined') boot();

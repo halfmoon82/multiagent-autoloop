@@ -159,7 +159,7 @@ public class ForegroundService extends Service {
     }
   }
 
-  private void handleState(String json) {
+  private void handleState(String json) throws org.json.JSONException {
     JSONObject root = new JSONObject(json);
     JSONArray cards = root.optJSONArray("cards");
     int badge = 0;

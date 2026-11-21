@@ -24,8 +24,13 @@ public class AutoLoopBiometric extends Plugin {
   private static final String ERR_UNAVAILABLE = "AUTOLOOP_BIOMETRIC_UNAVAILABLE";
   private static final String ERR_ERROR = "AUTOLOOP_BIOMETRIC_ERROR";
   private static final String ERR_FAILED = "AUTOLOOP_BIOMETRIC_FAILED";
-  private static final int AUTHENTICATORS =
-      BiometricManager.Authenticators.BIOMETRIC_WEAK | BiometricManager.Authenticators.DEVICE_CREDENTIAL;
+  // 按顺序尝试：生物识别+设备密码 → 仅生物识别 → 仅设备密码。旧系统（API 23-29）不支持组合时逐级降级，
+  // 避免有指纹或锁屏密码的设备被一刀切判为「不可用」而永远进不去。
+  private static final int[] AUTHENTICATOR_CHOICES = {
+      BiometricManager.Authenticators.BIOMETRIC_WEAK | BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+      BiometricManager.Authenticators.BIOMETRIC_WEAK,
+      BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+  };
 
   @Override
   public void load() {
@@ -42,11 +47,19 @@ public class AutoLoopBiometric extends Plugin {
     }
 
     BiometricManager manager = BiometricManager.from(context);
-    int status = manager.canAuthenticate(AUTHENTICATORS);
-    if (status != BiometricManager.BIOMETRIC_SUCCESS) {
+    int authenticators = -1;
+    for (int choice : AUTHENTICATOR_CHOICES) {
+      if (manager.canAuthenticate(choice) == BiometricManager.BIOMETRIC_SUCCESS) {
+        authenticators = choice;
+        break;
+      }
+    }
+    if (authenticators == -1) {
       call.reject(ERR_UNAVAILABLE, "当前设备没有可用的系统生物识别或设备密码");
       return;
     }
+    final boolean allowsCredential =
+        (authenticators & BiometricManager.Authenticators.DEVICE_CREDENTIAL) != 0;
 
     Executor executor = ContextCompat.getMainExecutor(context);
     BiometricPrompt prompt = new BiometricPrompt(getActivity(), executor, new BiometricPrompt.AuthenticationCallback() {
@@ -62,15 +75,17 @@ public class AutoLoopBiometric extends Plugin {
 
       @Override
       public void onAuthenticationFailed() {
-        call.reject(ERR_FAILED, "生物识别未通过，请重试");
+        // 单次指纹/人脸未匹配时系统提示框仍开着，用户可继续重试；此处不能 reject，
+        // 否则第一次没按准就把整次解锁判失败。最终结果只由 Succeeded / Error 决定。
       }
     });
 
-    BiometricPrompt.PromptInfo info = new BiometricPrompt.PromptInfo.Builder()
-        .setTitle("解锁 Autoloop")
+    BiometricPrompt.PromptInfo.Builder builder = new BiometricPrompt.PromptInfo.Builder()
+        .setTitle("解锁 NoMoTo")
         .setSubtitle("请使用指纹、面部或设备密码")
-        .setAllowedAuthenticators(AUTHENTICATORS)
-        .build();
-    prompt.authenticate(info);
+        .setAllowedAuthenticators(authenticators);
+    // 允许设备密码时系统自带「使用密码」入口，不能再设取消按钮文案；否则必须设置。
+    if (!allowsCredential) builder.setNegativeButtonText("取消");
+    prompt.authenticate(builder.build());
   }
 }
