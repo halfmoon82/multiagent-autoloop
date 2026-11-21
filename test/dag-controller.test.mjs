@@ -443,6 +443,13 @@ test('派发提示的回执模板逐字可被状态机接受（dev 与 review）
   assert.equal(review.receipt.role, 'review');
   assert.equal(review.receipt.outcome, 'accepted');
   assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), review.receipt), { verdict: 'apply', failureCounted: false, nextStatus: 'done' });
+  // 2026-11-22 事故：模板只给通过写法，审阅不通过时 worker 自造 rejected/changes_requested，被判 malformed-outcome → blocked_unknown。
+  const reviewPrompt = s.hub.last('a', 'review').prompt;
+  assert.match(reviewPrompt, /outcome[^\n]*accepted[^\n]*rework/, '审阅提示必须写明通过 accepted / 有 P0–P2 返工 rework');
+  for (const bad of ['rejected', 'changes_requested']) {
+    assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: bad }).reason, 'malformed-outcome');
+  }
+  assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: 'rework', p2: 1 }), { verdict: 'apply', failureCounted: true, nextStatus: 'done' });
 });
 
 test('验收后残留的非终态 run 会收敛并释放槽位（Hub 已终态但 store 停在 claimed）', async () => {
