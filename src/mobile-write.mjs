@@ -10,6 +10,7 @@ import { discoverGitProjects } from './projects.mjs';
 import { readRuleOptions } from './rules.mjs';
 import { reconcile, syncPrompt, createSyncState } from '../mobile/src/features/device-sync/index.mjs';
 import { classifySessionRequest } from './session-classify.mjs';
+import { SchedulingSessionError } from './scheduling-session.mjs';
 
 function securityHeaders() {
   return {
@@ -74,6 +75,7 @@ function validate(req, needsJson) {
 // 只向客户端返回固定的用户可读文案，绝不回显 Hub 错误体、堆栈或内部配置。
 const SAFE_ERRORS = Object.freeze({
   400: '请求无效',
+  429: '排队消息过多，请稍后再试',
   401: '设备未授权或授权已失效，请重新绑定',
   403: '拒绝跨站操作',
   404: '目标不存在或已失效',
@@ -108,7 +110,10 @@ function writeError(res, error) {
     : error instanceof HubError && error.status >= 400 && error.status < 500 ? error.status
       : error?.status >= 400 && error?.status < 500 ? error.status
         : 502;
-  jsonResponse(res, status, { error: error instanceof WriteError ? error.message : (SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试') });
+  // 本地会话态错误（已关闭/异常等）的 message 本就是给用户看的中文文案，与网页端同口径透传；
+  // 其余非 WriteError 一律回落固定文案，不回显 Hub 错误体或内部细节。
+  const passthrough = error instanceof SchedulingSessionError && status >= 400 && status < 500 && error.message;
+  jsonResponse(res, status, { error: error instanceof WriteError ? error.message : passthrough || (SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试') });
 }
 
 // 关键操作审计：来源设备、时间、结果由设备台账写入。成功路径写失败要报错（不吞为成功）；

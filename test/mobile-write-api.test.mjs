@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createConsoleServer } from '../src/server.mjs';
 import { createDeviceStore } from '../src/device-auth.mjs';
+import { SchedulingSessionError } from '../src/scheduling-session.mjs';
 import { fakeHub, json, listen, close } from './helpers.mjs';
 
 const WORKTREE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -48,6 +49,7 @@ function makeSessions(artifact) {
     async list() { this.calls.push(['list']); return [{ id: 'sess-live', kind: 'scheduling', project: WORKTREE, status: 'running' }]; },
     async send(id, text, opts) {
       this.calls.push(['send', id, text, opts]);
+      if (id === 'sess-closed') throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
       if (id !== 'sess-live') { const error = new Error('调度会话不存在'); error.status = 404; throw error; }
       return { id, status: 'running' };
     },
@@ -354,4 +356,10 @@ test('绑定设备可经移动端网关向会话发消息，复用同一 session
     method: 'POST', body: { text: 'x' },
   });
   assert.equal(unbound.status, 401);
+
+  const closed = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-closed/messages', {
+    method: 'POST', token: ctx.deviceToken, body: { text: '还在吗' },
+  });
+  assert.equal(closed.status, 409);
+  assert.equal((await closed.json()).error, '会话已关闭，请开启新会话', '本地会话态错误透传用户可读文案，与网页端同口径');
 });
