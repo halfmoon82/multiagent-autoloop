@@ -2,7 +2,7 @@
 // 假 whisper 命令替身验证参数白名单/超时/清理/成功/失败/缺失。不调用真实 whisper。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync, readdirSync, accessSync, constants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -135,9 +135,15 @@ test('whisper 超时 504 并杀进程，临时文件清理', async t => {
 test('配置路径不可执行 503（客户端降级）；未配置也走默认路径检查', async t => {
   const ctx = await setup(t, { whisperPath: '/nonexistent/whisper' });
   assert.equal((await post(ctx, wav(1))).status, 503);
-  const ctx2 = await setup(t, { configure: false });
-  const status = (await post(ctx2, wav(1))).status;
-  assert.ok([200, 502, 503, 504].includes(status));
+  assert.equal(existsSync(path.join(ctx.root, 'args.log')), false);
+  // 未配置时只核对可用性判定落在默认路径上，不发请求：本机若装了真 whisper，发请求会真跑模型
+  // （全量 npm test 负载下超过 15s 超时，且测试不得调用真实模型）。
+  const { createWhisperTranscriber, DEFAULT_WHISPER_PATH } = await import('../src/whisper-transcribe.mjs');
+  let defaultExecutable = true;
+  try { accessSync(DEFAULT_WHISPER_PATH, constants.X_OK); } catch { defaultExecutable = false; }
+  const check = () => createWhisperTranscriber({}).assertAvailable();
+  if (defaultExecutable) assert.doesNotThrow(check);
+  else assert.throws(check, error => error.status === 503);
 });
 
 test('模型名非法时不拼进命令行（白名单）', async t => {
