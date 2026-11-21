@@ -58,8 +58,9 @@ export function createSessionsReader({ origin = '', fetchImpl, getToken, isActiv
 
       // 新会话置顶：接口返回顺序是插入序，按更新时间倒序后取第一条作为当前会话。
       const stamp = value => { const parsed = Date.parse(value); return Number.isNaN(parsed) ? 0 : parsed; };
-      const summaries = mobileSessionSummaries(active)
-        .sort((a, b) => stamp(b.updatedAt || b.createdAt) - stamp(a.updatedAt || a.createdAt));
+      // updatedAt 不可解析时回退 createdAt，坏时间戳沉底。
+      const recency = item => stamp(item.updatedAt) || stamp(item.createdAt);
+      const summaries = mobileSessionSummaries(active).sort((a, b) => recency(b) - recency(a));
       const snapshot = {
         sessions: active === null ? null : summaries,
         archives: archived === null ? null : mobileArchiveSummaries(archived),

@@ -691,7 +691,10 @@ export function mount(ctx) {
     observer.observe(main, { attributes: true, attributeFilter: ['hidden'] });
   }
   window.addEventListener('online', () => { void load(); });
-  window.addEventListener('pagehide', saveContext);
+  window.addEventListener('pagehide', () => {
+    if (detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+    saveContext();
+  });
   window.addEventListener('autoloop:view-popped', event => {
     if (event.detail?.type === 'sessions') showView('list');
   });
