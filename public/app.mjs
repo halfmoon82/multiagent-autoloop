@@ -331,6 +331,13 @@ document.addEventListener('click', async event => {
       return;
     }
     if (action === 'view-archive') { state.archivedView = id; state.selectedSession = ''; render(); return; }
+    if (action === 'approve-plan') {
+      if (!confirm('确认计划已定稿？放行后该设计会话将退出 Plan Mode 并获得本仓库工作区写权限，立即落盘计划文档并登记 GitHub 事项（AGENTS.md §10）。')) return;
+      const released = await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/approve-plan`, { method: 'POST', body: JSON.stringify({}) });
+      showToast(`会话 ${released.id.slice(0, 8)} 已放行：退出 Plan Mode，可落盘与登记。`);
+      await refresh();
+      return;
+    }
     if (action === 'design-authorize') { showView('authorize'); return; }
     if (action === 'continue-session') {
       if (!confirm('继续调度将新建会话、注入该存档最近 10 轮转录，并启动 Codex 消耗模型额度。继续？')) return;

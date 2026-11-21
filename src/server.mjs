@@ -361,6 +361,7 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'DELETE' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/([^/]+)$/))) return jsonResponse(res, 200, await config.schedulingSessions.removeQueued(decodeURIComponent(match[1]), decodeURIComponent(match[2])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/([^/]+)\/steer$/))) return jsonResponse(res, 200, await config.schedulingSessions.steerQueued(decodeURIComponent(match[1]), decodeURIComponent(match[2])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/close$/))) return jsonResponse(res, 200, await config.schedulingSessions.close(decodeURIComponent(match[1])));
+  if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/approve-plan$/))) return jsonResponse(res, 200, await config.schedulingSessions.approvePlan(decodeURIComponent(match[1])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/messages$/))) return jsonResponse(res, 200, await config.schedulingSessions.send(decodeURIComponent(match[1]), body.text, { interrupt: body.interrupt === true }));
   if (req.method === 'PUT' && (match = url.pathname.match(/^\/api\/rules\/([^/]+)$/))) return jsonResponse(res, 200, await saveRule(config, body, decodeURIComponent(match[1])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/rules\/([^/]+)\/(run|pause|resume)$/))) {

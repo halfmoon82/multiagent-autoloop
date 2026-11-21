@@ -33,6 +33,7 @@ function normalizeRecord(input) {
     version: ARCHIVE_VERSION,
     id,
     kind: SESSION_KINDS.includes(input.kind) ? input.kind : 'scheduling',
+    planApproved: input.planApproved === true,
     project: text(input.project, 500),
     agent: text(input.agent, 120) || 'Codex ACP',
     prompt: text(input.prompt, 4000),

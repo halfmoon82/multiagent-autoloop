@@ -419,3 +419,29 @@ test('creating a duplicate session for the same project and kind returns 409 wit
     assert.equal((await other.json()).conflict, undefined, '非冲突错误不带 conflict 字段');
   } finally { await close(server); manager.dispose?.(); }
 });
+
+test('approve-plan API releases a design session for plan persistence', async () => {
+  const calls = [];
+  const manager = {
+    async approvePlan(id) {
+      calls.push(['approvePlan', id]);
+      if (id !== 'design-1') throw new SchedulingSessionError('只有设计会话需要放行落盘', { status: 400 });
+      return { id, kind: 'design', planApproved: true, status: 'idle', statusText: '待命' };
+    },
+  };
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'api-approve-'));
+  const server = createConsoleServer({ ...config, projectRoots: [projectRoot], rulesFile: path.join(projectRoot, 'rules.json') }, manager);
+  const url = await listen(server);
+  try {
+    const ok = await fetch(`${url}/api/scheduling-sessions/design-1/approve-plan`, { method: 'POST', headers: writeHeaders, body: '{}' });
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.json()).planApproved, true);
+    assert.deepEqual(calls, [['approvePlan', 'design-1']]);
+
+    const rejected = await fetch(`${url}/api/scheduling-sessions/other/approve-plan`, { method: 'POST', headers: writeHeaders, body: '{}' });
+    assert.equal(rejected.status, 400);
+
+    const missingMarker = await fetch(`${url}/api/scheduling-sessions/design-1/approve-plan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(missingMarker.status, 403);
+  } finally { await close(server); }
+});
