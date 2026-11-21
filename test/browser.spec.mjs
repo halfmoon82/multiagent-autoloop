@@ -180,8 +180,8 @@ try {
     if (message.type() !== 'error') return;
     // 沙箱 iframe 里的 XSS 载荷被 Chrome 拦下时会打这条 console —— 这正是防护生效的证据，不是脚本错误。
     if (message.text().includes("Blocked script execution in 'about:srcdoc'")) return;
-    // 移动端壳「解除授权后立即失效」回归会主动触发一次 401；Chrome 把它记成资源加载错误，属预期噪音。
-    if (message.text().includes('401') && (message.location()?.url || '').includes('/api/mobile/session')) return;
+    // 移动端壳「解除授权后立即失效」回归会主动触发 401（连接探测 + 页面在途只读中继）；Chrome 把它们记成资源加载错误，属预期噪音。
+    if (message.text().includes('401') && (message.location()?.url || '').includes('/api/mobile/')) return;
     errors.push(`${message.text()} at ${JSON.stringify(message.location())}`);
   });
   let acceptDialogs = true;

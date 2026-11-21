@@ -331,6 +331,34 @@ test('createSessionsReader 走固定只读路径、同源校验，并组装列�
   assert.equal(list.archived.count, 1);
 });
 
+test('createSessionsReader 活性闸：壳状态翻转后在途读取被跳过，不发请求', async () => {
+  const calls = [];
+  const fetchImpl = async url => { calls.push(url); return { ok: true, json: async () => ({ sessions: [] }) }; };
+  let active = true;
+  const reader = createSessionsReader({ origin: 'https://auto.socialmore.net', fetchImpl, isActive: () => active });
+  active = false;
+  const { snapshot } = await reader.load();
+  assert.equal(calls.length, 0, '失活后不得发出任何读取请求');
+  assert.match(snapshot.sessionsError, /连接已失效/);
+  assert.match(snapshot.archivesError, /连接已失效/);
+  // 中途翻失活：第一次读取成功，第二次被跳过。
+  active = true;
+  let second = false;
+  const gated = createSessionsReader({
+    origin: 'https://auto.socialmore.net',
+    fetchImpl: async url => {
+      calls.push(url);
+      // 第一次读取完成后、第二次读取开始前，壳状态翻转为失活。
+      if (!second) { second = true; active = false; }
+      return { ok: true, json: async () => (url.includes('session-archives') ? { sessions: [] } : []) };
+    },
+    isActive: () => active,
+  });
+  const mid = await gated.load();
+  assert.equal(mid.snapshot.sessions.length, 0, '第一次读取完成');
+  assert.match(mid.snapshot.archivesError, /连接已失效/, '两次读取之间失活则第二次跳过');
+});
+
 test('createSessionsReader 读取失败给出明确错误态，不编造会话', async () => {
   const fetchImpl = async url => {
     if (new URL(url).pathname === '/api/mobile/api/sessions') throw new Error('网络断开');
