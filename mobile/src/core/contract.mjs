@@ -39,6 +39,14 @@ export const DENIED_LABELS = Object.freeze({
   credentials: '新建或读取其他凭据', 'external-communication': '对外通信',
 });
 
+// 总览四组的空态文案与网页版 public/views.mjs renderWorkSections 逐字一致。
+export const OVERVIEW_GROUP_EMPTY = Object.freeze({
+  running: '没有正在运行的任务。',
+  retrying: '没有等待重试的任务。',
+  doneToday: '今天还没有完成任务。',
+  attention: '没有等待调度处理的事。',
+});
+
 export function emptyState(reason) { return { empty: true, reason }; }
 
 // 所有列表统一成 collection：空列表带明确 reason，绝不返回「看起来有数据」的占位项。
@@ -94,11 +102,23 @@ export function triggeringEvent(run) {
   const events = Array.isArray(run?.events) ? run.events : [];
   return events.find(event => event && (String(event.summary || '').trim() || String(event.subject || '').trim())) || events[0] || {};
 }
+// DAG 派发角色标签与 public/status-sections.mjs dagRoleLabel 同口径：只认 dev/review，回执等事件不加标签。
+const DAG_ROLE_LABELS = Object.freeze({ dev: '开发', review: '审阅' });
+export function dagRoleLabel(run) {
+  for (const event of Array.isArray(run?.events) ? run.events : []) {
+    const match = /^dag\.[^.]+\.(dev|review)(?:\.[a-z0-9-]+)?$/.exec(String(event?.type || ''));
+    if (match) return DAG_ROLE_LABELS[match[1]];
+  }
+  return '';
+}
 export function runTaskInfo(run) {
   const event = triggeringEvent(run);
   const runText = String(run?.error || '').trim() || String(run?.summary || '').trim();
+  const summary = runText || String(event.summary || '').trim() || String(run?.rule || '').trim() || '暂无概要';
+  const roleLabel = dagRoleLabel(run);
   return {
-    taskSummary: runText || String(event.summary || '').trim() || String(run?.rule || '').trim() || '暂无概要',
+    roleLabel,
+    taskSummary: roleLabel ? `【${roleLabel}】${summary}` : summary,
     taskNumber: String(event.subject || '').trim() || String(run?.id ?? ''),
   };
 }

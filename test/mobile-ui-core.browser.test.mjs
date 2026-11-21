@@ -102,7 +102,7 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   assert.match(metrics, /正在运行/);
   assert.match(metrics, /等待重试/);
   assert.match(metrics, /今日完成/);
-  assert.match(metrics, /待我处理/);
+  assert.match(metrics, /待调度处理/);
   assert.match(metrics, /开发核心页面/);
   assert.match(await page.locator('[data-core-section="usage"]').innerText(), /\$0\.25/);
   assert.match(await page.locator('[data-core-section="projects"]').innerText(), /移动控制台/);
@@ -137,7 +137,8 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   const card = page.locator('[data-card-id="9"]');
   assert.match(await card.innerText(), /任意网络还是仅私网/);
 
-  // 写路由当前是 501：失败给人话提示，选项与文字草稿都保留，不白屏。
+  // 写路由已实现；这里显式模拟失败（501）来验证：失败给人话提示，选项与文字草稿都保留，不白屏。
+  await page.route('**/api/mobile/cards/*/answer', route => route.fulfill({ status: 501, contentType: 'application/json', body: JSON.stringify({ error: '尚未实现' }) }));
   await card.locator('[data-card-option="1"]').click();
   await card.locator('[data-card-text]').fill('我先填着的草稿');
   await card.locator('[data-card-submit]').click();
@@ -147,6 +148,7 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   assert.equal(await card.locator('[data-card-text]').inputValue(), '我先填着的草稿');
 
   // 模拟 mobile-write-api 节点上线：回答成功 → 重新拉取 → 列表显示已回答，角标归零。
+  await page.unroute('**/api/mobile/cards/*/answer');
   await page.route('**/api/mobile/cards/*/answer', async route => {
     hubState.cards[0].state = 'decided';
     hubState.cards[0].choice = '仅私网';
