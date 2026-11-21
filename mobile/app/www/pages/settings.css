@@ -1,0 +1,7 @@
+/* 设置页：三分区纵向排列，沿用主题变量。 */
+.settings-title { margin: 0 0 0.8rem; font-size: 1.1rem; }
+.settings-section {
+  margin: 0 0 1rem; padding: 0.8rem; background: var(--card);
+  border: 1px solid var(--line); border-radius: 0.7rem;
+}
+.settings-section h3 { margin: 0 0 0.6rem; font-size: 1rem; }
