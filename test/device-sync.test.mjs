@@ -4,7 +4,7 @@
 // 全部是纯逻辑 / 注入 transport，不调用真实模型、真机推送或生物识别。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -220,4 +220,143 @@ test('无 syncState 提供者时 notifier 行为不变', async () => {
   cards = [openCard(1, '待审批'), openCard(2, '新待办')];
   await notifier.poll();
   assert.equal(notes.length, 1, '新增待办仍按原有逻辑通知一次');
+});
+
+// ---------------------------------------------------------------------------
+// sync-audit 节点：GET/POST /api/mobile/sync 路由 + 关键操作审计（来源设备/时间/结果）
+// ---------------------------------------------------------------------------
+import { createConsoleServer } from '../src/server.mjs';
+import { fakeHub, json as hubJson, listen, close } from './helpers.mjs';
+
+async function syncSetup(t, { failAuditFor = null } = {}) {
+  const root = mkdtempSync(path.join(tmpdir(), 'device-sync-http-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const cards = [{ id: 7, state: 'open', title: 't', options: ['a', 'b'] }];
+  const hub = await fakeHub((req, res) => {
+    if (req.url === '/v1/state') return hubJson(res, { cards });
+    if (/^\/v1\/cards\/\d+\/answer$/.test(req.url)) { cards[0].state = 'decided'; return hubJson(res, { changed: true }); }
+    return hubJson(res, { ok: true });
+  });
+  const store = createDeviceStore({ file: path.join(root, 'device-auth.json') });
+  const a = store.bindDevice({ token: store.createBinding().token, name: '手机A', platform: 'Android' });
+  const b = store.bindDevice({ token: store.createBinding().token, name: '手机B', platform: 'Android' });
+  if (failAuditFor) {
+    const original = store.recordDeviceEvent;
+    store.recordDeviceEvent = (...args) => { if (args[1] === failAuditFor) throw new Error('disk full'); return original(...args); };
+  }
+  const rulesFile = path.join(root, 'rules.json');
+  writeFileSync(rulesFile, JSON.stringify({ rules: [], agents: {}, sources: {} }));
+  const server = createConsoleServer({
+    hubUrl: hub.url, ownerKey: 'k', sourceKey: 's', host: '127.0.0.1', root, rulesFile, projectRoots: [], deviceAuth: store,
+  }, { async notifyCardAnswered() { return true; }, async listArchived() { return []; } });
+  const url = await listen(server);
+  t.after(async () => { await close(server); await close(hub.server); });
+  return { url, store, a, b };
+}
+
+function call(base, pathname, { method = 'GET', token, body } = {}) {
+  const origin = new URL(base).origin;
+  return fetch(base + pathname, {
+    method,
+    headers: {
+      'x-console-request': '1', 'x-forwarded-proto': 'https', origin, connection: 'close',
+      ...(method === 'GET' ? {} : { 'content-type': 'application/json' }),
+      ...(token ? { 'x-device-token': token } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(6000),
+  });
+}
+
+test('sync 路由：A 设备提交后 B 设备 GET 拿到新版本与来源设备', async t => {
+  const { url, a, b } = await syncSetup(t);
+  const posted = await call(url, '/api/mobile/sync', { method: 'POST', token: a.deviceToken, body: { cardId: 'c-1', decision: 'approve' } });
+  assert.equal(posted.status, 200);
+  const postBody = await posted.json();
+  assert.equal(postBody.state.revision, 1);
+  assert.equal(postBody.conflict, false);
+  const got = await (await call(url, '/api/mobile/sync', { token: b.deviceToken })).json();
+  assert.equal(got.state.revision, 1);
+  assert.equal(got.state.decisions['c-1'].byDevice, a.device.id);
+  assert.equal(got.device.id, b.device.id, '只返回自身设备信息');
+  assert.equal(JSON.stringify(got).includes(a.deviceToken), false);
+});
+
+test('sync 路由：基于旧版本的提交冲突取最新、不双写，并提示 conflict', async t => {
+  const { url, a, b } = await syncSetup(t);
+  await call(url, '/api/mobile/sync', { method: 'POST', token: a.deviceToken, body: { cardId: 'c-1', decision: 'approve' } });
+  const stale = await (await call(url, '/api/mobile/sync', { method: 'POST', token: b.deviceToken, body: { cardId: 'c-1', decision: 'reject', baseRevision: 0 } })).json();
+  assert.equal(stale.conflict, true);
+  assert.equal(stale.state.decisions['c-1'].value, 'reject', '最新提交为准');
+  assert.equal(stale.state.revision, 2);
+  const again = await (await call(url, '/api/mobile/sync', { method: 'POST', token: b.deviceToken, body: { cardId: 'c-1', decision: 'reject', baseRevision: 2 } })).json();
+  assert.equal(again.state.revision, 2, '重复提交不双写');
+  assert.equal(again.conflict, false);
+});
+
+test('sync 路由：移动端访问他人设备 403；非法结论 400', async t => {
+  const { url, a, b } = await syncSetup(t);
+  assert.equal((await call(url, `/api/mobile/sync?deviceId=${encodeURIComponent(b.device.id)}`, { token: a.deviceToken })).status, 403);
+  assert.equal((await call(url, `/api/mobile/sync?deviceId=${encodeURIComponent(a.device.id)}`, { token: a.deviceToken })).status, 200);
+  assert.equal((await call(url, '/api/mobile/sync', { method: 'POST', token: a.deviceToken, body: { cardId: 'c-1', decision: 'approve', deviceId: b.device.id } })).status, 403);
+  assert.equal((await call(url, '/api/mobile/sync', { method: 'POST', token: a.deviceToken, body: { cardId: 'c-1', decision: 'nuke' } })).status, 400);
+});
+
+test('审计：绑定/解除/重命名/同步提交均含来源设备、时间、结果；被拒操作记 denied', async t => {
+  const { store, a, b } = await syncSetup(t);
+  store.renameDevice(a.device.id, '新名字', { type: 'device', deviceId: a.device.id });
+  assert.throws(() => store.revokeDevice(b.device.id, { type: 'device', deviceId: a.device.id }), error => error.status === 403);
+  store.revokeDevice(a.device.id, { type: 'admin' });
+  const audit = store.listAudit();
+  const bindA = audit.find(item => item.action === 'bind' && item.deviceId === a.device.id);
+  assert.ok(bindA.at && bindA.result === 'ok' && bindA.source);
+  const rename = audit.find(item => item.action === 'rename');
+  assert.equal(rename.byDevice, a.device.id);
+  const denied = audit.find(item => item.action === 'revoke' && item.result === 'denied');
+  assert.equal(denied.byDevice, a.device.id);
+  assert.equal(denied.deviceId, b.device.id);
+  assert.equal(store.listDevices().find(item => item.id === b.device.id).status, 'authorized', '他人设备未被解除');
+});
+
+test('审计：移动端卡片回答写审计（来源设备+结果）；审计写失败不吞为成功', async t => {
+  const ok = await syncSetup(t);
+  const res = await call(ok.url, '/api/mobile/cards/7/answer', { method: 'POST', token: ok.a.deviceToken, body: { choice: 0 } });
+  assert.equal(res.status, 200);
+  const entry = ok.store.listAudit().find(item => item.action === 'card.answer');
+  assert.equal(entry.byDevice, ok.a.device.id);
+  assert.equal(entry.cardId, '7');
+  assert.equal(entry.result, 'ok');
+
+  const bad = await syncSetup(t, { failAuditFor: 'card.answer' });
+  const failed = await call(bad.url, '/api/mobile/cards/7/answer', { method: 'POST', token: bad.a.deviceToken, body: { choice: 0 } });
+  assert.ok(failed.status >= 500, `审计写失败必须报错，实际 ${failed.status}`);
+  assert.equal(JSON.stringify(await failed.json()).includes('disk full'), false);
+});
+
+// ---- 移动端设备页视图模型与同步客户端 ----
+import { buildDeviceView, createDeviceSyncClient } from '../mobile/src/features/device-sync/index.mjs';
+
+test('buildDeviceView 展示本机绑定信息与同步版本；失败保留版本并提示', () => {
+  const payload = { device: { name: '手机A', platform: 'Android', status: 'authorized', boundAt: AT, lastActiveAt: null }, state: { revision: 3, decisions: {}, updatedAt: AT } };
+  const ok = buildDeviceView(payload);
+  assert.equal(ok.kind, 'ok');
+  assert.deepEqual(ok.rows.find(row => row[0] === '同步版本'), ['同步版本', '3']);
+  const stale = buildDeviceView(payload, new Error('boom token=secret'));
+  assert.equal(stale.kind, 'stale');
+  assert.match(stale.syncText, /版本 3/);
+  assert.equal(JSON.stringify(stale).includes('secret'), false);
+  assert.deepEqual(buildDeviceView(null).rows, []);
+});
+
+test('createDeviceSyncClient 只打 /api/mobile/sync 并带设备令牌；未绑定不发请求；错误可读', async () => {
+  const calls = [];
+  const client = { origin: 'https://console.example', tokenStore: { get: async () => 'tok' } };
+  const api = createDeviceSyncClient(client, { fetchImpl: async (url, init) => { calls.push([url, init]); return { ok: true, json: async () => ({ state: { revision: 1 } }) }; } });
+  assert.equal((await api.fetchSync()).state.revision, 1);
+  assert.equal(calls[0][0], 'https://console.example/api/mobile/sync');
+  assert.equal(calls[0][1].headers['x-device-token'], 'tok');
+  const none = createDeviceSyncClient({ ...client, tokenStore: { get: async () => null } }, { fetchImpl: async () => { throw new Error('不应发请求'); } });
+  await assert.rejects(none.fetchSync(), /尚未绑定/);
+  const denied = createDeviceSyncClient(client, { fetchImpl: async () => ({ ok: false, status: 403, json: async () => ({ error: '移动端只能访问本机设备的同步信息' }) }) });
+  await assert.rejects(denied.fetchSync(), /只能访问本机/);
 });

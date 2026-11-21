@@ -1,2 +1,37 @@
-/* project-filter 挂载点样式：后续节点实现全局项目筛选。 */
-#project-filter-root { min-height: 1px; }
+/* 全局一级项目筛选：挂在头部、所有主要 Tab 共用同一选中值。沿用品牌绿与卡片式信息架构，
+   触控热区约 44–48dp；字体跟随系统度量，窄屏与放大字体均不横向溢出。 */
+#project-filter-root {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.9rem;
+  padding: 0.6rem 0.8rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+}
+#project-filter-root .pf-label { margin: 0; font-size: 0.9rem; font-weight: 600; }
+#project-filter-root .pf-select {
+  flex: 1 1 10rem;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.5rem 0.6rem;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+}
+#project-filter-root .pf-clear {
+  flex: 0 0 auto;
+  min-height: 44px;
+  margin: 0;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.95rem;
+  color: var(--ink);
+  background: var(--mint);
+  border-color: var(--ink-soft);
+}
+#project-filter-root .pf-status { flex: 1 1 100%; margin: 0; font-size: 0.85rem; color: var(--ink-soft); }

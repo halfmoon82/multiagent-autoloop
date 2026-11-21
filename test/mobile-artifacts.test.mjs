@@ -28,6 +28,14 @@ import {
   createQuestionGroup, setDraft, setScrollTop, snapshotGroup, restoreGroup,
   buildQuestionGroupBinding,
 } from '../mobile/src/features/question-group/index.mjs';
+import {
+  ARTIFACT_READ_VIEW,
+  artifactReadView, artifactDownloadUrl, artifactPagePlan,
+  openGlobalArtifacts, openSessionArtifacts as wireOpenSessionArtifacts,
+  openArtifactReader, backArtifactReader, downloadArtifact,
+} from '../mobile/src/features/artifacts/page.mjs';
+import { mount as mountArtifactsPage } from '../mobile/app/www/pages/artifacts.mjs';
+import * as artifactsFeature from '../mobile/src/features/artifacts/index.mjs';
 
 const FEATURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'mobile', 'src', 'features', 'artifacts');
 
@@ -338,4 +346,231 @@ test('readSessionArtifact 按会话读取；越界与缺失映射为可读错误
   assert.ok(!leaked.includes('/Users/'), '任何错误都不把绝对路径回给移动端');
   symlinkSync('/etc/passwd', path.join(root, 'docs', 'evil.md'));
   assert.throws(() => readSessionArtifact(sessions, 's1', 'docs/evil.md'), /越界/);
+});
+
+// ---------------------------------------------------------------------------
+// 接线层（pages/artifacts.mjs 的 mount 使用；Node 侧直接断言，无 DOM）
+// ---------------------------------------------------------------------------
+
+test('artifactDownloadUrl 只生成 HTTPS 的 GET sessions download，路径安全编码', () => {
+  const url = artifactDownloadUrl('https://auto.example/', 's 1', 'docs/计划 稿.md');
+  assert.match(url, /^https:\/\/auto\.example\/api\/mobile\/sessions\/s%201\/download\?path=/);
+  assert.ok(url.includes('path=docs%2F'), '路径整体编码，不拼接普通链接跳转');
+  assert.equal(new URL(url).searchParams.get('path'), 'docs/计划 稿.md');
+  assert.equal(artifactDownloadUrl('http://auto.example', 's1', 'a.md'), null, '明文 HTTP 基址一律拒绝');
+  assert.equal(artifactDownloadUrl('', 's1', 'a.md'), null, '无基址不编造下载地址');
+  assert.equal(artifactDownloadUrl('not a url', 's1', 'a.md'), null);
+});
+
+test('artifactReadView 登记阅读视图，返回键据此逐级退出', () => {
+  const b = openArtifactReader(
+    createArtifactBrowser({ id: 'b1', entry: 'session', sessionId: 's1', artifacts: rawArtifacts() }), 'a1',
+  ).browser;
+  const view = artifactReadView(b);
+  assert.equal(view.id, ARTIFACT_READ_VIEW);
+  assert.equal(view.entry, 'session');
+  assert.equal(view.sessionId, 's1');
+  assert.equal(view.artifactId, 'a1');
+});
+
+test('全局入口与会话入口打开同一产物浏览器：会话保留返回态，全局不带会话态', () => {
+  const base = createArtifactBrowser({ id: 'artifacts', artifacts: rawArtifacts(), layout: 'phone' });
+  const global = openGlobalArtifacts(base, { artifacts: rawArtifacts(), layout: 'fold' });
+  assert.equal(global.browser.entry, 'global');
+  assert.equal(global.browser.sessionId, '');
+  assert.equal(global.browser.returnState, null);
+  assert.equal(global.browser.layout, 'fold');
+  assert.deepEqual(global.effects, [{ type: 'selectTab', page: 'artifacts' }]);
+
+  const restore = groupSnapshot();
+  const session = wireOpenSessionArtifacts(base, {
+    artifacts: rawArtifacts(), sessionId: 's1', returnState: restore, layout: 'phone',
+  });
+  assert.equal(session.browser.entry, 'session');
+  assert.equal(session.browser.sessionId, 's1');
+  assert.deepEqual(session.browser.returnState, restore, '会话入口完整保留返回态副本');
+  assert.deepEqual(session.effects, [{ type: 'selectTab', page: 'artifacts' }]);
+
+  // 两个入口打开的产物集合一致（同一产物在两处都能选中阅读）
+  const gRead = openArtifactReader(global.browser, 'a1').browser;
+  const sRead = openArtifactReader(session.browser, 'a1').browser;
+  assert.equal(gRead.selectedId, 'a1');
+  assert.equal(sRead.selectedId, 'a1');
+});
+
+test('打开产物登记 pushView；返回键逐级 popView 再回会话且不丢返回态', () => {
+  const restore = groupSnapshot();
+  let b = wireOpenSessionArtifacts(createArtifactBrowser({ id: 'artifacts' }), {
+    artifacts: rawArtifacts(), sessionId: 's1', returnState: restore,
+  }).browser;
+
+  const opened = openArtifactReader(b, 'a1');
+  assert.equal(opened.effects.length, 1);
+  assert.equal(opened.effects[0].type, 'pushView');
+  assert.equal(opened.effects[0].view.id, ARTIFACT_READ_VIEW);
+  b = opened.browser;
+
+  // 第一级返回：阅读侧退出，交回一次 popView，不动会话返回态
+  const back1 = backArtifactReader(b);
+  assert.equal(back1.browser.opened, false);
+  assert.deepEqual(back1.effects, [{ type: 'popView' }]);
+  assert.equal(back1.browser.entry, 'session');
+  assert.deepEqual(back1.browser.returnState, restore);
+
+  // 第二级返回：从会话内产物退回会话，交回返回态并切回会话页
+  const back2 = backArtifactReader(back1.browser);
+  const restoreEffect = back2.effects.find(e => e.type === 'restoreSession');
+  assert.ok(restoreEffect, '会话入口返回时交回返回态');
+  assert.deepEqual(restoreEffect.payload.restore, restore);
+  assert.ok(back2.effects.some(e => e.type === 'selectTab' && e.page === 'sessions'));
+});
+
+test('下载只经原生桥：产出 download 副作用；无 HTTPS 基址给可读错误可重试', () => {
+  const b = createArtifactBrowser({ id: 'artifacts', artifacts: rawArtifacts() });
+  const ok = downloadArtifact(b, 'a1', 'https://auto.example/');
+  assert.equal(ok.effects.length, 1);
+  assert.equal(ok.effects[0].type, 'download');
+  assert.equal(ok.effects[0].name, 'plan.md');
+  assert.match(ok.effects[0].url, /^https:\/\/auto\.example\/api\/mobile\/sessions\/s1\/download\?path=/);
+  assert.equal(Object.hasOwn(ok.effects[0], 'href'), false, '不产出普通链接跳转');
+
+  const bad = downloadArtifact(b, 'a1', 'http://auto.example');
+  assert.ok(bad.browser.error, '无 HTTPS 基址给可读错误，用户可重试');
+  assert.equal(bad.effects.length, 0);
+
+  const missing = downloadArtifact(b, 'nope', 'https://auto.example/');
+  assert.equal(missing.browser.error, ARTIFACT_ERRORS.missing);
+});
+
+test('artifactPagePlan：手机单栈与折叠双栏，只按状态刷新阅读侧', () => {
+  const artifacts = rawArtifacts();
+  const phone = createArtifactBrowser({ id: 'b1', artifacts, layout: 'phone' });
+  const plan0 = artifactPagePlan(phone);
+  assert.equal(plan0.dualPane, false);
+  assert.equal(plan0.readerVisible, false);
+  assert.equal(plan0.count, 3);
+
+  let opened = openArtifactReader(phone, 'a1').browser;
+  const plan1 = artifactPagePlan(opened);
+  assert.equal(plan1.readerVisible, true);
+  assert.equal(plan1.download.name, 'plan.md');
+
+  const fold = createArtifactBrowser({ id: 'b2', artifacts, layout: 'fold', listScrollTop: 77 });
+  const foldOpened = openArtifactReader(fold, 'a2').browser;
+  const plan2 = artifactPagePlan(foldOpened);
+  assert.equal(plan2.dualPane, true, '折叠/宽屏双栏');
+  assert.equal(plan2.listVisible, true, '双栏时列表保持不动，只刷新右侧');
+  assert.equal(plan2.listScrollTop, 77, '选择产物不丢列表滚动位置');
+  assert.equal(plan2.download.name, 'dashboard.html');
+});
+
+// ---- mount（假 DOM）：覆盖钩子、渲染、逐级返回、下载走原生桥 ----
+function fakeEl(tag = 'div') {
+  const el = {
+    tag, children: [], _text: '', hidden: false, dataset: {}, attrs: {}, listeners: {},
+    get textContent() { return this._text; },
+    set textContent(v) { this._text = String(v ?? ''); this.children = []; },
+    appendChild(child) { this.children.push(child); return child; },
+    replaceChildren(...nodes) { this.children = nodes; },
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
+    setAttribute(k, v) { this.attrs[k] = String(v); },
+    getAttribute(k) { return this.attrs[k] ?? null; },
+    click() { for (const fn of this.listeners.click || []) fn({ target: this }); },
+  };
+  return el;
+}
+function fakeDoc() {
+  const byId = {};
+  return {
+    getElementById(id) { return byId[id] || null; },
+    createElement(tag) { return fakeEl(tag); },
+    add(id) { byId[id] = fakeEl('div'); return byId[id]; },
+  };
+}
+function collect(node, out = []) {
+  out.push(node);
+  for (const child of node.children || []) collect(child, out);
+  return out;
+}
+const elText = node => collect(node).map(n => n.textContent || '').join(' ');
+const buttonsNamed = (node, name) => collect(node).filter(n => n.tag === 'button' && (n.textContent || '').includes(name));
+
+test('mount 覆盖 openSessionArtifacts：会话入口与全局页打开同一产物，双栏渲染', () => {
+  const doc = fakeDoc();
+  const root = doc.add('page-artifacts');
+  const winListeners = {};
+  const win = {
+    innerWidth: 1200,
+    location: { origin: 'https://auto.example' },
+    addEventListener(type, fn) { (winListeners[type] ||= []).push(fn); },
+  };
+  const calls = [];
+  const hooks = {
+    openSessionArtifacts() { calls.push('default-noop'); },
+    pushView(view) { calls.push(['pushView', view]); },
+    popView() { calls.push(['popView']); },
+    selectTab(page) { calls.push(['selectTab', page]); },
+    download(url, name) { calls.push(['download', url, name]); return Promise.resolve(); },
+  };
+  const ctx = { client: {}, state: {}, hooks };
+  const artifacts = rawArtifacts();
+
+  mountArtifactsPage(ctx, { doc, win, feature: artifactsFeature });
+  assert.ok(!calls.includes('default-noop'), 'mount 覆盖了默认空操作钩子');
+
+  // 会话页调用入口：切到产物页并渲染同一份产物列表
+  hooks.openSessionArtifacts('s1', { artifacts, returnState: groupSnapshot() });
+  assert.ok(calls.some(c => Array.isArray(c) && c[0] === 'selectTab' && c[1] === 'artifacts'));
+  assert.match(elText(root), /plan\.md/);
+  assert.match(elText(root), /本会话产物|折叠双栏/, '双栏布局可见');
+
+  // 宽屏点文件只刷新阅读侧：pushView 登记阅读页
+  buttonsNamed(root, 'plan.md')[0].click();
+  assert.ok(calls.some(c => Array.isArray(c) && c[0] === 'pushView' && c[1].id === ARTIFACT_READ_VIEW));
+  assert.match(elText(root), /docs\/plan\.md/, '阅读侧显示所选产物路径');
+
+  // 下载走原生桥，不是普通链接跳转
+  calls.length = 0;
+  buttonsNamed(root, '下载')[0].click();
+  const dl = calls.find(c => Array.isArray(c) && c[0] === 'download');
+  assert.ok(dl, '下载经 ctx.hooks.download');
+  assert.match(dl[1], /^https:\/\/auto\.example\/api\/mobile\/sessions\/s1\/download\?path=/);
+  assert.equal(collect(root).some(n => n.tag === 'a'), false, '页面不产生可跳转链接');
+});
+
+test('mount 返回键逐级退出：阅读页 popView；无栈时回会话交回返回态', () => {
+  const doc = fakeDoc();
+  const root = doc.add('page-artifacts');
+  const winListeners = {};
+  const win = {
+    innerWidth: 400, location: { origin: 'https://auto.example' },
+    addEventListener(type, fn) { (winListeners[type] ||= []).push(fn); },
+  };
+  const calls = [];
+  const restored = [];
+  const hooks = {
+    pushView(v) { calls.push(['pushView', v]); },
+    popView() { calls.push(['popView']); },
+    selectTab(page) { calls.push(['selectTab', page]); },
+    restoreSession(payload) { restored.push(payload); },
+    download() { return Promise.resolve(); },
+  };
+  mountArtifactsPage({ client: {}, state: {}, hooks }, { doc, win, feature: artifactsFeature });
+
+  const restore = groupSnapshot();
+  hooks.openSessionArtifacts('s1', { artifacts: rawArtifacts(), returnState: restore });
+  buttonsNamed(root, 'plan.md')[0].click();
+  assert.ok(calls.some(c => Array.isArray(c) && c[0] === 'pushView'));
+
+  // 应用返回键弹出阅读视图 → 只收起阅读侧，不再重复 popView
+  calls.length = 0;
+  for (const fn of winListeners['autoloop:view-popped'] || []) fn({ detail: { id: ARTIFACT_READ_VIEW } });
+  assert.ok(!calls.some(c => Array.isArray(c) && c[0] === 'popView'));
+
+  // 页内返回按钮：无阅读栈时退回会话并交回返回态
+  const backButtons = buttonsNamed(root, '返回会话');
+  assert.ok(backButtons.length > 0, '会话入口提供返回会话按钮');
+  backButtons[0].click();
+  assert.equal(restored.length, 1);
+  assert.deepEqual(restored[0].restore, restore, '返回会话不丢草稿与滚动');
 });

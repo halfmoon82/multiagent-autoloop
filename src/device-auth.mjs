@@ -63,8 +63,8 @@ export function createDeviceStore({ file = null, now = () => new Date(), ttlMs =
   };
   const stamp = () => now().toISOString();
 
-  function record(action, fields, source) {
-    data.audit.push({ id: random(16).toString('hex'), at: stamp(), action, source, result: 'ok', ...fields });
+  function record(action, fields, source, result = 'ok') {
+    data.audit.push({ id: random(16).toString('hex'), at: stamp(), action, source, result, ...fields });
     if (data.audit.length > MAX_AUDIT) data.audit = data.audit.slice(-MAX_AUDIT);
   }
   function checkActor(actor, device) {
@@ -74,6 +74,20 @@ export function createDeviceStore({ file = null, now = () => new Date(), ttlMs =
       if (actor.token && typeof actor.token === 'string' && sha256(actor.token) === device.tokenHash) return;
     }
     throw new DeviceAuthError(403, '无权操作该设备', 'FORBIDDEN');
+  }
+  // 来源设备 id：设备凭据（deviceId 或令牌）才有；管理后台操作没有来源设备。
+  function actorDeviceId(actor) {
+    if (actor?.type !== 'device') return undefined;
+    if (actor.deviceId) return actor.deviceId;
+    return typeof actor.token === 'string' && actor.token ? authorizedByToken(actor.token)?.id : undefined;
+  }
+  // 越权尝试也要留痕（result=denied），再原样抛出，不吞为成功。
+  function authorizeActor(action, actor, device, fields) {
+    try { checkActor(actor, device); } catch (error) {
+      record(action, { ...fields, byDevice: actorDeviceId(actor) }, actor?.type || 'unknown', 'denied');
+      flush();
+      throw error;
+    }
   }
   function findDevice(deviceId) {
     const device = data.devices.find(item => item && item.id === deviceId);
@@ -141,21 +155,21 @@ export function createDeviceStore({ file = null, now = () => new Date(), ttlMs =
     // 解除授权：网页管理后台（admin）可解除任意设备；设备凭据只能解除自身。
     revokeDevice(deviceId, actor = { type: 'admin' }) {
       const device = findDevice(deviceId);
-      checkActor(actor, device);
+      authorizeActor('revoke', actor, device, { deviceId: device.id, deviceName: device.name });
       if (device.status === 'revoked') return publicDevice(device);
       device.status = 'revoked';
       device.revokedAt = stamp();
-      record('revoke', { deviceId: device.id, deviceName: device.name }, actor.type);
+      record('revoke', { deviceId: device.id, deviceName: device.name, byDevice: actorDeviceId(actor) }, actor.type);
       flush();
       return publicDevice(device);
     },
 
     renameDevice(deviceId, name, actor = { type: 'admin' }) {
       const device = findDevice(deviceId);
-      checkActor(actor, device);
+      authorizeActor('rename', actor, device, { deviceId: device.id, deviceName: device.name });
       const safeName = requireText(name, '设备名称', 80);
       device.name = safeName;
-      record('rename', { deviceId: device.id, deviceName: safeName }, actor.type);
+      record('rename', { deviceId: device.id, deviceName: safeName, byDevice: actorDeviceId(actor) }, actor.type);
       flush();
       return publicDevice(device);
     },
@@ -184,10 +198,33 @@ export function createDeviceStore({ file = null, now = () => new Date(), ttlMs =
         if (error instanceof SyncStateError) throw new DeviceAuthError(error.status, error.message, error.code);
         throw error;
       }
-      data.sync = next;
-      record('sync.submit', { cardId: String(submission?.cardId ?? submission?.key ?? ''), byDevice: device.id, revision: next.revision }, 'device');
-      flush();
+      // 重复提交（版本未推进）不双写、不重复审计。
+      if (next.revision === data.sync.revision) return publicSyncState(data.sync);
+      // 审计或落盘失败时回滚内存并抛出，不把未留痕的提交当成功。
+      const prevSync = data.sync; const prevAudit = data.audit;
+      try {
+        data.sync = next;
+        record('sync.submit', { cardId: String(submission?.cardId ?? submission?.key ?? ''), byDevice: device.id, revision: next.revision }, 'device');
+        flush();
+      } catch (error) {
+        data.sync = prevSync; data.audit = prevAudit;
+        throw error;
+      }
       return publicSyncState(next);
+    },
+
+    // 移动端关键操作（卡片回答/授权、规则操作等）留痕：来源设备、时间、结果。写失败向上抛出，不吞。
+    recordDeviceEvent(token, action, fields = {}, result = 'ok') {
+      const device = authorizedByToken(token);
+      if (!device) throw new DeviceAuthError(403, '设备未授权或已解除授权', 'FORBIDDEN');
+      if (typeof action !== 'string' || !/^[a-z][a-z.]{1,40}$/.test(action)) throw new DeviceAuthError(400, '审计动作不合法', 'INVALID_INPUT');
+      const safe = {};
+      for (const [key, value] of Object.entries(fields)) if (['string', 'number', 'boolean'].includes(typeof value)) safe[key] = typeof value === 'string' ? value.slice(0, 200) : value;
+      const prevAudit = data.audit;
+      try {
+        record(action, { ...safe, byDevice: device.id }, 'device', result);
+        flush();
+      } catch (error) { data.audit = prevAudit; throw error; }
     },
 
     // 其他设备拉取最新一致状态；被解除授权的凭据无法读取。

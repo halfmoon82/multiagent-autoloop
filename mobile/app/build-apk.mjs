@@ -263,6 +263,77 @@ function signRelease(creds) {
   console.log(`[apk] 签名完成：${path.relative(here, SIGNED_APK)}（sha256 已写入同目录 .sha256）。`);
 }
 
+// 签名前门禁：合并后的清单、自写插件注册与编译产物必须完整，缺一即以码 12 退出、不进入签名。
+// 注释里的声明不算数（先剥离 XML/Java 注释再比对）。
+const VERIFY_FAIL = 12;
+
+function stripXmlComments(text) {
+  return text.replace(/<!--[\s\S]*?-->/g, '');
+}
+
+function stripJavaComments(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+}
+
+function listFiles(dir, out = []) {
+  if (!existsSync(dir)) return out;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) listFiles(full, out);
+    else out.push(full);
+  }
+  return out;
+}
+
+function listJavaSources(dir) {
+  return listFiles(dir).filter(file => file.endsWith('.java'));
+}
+
+function verifyBeforeSign() {
+  const manifestPath = path.join(here, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+  const mainActivityPath = path.join(NATIVE_SRC, 'java', 'cool', 'autoloop', 'console', 'MainActivity.java');
+  const javacRoot = path.join(here, 'android', 'app', 'build', 'intermediates', 'javac');
+  const missing = [];
+
+  // 1) 合并后清单含 manifest-additions 声明的全部权限与服务。
+  const manifest = stripXmlComments(readFileSync(manifestPath, 'utf8'));
+  const additions = stripXmlComments(readFileSync(MANIFEST_ADDITIONS, 'utf8'));
+  for (const [, permission] of additions.matchAll(/<uses-permission\s+android:name="([^"]+)"/g)) {
+    if (!manifest.includes(`android:name="${permission}"`)) missing.push(`清单权限 ${permission}`);
+  }
+  for (const [, service] of additions.matchAll(/<service\b[^>]*?android:name="([^"]+)"/g)) {
+    const declared = new RegExp(`<service\\b[^>]*android:name="${service.replace(/\./g, '\\.')}"`);
+    if (!declared.test(manifest)) missing.push(`清单服务 ${service}`);
+  }
+
+  // 2) 自写 Capacitor 插件必须在 MainActivity 中 registerPlugin。
+  if (!existsSync(mainActivityPath)) fail(10, '缺少 native/java 下的 MainActivity.java，无法校验插件注册');
+  const mainActivity = stripJavaComments(readFileSync(mainActivityPath, 'utf8'));
+  const sources = listJavaSources(path.join(NATIVE_SRC, 'java'));
+  for (const source of sources) {
+    const text = stripJavaComments(readFileSync(source, 'utf8'));
+    if (!/@CapacitorPlugin\b/.test(text)) continue;
+    const name = path.basename(source, '.java');
+    if (!new RegExp(`registerPlugin\\(\\s*${name}\\.class\\s*\\)`).test(mainActivity)) {
+      missing.push(`自写插件 ${name} 未在 MainActivity 中注册（registerPlugin）`);
+    }
+  }
+
+  // 3) 每个自写源文件都有对应编译产物（按包路径定位 .class）。
+  const compiled = listFiles(javacRoot).map(file => file.split(path.sep).join('/'));
+  for (const source of sources) {
+    const pkg = /^\s*package\s+([\w.]+)\s*;/m.exec(readFileSync(source, 'utf8'))?.[1];
+    if (!pkg) continue;
+    const rel = `${pkg.split('.').join('/')}/${path.basename(source, '.java')}.class`;
+    if (!compiled.some(file => file.endsWith(`/${rel}`))) missing.push(`编译产物缺少类 ${pkg}.${path.basename(source, '.java')}`);
+  }
+
+  if (missing.length) {
+    fail(VERIFY_FAIL, `签名前校验未通过，已拒绝签名：${missing.join('；')}`);
+  }
+  console.log('[apk] 签名前校验通过：清单、插件注册与编译产物齐全。');
+}
+
 function main() {
   const config = JSON.parse(readFileSync(path.join(here, 'capacitor.config.json'), 'utf8'));
   const minSdk = Number(config.autoloop?.android?.minSdkVersion);
@@ -284,6 +355,7 @@ function main() {
   patchAndroidPlatform();
   const creds = signingCredentials();
   run(path.join(here, 'android', 'gradlew'), ['assembleRelease'], 5, path.join(here, 'android'));
+  verifyBeforeSign();
   signRelease(creds);
 }
 

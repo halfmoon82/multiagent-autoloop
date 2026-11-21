@@ -16,7 +16,7 @@ import {
   selectOption, setDraft, appendVoiceDraft, focusQuestion,
   submitAnswer, toggleAnswered, setScrollTop,
   snapshotGroup, restoreGroup, remainingCount, isComplete,
-  buildQuestionGroupBinding,
+  buildQuestionGroupBinding, cardsToQuestionGroup, answerPayload,
 } from '../mobile/src/features/question-group/index.mjs';
 
 const FEATURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'mobile', 'src', 'features', 'question-group');
@@ -269,4 +269,39 @@ test('feature 是纯逻辑：不依赖 node: 内置模块、不碰 DOM、不拼�
     assert.ok(!/\bdocument\.|\bwindow\.|\blocalStorage\b/.test(source.replace(/\/\/.*$/gm, '')), `${name} 不得直接碰 DOM/浏览器存储`);
     assert.ok(!/innerHTML|insertAdjacentHTML/.test(source), `${name} 不得拼接 HTML`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// RED 12：会话内卡片映射为待回答组，作答载荷走 cards answer 口径
+// ---------------------------------------------------------------------------
+test('开放卡片映射为待回答组：有选项为选择、无选项为文字', () => {
+  const group = cardsToQuestionGroup([
+    { id: 8, title: '选哪种方案？', options: ['方案甲', '方案乙'], state: 'open' },
+    { id: 9, title: '补充背景？', state: 'open' },
+    { id: 10, title: '已处理', state: 'decided' },
+  ], { id: 'session-cards', sessionId: 's1' });
+  assert.equal(group.id, 'session-cards');
+  assert.equal(group.sessionId, 's1');
+  assert.equal(group.questions.length, 2, '已处理卡片不生成待答题');
+  assert.equal(group.questions[0].id, '8');
+  assert.equal(group.questions[0].kind, 'choice');
+  assert.deepEqual(group.questions[0].options, ['方案甲', '方案乙']);
+  assert.equal(group.questions[1].kind, 'text');
+  const binding = buildQuestionGroupBinding(group);
+  assert.equal(binding.total, 2);
+  assert.equal(binding.active.id, '8');
+});
+
+test('作答载荷：选择用选项下标、文字与语音用文本，未知选项回退文本', () => {
+  let group = cardsToQuestionGroup([
+    { id: 8, title: '选哪种？', options: ['甲', '乙'], state: 'open' },
+    { id: 9, title: '补充？', state: 'open' },
+  ]);
+  group = selectOption(group, '8', '乙');
+  assert.deepEqual(answerPayload(group.questions[0], '乙'), { choice: 1 });
+  assert.deepEqual(answerPayload(group.questions[0], '未知选项'), { text: '未知选项' });
+  group = setDraft(group, '9', '补充说明');
+  assert.deepEqual(answerPayload(group.questions[1], '补充说明'), { text: '补充说明' });
+  group = appendVoiceDraft(group, '9', '转写内容');
+  assert.deepEqual(answerPayload(group.questions[1]), { text: '补充说明 转写内容' });
 });

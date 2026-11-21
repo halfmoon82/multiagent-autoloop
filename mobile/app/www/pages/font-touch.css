@@ -1,2 +1,102 @@
-/* font-touch 挂载点样式：后续节点实现字体与触控适配。 */
-#font-touch-root { min-height: 1px; }
+/* font-touch 全局样式层：由 app.mjs 在装配阶段 mount，再由 index.html 作为全局样式加载。
+   跟随系统字体档，原生 font-size 度量（CSS 变量由 feature 计算），不以网页缩放代替原生字号。
+   放大后正文换行、容器增高、纵向滚动；不截断、不遮挡、不横向滚动正文。 */
+
+:root {
+  /* 缺省值与 feature 默认一致：JS 未注入时保持 100% 基线。 */
+  --font-scale: 100;
+  --font-base-dp: 16;
+  --font-size-dp: 16;
+  --touch-hit-min-dp: 44;
+  --touch-hit-max-dp: 48;
+  --icon-visual-dp: 22;
+  /* 1rem = 系统档下的原生字号（dp 映射为 px）。字号由宿主系统设置决定，不用网页缩放。 */
+  font-size: calc(var(--font-size-dp, 16) * 1px);
+}
+
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* 放大后 rem 变大，容器不再用 40rem 固定上限，避免撑出视口造成横向滚动。 */
+.app { max-width: 100%; }
+
+/* 所有参与界面共用换行/增高/纵向滚动策略；长词、长串不断开视口。 */
+.screen, .content, .page, .card {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.screen {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+input, textarea, button, select {
+  font: inherit;
+  max-width: 100%;
+}
+
+input[type="text"], input[type="url"] { font-size: 1rem; }
+textarea { font-size: 1rem; resize: vertical; }
+
+/* 图标视觉保持轻巧，命中热区独立扩张到 44–48dp。 */
+button, [role="button"], .tab, .option, a {
+  min-height: calc(var(--touch-hit-min-dp, 44) * 1px);
+  min-width: calc(var(--touch-hit-min-dp, 44) * 1px);
+}
+
+.icon {
+  display: inline-grid;
+  place-items: center;
+  width: calc(var(--icon-visual-dp, 22) * 1px);
+  height: calc(var(--icon-visual-dp, 22) * 1px);
+  flex: 0 0 auto;
+}
+
+/* 整卡选项：默认态 + 按压/选中/禁用三态，状态由 data-option-state 表达，纯 CSS 呈现。 */
+.option {
+  display: block;
+  position: relative;
+  width: 100%;
+  min-height: calc(var(--touch-hit-min-dp, 44) * 1px);
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.option[data-option-state="pressed"], .option:active {
+  background: var(--mint);
+  border-color: var(--ink-soft);
+}
+
+.option[data-option-state="selected"], .option[aria-selected="true"] {
+  background: var(--mint);
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 2px var(--ink-soft);
+}
+
+.option[data-option-state="disabled"], .option[aria-disabled="true"], .option:disabled {
+  opacity: 0.55;
+  cursor: default;
+  background: #eef2f0;
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+/* 挂载点本身不占布局：它是全局样式层的锚，不是 Tab 页面。 */
+#font-touch-root { min-height: 0; }
