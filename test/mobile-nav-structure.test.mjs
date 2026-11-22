@@ -11,8 +11,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = rel => readFileSync(path.join(ROOT, rel), 'utf8');
 const html = read('mobile/app/www/index.html');
 const tabBar = /<nav id="tab-bar"[\s\S]*?<\/nav>/.exec(html)?.[0] || '';
-const tabs = [...tabBar.matchAll(/<button[^>]*class="tab"[^>]*data-tab="([^"]+)"[^>]*aria-selected="(true|false)"[^>]*>([^<]+)<\/button>/g)]
-  .map(m => ({ key: m[1], selected: m[2], label: m[3] }));
+const tabs = [...tabBar.matchAll(/<button[^>]*class="tab"[^>]*data-tab="([^"]+)"[^>]*aria-selected="(true|false)"[^>]*>([\s\S]*?)<\/button>/g)]
+  .map(m => ({ key: m[1], selected: m[2], label: m[3].replace(/<[^>]+>/g, '') }));
 
 test('tab-bar 恰 6 个 Tab，顺序与文案按设计稿', () => {
   assert.deepEqual(tabs.map(t => t.label), ['总览', '规则', '会话', '轮次', '待办', '管理后台']);

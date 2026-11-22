@@ -65,14 +65,7 @@
 
       <div id="project-filter-root" aria-label="全局项目筛选"></div>
 
-      <nav id="tab-bar" class="tab-bar" aria-label="主导航">
-        <button type="button" class="tab" data-tab="core" aria-selected="true">总览</button>
-        <button type="button" class="tab" data-tab="rules" aria-selected="false">规则</button>
-        <button type="button" class="tab" data-tab="sessions" aria-selected="false">会话</button>
-        <button type="button" class="tab" data-tab="rounds" aria-selected="false">轮次</button>
-        <button type="button" class="tab" data-tab="todos" aria-selected="false">待办</button>
-        <button type="button" class="tab" data-tab="admin" aria-selected="false">管理后台</button>
-      </nav>
+
 
       <div class="content">
         <div id="page-core" class="page" data-page="core">
@@ -119,6 +112,15 @@
       </div>
 
       <div id="voice-root" aria-label="语音输入"></div>
+
+      <nav id="tab-bar" class="tab-bar bottom-nav" aria-label="主导航">
+        <button type="button" class="tab" data-tab="core" aria-selected="true"><span class="nav-icon" data-icon="home"></span><span>总览</span></button>
+        <button type="button" class="tab" data-tab="rules" aria-selected="false"><span class="nav-icon" data-icon="rules"></span><span>规则</span></button>
+        <button type="button" class="tab" data-tab="sessions" aria-selected="false"><span class="nav-icon" data-icon="chat"></span><span>会话</span></button>
+        <button type="button" class="tab" data-tab="rounds" aria-selected="false"><span class="nav-icon" data-icon="runs"></span><span>轮次</span></button>
+        <button type="button" class="tab" data-tab="todos" aria-selected="false"><span class="nav-icon" data-icon="cards"></span><span>待办</span></button>
+        <button type="button" class="tab" data-tab="admin" aria-selected="false"><span class="nav-icon" data-icon="admin"></span><span>管理后台</span></button>
+      </nav>
     </main>
 
     <div id="toast" class="toast" role="status" hidden></div>

@@ -85,7 +85,6 @@ button:disabled { opacity: 0.6; cursor: default; }
 .tab-bar {
   display: flex; gap: 0.35rem; margin: 0 0 1rem; padding: 0.3rem;
   background: var(--card); border: 1px solid var(--line); border-radius: 0.7rem;
-  overflow-x: auto; -webkit-overflow-scrolling: touch;
 }
 .tab-bar .tab {
   flex: 1 1 0; min-height: 48px; min-width: 3.6rem; margin: 0; padding: 0.5rem 0.4rem;
@@ -100,3 +99,44 @@ button:disabled { opacity: 0.6; cursor: default; }
   font-size: 0.9rem; z-index: 10; max-width: 90vw; text-align: center;
 }
 
+
+/* 设计基线共享壳：内容独立滚动，六栏底部常驻。 */
+#app-main {
+  display: flex; flex-direction: column; height: 100dvh; max-width: 40rem; margin: 0 auto;
+  padding: calc(0.8rem + env(safe-area-inset-top)) calc(0.8rem + env(safe-area-inset-right))
+           0 calc(0.8rem + env(safe-area-inset-left));
+}
+#app-main .app-header { flex: none; margin-bottom: 0.7rem; }
+#app-main .app-header .brand { gap: 0.65rem; }
+#app-main .brand-gem { border-radius: 0.8rem; }
+#app-main #project-filter-root { flex: none; }
+.content {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: clip;
+  overscroll-behavior: contain; scrollbar-width: thin;
+}
+.tab-bar {
+  flex: none; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0; margin: 0 calc(-0.8rem - env(safe-area-inset-left)) 0 calc(-0.8rem - env(safe-area-inset-right));
+  padding: 0.35rem 0.25rem calc(0.45rem + env(safe-area-inset-bottom));
+  background: rgba(255,255,255,0.98); border: 0; border-top: 1px solid var(--line); border-radius: 0;
+}
+.tab-bar .tab {
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 0.2rem; min-width: 0; min-height: 3.65rem; margin: 0; padding: 0.25rem 0.1rem;
+  border: 0; border-radius: 0.55rem; background: transparent; color: #718078;
+  font-size: 0.68rem; line-height: 1.15; white-space: normal;
+}
+.tab-bar .tab::before {
+  content: ''; position: absolute; top: -0.35rem; width: 1.6rem; height: 2px; border-radius: 2px;
+  background: transparent;
+}
+.tab-bar .tab[aria-selected="true"] { background: transparent; border: 0; color: var(--ink); font-weight: 650; }
+.tab-bar .tab[aria-selected="true"]::before { background: var(--ink-soft); }
+.tab-bar .nav-icon {
+  display: grid; place-items: center; width: 1.85rem; height: 1.85rem; border-radius: 0.6rem;
+}
+.tab-bar .tab[aria-selected="true"] .nav-icon { background: var(--mint); }
+.inline-icon {
+  width: 1.25rem; height: 1.25rem; display: block; fill: none; stroke: currentColor;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+}

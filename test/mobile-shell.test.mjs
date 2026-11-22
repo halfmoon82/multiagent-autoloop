@@ -319,7 +319,7 @@ async function issueDevice(url, store, name = 'Pixel') {
 
 test('移动端静态壳由固定白名单提供，带安全响应头，不提供目录遍历和构建文件', async t => {
   const { url } = await setup(t);
-  const allowed = ['/mobile/', '/mobile/index.html', '/mobile/app.mjs', '/mobile/shell.mjs', '/mobile/scan.mjs', '/mobile/vendor/qr-decoder.mjs', '/mobile/styles.css', '/mobile/manifest.webmanifest', '/mobile/icon.svg'];
+  const allowed = ['/mobile/', '/mobile/index.html', '/mobile/app.mjs', '/mobile/shell.mjs', '/mobile/scan.mjs', '/mobile/icons.mjs', '/mobile/vendor/qr-decoder.mjs', '/mobile/styles.css', '/mobile/manifest.webmanifest', '/mobile/icon.svg'];
   for (const p of allowed) {
     const response = await fetch(`${url}${p}`);
     assert.equal(response.status, 200, p);

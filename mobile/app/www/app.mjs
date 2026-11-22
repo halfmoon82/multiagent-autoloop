@@ -3,6 +3,7 @@
 // 跨页互调一律走 ctx.hooks，不直接 import 其他页面模块。
 import { ShellState, createTokenStore, createMobileClient, createBiometricGate, shouldAutoRetry } from './shell.mjs';
 import { createScanSession, createUserMediaCamera } from './scan.mjs';
+import { renderIcons } from './icons.mjs';
 import * as corePage from './pages/core.mjs';
 import * as sessionsPage from './pages/sessions.mjs';
 import * as artifactsPage from './pages/artifacts.mjs';
@@ -137,6 +138,7 @@ function boot() {
     hooks,
   };
 
+  renderIcons(document);
   const tabBar = $('tab-bar');
   const tabs = tabBar ? [...tabBar.querySelectorAll('.tab')] : [];
   const pageEls = new Map([...document.querySelectorAll('.content .page')].map(el => [el.dataset.page, el]));
