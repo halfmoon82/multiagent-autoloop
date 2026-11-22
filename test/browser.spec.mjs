@@ -1130,7 +1130,9 @@ try {
   assert.deepEqual(errors, [], '扫码绑定不得产生脚本错误');
   console.log('PASS browser: qr scan bind — fake camera frame decoded, bound, camera closed');
 
-  // ===== 会话详情整页滚动回归（2026-11-21 真机事故：嵌套滚动区被提示词块挤压，详情拉不动）=====
+  // ===== 会话详情滚动回归（2026-11-21 真机事故：嵌套滚动区被提示词块挤压，详情拉不动；
+  // 2026-11-23 #243 按主人要求改为手机对话框习惯：详情固定高、消息窗唯一滚动区、输入栏常驻底部。
+  // 断言对象从整页 document 滚动改为消息窗自身滚动，锚定意图不变：可滚动/追新不拽走/回到底部/触摸可滑）
   schedulingSessions.records.push({
     id: 'browser-scroll', sessionId: 'acp-browser-scroll', kind: 'scheduling', status: 'running',
     project: demoRepo, agent: 'Codex ACP', prompt: '完整首轮提示词：'.concat('具体要求。'.repeat(30)),
@@ -1145,40 +1147,46 @@ try {
   await page.waitForFunction(() => document.querySelector('.sessions-item'), null, { timeout: 15000 });
   await page.locator('.sessions-item').first().click();
   await page.waitForFunction(() => !document.querySelector('[data-view="detail"]').hidden);
-  assert.equal(await page.locator('.sessions-scroller').count(), 0, '详情不得再有嵌套滚动区（真机拉不动的根因）');
+  // #243 设计：消息窗（.sessions-message-window）是唯一滚动区，断言锚定它而非整页 document。
+  const winMetrics = () => page.evaluate(() => { const w = document.querySelector('.sessions-message-window'); return { st: w.scrollTop, sh: w.scrollHeight, ch: w.clientHeight }; });
   assert.equal(await page.locator('.sessions-message').count(), 20, '详情全量渲染转录');
-  await page.waitForTimeout(300);
-  const openedAtBottom = await page.evaluate(() => window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 8);
-  assert.equal(openedAtBottom, true, '打开详情必须定位到最新一条（底部），不得停在顶部');
+  await page.waitForFunction(() => { const w = document.querySelector('.sessions-message-window'); return w.scrollHeight > w.clientHeight + 100; }, null, { timeout: 5000 });
+  await page.waitForFunction(() => { const w = document.querySelector('.sessions-message-window'); return w.scrollTop + w.clientHeight >= w.scrollHeight - 8; }, null, { timeout: 5000 });
+  let metrics = await winMetrics();
+  assert.ok(metrics.sh > metrics.ch + 100, `消息窗内容必须超出消息窗（可滚动）：sh=${metrics.sh} ch=${metrics.ch}`);
   assert.equal(await page.locator('.sessions-detail-prompt').isVisible(), true, '提示词入口可见');
   assert.equal(await page.locator('.sessions-detail-prompt.expanded').count(), 0, '提示词默认折叠成一行');
   await page.locator('.sessions-detail-prompt').click();
   assert.equal(await page.locator('.sessions-detail-prompt.expanded').count(), 1, '点按展开完整提示词');
   await page.locator('.sessions-detail-prompt').click();
-  assert.equal(await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight + 100), true, '详情内容应超出视口（可滚动）');
-  // 真实触摸上滑必须移动整页滚动条（CDP 触摸事件，真机事故的精确复现路径）。
-  await page.evaluate(() => window.scrollTo(0, 0));
+  // 真实触摸上滑必须滚动消息窗（CDP 触摸事件，真机事故的精确复现路径）。
+  await page.evaluate(() => { const w = document.querySelector('.sessions-message-window'); w.scrollTo(0, 0); });
+  const winBox = await page.locator('.sessions-message-window').boundingBox();
+  const touchX = Math.round(winBox.x + winBox.width / 2);
+  const touchY = Math.round(winBox.y + Math.min(winBox.height - 20, winBox.height * 0.6));
   const touchCdp = await context.newCDPSession(page);
-  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 200, y: 500, id: 1 }] });
-  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 200, y: 280, id: 1 }] });
+  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touchX, y: touchY, id: 1 }] });
+  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: touchX, y: touchY - 220, id: 1 }] });
   await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await page.waitForTimeout(300);
-  const scrolledByTouch = await page.evaluate(() => window.scrollY);
-  assert.ok(scrolledByTouch > 30, `触摸上滑必须滚动整页（实际 ${scrolledByTouch}px）`);
-  // 阅读中追新不得拽走位置：追加一条消息后滚动位置应保持。
+  metrics = await winMetrics();
+  assert.ok(metrics.st > 30, `触摸上滑必须滚动消息窗（实际 ${metrics.st}px）`);
+  // 阅读中追新不得拽走位置：上翻后追加一条消息，消息窗滚动位置应保持。
   await page.waitForTimeout(600);
-  await page.evaluate(() => window.scrollTo(0, 120));
-  await page.waitForFunction(() => window.scrollY === 120, null, { timeout: 5000 });
+  await page.evaluate(() => { const w = document.querySelector('.sessions-message-window'); w.scrollTo(0, 120); });
+  await page.waitForFunction(() => document.querySelector('.sessions-message-window').scrollTop === 120, null, { timeout: 5000 });
   schedulingSessions.records.find(item => item.id === 'browser-scroll').messages.push({ role: 'agent', text: '追加的新回复', at: '2026-11-15T01:02:00Z' });
-  await page.waitForFunction(() => window.scrollY !== 120 || document.body.innerText.includes('追加的新回复'), null, { timeout: 12000 });
-  const keptPosition = await page.evaluate(() => window.scrollY);
-  assert.ok(keptPosition > 30 && keptPosition <= 130, `阅读中追新后滚动位置应保持（实际 ${keptPosition}px）`);
+  await page.waitForFunction(() => document.querySelector('.sessions-message-window').scrollTop !== 120 || document.body.innerText.includes('追加的新回复'), null, { timeout: 12000 });
+  const keptPosition = (await winMetrics()).st;
+  assert.ok(keptPosition > 30 && keptPosition <= 130, `阅读中追新后消息窗滚动位置应保持（实际 ${keptPosition}px）`);
   await page.locator('.sessions-back-bottom').waitFor({ state: 'visible' });
   await page.locator('.sessions-back-bottom').click();
-  await page.waitForTimeout(400);
-  assert.equal(await page.evaluate(() => window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 8), true, '回到底部应恢复跟随');
+  // 回到底是 smooth 滚动，等动画收敛而非固定等待。
+  await page.waitForFunction(() => { const w = document.querySelector('.sessions-message-window'); return w.scrollTop + w.clientHeight >= w.scrollHeight - 8; }, null, { timeout: 5000 });
+  metrics = await winMetrics();
+  assert.ok(metrics.st + metrics.ch >= metrics.sh - 8, '回到底部应恢复跟随');
   assert.deepEqual(errors, [], '会话详情滚动回归不得产生脚本错误');
-  console.log('PASS browser: session detail full-page scroll, collapsed prompt, touch swipe, back-to-bottom');
+  console.log('PASS browser: session detail message-window scroll, collapsed prompt, touch swipe, back-to-bottom');
 } finally {
   if (context) await context.close(); await close(consoleServer); await close(hub.server); rmSync(root, { recursive: true, force: true }); rmSync(profile, { recursive: true, force: true });
 }
