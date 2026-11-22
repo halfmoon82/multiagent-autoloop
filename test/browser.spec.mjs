@@ -1161,9 +1161,11 @@ try {
   await page.locator('.sessions-detail-prompt').click();
   // 真实触摸上滑必须滚动消息窗（CDP 触摸事件，真机事故的精确复现路径）。
   await page.evaluate(() => { const w = document.querySelector('.sessions-message-window'); w.scrollTo(0, 0); });
-  const winBox = await page.locator('.sessions-message-window').boundingBox();
-  const touchX = Math.round(winBox.x + winBox.width / 2);
-  const touchY = Math.round(winBox.y + Math.min(winBox.height - 20, winBox.height * 0.6));
+  // atomic-lint：单次 evaluate 内取消息窗几何（同文件 line ~338 先例），不做两步读。
+  const { touchX, touchY } = await page.evaluate(() => {
+    const rect = document.querySelector('.sessions-message-window').getBoundingClientRect();
+    return { touchX: Math.round(rect.left + rect.width / 2), touchY: Math.round(rect.top + Math.min(rect.height - 20, rect.height * 0.6)) };
+  });
   const touchCdp = await context.newCDPSession(page);
   await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touchX, y: touchY, id: 1 }] });
   await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: touchX, y: touchY - 220, id: 1 }] });
