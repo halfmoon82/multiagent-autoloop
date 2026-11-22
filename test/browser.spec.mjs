@@ -1136,7 +1136,9 @@ try {
   schedulingSessions.records.push({
     id: 'browser-scroll', sessionId: 'acp-browser-scroll', kind: 'scheduling', status: 'running',
     project: demoRepo, agent: 'Codex ACP', prompt: '完整首轮提示词：'.concat('具体要求。'.repeat(30)),
-    messages: [...Array.from({ length: 10 }, (_, index) => [{ role: 'user', text: `第 ${index + 1} 轮指令`, at: '2026-11-15T00:00:00Z' }, { role: 'agent', text: `第 ${index + 1} 轮回复：` + '长内容需要换行展示。'.repeat(40), at: '2026-11-15T00:05:00Z' }]).flat()],
+    // 消息体量留大余量：不同平台字体排布下消息窗溢出必须稳超跟随阈值两倍（ shouldFollowScroll 阈值 80px，
+    // 非跟随阅读断言需要 overflow > 220px；2026-11-22 CI Linux Chrome 溢出仅 ~132px 致硬编码位置断言必红）。
+    messages: [...Array.from({ length: 10 }, (_, index) => [{ role: 'user', text: `第 ${index + 1} 轮指令`, at: '2026-11-15T00:00:00Z' }, { role: 'agent', text: `第 ${index + 1} 轮回复：` + '长内容需要换行展示。'.repeat(90), at: '2026-11-15T00:05:00Z' }]).flat()],
     liveText: '', busy: false, queuedCount: 0,
     createdAt: '2026-11-21T08:00:00Z', updatedAt: '2026-11-21T08:30:00Z',
   });
@@ -1173,14 +1175,18 @@ try {
   await page.waitForTimeout(300);
   metrics = await winMetrics();
   assert.ok(metrics.st > 30, `触摸上滑必须滚动消息窗（实际 ${metrics.st}px）`);
-  // 阅读中追新不得拽走位置：上翻后追加一条消息，消息窗滚动位置应保持。
+  // 阅读中追新不得拽走位置：上翻到跟随阈值（80px）之外，追加消息后消息窗滚动位置应保持。
+  // 滚动目标按实测度量推导，不硬编码——几何环境差异（CI Linux 字体排布）下距底 <80px 会被正确判为跟随。
   await page.waitForTimeout(600);
-  await page.evaluate(() => { const w = document.querySelector('.sessions-message-window'); w.scrollTo(0, 120); });
-  await page.waitForFunction(() => document.querySelector('.sessions-message-window').scrollTop === 120, null, { timeout: 5000 });
+  metrics = await winMetrics();
+  assert.ok(metrics.sh - metrics.ch > 220, `消息窗溢出应足够非跟随阅读：overflow=${metrics.sh - metrics.ch}`);
+  const readPos = metrics.sh - metrics.ch - 150;
+  await page.evaluate(pos => { const w = document.querySelector('.sessions-message-window'); w.scrollTo(0, pos); }, readPos);
+  await page.waitForFunction(pos => document.querySelector('.sessions-message-window').scrollTop === pos, readPos, { timeout: 5000 });
   schedulingSessions.records.find(item => item.id === 'browser-scroll').messages.push({ role: 'agent', text: '追加的新回复', at: '2026-11-15T01:02:00Z' });
-  await page.waitForFunction(() => document.querySelector('.sessions-message-window').scrollTop !== 120 || document.body.innerText.includes('追加的新回复'), null, { timeout: 12000 });
+  await page.waitForFunction(pos => document.querySelector('.sessions-message-window').scrollTop !== pos || document.body.innerText.includes('追加的新回复'), readPos, { timeout: 12000 });
   const keptPosition = (await winMetrics()).st;
-  assert.ok(keptPosition > 30 && keptPosition <= 130, `阅读中追新后消息窗滚动位置应保持（实际 ${keptPosition}px）`);
+  assert.ok(keptPosition > 30 && Math.abs(keptPosition - readPos) <= 30, `阅读中追新后消息窗滚动位置应保持（目标 ${readPos}px，实际 ${keptPosition}px）`);
   await page.locator('.sessions-back-bottom').waitFor({ state: 'visible' });
   await page.locator('.sessions-back-bottom').click();
   // 回到底是 smooth 滚动，等动画收敛而非固定等待。
