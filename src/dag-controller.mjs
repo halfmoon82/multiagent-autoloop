@@ -92,16 +92,22 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     // 回执模板写进派发提示：worker 只看到契约与 expectedAdvanceId 时容易漏掉 detail，
     // 中台解析出空 detail 会被判 malformed，Hub run 终态却没有合法 advance，节点白跑一轮（2026-11-19 device-binding review）。
     // 模板必须逐字可被 evaluateAdvance 接受：runId 用节点 run（不是根 run），detail 只用字符串/数字/布尔/数组。
-    const receiptDetail = run.role === 'dev'
+    // 通过与不通过两版模板都给（2026-11-22 PR #243/#245 事故：只给通过模板，审阅不通过的 worker
+    // 自造 rejected/changes_requested 被判 malformed-outcome → 整轮作废）。两版都逐字可被 evaluateAdvance 接受。
+    const receiptOk = run.role === 'dev'
       ? '"outcome":"done","detail":{"prUrl":"<真实 PR 链接>","commit":"<真实提交 SHA>","tests":"<真实测试结论>"}'
       : '"outcome":"accepted","detail":{"pr":0,"head":"<审阅的真实提交 SHA>","p0":0,"p1":0,"p2":0,"p3":0,"tests":"<真实测试结论>"}';
+    const receiptFail = run.role === 'dev'
+      ? '"outcome":"failed","detail":{"tests":"<失败原因与已跑测试结论>"}'
+      : '"outcome":"rework","detail":{"pr":0,"head":"<审阅的真实提交 SHA>","p0":0,"p1":0,"p2":0,"p3":0,"tests":"<真实测试结论>"}';
+    const receiptLine = detail => `{"events":[{"id":"${run.expectedAdvanceId}","type":"dag.node.advance","subject":"dag-${seg(id)}","summary":"一句话结论","detail":{"advanceId":"${run.expectedAdvanceId}","runId":"${run.runId}","nodeId":"${id}","role":"${run.role}","generation":${run.generation},"attempt":${run.attempt},${detail}}}]}`;
     lines.push(
-      '回执（写在最后一条消息的 agent-autoloop 代码块）：结构逐字照抄下方 JSON，尖括号占位符与数字计数必须换成真实值，字段不得省略或改名：',
-      `{"events":[{"id":"${run.expectedAdvanceId}","type":"dag.node.advance","subject":"dag-${seg(id)}","summary":"一句话结论","detail":{"advanceId":"${run.expectedAdvanceId}","runId":"${run.runId}","nodeId":"${id}","role":"${run.role}","generation":${run.generation},"attempt":${run.attempt},${receiptDetail}}}]}`,
-      // 只给通过模板时，审阅不通过的 worker 会自造 rejected/changes_requested，被判 malformed-outcome → blocked_unknown（2026-11-22 PR #243/#245）。
+      '回执（写在最后一条消息的 agent-autoloop 代码块）：结构逐字照抄下方 JSON，尖括号占位符与数字计数必须换成真实值，字段不得省略或改名。达成照第一版；不通过/做不到照第二版：',
+      receiptLine(receiptOk),
+      receiptLine(receiptFail),
       run.role === 'dev'
         ? 'outcome 只能是：done（交付完成）或 failed（做不到，tests 里写原因）。'
-        : 'outcome 只能是：accepted（无 P0–P2，可合并）或 rework（有 P0–P2 需返工）；不得写 rejected、changes_requested 等其他值。',
+        : 'outcome 只能是：accepted（无 P0–P2，可合并）或 rework（有 P0–P2 需返工，分级计数写真实值）；不得写 rejected、changes_requested 等其他值。',
     );
     if (design) lines.push(
       `设计基线：${root.designBaseline.designDigest}（冻结于本 DAG；不得读取新稿替代）`,

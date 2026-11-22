@@ -3,9 +3,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkNode, setup } from './dag-fakes.mjs';
 
+// 存量 blocked_unknown 场景（2026-11-22 回执韧性后 advance 不再产生该终态，用注入模拟旧 run）。
 async function blockDev(s) {
   await s.ctl.tick(); s.claimAll();
-  s.receipt('a', 'dev', 'weird-outcome');
+  await s.blockNow('a', 'dev');
   await s.ctl.tick();
   assert.equal(s.ctl.snapshot().nodes.a.state, 'blocked');
 }

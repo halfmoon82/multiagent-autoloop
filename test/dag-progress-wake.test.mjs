@@ -9,10 +9,10 @@ import { buildProgressEvent, createProgressNotifier } from '../src/dag-stall.mjs
 const wakeOf = snap => (snap.progress || []).map(p => `${p.nodeId}:${p.to}`);
 const rootRuns = s => s.store.listRuns().filter(run => run.nodeId === ROOT_NODE);
 
-// 推到 blocked：回执畸形（同 dag-controller-blocked-review 的写法）。
+// 推到 blocked：存量 blocked_unknown 注入（回执韧性后状态机不再产生该终态）。
 async function blockDev(s, id = 'a') {
   await s.ctl.tick(); s.claimAll();
-  s.receipt(id, 'dev', 'weird-outcome');
+  await s.blockNow(id, 'dev');
   return s.ctl.tick();
 }
 // 推到整条链完成：每个节点 dev done → review accepted。
@@ -54,7 +54,9 @@ test('blocked 叫醒；同状态不重复报', async () => {
 test('gated 叫醒（等待人工决策）', async () => {
   const s = setup([mkNode('a')]);
   for (let i = 0; i < 2; i++) { await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'failed'); await s.ctl.tick(); }
-  s.claimAll(); s.receipt('a', 'dev', 'weird-outcome'); await s.ctl.tick();
+  s.claimAll();
+  await s.blockNow('a', 'dev');
+  await s.ctl.tick();
   s.ctl.revive('a', 'blocked-resolved');
   const snap = await s.ctl.tick();
   assert.equal(s.ctl.snapshot().nodes.a.state, 'gated');
@@ -96,7 +98,7 @@ test('同一节点两次进入 blocked（中间被复活），事件 ID 不同�
   s.clock.t += 60_000;
   s.ctl.revive('a', 'blocked-resolved');
   await s.ctl.tick(); s.claimAll();
-  s.receipt('a', 'dev', 'weird-outcome');
+  await s.blockNow('a', 'dev');
   s.clock.t += 60_000;
   const second = await s.ctl.tick();
   assert.deepEqual(wakeOf(second), ['a:blocked']);

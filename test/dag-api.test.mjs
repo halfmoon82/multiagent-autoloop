@@ -177,7 +177,12 @@ async function seedBlocked(t, url) {
   const root = await (await post(url, '/api/dag-runs', t.payload())).json();
   let node = t.store.createNodeRun(root.runId, { nodeId: 'a', role: 'dev' });
   node = t.store.claim(node.runId, { slot: 2 });
-  t.store.advance(node.runId, { advanceId: node.expectedAdvanceId, runId: node.runId, nodeId: 'a', role: 'dev', generation: 1, attempt: 1, outcome: 'weird-outcome' });
+  // 存量 blocked_unknown 注入（回执韧性后状态机不再产生该终态）：直接翻 run 文件。
+  const file = path.join(t.store.directory, `${node.runId}.json`);
+  const data = JSON.parse(readFileSync(file, 'utf8'));
+  data.status = 'blocked_unknown';
+  data.expectedAdvanceId = null;
+  writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
   assert.equal(t.store.getRun(node.runId).status, 'blocked_unknown');
   t.store.updateRun(root.runId, { publish: { nodes: { a: { state: 'blocked', blockedRole: 'dev', slot: null, todo: null } } } });
   return { root, node };

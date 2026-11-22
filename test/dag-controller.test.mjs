@@ -65,10 +65,10 @@ test('1 个隔离 + 多 ready：隔离槽位仍占名额，不被复用', async 
   assert.ok(!s.hub.last('n9'), '1 个隔离 + 4 个运行 = 5，n9 等待');
 });
 
-test('blocked 隔离：blocked_unknown 的硬依赖后代暂停，无关节点继续', async () => {
+test('blocked 隔离：blocked_unknown 的硬依赖后代暂停，无关节点继续（存量 run 注入）', async () => {
   const s = setup([mkNode('a'), mkNode('b', ['a']), mkNode('c')]);
   await s.ctl.tick(); s.claimAll();
-  s.receipt('a', 'dev', 'weird-outcome');
+  await s.blockNow('a', 'dev'); // 存量 blocked_unknown（回执韧性后状态机不再产生）
   assert.equal(s.runOf('a').status, 'blocked_unknown');
   await s.ctl.tick();
   assert.ok(!s.hub.last('b'), '后代暂停');
@@ -420,12 +420,13 @@ test('开发回执 done 但没有任何提交：按失败尝试重派，不原�
 });
 
 test('派发提示的回执模板逐字可被状态机接受（dev 与 review）', async () => {
-  const templateOf = prompt => {
-    const line = prompt.split('\n').find(item => item.trim().startsWith('{"events"'));
-    assert.ok(line, '派发提示必须带逐字回执模板');
-    const [event] = JSON.parse(line).events;
-    return { event, receipt: event.detail };
+  const templatesOf = prompt => {
+    // 通过与不通过两版模板都要逐字可解析（2026-11-22：只给通过模板时 worker 自造 outcome 词）。
+    const lines = prompt.split('\n').filter(item => item.trim().startsWith('{"events"'));
+    assert.ok(lines.length, '派发提示必须带逐字回执模板');
+    return lines.map(line => { const [event] = JSON.parse(line).events; return { event, receipt: event.detail }; });
   };
+  const templateOf = prompt => templatesOf(prompt)[0];
   const s = setup([mkNode('a')]);
   await s.ctl.tick();
   const devRun = s.runOf('a');
@@ -444,12 +445,23 @@ test('派发提示的回执模板逐字可被状态机接受（dev 与 review）
   assert.equal(review.receipt.outcome, 'accepted');
   assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), review.receipt), { verdict: 'apply', failureCounted: false, nextStatus: 'done' });
   // 2026-11-22 事故：模板只给通过写法，审阅不通过时 worker 自造 rejected/changes_requested，被判 malformed-outcome → blocked_unknown。
+  // 回执韧性（本 PR）：别名归一让 rejected/changes_requested 按 rework 生效；仍不识别的词按失败尝试收敛，不再终态阻塞。
   const reviewPrompt = s.hub.last('a', 'review').prompt;
   assert.match(reviewPrompt, /outcome[^\n]*accepted[^\n]*rework/, '审阅提示必须写明通过 accepted / 有 P0–P2 返工 rework');
-  for (const bad of ['rejected', 'changes_requested']) {
-    assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: bad }).reason, 'malformed-outcome');
+  for (const alias of ['rejected', 'changes_requested', 'request-changes']) {
+    assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: alias }).record.outcome, 'rework', `${alias} 归一为 rework`);
   }
+  assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: 'weird-outcome' }).reason, 'malformed-outcome', '仍不识别的词按失败收敛');
   assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: 'rework', p2: 1 }), { verdict: 'apply', failureCounted: true, nextStatus: 'done' });
+  // 两版模板齐：review 有 accepted+rework，dev 有 done+failed；各版逐字可被状态机接受。
+  const reviewTemplates = templatesOf(reviewPrompt);
+  assert.deepEqual(reviewTemplates.map(t => t.receipt.outcome).sort(), ['accepted', 'rework']);
+  const devTemplates = templatesOf(s.hub.last('a').prompt);
+  assert.deepEqual(devTemplates.map(t => t.receipt.outcome).sort(), ['done', 'failed']);
+  for (const t of [...reviewTemplates, ...devTemplates]) {
+    const verdict = evaluateAdvance(s.store.getRun(reviewRun.runId), { ...t.receipt, advanceId: reviewRun.expectedAdvanceId, runId: reviewRun.runId, nodeId: 'a', role: 'review' });
+    assert.equal(verdict.verdict, 'apply', `${t.receipt.outcome} 模板逐字可接受`);
+  }
 });
 
 test('验收后残留的非终态 run 会收敛并释放槽位（Hub 已终态但 store 停在 claimed）', async () => {
