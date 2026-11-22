@@ -61,6 +61,9 @@ export function mobileSessionSummaries(sessions = []) {
         continuedFrom: session.continuedFrom ?? null,
         createdAt: String(session.createdAt ?? '').trim() || null,
         updatedAt: String(session.updatedAt ?? '').trim() || null,
+        queue: (Array.isArray(session.queue) ? session.queue : (Array.isArray(session.queued) ? session.queued : []))
+          .filter(item => item && typeof item.id === 'string' && item.id)
+          .map(item => ({ id: item.id, text: String(item.text ?? ''), at: String(item.at ?? '') })),
         queuedCount: Number.isInteger(session.queuedCount) ? session.queuedCount : 0,
         busy: session.busy === true,
       };
