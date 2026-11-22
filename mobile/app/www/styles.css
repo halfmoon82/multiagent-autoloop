@@ -10,6 +10,10 @@
   --card: #ffffff;
   --danger: #a3312a;
   --keyboard-height: 0px;
+  --brand: #137c64;
+  --brand-ink: #103f34;
+  --secondary: #66766f;
+  --tertiary: #89958f;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }

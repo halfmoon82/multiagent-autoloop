@@ -32,7 +32,8 @@ export function mount(ctx) {
     className: 'pf-clear', text: '全部', attrs: { id: 'clear-project-filter', type: 'button', hidden: '' },
   });
   const status = node('span', { className: 'pf-status', attrs: { 'aria-live': 'polite' } });
-  root.replaceChildren(label, select, clear, status);
+  const bar = node('div', { className: 'project-filter-bar' }, [label, select, clear]);
+  root.replaceChildren(bar, status);
 
   // 同步覆盖默认空钩子：mount 顺序在 DAG/核心页之后，先订阅的页面也要能收到后续广播。
   let controller = null;

@@ -87,3 +87,19 @@ test('消息与待回答组共用滚动区，composer 独立常驻底部', () =>
   assert.doesNotMatch(cssSessions, /\.sessions-question\s*\{[^}]*max-height:\s*42%/);
   assert.match(cssSessions, /\.sessions-message-window\s*\{[^}]*min-height:\s*5rem/);
 });
+
+test('其余主 Tab 与管理/设置页都有基线标题组和统一卡片层级', () => {
+  for (const marker of ['PILOT OVERVIEW', '今天的自动化', '调度规则', '执行轮次', '待我处理', '管理后台', 'DEVICES &amp; PREFERENCES', '设备与偏好']) assert.ok(html.includes(marker), `缺少 ${marker}`);
+  const coreCss = read('mobile/app/www/pages/core.css');
+  const adminCss = read('mobile/app/www/pages/admin.css');
+  assert.match(coreCss, /\.core-section\.card\s*\{[^}]*border-radius:\s*15px/);
+  assert.match(adminCss, /\.admin-subnav\s*\{[^}]*border-radius:\s*999px/);
+});
+
+test('全局项目筛选使用设计稿卡片条，不改变原生选择器与清除行为', () => {
+  const src = read('mobile/app/www/pages/project-filter.mjs');
+  const pfCss = read('mobile/app/www/pages/project-filter.css');
+  assert.match(src, /className: 'project-filter-bar'/);
+  assert.match(src, /root\.replaceChildren\(bar, status\)/);
+  assert.match(pfCss, /\.project-filter-bar\s*\{[^}]*border-radius:\s*13px/);
+});
