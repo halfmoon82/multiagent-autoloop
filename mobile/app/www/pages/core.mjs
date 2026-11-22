@@ -8,31 +8,7 @@ const loadViewModel = typeof window === 'undefined'
 
 export { loadViewModel };
 
-// 执行授权的容器与 Tab 在脚手架 index.html 里还没有；模块顶层先补一个空壳，
-// 这样 app.mjs 的 boot() 读取 tab-bar / .content 时已经能看到它。不改动其他页面节点。
-function ensureAuthorizePage() {
-  const content = document.querySelector('.content');
-  const tabs = document.getElementById('tab-bar');
-  if (!content || !tabs) return;
-  if (!content.querySelector('[data-page="authorize"]')) {
-    const page = document.createElement('div');
-    page.id = 'page-authorize';
-    page.className = 'page';
-    page.dataset.page = 'authorize';
-    page.hidden = true;
-    content.appendChild(page);
-  }
-  if (!tabs.querySelector('[data-tab="authorize"]')) {
-    const tab = document.createElement('button');
-    tab.type = 'button';
-    tab.className = 'tab';
-    tab.dataset.tab = 'authorize';
-    tab.setAttribute('aria-selected', 'false');
-    tab.textContent = '授权';
-    tabs.appendChild(tab);
-  }
-}
-if (typeof document !== 'undefined') ensureAuthorizePage();
+// 执行授权并入「待办」页；主导航固定由 index.html 的六个 Tab 拥有，运行时不再追加第七个。
 
 const node = (tag, { className, text, attrs = {} } = {}, children = []) => {
   const element = document.createElement(tag);
@@ -91,15 +67,13 @@ export function mount(ctx) {
   const rulesEl = document.getElementById('page-rules');
   const runsEl = document.getElementById('page-rounds');
   const todosEl = document.getElementById('page-todos');
-  const authorizeEl = document.getElementById('page-authorize');
-  if (!overviewEl || !rulesEl || !runsEl || !todosEl || !authorizeEl) return;
+  if (!overviewEl || !rulesEl || !runsEl || !todosEl) return;
 
   let reload = () => {};
   banners.push(makeBanner(overviewEl, () => reload()));
   banners.push(makeBanner(rulesEl, () => reload()));
   banners.push(makeBanner(runsEl, () => reload()));
   banners.push(makeBanner(todosEl, () => reload()));
-  banners.push(makeBanner(authorizeEl, () => reload()));
 
   refs.usage = makeSection(overviewEl, 'usage', '今日用量');
   refs.metrics = makeSection(overviewEl, 'metrics', '任务概览');
@@ -108,7 +82,7 @@ export function mount(ctx) {
   refs.rules = makeSection(rulesEl, 'rules', '调度规则');
   refs.runs = makeSection(runsEl, 'runs', '执行轮次');
   refs.todos = makeSection(todosEl, 'todos', '待我处理');
-  refs.authorize = makeSection(authorizeEl, 'authorize', '执行授权');
+  refs.authorize = makeSection(todosEl, 'authorize', '执行授权');
 
   let write = null;
 
