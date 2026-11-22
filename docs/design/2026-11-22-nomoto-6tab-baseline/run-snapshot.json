@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "runId": "dagrun-mwr4beq5-b8e78ae6",
+  "nodeId": "integration-verify",
+  "generation": 1,
+  "attempt": 1,
+  "commit": "63d2f9035ebc53c282b4c1d9510f3f6beb919da1",
+  "designDigest": "4e60c0663f08b6bb335682aea73316ef37152ab0e716c6dde788ee2ce1813f44",
+  "manifestPath": "docs/design/2026-11-22-nomoto-6tab-baseline/design-manifest.json",
+  "approvalPath": "docs/design/2026-11-22-nomoto-6tab-baseline/design-approval.json",
+  "capturedAt": "2026-11-22T00:55:40.844Z",
+  "verification": {
+    "unit": {
+      "command": "npm test",
+      "total": 1402,
+      "pass": 1401,
+      "fail": 1,
+      "note": "g1a2 真实 HOME 重跑：唯一失败为 wave-1 文件 test/mobile-tab-swipe.test.mjs 的 composer 吸底浏览器回归（main 同样复现），按 error_behavior 打回 tab-swipe 节点，本节点未改业务代码"
+    },
+    "browser": {
+      "command": "浏览器 5 spec 逐个 node test/<spec>.mjs（npm run test:browser 首个 spec 失败即短路，故逐个实跑以覆盖全部）",
+      "specs": [
+        {
+          "file": "test/browser.spec.mjs",
+          "exit": 1,
+          "failure": "详情内容应超出视口（可滚动）",
+          "owner": "session-inputs"
+        },
+        {
+          "file": "test/browser-dag.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-archive.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-design-verify.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-admin.spec.mjs",
+          "exit": 0
+        }
+      ],
+      "regressions": [
+        "test/mobile-tab-swipe.test.mjs: composer 应保持吸底（bottom=1018 > vh=720，归属 tab-swipe 节点，npm test 实跑复现）",
+        "test/browser.spec.mjs:1158 详情内容应超出视口（可滚动，归属 session-inputs 节点，逐 spec 实跑复现）"
+      ],
+      "note": "g1a2 逐 spec 实跑 4 绿 1 红；红项按 error_behavior 打回对应 wave-1 节点，本节点未改业务代码"
+    },
+    "apk": {
+      "command": "node --test test/mobile-apk-build.test.mjs",
+      "total": 16,
+      "pass": 16,
+      "fail": 0
+    },
+    "baseline": {
+      "command": "node --test test/browser-integration-baseline.test.mjs",
+      "total": 4,
+      "pass": 4,
+      "fail": 0
+    },
+    "coverage": []
+  },
+  "rerun": {
+    "runId": "dagrun-mwr66hkz-be133346",
+    "generation": 2,
+    "attempt": 1,
+    "capturedAt": "2026-11-22T01:48:52.118Z",
+    "source": "g2a1 change-approach 当轮实跑：npm test 全量 + 浏览器 5 spec 逐个 + APK + 基线测试；4 个绿 spec 与 APK 16 项本轮逐一重跑，不沿用旧快照记录，回归文字来自本轮实测而非转述",
+    "fresh": {
+      "specs": [
+        {
+          "file": "test/browser.spec.mjs",
+          "exit": 1
+        },
+        {
+          "file": "test/browser-dag.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-archive.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-design-verify.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-admin.spec.mjs",
+          "exit": 0
+        }
+      ],
+      "unit": "1401/1402",
+      "apk": "16/16",
+      "baseline": "4/4"
+    }
+  },
+  "digest": "d18072933c323dc296ecce23467abbe52755b04d7b7342bf465d65ff9e1a20a3"
+}

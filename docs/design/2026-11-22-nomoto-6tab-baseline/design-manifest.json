@@ -1,0 +1,150 @@
+{
+  "schema": 1,
+  "designId": "nomoto-6tab-voice-composer-2026-11-22",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-17-mobile-app/DESIGN_REVIEW.md",
+      "sha256": "25e57ebe537270ac211827395d0ddf8406a1ff815745e7bf24f0baa84ba16ce7"
+    },
+    {
+      "path": "docs/design/2026-11-17-mobile-app/screenshots/phone-overview.png",
+      "sha256": "54abea105111a50885c5001e03da3c199f8112a5a62bbf89c40017a68473a037"
+    },
+    {
+      "path": "docs/design/2026-11-17-mobile-app/screenshots/phone-rules.png",
+      "sha256": "a980aaf218f42bb1f9b81a71ccdf7df51caad1d76e34b529a3492a3531f28fb1"
+    },
+    {
+      "path": "docs/design/2026-11-17-mobile-app/screenshots/phone-sessions.png",
+      "sha256": "7b89b5bcc1ae15496d3d9883cbce95886b2e743a4bd194729e7695f97d0080b5"
+    },
+    {
+      "path": "docs/design/2026-11-17-mobile-app/screenshots/phone-runs.png",
+      "sha256": "9acfed75dd4c03a1447309dafc4bd27be61706ba635fa59737538eb7b34c9883"
+    },
+    {
+      "path": "docs/design/2026-11-17-mobile-app/screenshots/phone-cards.png",
+      "sha256": "cb2f32d97a6be7596c4dd2a9ff3dadbef70ad89352f0f114ef6b850b79882c2e"
+    },
+    {
+      "path": "docs/design/2026-11-17-mobile-app/screenshots/phone-devices.png",
+      "sha256": "b62fded6f7fd59e511dde426ea5a57a7de5d97203aea476f0e13e81b5ff04267"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "overview",
+      "route": "#overview",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "normal",
+        "empty",
+        "loading"
+      ],
+      "interactions": [
+        "open-dag",
+        "project-ring"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-17-mobile-app/screenshots/phone-overview.png"
+      ]
+    },
+    {
+      "id": "rules",
+      "route": "#rules",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "normal",
+        "empty"
+      ],
+      "interactions": [
+        "toggle-rule"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-17-mobile-app/screenshots/phone-rules.png"
+      ]
+    },
+    {
+      "id": "sessions",
+      "route": "#sessions",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "normal",
+        "answered",
+        "archived"
+      ],
+      "interactions": [
+        "open-detail",
+        "voice-input",
+        "autogrow"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-17-mobile-app/screenshots/phone-sessions.png"
+      ]
+    },
+    {
+      "id": "rounds",
+      "route": "#rounds",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "normal",
+        "empty"
+      ],
+      "interactions": [
+        "open-session-link"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-17-mobile-app/screenshots/phone-runs.png"
+      ]
+    },
+    {
+      "id": "todos",
+      "route": "#todos",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "normal",
+        "empty"
+      ],
+      "interactions": [
+        "answer-card"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-17-mobile-app/screenshots/phone-cards.png"
+      ]
+    },
+    {
+      "id": "admin",
+      "route": "#admin",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "normal",
+        "loading"
+      ],
+      "interactions": [
+        "switch-pane",
+        "confirm-save"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-17-mobile-app/screenshots/phone-devices.png"
+      ]
+    }
+  ]
+}
