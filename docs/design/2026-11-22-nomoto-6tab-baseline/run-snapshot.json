@@ -64,11 +64,38 @@
     "coverage": []
   },
   "rerun": {
-    "runId": "dagrun-mwr4wbjf-60d145e5",
-    "generation": 1,
-    "attempt": 2,
-    "capturedAt": "2026-11-22T01:16:20.300Z",
-    "source": "g1a2 对同一基底 63d2f90 的实际重跑：unit 全量 + 浏览器 5 spec 逐个 + APK + 基线测试；回归文字来自本轮实跑而非开发方转述"
+    "runId": "dagrun-mwr66hkz-be133346",
+    "generation": 2,
+    "attempt": 1,
+    "capturedAt": "2026-11-22T01:48:52.118Z",
+    "source": "g2a1 change-approach 当轮实跑：npm test 全量 + 浏览器 5 spec 逐个 + APK + 基线测试；4 个绿 spec 与 APK 16 项本轮逐一重跑，不沿用旧快照记录，回归文字来自本轮实测而非转述",
+    "fresh": {
+      "specs": [
+        {
+          "file": "test/browser.spec.mjs",
+          "exit": 1
+        },
+        {
+          "file": "test/browser-dag.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-archive.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-design-verify.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-admin.spec.mjs",
+          "exit": 0
+        }
+      ],
+      "unit": "1401/1402",
+      "apk": "16/16",
+      "baseline": "4/4"
+    }
   },
-  "digest": "c73c82b89b20b0523160f1eb7694f58c44ed2e3fa246d6aa59372f3826b3c0ef"
+  "digest": "d18072933c323dc296ecce23467abbe52755b04d7b7342bf465d65ff9e1a20a3"
 }

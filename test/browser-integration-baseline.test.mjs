@@ -52,12 +52,15 @@ test('不可变 run 快照：自摘要可重算、且锚定同一 designDigest �
   assert.equal(sha256(canonical(body)), digest, '快照 self-digest 必须可重算，任何改动即失配');
 });
 
-// 复审 P3：回归文字必须来自实际重跑（g1a2 逐 spec + unit），而非开发方转述。
-test('不可变 run 快照：记录 g1a2 实际重跑证据，浏览器 5 spec 全覆盖且红项归属 wave-1', () => {
+// 复审 P3：g2a1 换打法本轮实跑，5 spec + APK 16 项逐一重跑留证，非沿用旧快照记录、非开发方转述。
+test('不可变 run 快照：记录 g2a1 当轮实跑证据，5 spec 与 APK 逐项新鲜、红项仍归属 wave-1', () => {
   const snap = JSON.parse(readFileSync(path.join(BASE, 'run-snapshot.json'), 'utf8'));
-  assert.equal(snap.rerun.runId, 'dagrun-mwr4wbjf-60d145e5');
-  assert.equal(snap.rerun.attempt, 2);
+  assert.equal(snap.rerun.runId, 'dagrun-mwr66hkz-be133346');
+  assert.equal(snap.rerun.generation, 2);
+  assert.equal(snap.rerun.attempt, 1);
+  assert.ok(Date.parse(snap.rerun.capturedAt) > Date.parse('2026-11-22T01:40:12.046Z'), '证据须在 g2a1 派发后采集');
   assert.match(snap.rerun.source, /实跑/);
+  assert.match(snap.rerun.source, /不沿用/);
 
   const specs = snap.verification.browser.specs;
   assert.deepEqual(specs.map(s => s.file), [
@@ -72,6 +75,10 @@ test('不可变 run 快照：记录 g1a2 实际重跑证据，浏览器 5 spec �
   assert.equal(failed[0].owner, 'session-inputs', '红项归属 wave-1 的 session-inputs 节点');
   assert.match(failed[0].failure, /超出视口/);
 
+  // 逐项新鲜证据：4 绿 spec 与 APK 16 项本轮逐一重跑，不是从旧快照抄来。
+  assert.deepEqual(snap.rerun.fresh.specs, specs.map(s => ({ file: s.file, exit: s.exit })));
+  assert.equal(snap.rerun.fresh.apk, '16/16');
+  assert.equal(snap.rerun.fresh.unit, '1401/1402');
   assert.equal(snap.verification.unit.fail, 1, 'unit 唯一失败为 wave-1 tab-swipe 吸底回归');
   assert.equal(snap.verification.apk.pass, 16);
   assert.equal(snap.verification.baseline.pass, 4);
