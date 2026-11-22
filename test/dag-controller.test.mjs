@@ -420,12 +420,13 @@ test('开发回执 done 但没有任何提交：按失败尝试重派，不原�
 });
 
 test('派发提示的回执模板逐字可被状态机接受（dev 与 review）', async () => {
-  const templateOf = prompt => {
-    const line = prompt.split('\n').find(item => item.trim().startsWith('{"events"'));
-    assert.ok(line, '派发提示必须带逐字回执模板');
-    const [event] = JSON.parse(line).events;
-    return { event, receipt: event.detail };
+  const templatesOf = prompt => {
+    // 通过与不通过两版模板都要逐字可解析（2026-11-22：只给通过模板时 worker 自造 outcome 词）。
+    const lines = prompt.split('\n').filter(item => item.trim().startsWith('{"events"'));
+    assert.ok(lines.length, '派发提示必须带逐字回执模板');
+    return lines.map(line => { const [event] = JSON.parse(line).events; return { event, receipt: event.detail }; });
   };
+  const templateOf = prompt => templatesOf(prompt)[0];
   const s = setup([mkNode('a')]);
   await s.ctl.tick();
   const devRun = s.runOf('a');
@@ -452,6 +453,15 @@ test('派发提示的回执模板逐字可被状态机接受（dev 与 review）
   }
   assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: 'weird-outcome' }).reason, 'malformed-outcome', '仍不识别的词按失败收敛');
   assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: 'rework', p2: 1 }), { verdict: 'apply', failureCounted: true, nextStatus: 'done' });
+  // 两版模板齐：review 有 accepted+rework，dev 有 done+failed；各版逐字可被状态机接受。
+  const reviewTemplates = templatesOf(reviewPrompt);
+  assert.deepEqual(reviewTemplates.map(t => t.receipt.outcome).sort(), ['accepted', 'rework']);
+  const devTemplates = templatesOf(s.hub.last('a').prompt);
+  assert.deepEqual(devTemplates.map(t => t.receipt.outcome).sort(), ['done', 'failed']);
+  for (const t of [...reviewTemplates, ...devTemplates]) {
+    const verdict = evaluateAdvance(s.store.getRun(reviewRun.runId), { ...t.receipt, advanceId: reviewRun.expectedAdvanceId, runId: reviewRun.runId, nodeId: 'a', role: 'review' });
+    assert.equal(verdict.verdict, 'apply', `${t.receipt.outcome} 模板逐字可接受`);
+  }
 });
 
 test('验收后残留的非终态 run 会收敛并释放槽位（Hub 已终态但 store 停在 claimed）', async () => {
