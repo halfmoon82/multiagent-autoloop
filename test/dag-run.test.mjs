@@ -1,7 +1,7 @@
 // DAG run 状态机核心：创建/授权快照、迁移校验、advance 回执、失败计数、槽位、publish、持久化。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -10,6 +10,15 @@ import {
 } from '../src/dag-run.mjs';
 
 const setup = () => createRunStore({ directory: mkdtempSync(path.join(tmpdir(), 'dag-run-')) });
+
+// 历史 blocked_unknown run 注入：回执韧性改造后状态机不再产生该终态，但复活/归档口径必须继续覆盖旧 run。
+const forceBlockedUnknown = (store, runId) => {
+  const file = path.join(store.directory, `${runId}.json`);
+  const run = JSON.parse(readFileSync(file, 'utf8'));
+  run.status = 'blocked_unknown';
+  run.expectedAdvanceId = null;
+  writeFileSync(file, JSON.stringify(run, null, 2) + '\n');
+};
 
 const ALL_ACTIONS = [...ALLOWED_ACTIONS];
 const baseInput = over => ({
@@ -183,14 +192,53 @@ test('advance：重复回执幂等，返回相同结果且不重复计数', () =
   assert.equal(store.getRun(run.runId).status, 'done');
 });
 
-test('advance：畸形 detail 进入 blocked_unknown 并计失败', () => {
+test('advance：畸形 detail 保留 outcome 结论、坏字段丢弃留痕（2026-11-22 回执韧性：不再进 blocked_unknown）', () => {
   const store = setup();
   const run = store.createRun(baseInput());
   store.claim(run.runId, { slot: 1 });
-  const bad = store.advance(run.runId, { ...validReceipt(store.getRun(run.runId)), detail: '{"not":"an object"}' });
-  assert.equal(bad.verdict, 'invalid');
-  assert.equal(store.getRun(run.runId).status, 'blocked_unknown');
+  const bad = store.advance(run.runId, { ...validReceipt(store.getRun(run.runId)), detail: { good: 'kept', bad: { nested: 'object' }, n: 2 } });
+  assert.equal(bad.verdict, 'apply');
+  assert.equal(store.getRun(run.runId).status, 'done');
+  assert.equal(store.getRun(run.runId).outcome, 'done', 'validReceipt 默认 outcome done，detail 畸形不影响结论');
+  assert.equal(store.getRun(run.runId).failures, 0);
+  assert.deepEqual(store.getRun(run.runId).appliedAdvance.result.detail, { good: 'kept', n: 2, malformedDetail: true });
+});
+
+test('advance：无法识别的 outcome 按失败尝试收敛（落 done/failed 走既有重派阶梯），不再产生 blocked_unknown 终态', () => {
+  const store = setup();
+  const run = store.createRun(baseInput());
+  store.claim(run.runId, { slot: 1 });
+  const bad = store.advance(run.runId, { ...validReceipt(store.getRun(run.runId)), outcome: 'weird-outcome' });
+  assert.equal(bad.verdict, 'apply');
+  assert.equal(store.getRun(run.runId).status, 'done');
+  assert.equal(store.getRun(run.runId).outcome, 'failed');
   assert.equal(store.getRun(run.runId).failures, 1);
+  assert.equal(store.getRun(run.runId).appliedAdvance.result.detail.malformedOutcome, 'weird-outcome');
+});
+
+test('advance：平台别名 outcome 归一为契约词（changes_requested→rework，分级 detail 原样保留）', () => {
+  const store = setup();
+  const run = store.createRun(baseInput());
+  store.claim(run.runId, { slot: 1 });
+  const verdict = store.advance(run.runId, { ...validReceipt(store.getRun(run.runId)), outcome: 'changes_requested', detail: { p0: 0, p1: 0, p2: 1, p3: 0, head: 'abc123', tests: 'ok' } });
+  assert.equal(verdict.verdict, 'apply');
+  assert.equal(store.getRun(run.runId).status, 'done');
+  assert.equal(store.getRun(run.runId).outcome, 'rework');
+  assert.equal(store.getRun(run.runId).failures, 1, 'rework 计一次失败');
+  assert.equal(store.getRun(run.runId).appliedAdvance.result.detail.p2, 1, '审阅分级 detail 原样保留');
+});
+
+test('advance：outcome 大小写/连字符/下划线/空格变体归一（DONE→done，request changes→rework）', () => {
+  const store = setup();
+  const upper = store.createRun(baseInput());
+  store.claim(upper.runId, { slot: 1 });
+  store.advance(upper.runId, { ...validReceipt(store.getRun(upper.runId)), outcome: 'DONE' });
+  assert.equal(store.getRun(upper.runId).outcome, 'done');
+  const store2 = setup();
+  const r = store2.createRun(baseInput());
+  store2.claim(r.runId, { slot: 1 });
+  store2.advance(r.runId, { ...validReceipt(store2.getRun(r.runId)), outcome: 'request changes' });
+  assert.equal(store2.getRun(r.runId).outcome, 'rework');
 });
 
 test('失败计数：cancelled 计一次失败，attempts-exhausted 取消不重复计数', () => {
@@ -397,8 +445,7 @@ test('阻塞解除自动恢复（2026-11-16 b7 教训入契约）：blocked_unkn
   const store = setup();
   const run = store.createRun(baseInput());
   store.claim(run.runId, { slot: 1 });
-  const blocked = store.advance(run.runId, { ...validReceipt(store.getRun(run.runId)), detail: '{"bad":"not an object"}' });
-  assert.equal(blocked.verdict, 'invalid');
+  forceBlockedUnknown(store, run.runId);
   assert.equal(store.getRun(run.runId).status, 'blocked_unknown');
 
   // 复活必须注明原因：blocked-resolved（阻塞证据已消失）或 change-approach（换打法）。
@@ -423,11 +470,9 @@ test('阻塞解除自动恢复（2026-11-16 b7 教训入契约）：blocked_unkn
 test('终态复活白名单：blocked_unknown 满 3 次必须 change-approach；done/abandoned 永不复活', () => {
   const store = setup();
   const r1 = store.createRun(baseInput());
-  store.claim(r1.runId, { slot: 1 });
-  store.advance(r1.runId, { ...validReceipt(store.getRun(r1.runId)), detail: 'malformed' });
+  forceBlockedUnknown(store, r1.runId);
   const r2 = store.createAttempt(r1.runId, { reason: 'blocked-resolved' });
-  store.claim(r2.runId, { slot: 1 });
-  store.advance(r2.runId, { ...validReceipt(store.getRun(r2.runId)), detail: 'malformed' });
+  forceBlockedUnknown(store, r2.runId);
   const r3 = store.createAttempt(r2.runId, { reason: 'blocked-resolved' });
   assert.equal(r3.attempt, 3);
   assert.throws(() => store.createAttempt(r3.runId, { reason: 'blocked-resolved' }), error => error.code === 'CHANGE_APPROACH_REQUIRED', '复活计入执行尝试，满 3 次必须换打法，防无限复活循环');

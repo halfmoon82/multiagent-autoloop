@@ -17,8 +17,9 @@ function failPrepareOnce(s) {
 test('reattempt prepare 抛错后 queued 无 hubRunId：下一 tick 补发，不静默卡住', async () => {
   const s = setup([mkNode('a')]);
   const failNext = failPrepareOnce(s);
-  await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'weird-outcome');
-  await s.ctl.tick();                       // attempt1 blocked
+  await s.ctl.tick(); s.claimAll();
+  await s.blockNow('a', 'dev');             // attempt1 存量阻塞（回执韧性后状态机不再产生）
+  await s.ctl.tick();
   assert.equal(s.ctl.snapshot().nodes.a.state, 'blocked');
   failNext();
   s.ctl.revive('a', 'blocked-resolved');
@@ -42,7 +43,7 @@ test('queued 补发保留 review 的原 commit 基准，不退回基线', async 
   const s = setup([mkNode('a')]);
   const failNext = failPrepareOnce(s);
   await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick(); // 进入 review
-  s.claimAll(); s.receipt('a', 'review', 'weird-outcome'); await s.ctl.tick();       // review blocked
+  s.claimAll(); await s.blockNow('a', 'review'); await s.ctl.tick();                 // review 存量阻塞
   assert.equal(s.ctl.snapshot().nodes.a.blockedRole, 'review');
   failNext();
   s.ctl.revive('a', 'blocked-resolved');

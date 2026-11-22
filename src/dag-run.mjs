@@ -31,7 +31,8 @@ export const SLOT_RELEASE_MIN_OFFLINE_MS = 24 * 3600 * 1000;
 export const TERMINAL_STATUSES = new Set(['done', 'cancelled', 'abandoned', 'blocked_unknown']);
 export const isTerminal = status => TERMINAL_STATUSES.has(status);
 
-// 主链 queued → claimed → done/cancelled；异常路径 unknown/blocked_unknown/abandoned。
+// 主链 queued → claimed → done/cancelled；异常路径 unknown/abandoned。blocked_unknown 仅存量 run：
+// 回执韧性改造（2026-11-22）后 advance 不再产生该终态，保留状态用于旧 run 的复活/归档口径。
 const LEGAL_TRANSITIONS = {
   queued: ['claimed', 'cancelled', 'unknown', 'blocked_unknown'],
   claimed: ['done', 'cancelled', 'unknown', 'blocked_unknown'],
@@ -152,6 +153,17 @@ export function reconcileGrant(prevGrant, { confirmedActionIds, selectedOptional
 
 const DONE_OUTCOMES = new Set(['done', 'accepted', 'merged']);
 const FAIL_OUTCOMES = new Set(['rework', 'failed']);
+// 平台/口语 outcome 别名 → 契约词（2026-11-22 tab-swipe 事故：审阅自造 changes-requested/changes_requested 被判
+// malformed-outcome → blocked_unknown 终态，节点永久卡死且无人被通知）。身份与轮次校验（advanceId/runId/nodeId/role/
+// generation/attempt 逐字一致）不变、仍 fail-closed；这里只放宽「用词」，且放宽后仍不识别的 outcome 按一次失败尝试
+// 收敛（落 done/failed 走既有重派/换打法阶梯），不再产生终态阻塞。
+const OUTCOME_ALIASES = new Map(Object.entries({
+  'changes-requested': 'rework', 'request-changes': 'rework', 'rejected': 'rework', 'reject': 'rework',
+  'revise': 'rework', 'needs-revision': 'rework', 'needs-changes': 'rework', 'request-changes-required': 'rework',
+  'approved': 'accepted', 'approve': 'accepted', 'accept': 'accepted', 'passed': 'accepted', 'pass': 'accepted', 'lgtm': 'accepted',
+  'failure': 'failed', 'error': 'failed', 'incomplete': 'failed', 'unable': 'failed',
+}));
+const canonicalOutcome = value => String(value ?? '').trim().toLowerCase().replace(/[\s_]+/g, '-');
 const RECEIPT_STRING_FIELDS = ['advanceId', 'runId', 'nodeId', 'role'];
 
 function detailMalformed(detail) {
@@ -200,13 +212,33 @@ export function evaluateAdvance(run, receipt) {
   if (receipt.generation !== run.generation || receipt.attempt !== run.attempt) {
     return { verdict: 'stale', reason: 'attempt-mismatch', failureCounted: false };
   }
-  if (typeof receipt.outcome !== 'string' || (!DONE_OUTCOMES.has(receipt.outcome) && !FAIL_OUTCOMES.has(receipt.outcome))) {
-    return { verdict: 'invalid', reason: 'malformed-outcome', failureCounted: true, nextStatus: 'blocked_unknown' };
+  // outcome 归一：先按契约集合判，再查别名表；record 给出落盘用的 outcome/detail（归一/净化后）。
+  const canonical = canonicalOutcome(receipt.outcome);
+  const normalized = DONE_OUTCOMES.has(canonical) ? canonical
+    : FAIL_OUTCOMES.has(canonical) ? canonical
+      : OUTCOME_ALIASES.get(canonical);
+  if (!normalized) {
+    // 已认证回执（身份/轮次逐字一致）但 outcome 无法识别：按一次失败尝试收敛，run 落 done/failed，
+    // 由调度方既有阶梯重派/换打法。worker 用词错误是协作方缺陷，不是攻击（认证层已防伪造），不该永久卡死节点。
+    return { verdict: 'apply', reason: 'malformed-outcome', failureCounted: true, nextStatus: 'done',
+      record: { outcome: 'failed', detail: { malformedOutcome: String(receipt.outcome).slice(0, 120) } } };
   }
   if (detailMalformed(receipt.detail)) {
-    return { verdict: 'invalid', reason: 'malformed-detail', failureCounted: true, nextStatus: 'blocked_unknown' };
+    // detail 含不可持久化值：outcome 结论（通过/返工是昂贵结论）照常生效，只丢弃坏字段并留痕，
+    // 避免整个审阅轮次因附属字段格式作废。
+    const sanitized = (receipt.detail && typeof receipt.detail === 'object' && !Array.isArray(receipt.detail))
+      ? Object.fromEntries(Object.entries(receipt.detail).filter(([, value]) => value === null
+        || ['string', 'number', 'boolean'].includes(typeof value) || Array.isArray(value)))
+      : {};
+    return { verdict: 'apply', reason: 'malformed-detail', failureCounted: FAIL_OUTCOMES.has(normalized), nextStatus: 'done',
+      record: { outcome: normalized, detail: { ...sanitized, malformedDetail: true } } };
   }
-  return { verdict: 'apply', failureCounted: FAIL_OUTCOMES.has(receipt.outcome), nextStatus: 'done' };
+  // 用词与契约完全一致时不带 record，保持判定结果形状稳定；归一/净化路径才带落盘形态。
+  if (normalized !== receipt.outcome) {
+    return { verdict: 'apply', failureCounted: FAIL_OUTCOMES.has(normalized), nextStatus: 'done',
+      record: { outcome: normalized, detail: receipt.detail } };
+  }
+  return { verdict: 'apply', failureCounted: FAIL_OUTCOMES.has(normalized), nextStatus: 'done' };
 }
 
 // slot-release 判定（纯函数，fail closed）：只有 unknown，或 claimed 且 worker 离线，
@@ -461,12 +493,14 @@ export function createRunStore({ directory } = {}) {
         const next = { ...run };
         if (decision.failureCounted) next.failures = run.failures + 1;
         if (decision.verdict === 'apply') {
+          // record 是 evaluateAdvance 归一/净化后的落盘形态；无 record 的旧判定时取回执原文。
+          const record = decision.record || { outcome: receipt.outcome, detail: receipt.detail };
           next.status = 'done';
-          next.outcome = receipt.outcome;
+          next.outcome = record.outcome;
           next.expectedAdvanceId = null;
           next.appliedAdvance = {
             advanceId: receipt.advanceId,
-            result: { outcome: receipt.outcome, detail: receipt.detail ?? {}, receivedAt: iso() },
+            result: { outcome: record.outcome, detail: record.detail ?? {}, receivedAt: iso() },
           };
         } else if (decision.nextStatus) {
           next.status = decision.nextStatus;

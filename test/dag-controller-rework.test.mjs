@@ -5,7 +5,7 @@ import { mkNode, setup } from './dag-fakes.mjs';
 
 async function blockDev(s, id = 'a') {
   await s.ctl.tick(); s.claimAll();
-  s.receipt(id, 'dev', 'weird-outcome');
+  await s.blockNow(id, 'dev'); // 存量 blocked_unknown 注入（回执韧性后状态机不再产生）
   await s.ctl.tick();
   assert.equal(s.ctl.snapshot().nodes[id].state, 'blocked');
 }
@@ -40,7 +40,7 @@ test('blocked 复活：change-approach 换模型并留痕；复活前节点仍�
 test('blocked 的 review 复活：新槽位从原 commit 重派审阅，不重跑开发', async () => {
   const s = setup([mkNode('a')]);
   await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); await s.ctl.tick(); s.claimAll();
-  s.receipt('a', 'review', 'weird-outcome'); await s.ctl.tick();
+  await s.blockNow('a', 'review'); await s.ctl.tick();
   assert.equal(s.ctl.snapshot().nodes.a.state, 'blocked');
   s.ctl.revive('a', 'blocked-resolved'); await s.ctl.tick();
   assert.equal(s.runOf('a', 'review').attempt, 2);

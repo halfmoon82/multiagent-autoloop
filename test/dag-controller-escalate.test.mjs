@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkNode, setup } from './dag-fakes.mjs';
 
-// 推到 attempt=3 的 blocked_unknown：两次 failed 重派后，第三次回执畸形进入 blocked。
+// 推到 attempt=3 的存量 blocked_unknown：两次 failed 重派后，第三次以旧 run 注入阻塞（回执韧性后状态机不再产生）。
 async function blockAtThirdAttempt(s) {
   for (let i = 0; i < 2; i++) {
     await s.ctl.tick(); s.claimAll();
@@ -11,7 +11,7 @@ async function blockAtThirdAttempt(s) {
     await s.ctl.tick();
   }
   s.claimAll();
-  s.receipt('a', 'dev', 'weird-outcome');
+  await s.blockNow('a', 'dev');
   await s.ctl.tick();
   assert.equal(s.ctl.snapshot().nodes.a.state, 'blocked');
   assert.equal(s.runOf('a').attempt, 3);

@@ -65,10 +65,10 @@ test('1 个隔离 + 多 ready：隔离槽位仍占名额，不被复用', async 
   assert.ok(!s.hub.last('n9'), '1 个隔离 + 4 个运行 = 5，n9 等待');
 });
 
-test('blocked 隔离：blocked_unknown 的硬依赖后代暂停，无关节点继续', async () => {
+test('blocked 隔离：blocked_unknown 的硬依赖后代暂停，无关节点继续（存量 run 注入）', async () => {
   const s = setup([mkNode('a'), mkNode('b', ['a']), mkNode('c')]);
   await s.ctl.tick(); s.claimAll();
-  s.receipt('a', 'dev', 'weird-outcome');
+  await s.blockNow('a', 'dev'); // 存量 blocked_unknown（回执韧性后状态机不再产生）
   assert.equal(s.runOf('a').status, 'blocked_unknown');
   await s.ctl.tick();
   assert.ok(!s.hub.last('b'), '后代暂停');
@@ -444,11 +444,13 @@ test('派发提示的回执模板逐字可被状态机接受（dev 与 review）
   assert.equal(review.receipt.outcome, 'accepted');
   assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), review.receipt), { verdict: 'apply', failureCounted: false, nextStatus: 'done' });
   // 2026-11-22 事故：模板只给通过写法，审阅不通过时 worker 自造 rejected/changes_requested，被判 malformed-outcome → blocked_unknown。
+  // 回执韧性（本 PR）：别名归一让 rejected/changes_requested 按 rework 生效；仍不识别的词按失败尝试收敛，不再终态阻塞。
   const reviewPrompt = s.hub.last('a', 'review').prompt;
   assert.match(reviewPrompt, /outcome[^\n]*accepted[^\n]*rework/, '审阅提示必须写明通过 accepted / 有 P0–P2 返工 rework');
-  for (const bad of ['rejected', 'changes_requested']) {
-    assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: bad }).reason, 'malformed-outcome');
+  for (const alias of ['rejected', 'changes_requested', 'request-changes']) {
+    assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: alias }).record.outcome, 'rework', `${alias} 归一为 rework`);
   }
+  assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: 'weird-outcome' }).reason, 'malformed-outcome', '仍不识别的词按失败收敛');
   assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: 'rework', p2: 1 }), { verdict: 'apply', failureCounted: true, nextStatus: 'done' });
 });
 
