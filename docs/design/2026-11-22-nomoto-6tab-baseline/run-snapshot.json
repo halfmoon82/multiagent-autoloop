@@ -12,18 +12,42 @@
   "verification": {
     "unit": {
       "command": "npm test",
-      "total": 1401,
-      "pass": 1400,
+      "total": 1402,
+      "pass": 1401,
       "fail": 1,
-      "note": "唯一失败为 wave-1 文件 test/mobile-tab-swipe.test.mjs 的浏览器回归；控制器 clean-HOME 环境下浏览器测试 skip（npm test 1394 pass/0 fail/7 skipped）"
+      "note": "g1a2 真实 HOME 重跑：唯一失败为 wave-1 文件 test/mobile-tab-swipe.test.mjs 的 composer 吸底浏览器回归（main 同样复现），按 error_behavior 打回 tab-swipe 节点，本节点未改业务代码"
     },
     "browser": {
-      "command": "npm run test:browser",
-      "regressions": [
-        "test/mobile-tab-swipe.test.mjs: composer 吸底（归属 tab-swipe 节点）",
-        "test/browser.spec.mjs: 详情内容超出视口（归属 session-inputs 节点）"
+      "command": "浏览器 5 spec 逐个 node test/<spec>.mjs（npm run test:browser 首个 spec 失败即短路，故逐个实跑以覆盖全部）",
+      "specs": [
+        {
+          "file": "test/browser.spec.mjs",
+          "exit": 1,
+          "failure": "详情内容应超出视口（可滚动）",
+          "owner": "session-inputs"
+        },
+        {
+          "file": "test/browser-dag.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-archive.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-design-verify.spec.mjs",
+          "exit": 0
+        },
+        {
+          "file": "test/browser-admin.spec.mjs",
+          "exit": 0
+        }
       ],
-      "note": "回归红按 error_behavior 打回对应 wave-1 节点，本节点未改业务代码"
+      "regressions": [
+        "test/mobile-tab-swipe.test.mjs: composer 应保持吸底（bottom=1018 > vh=720，归属 tab-swipe 节点，npm test 实跑复现）",
+        "test/browser.spec.mjs:1158 详情内容应超出视口（可滚动，归属 session-inputs 节点，逐 spec 实跑复现）"
+      ],
+      "note": "g1a2 逐 spec 实跑 4 绿 1 红；红项按 error_behavior 打回对应 wave-1 节点，本节点未改业务代码"
     },
     "apk": {
       "command": "node --test test/mobile-apk-build.test.mjs",
@@ -31,7 +55,20 @@
       "pass": 16,
       "fail": 0
     },
+    "baseline": {
+      "command": "node --test test/browser-integration-baseline.test.mjs",
+      "total": 4,
+      "pass": 4,
+      "fail": 0
+    },
     "coverage": []
   },
-  "digest": "5d39e93edc1e6ce7f80a3775d8f15796c1e41f03b53b788512cb3b3c74ed64c4"
+  "rerun": {
+    "runId": "dagrun-mwr4wbjf-60d145e5",
+    "generation": 1,
+    "attempt": 2,
+    "capturedAt": "2026-11-22T01:16:20.300Z",
+    "source": "g1a2 对同一基底 63d2f90 的实际重跑：unit 全量 + 浏览器 5 spec 逐个 + APK + 基线测试；回归文字来自本轮实跑而非开发方转述"
+  },
+  "digest": "c73c82b89b20b0523160f1eb7694f58c44ed2e3fa246d6aa59372f3826b3c0ef"
 }

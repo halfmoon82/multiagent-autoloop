@@ -51,3 +51,28 @@ test('不可变 run 快照：自摘要可重算、且锚定同一 designDigest �
   const { digest, ...body } = snap;
   assert.equal(sha256(canonical(body)), digest, '快照 self-digest 必须可重算，任何改动即失配');
 });
+
+// 复审 P3：回归文字必须来自实际重跑（g1a2 逐 spec + unit），而非开发方转述。
+test('不可变 run 快照：记录 g1a2 实际重跑证据，浏览器 5 spec 全覆盖且红项归属 wave-1', () => {
+  const snap = JSON.parse(readFileSync(path.join(BASE, 'run-snapshot.json'), 'utf8'));
+  assert.equal(snap.rerun.runId, 'dagrun-mwr4wbjf-60d145e5');
+  assert.equal(snap.rerun.attempt, 2);
+  assert.match(snap.rerun.source, /实跑/);
+
+  const specs = snap.verification.browser.specs;
+  assert.deepEqual(specs.map(s => s.file), [
+    'test/browser.spec.mjs',
+    'test/browser-dag.spec.mjs',
+    'test/browser-archive.spec.mjs',
+    'test/browser-design-verify.spec.mjs',
+    'test/browser-admin.spec.mjs',
+  ], '5 个浏览器 spec 必须逐个实跑并记录');
+  const failed = specs.filter(s => s.exit !== 0);
+  assert.equal(failed.length, 1, '本轮实际重跑恰有 1 个浏览器 spec 红');
+  assert.equal(failed[0].owner, 'session-inputs', '红项归属 wave-1 的 session-inputs 节点');
+  assert.match(failed[0].failure, /超出视口/);
+
+  assert.equal(snap.verification.unit.fail, 1, 'unit 唯一失败为 wave-1 tab-swipe 吸底回归');
+  assert.equal(snap.verification.apk.pass, 16);
+  assert.equal(snap.verification.baseline.pass, 4);
+});
