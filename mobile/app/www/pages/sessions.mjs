@@ -119,27 +119,48 @@ export function mount(ctx) {
   ]);
 
   const detailTitle = node('strong', { className: 'sessions-detail-title' });
+  const detailMeta = node('span', { className: 'sessions-detail-meta' });
   const detailPrompt = node('button', { type: 'button', className: 'sessions-detail-prompt', attrs: { hidden: '' } });
-  const artifactsBtn = node('button', { type: 'button', className: 'sessions-artifacts-btn', text: '本会话产物' });
-  const detailBack = node('button', { type: 'button', className: 'sessions-back', text: '‹ 会话列表' });
+  const artifactsBtn = node('button', { type: 'button', className: 'sessions-artifacts-btn' }, [
+    node('span', { attrs: { 'data-icon': 'file', 'aria-hidden': 'true' } }),
+    node('span', { text: '产物' }),
+  ]);
+  const detailBack = node('button', { type: 'button', className: 'sessions-back icon-btn', attrs: { 'aria-label': '返回会话列表' } }, [
+    node('span', { attrs: { 'data-icon': 'back', 'aria-hidden': 'true' } }),
+  ]);
+  const detailHero = node('div', { className: 'sessions-detail-hero' }, [
+    detailBack,
+    node('div', { className: 'sessions-detail-title-block' }, [detailTitle, detailMeta]),
+    artifactsBtn,
+  ]);
+  const detailContext = node('div', { className: 'sessions-context-bar' });
+  const queueMeta = node('span', { className: 'sessions-queue-meta' });
+  const sessionTools = node('div', { className: 'sessions-tools' }, [
+    node('span', { text: '会话详情' }), queueMeta,
+  ]);
+  const pendingStrip = node('button', { type: 'button', className: 'sessions-pending-strip', attrs: { hidden: '' } });
+  pendingStrip.addEventListener('click', () => { questionBox.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
   const questionBox = node('div', { className: 'sessions-question' });
   // 消息区：详情页 flex 列中唯一的滚动区（flex:1; min-height:0; overflow:auto），顶部与输入栏不随消息流滚走。
   const messageWindow = node('div', { className: 'sessions-message-window' });
   const backBottom = node('button', { type: 'button', className: 'sessions-back-bottom', text: '回到底部 ↓', attrs: { hidden: '' } });
   const composerInput = node('textarea', {
     className: 'sessions-composer-input',
-    attrs: { rows: '2', placeholder: '输入回答或消息…', 'aria-label': '输入回答或消息', enterkeyhint: 'send' },
+    attrs: { rows: '2', placeholder: '继续补充，或使用语音…', 'aria-label': '输入回答或消息', enterkeyhint: 'send' },
   });
-  const micBtn = node('button', { type: 'button', className: 'sessions-mic', text: '🎤', attrs: { 'aria-label': '语音输入', hidden: '' } });
-  const composerSend = node('button', { type: 'button', className: 'sessions-send', text: '发送', attrs: { disabled: '' } });
+  const micBtn = node('button', { type: 'button', className: 'sessions-mic mic-btn', attrs: { 'aria-label': '语音输入', hidden: '' } }, [
+    node('span', { attrs: { 'data-icon': 'mic', 'aria-hidden': 'true' } }),
+  ]);
+  const composerSend = node('button', { type: 'button', className: 'sessions-send send-btn', attrs: { disabled: '', 'aria-label': '发送' } }, [
+    node('span', { attrs: { 'data-icon': 'send', 'aria-hidden': 'true' } }),
+  ]);
   const composerRow = node('div', { className: 'sessions-composer' }, [composerInput, micBtn, composerSend]);
-  // 详情页是 flex 列：顶部（标题/提示词/待回答）与输入栏固定，只有消息窗在中间滚动；输入栏常驻底部。
+  const queuePreview = node('div', { className: 'sessions-queue-preview', attrs: { hidden: '' } });
   const detailTop = node('div', { className: 'sessions-detail-top' }, [
-    node('div', { className: 'sessions-detail-head' }, [detailBack, detailTitle, artifactsBtn]),
-    detailPrompt, questionBox,
+    detailHero, detailContext, sessionTools, detailPrompt, pendingStrip,
   ]);
   const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
-    detailTop, messageWindow, backBottom, composerRow,
+    detailTop, messageWindow, backBottom, queuePreview, composerRow,
   ]);
 
   const archiveBody = node('div', { className: 'sessions-archive-body' });
@@ -154,13 +175,18 @@ export function mount(ctx) {
     className: 'sessions-new-prompt',
     attrs: { rows: '2', placeholder: '例如：设计移动端控制台并拆解产品需求…', 'aria-label': '首轮提示词' },
   });
-  const newMic = node('button', { type: 'button', className: 'sessions-mic sessions-new-mic', text: '🎤', attrs: { 'aria-label': '语音输入', hidden: '' } });
+  const newMic = node('button', { type: 'button', className: 'sessions-mic sessions-new-mic mic-btn', attrs: { 'aria-label': '语音输入', hidden: '' } }, [node('span', { attrs: { 'data-icon': 'mic', 'aria-hidden': 'true' } })]);
   const newPromptRow = node('div', { className: 'sessions-new-prompt-row' }, [newPrompt, newMic]);
   const newKinds = node('div', { className: 'sessions-new-kinds' });
   const newRecommend = node('p', { className: 'hint sessions-recommend' });
   const newSubmit = node('button', { type: 'button', className: 'primary sessions-new-submit', text: '创建并发送首轮' });
   const newView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'new', hidden: '' } }, [
     node('button', { type: 'button', className: 'sessions-back', text: '‹ 会话列表' }),
+    node('div', { className: 'page-heading sessions-new-heading' }, [
+      node('p', { className: 'eyebrow', text: 'NEW SESSION' }),
+      node('h1', { className: 'page-title', text: '您想做什么？' }),
+      node('p', { className: 'page-subtitle', text: '输入第一句话，系统会推荐会话类型，您也可以手动更改。' }),
+    ]),
     newProjects, newPromptRow, newRecommend, newKinds, newSubmit,
   ]);
 
@@ -187,7 +213,8 @@ export function mount(ctx) {
     if (!vv) { detailView.style.height = ''; return; }
     const top = Math.max(0, detailView.getBoundingClientRect().top);
     const bottomGap = Number.parseFloat(getComputedStyle(document.getElementById('app-main') || document.body).paddingBottom) || 0;
-    detailView.style.height = `${Math.max(240, Math.floor(vv.height - top - bottomGap))}px`;
+    const navHeight = document.getElementById('tab-bar')?.getBoundingClientRect().height || 0;
+    detailView.style.height = `${Math.max(240, Math.floor(vv.height - top - bottomGap - navHeight))}px`;
   };
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', () => { fitDetail(); regrow(); });
@@ -304,6 +331,7 @@ export function mount(ctx) {
       state.group = qmodel.restoreGroup(state.savedGroup);
     }
     detailTitle.textContent = session.title || '会话';
+    renderDetailMeta(session);
     showView('detail');
     renderQuestion();
     renderMessages();
@@ -313,6 +341,15 @@ export function mount(ctx) {
     state.detailSessionId = session.id;
     startDetailPolling();
     saveContext();
+  }
+
+  function renderDetailMeta(session) {
+    detailMeta.textContent = [session?.kindLabel, session?.agent, session?.statusLabel].filter(Boolean).join(' · ');
+    detailContext.textContent = `项目 ${session?.projectLabel || '未识别'} · 会话上下文`;
+    queueMeta.textContent = session?.queuedCount ? `排队消息 ${session.queuedCount}` : '消息与回答';
+    queuePreview.hidden = !session?.queuedCount;
+    queuePreview.replaceChildren();
+    if (session?.queuedCount) queuePreview.appendChild(node('span', { className: 'queue-chip', text: `排队 ${session.queuedCount} 条消息` }));
   }
 
   // 提示词默认折叠成一行（不再钉在顶部挤压转录区），点按展开/收起全文。
@@ -364,16 +401,21 @@ export function mount(ctx) {
         else messageWindow.scrollTop = keepScroll;
       }
       detailTitle.textContent = session.title || '会话';
+      renderDetailMeta(session);
     } catch { /* 轮询静默失败，等下一轮 */ }
   }
 
   function renderQuestion() {
     questionBox.replaceChildren();
+    pendingStrip.hidden = true;
     if (!qmodel || !state.group || !state.group.questions.length) {
       questionBox.appendChild(node('p', { className: 'hint', text: '当前会话没有需要回答的事项' }));
       return;
     }
     const binding = qmodel.buildQuestionGroupBinding(state.group);
+    const remaining = Math.max(0, binding.total - binding.answeredCount);
+    pendingStrip.hidden = remaining === 0;
+    if (remaining > 0) pendingStrip.textContent = `还有 ${remaining} 个问题待回答 · 立即定位`;
     const track = node('div', { className: 'sessions-progress-track', attrs: { role: 'progressbar', 'aria-valuenow': binding.percent } });
     for (let i = 0; i < binding.total; i += 1) {
       track.appendChild(node('span', { className: i < binding.answeredCount ? 'done' : '' }));
@@ -493,6 +535,7 @@ export function mount(ctx) {
     messageWindow.replaceChildren();
     if (!total) messageWindow.appendChild(node('p', { className: 'hint', text: '暂无在线转录；可查看归档会话或等待新消息' }));
     else for (const message of state.messages) messageWindow.appendChild(messageNode(message));
+    messageWindow.appendChild(questionBox);
     backBottom.hidden = state.follow;
   }
 

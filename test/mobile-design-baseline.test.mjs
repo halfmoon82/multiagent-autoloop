@@ -58,3 +58,32 @@ test('会话卡片：标题、状态胶囊、项目/类型与摘要分层，长�
   assert.match(cssSessions, /\.sessions-item \.item-title\s*\{[^}]*overflow-wrap:\s*anywhere/);
   assert.match(cssSessions, /\.sessions-chip\.active\s*\{[^}]*background:\s*var\(--brand-ink\)/);
 });
+
+test('会话详情：返回式详情头、上下文工具条与待回答定位齐备', () => {
+  const src = read('mobile/app/www/pages/sessions.mjs');
+  const cssSessions = read('mobile/app/www/pages/sessions.css');
+  for (const marker of ["className: 'sessions-detail-hero'", "className: 'sessions-detail-meta'", "className: 'sessions-context-bar'", "className: 'sessions-tools'", "className: 'sessions-pending-strip'", "className: 'sessions-queue-preview'"]) assert.ok(src.includes(marker), `缺少 ${marker}`);
+  assert.match(cssSessions, /\.sessions-message\.user \.sessions-bubble\s*\{[^}]*background:\s*var\(--brand-ink\)/);
+  assert.match(cssSessions, /\.sessions-message\.user \.sessions-bubble\s*\{[^}]*color:\s*#fff/);
+});
+
+test('会话 composer 与新建表单：使用既有图标语义和完整标题组', () => {
+  const src = read('mobile/app/www/pages/sessions.mjs');
+  const cssSessions = read('mobile/app/www/pages/sessions.css');
+  assert.match(src, /className: 'sessions-mic mic-btn',/);
+  assert.match(src, /className: 'sessions-send send-btn',/);
+  assert.match(src, /attrs: \{ 'data-icon': 'mic'/);
+  assert.match(src, /attrs: \{ 'data-icon': 'send'/);
+  assert.match(src, /text: 'NEW SESSION'/);
+  assert.match(src, /text: '您想做什么？'/);
+  assert.match(cssSessions, /\.sessions-composer\s*\{[^}]*border-radius:\s*16px/);
+  assert.match(cssSessions, /\.sessions-send\.send-btn\s*\{[^}]*border-radius:\s*50%/);
+});
+
+test('消息与待回答组共用滚动区，composer 独立常驻底部', () => {
+  const src = read('mobile/app/www/pages/sessions.mjs');
+  const cssSessions = read('mobile/app/www/pages/sessions.css');
+  assert.match(src, /messageWindow\.appendChild\(questionBox\)/);
+  assert.doesNotMatch(cssSessions, /\.sessions-question\s*\{[^}]*max-height:\s*42%/);
+  assert.match(cssSessions, /\.sessions-message-window\s*\{[^}]*min-height:\s*5rem/);
+});

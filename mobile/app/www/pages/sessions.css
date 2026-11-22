@@ -185,3 +185,45 @@
 .sessions-current-open { width: 100%; margin: 0.35rem 0 0.65rem; }
 .sessions-archived-toggle { min-height: 40px; margin: 0.45rem 0 0; padding: 0.35rem 0; border: 0; background: transparent; color: var(--secondary); font-size: 0.72rem; text-align: left; }
 .sessions-archived-list { margin-top: 0.5rem; }
+
+/* 设计基线：会话详情、问题组与 composer。 */
+.sessions-detail-hero { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 0.55rem; }
+.sessions-detail-title-block { flex: 1 1 auto; min-width: 0; }
+.sessions-detail-title { display: block; font-size: 1rem; line-height: 1.35; overflow-wrap: anywhere; }
+.sessions-detail-meta { display: block; margin-top: 0.2rem; color: var(--secondary); font-size: 0.68rem; }
+.sessions-back.icon-btn, .sessions-artifacts-btn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 0.25rem;
+  width: 2.75rem; min-height: 2.75rem; margin: 0; padding: 0.55rem; border: 0; background: transparent; color: var(--ink);
+}
+.sessions-artifacts-btn { width: auto; font-size: 0.72rem; }
+.sessions-context-bar { padding: 0.55rem 0.7rem; border: 1px solid var(--line); border-radius: 0.75rem; background: #fff; color: var(--secondary); font-size: 0.7rem; }
+.sessions-tools { display: flex; gap: 0.45rem; margin: 0.55rem 0; }
+.sessions-tools > * { padding: 0.35rem 0.65rem; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--secondary); font-size: 0.66rem; }
+.sessions-pending-strip {
+  width: 100%; min-height: 40px; margin: 0.45rem 0; padding: 0.55rem 0.7rem; text-align: left;
+  border: 1px solid #eadfc8; border-radius: 0.75rem; background: #fff8e9; color: #8c672e; font-size: 0.7rem;
+}
+.sessions-question { flex: none; }
+.sessions-queue-preview { flex: none; display: flex; gap: 0.4rem; overflow-x: auto; }
+.sessions-queue-preview .queue-chip { padding: 0.25rem 0.55rem; border-radius: 999px; background: var(--mint); color: var(--brand-ink); font-size: 0.64rem; white-space: nowrap; }
+.sessions-message { display: flex; flex-direction: column; gap: 0.2rem; }
+.sessions-message .sessions-role, .sessions-message .sessions-time { font-size: 0.64rem; color: var(--tertiary); }
+.sessions-message .sessions-bubble { max-width: 88%; margin: 0; padding: 0.7rem 0.8rem; border-radius: 1rem; font-size: 0.78rem; line-height: 1.55; }
+.sessions-message:not(.user) .sessions-bubble { background: #fff; border: 1px solid var(--line); color: var(--ink); }
+.sessions-message.user .sessions-bubble { background: var(--brand-ink); border: 1px solid var(--brand-ink); color: #fff; }
+.sessions-composer {
+  flex: none; display: flex; align-items: flex-end; flex-wrap: nowrap; gap: 0.35rem;
+  margin-top: 0.35rem; padding: 0.35rem; border: 1px solid var(--line); border-radius: 16px; background: #fff;
+}
+.sessions-composer-input { flex: 1 1 auto; min-width: 0; margin: 0; border: 0; background: transparent; }
+.sessions-mic.mic-btn, .sessions-send.send-btn {
+  flex: none; display: grid; place-items: center; width: 2.75rem; min-height: 2.75rem; margin: 0; padding: 0.65rem;
+  border: 0; border-radius: 50%; background: transparent; color: var(--ink-soft);
+}
+.sessions-send.send-btn { border-radius: 50%; background: var(--brand); color: #fff; }
+.sessions-send.send-btn:disabled { background: #d8dfda; color: #89958f; }
+.sessions-new-heading { margin-top: 0.6rem; }
+.sessions-new-prompt-row { padding: 0.35rem; border: 1px solid var(--line); border-radius: 1rem; background: #fff; }
+.sessions-new-prompt-row .sessions-new-prompt { border: 0; }
+.sessions-question { flex: none; }
+.sessions-message-window { min-height: 5rem; }
