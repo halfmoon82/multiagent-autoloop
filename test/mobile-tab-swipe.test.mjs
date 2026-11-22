@@ -76,12 +76,21 @@ test('状态机：起点被标记为可滚动容器则不拦截；cancel 回弹'
 // ---- DOM 接线（假元素）----
 function fakeSurface() {
   const handlers = {};
+  const captureHandlers = {};
+  let captured = null;
   return {
     style: {}, clientWidth: 360,
-    addEventListener(type, fn) { handlers[type] = fn; },
-    removeEventListener(type) { delete handlers[type]; },
-    fire(type, e) { handlers[type]?.({ pointerId: 1, pointerType: 'touch', timeStamp: 0, ...e }); },
-    handlers,
+    addEventListener(type, fn, opts) { (opts === true || opts?.capture ? captureHandlers : handlers)[type] = fn; },
+    removeEventListener(type, fn, opts) { delete (opts === true || opts?.capture ? captureHandlers : handlers)[type]; },
+    fire(type, e, capture = false) {
+      const ev = { pointerId: 1, pointerType: 'touch', timeStamp: 0, preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; }, ...e };
+      (capture ? captureHandlers : handlers)[type]?.(ev);
+      return ev;
+    },
+    setPointerCapture(id) { captured = id; },
+    releasePointerCapture(id) { if (captured === id) captured = null; },
+    get captured() { return captured; },
+    handlers, captureHandlers,
   };
 }
 
@@ -132,6 +141,60 @@ test('接线：pointercancel / blur 打断后回弹到当前页，不切页', ()
   assert.deepEqual(picked, []);
 });
 
+test('接线：拖动切页后拦截 click，避免误触按下处元素；纯点击不拦截', () => {
+  const surface = fakeSurface();
+  const picked = [];
+  attachTabSwipe({ surface, tabOrder: () => ['a', 'b', 'c'], getActive: () => 'b', select: n => picked.push(n), win: { PointerEvent: function PE() {} } });
+  surface.fire('pointerdown', { clientX: 300, clientY: 50, target: {}, timeStamp: 0 });
+  surface.fire('pointermove', { clientX: 200, clientY: 52, timeStamp: 100 });
+  surface.fire('pointerup', { clientX: 200, clientY: 52, timeStamp: 120 });
+  const swipedClick = surface.fire('click', { target: {} }, true);
+  assert.equal(swipedClick.defaultPrevented, true);
+  assert.equal(swipedClick.stopped, true);
+  assert.deepEqual(picked, ['c']);
+  // 纯点击：位移不足阈值，click 必须照常透传
+  surface.fire('pointerdown', { clientX: 300, clientY: 50, target: {}, timeStamp: 200 });
+  surface.fire('pointerup', { clientX: 302, clientY: 50, timeStamp: 260 });
+  const tapClick = surface.fire('click', { target: {} }, true);
+  assert.equal(tapClick.defaultPrevented, undefined);
+  assert.equal(tapClick.stopped, undefined);
+});
+
+test('接线：仅横向拖动才捕获指针，pointerup / 丢失捕获后释放并复位', () => {
+  const surface = fakeSurface();
+  const picked = [];
+  attachTabSwipe({ surface, tabOrder: () => ['a', 'b', 'c'], getActive: () => 'b', select: n => picked.push(n), win: { PointerEvent: function PE() {} } });
+  surface.fire('pointerdown', { pointerId: 9, clientX: 300, clientY: 50, target: {}, timeStamp: 0 });
+  assert.equal(surface.captured, null); // 按下不捕获：.content 内按钮的 click 必须照常命中
+  surface.fire('pointermove', { pointerId: 9, clientX: 200, clientY: 52, timeStamp: 100 });
+  assert.equal(surface.captured, 9); // 主轴锁定为横向后才捕获，鼠标拖出仍能收到 pointerup
+  surface.fire('pointerup', { pointerId: 9, clientX: 200, clientY: 52, timeStamp: 120 });
+  assert.equal(surface.captured, null);
+  assert.deepEqual(picked, ['c']);
+  surface.fire('pointerdown', { pointerId: 10, clientX: 300, clientY: 50, target: {}, timeStamp: 200 });
+  surface.fire('pointermove', { pointerId: 10, clientX: 150, clientY: 50, timeStamp: 300 });
+  assert.equal(surface.captured, 10);
+  assert.equal(surface.style.transform, 'translateX(-150px)');
+  surface.fire('lostpointercapture', { pointerId: 10 });
+  assert.equal(surface.captured, null);
+  assert.equal(surface.style.transform, '');
+  surface.fire('pointerup', { pointerId: 10, clientX: 150, clientY: 50, timeStamp: 400 });
+  assert.deepEqual(picked, ['c']); // 打断后不切页
+});
+
+test('接线：点击 .content 内按钮不捕获指针、不拦 click', () => {
+  const surface = fakeSurface();
+  const picked = [];
+  attachTabSwipe({ surface, tabOrder: () => ['a', 'b', 'c'], getActive: () => 'b', select: n => picked.push(n), win: { PointerEvent: function PE() {} } });
+  surface.fire('pointerdown', { pointerId: 3, clientX: 300, clientY: 50, target: {}, timeStamp: 0 });
+  surface.fire('pointerup', { pointerId: 3, clientX: 301, clientY: 50, timeStamp: 60 });
+  assert.equal(surface.captured, null);
+  const click = surface.fire('click', { target: {} }, true);
+  assert.equal(click.defaultPrevented, undefined);
+  assert.equal(click.stopped, undefined);
+  assert.deepEqual(picked, []);
+});
+
 test('不支持 PointerEvent 时退化为无手势，不抛错、不挂监听', () => {
   const surface = fakeSurface();
   const r = attachTabSwipe({ surface, tabOrder: () => ['a'], getActive: () => 'a', select() {}, win: {} });
@@ -154,7 +217,10 @@ test('app.mjs 接线：滑动与点击走同一 selectTab；styles 限定 touch-
   assert.match(app, /features\/tab-swipe\/index\.mjs/);
   assert.match(app, /select: selectTab/);
   assert.match(app, /tab\.addEventListener\('click', \(\) => selectTab\(tab\.dataset\.tab\)\)/);
-  assert.match(read('mobile/app/www/styles.css'), /\.content \{[^}]*touch-action: pan-y/);
+  const styles = read('mobile/app/www/styles.css');
+  assert.match(styles, /\.content \{[^}]*touch-action: pan-y/);
+  // 审阅 P2：横向裁剪不得建立滚动容器，否则会话页 sticky 输入栏脱离视口。
+  assert.match(styles, /\.content \{[^}]*overflow-x: clip/);
 });
 
 // ---- 真实浏览器：合成 pointer(touch) 事件 ----
@@ -252,5 +318,30 @@ test('浏览器：双向滑动切页、aria 语义不变、横向滚动容器内
   // 点击仍可用，aria-hidden 语义（hidden 属性）与选中同步
   await page.locator('[data-tab="todos"]').click();
   assert.deepEqual(await state(), { selected: ['todos'], visible: ['todos'], transform: '' });
+  // 审阅 P2 回归：长内容下会话页输入栏仍吸底——.content 不得成为横向滚动容器。
+  await page.locator('[data-tab="sessions"]').click();
+  const composer = await page.evaluate(() => {
+    const el = document.querySelector('.sessions-composer');
+    if (!el) return { ok: false, reason: 'no composer' };
+    for (let n = el; n && n !== document.body; n = n.parentElement) n.removeAttribute('hidden');
+    const spacer = document.createElement('div');
+    spacer.style.cssText = 'height:3000px';
+    el.parentNode.insertBefore(spacer, el);
+    // 真机由原生壳把 .screen 约束到视口高；这里显式复现，使它成为真正的滚动容器。
+    // 停在长内容顶部：sticky 输入栏应仍贴在视口底部（审阅 P2 的真实场景）。
+    const screen = document.querySelector('main.screen');
+    screen.style.height = '100vh';
+    screen.scrollTop = 0;
+    const box = el.getBoundingClientRect();
+    const screenBox = screen.getBoundingClientRect();
+    return {
+      ok: box.bottom <= Math.min(window.innerHeight, screenBox.bottom) + 2 && box.top < window.innerHeight,
+      bottom: Math.round(box.bottom), top: Math.round(box.top),
+      vh: window.innerHeight, screenBottom: Math.round(screenBox.bottom),
+      overflowX: getComputedStyle(document.querySelector('.content')).overflowX,
+    };
+  });
+  assert.equal(composer.overflowX, 'clip');
+  assert.equal(composer.ok, true, `composer 应保持吸底: ${JSON.stringify(composer)}`);
   assert.deepEqual(errors, []);
 });
