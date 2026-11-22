@@ -6,7 +6,7 @@ import { ROOT_NODE, createRunStore } from '../src/dag-run.mjs';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createSentStore, wakeSentFile, findDagStalls, findDagGated, findDagClaimedStalls, CLAIMED_STALL_THRESHOLD_MS, buildStallEvent, sweepDagStalls, createDagStallSweeper, STALL_THRESHOLD_MS } from '../src/dag-stall.mjs';
+import { createSentStore, wakeSentFile, findDagStalls, findDagGated, findDagClaimedStalls, findDagBlockedDormant, BLOCKED_STALL_THRESHOLD_MS, CLAIMED_STALL_THRESHOLD_MS, buildStallEvent, sweepDagStalls, createDagStallSweeper, STALL_THRESHOLD_MS } from '../src/dag-stall.mjs';
 
 const pushFails = s => { s.publisher.commitPr = async () => { throw new Error("git push failed: could not read Username for 'https://github.com': terminal prompts disabled"); }; };
 const toReview = async s => { await s.ctl.tick(); s.claimAll(); s.receipt('a', 'dev', 'done'); };
@@ -144,6 +144,55 @@ test('findDagGated：gated 节点超过阈值才报，有 gateAt 用 gateAt，�
   const gated = findDagGated([run], { now });
   assert.deepEqual(gated.map(s => s.nodeId).sort(), ['legacy', 'old']);
   assert.equal(gated.find(s => s.nodeId === 'old').since, now - STALL_THRESHOLD_MS - 1);
+});
+
+test('findDagBlockedDormant：blocked 超阈值才报；有 todo/阈值内/latest run 活跃不报', () => {
+  const now = 1_000_000_000_000;
+  const root = { runId: 'r1', nodeId: ROOT_NODE, status: 'running', project: '/p', planId: 'p1', publish: { nodes: {
+    old: { state: 'blocked', blockedRole: 'dev', todo: null },
+    fresh: { state: 'blocked', blockedRole: 'dev', todo: null },
+    busy: { state: 'blocked', blockedRole: 'dev', todo: { kind: 'revive' } },
+  } } };
+  const nodeRuns = [
+    { runId: 'n-old', project: '/p', planId: 'p1', nodeId: 'old', role: 'dev', generation: 1, attempt: 1, status: 'blocked_unknown', updatedAt: new Date(now - BLOCKED_STALL_THRESHOLD_MS - 1).toISOString() },
+    { runId: 'n-fresh', project: '/p', planId: 'p1', nodeId: 'fresh', role: 'dev', generation: 1, attempt: 1, status: 'blocked_unknown', updatedAt: new Date(now - 1000).toISOString() },
+    { runId: 'n-busy', project: '/p', planId: 'p1', nodeId: 'busy', role: 'dev', generation: 1, attempt: 1, status: 'blocked_unknown', updatedAt: new Date(now - BLOCKED_STALL_THRESHOLD_MS - 1).toISOString() },
+  ];
+  const stalled = findDagBlockedDormant([root, ...nodeRuns], { now });
+  assert.deepEqual(stalled.map(s => s.nodeId), ['old']);
+  assert.equal(stalled[0].blockedDormant, true);
+  assert.equal(stalled[0].since, now - BLOCKED_STALL_THRESHOLD_MS - 1);
+});
+
+test('sweep：blocked 长期无人接手唤醒调度会话；同段去重；复活换新段再报', async () => {
+  const s = setup([mkNode('a')]);
+  await s.ctl.tick(); s.claimAll();
+  await s.blockNow('a', 'dev');
+  await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.a.state, 'blocked');
+  const posted = []; const sent = new Set();
+  const post = async event => { posted.push(event); return { event: 1 }; };
+  const t0 = Date.parse(s.runOf('a').updatedAt);
+  // 阈值内不报（findDagBlockedDormant 需要全量 runs 找节点角色 run，与 claimed 巡检同口径）
+  await sweepDagStalls({ runs: s.store.listRuns(), post, sent, now: t0 + BLOCKED_STALL_THRESHOLD_MS - 1 });
+  assert.equal(posted.length, 0);
+  // 超阈值报一次，事件 ID 含 since（同段去重）
+  await sweepDagStalls({ runs: s.store.listRuns(), post, sent, now: t0 + BLOCKED_STALL_THRESHOLD_MS });
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].type, 'scheduling.message');
+  assert.match(posted[0].id, new RegExp(`:${t0}$`));
+  assert.match(JSON.parse(posted[0].detail).text, /a（状态 blocked）/);
+  await sweepDagStalls({ runs: s.store.listRuns(), post, sent, now: t0 + BLOCKED_STALL_THRESHOLD_MS * 2 });
+  assert.equal(posted.length, 1, '同一阻塞段不重复报');
+  // 复活后新 attempt → 新 since → 新段再报（若仍阻塞）
+  s.ctl.revive('a', 'blocked-resolved');
+  await s.ctl.tick(); s.claimAll();
+  await s.blockNow('a', 'dev');
+  await s.ctl.tick();
+  const t1 = Date.parse(s.runOf('a').updatedAt);
+  assert.ok(t1 > t0, '复活换 attempt 后 updatedAt 前进');
+  await sweepDagStalls({ runs: s.store.listRuns(), post, sent, now: t1 + BLOCKED_STALL_THRESHOLD_MS });
+  assert.equal(posted.length, 2, '新阻塞段再报一次');
 });
 
 test('sweep：gated 节点也唤醒调度会话，事件走同一去重通道', async () => {

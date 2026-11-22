@@ -10,6 +10,7 @@ import { createRunStore, isTerminal, ROOT_NODE } from './dag-run.mjs';
 
 export const STALL_THRESHOLD_MS = 10 * 60 * 1000;
 export const CLAIMED_STALL_THRESHOLD_MS = 30 * 60 * 1000; // claimed 是 worker 在跑，正常长任务可能超 10 分钟，阈值放宽到 30 分钟
+export const BLOCKED_STALL_THRESHOLD_MS = 60 * 60 * 1000; // blocked 先由控制器证据复查自愈（秒级~分钟级），1 小时无人接手才是真孤儿
 const ERROR_LIMIT = 600;
 const SENT_LIMIT = 2000; // 已投递事件 ID 保留上限，超出丢弃最旧；防文件无界增长
 
@@ -132,6 +133,30 @@ export function findDagClaimedStalls(runs, { now = Date.now(), thresholdMs = CLA
   return stalled;
 }
 
+// 「blocked 长期无人接手」发现（无模型）：blocked 节点没有待办、持续超过阈值——说明控制器
+// 自愈与进度唤醒都没覆盖它（典型：控制台重启后进度唤醒去重表挡住边沿唤醒，调度会话再也没被叫醒，
+// 2026-11-22 tab-swipe 卡死三天）。交给调度会话；同一阻塞段只报一次（事件 id 含 since=最新角色 run
+// 的 updatedAt，复活换新 attempt 自然换新段再报）。
+export function findDagBlockedDormant(runs, { now = Date.now(), thresholdMs = BLOCKED_STALL_THRESHOLD_MS } = {}) {
+  const stalled = [];
+  for (const run of runs || []) {
+    if (!run || run.nodeId !== ROOT_NODE || isTerminal(run.status) || run.publish?.cancelRequested) continue;
+    for (const [nodeId, node] of Object.entries(run.publish?.nodes || {})) {
+      if (node?.state !== 'blocked' || node.todo) continue;
+      const latest = (runs || []).filter(r => r.project === run.project && r.planId === run.planId && r.nodeId === nodeId && r.role === (node.blockedRole || 'dev'))
+        .sort((a, b) => (b.generation - a.generation) || (b.attempt - a.attempt))[0];
+      if (!latest) continue;
+      const since = latest.updatedAt ? new Date(latest.updatedAt).getTime() : null;
+      if (!Number.isFinite(since)) continue;
+      if (now - since < thresholdMs) continue;
+      stalled.push({ runId: run.runId, planId: run.planId, project: run.project, nodeId, state: 'blocked',
+        since, count: 1, blockedDormant: true,
+        error: `节点 ${nodeId} 处于 blocked 已 ${Math.round((now - since) / 60000)} 分钟：控制器自愈与进度唤醒均未覆盖（可能重启后去重表挡住边沿唤醒），请读 dag-runs 定位根因并 revive（blocked-resolved/change-approach）或升级` });
+    }
+  }
+  return stalled;
+}
+
 const seg = value => String(value).replace(/[^A-Za-z0-9._-]/g, '_');
 
 // 状态变化唤醒：一轮 tick 里值得调度会话知道的变化（dev/review/accepted/blocked/gated），
@@ -177,7 +202,9 @@ export function buildStallEvent(stall, now = Date.now()) {
       ? '修好后调用 POST /api/dag-runs/<runId>/revive（body 带 nodeId、reason=gated-resolved）让控制器换打法重派；只有用户掌握的凭据/授权才向用户提问。核实后本轮结束。'
       : stall.claimedStall
         ? '修好后需要调度方核实 worker 是否存活：存活则等其回执，失联/僵死则换打法重派（POST /api/dag-runs/<runId>/revive，reason=change-approach）。控制器不会自动重试 claimed run。只有用户掌握的凭据/授权才向用户提问。核实后本轮结束。'
-        : '修好后控制器下一轮会自动重试，无需手工重派。只有用户掌握的凭据/授权才向用户提问。核实后本轮结束。',
+        : stall.blockedDormant
+          ? 'blocked 控制器不会自动重派：定位根因后调用 POST /api/dag-runs/<runId>/revive（body 带 nodeId、reason=blocked-resolved 或 change-approach）；需要用户决策的升级发卡。核实后本轮结束。'
+          : '修好后控制器下一轮会自动重试，无需手工重派。只有用户掌握的凭据/授权才向用户提问。核实后本轮结束。',
   ].join('\n');
   return {
     id: `console:dag-stall:${seg(stall.runId)}:${seg(stall.nodeId)}:${stall.since}`,
@@ -204,6 +231,12 @@ export async function sweepDagStalls({ runs, post, sent = new Set(), now = Date.
     catch (error) { result.errors.push(`${node.runId}/${node.nodeId}：${error.message}`); }
   }
   for (const node of findDagGated(runs, { now, thresholdMs })) {
+    const event = buildStallEvent(node, now);
+    if (sent.has(event.id)) continue;
+    try { await post(event); sent.add(event.id); result.posted.push(event.id); }
+    catch (error) { result.errors.push(`${node.runId}/${node.nodeId}：${error.message}`); }
+  }
+  for (const node of findDagBlockedDormant(runs, { now })) {
     const event = buildStallEvent(node, now);
     if (sent.has(event.id)) continue;
     try { await post(event); sent.add(event.id); result.posted.push(event.id); }
