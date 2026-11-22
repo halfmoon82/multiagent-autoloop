@@ -1,6 +1,8 @@
 // 会话页：把 sessions / question-group 的只读视图模型接到 App 壳。
 // 页面只改 #page-sessions 容器，跨页互调走 ctx.hooks；所有上游文本用 textContent 渲染，不拼接 HTML。
 // 视图模型经相对路径 ../src/... 加载（受限静态服务 /mobile/src/）；Node 下不装配 DOM。
+import { renderIcons } from '../icons.mjs';
+
 const loadViewModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/sessions/index.mjs');
@@ -93,20 +95,27 @@ export function mount(ctx) {
   bannerRetry.addEventListener('click', () => { void reload(); });
   banner.appendChild(bannerRetry);
 
-  const filterRow = node('div', { className: 'sessions-filter-row' }, [
-    node('input', {
-      className: 'sessions-search',
-      attrs: { type: 'search', placeholder: '搜索会话（标题、项目）', 'aria-label': '搜索会话' },
-    }),
-    node('button', { type: 'button', className: 'sessions-new-btn', text: '新建会话' }),
+  const heading = node('div', { className: 'page-heading sessions-heading' }, [
+    node('p', { className: 'eyebrow', text: 'SESSIONS' }),
+    node('h1', { className: 'page-title', text: '会话管理' }),
+    node('p', { className: 'page-subtitle', text: '对话、调度与 PRD 设计，各就其位。' }),
   ]);
-  const filters = node('div', { className: 'sessions-filters' });
+  const newButton = node('button', { type: 'button', className: 'sessions-new-btn primary-btn full-btn', text: '＋ 新建会话' });
+  const searchInput = node('input', {
+    className: 'sessions-search',
+    attrs: { type: 'search', placeholder: '搜索会话', 'aria-label': '搜索会话' },
+  });
+  const searchRow = node('div', { className: 'sessions-search-box search-box' }, [
+    node('span', { className: 'search-icon', attrs: { 'data-icon': 'search', 'aria-hidden': 'true' } }),
+    searchInput,
+  ]);
+  const filters = node('div', { className: 'sessions-filters filter-rail' });
   const currentBox = node('div', { className: 'sessions-current' });
   const listBox = node('div', { className: 'sessions-items' });
   const archivedToggle = node('button', { type: 'button', className: 'sessions-archived-toggle' });
   const archivedBox = node('div', { className: 'sessions-archived-list', attrs: { hidden: '' } });
   const listView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'list' } }, [
-    filterRow, filters, currentBox, listBox, archivedToggle, archivedBox,
+    heading, newButton, searchRow, filters, currentBox, listBox, archivedToggle, archivedBox,
   ]);
 
   const detailTitle = node('strong', { className: 'sessions-detail-title' });
@@ -158,6 +167,7 @@ export function mount(ctx) {
   const menuCopy = node('button', { type: 'button', text: '复制' });
   const menu = node('div', { className: 'sessions-menu', attrs: { hidden: '' } }, [menuCopy]);
   host.replaceChildren(banner, listView, detailView, archiveView, newView, menu);
+  renderIcons(host);
 
   const views = { list: listView, detail: detailView, archive: archiveView, new: newView };
   let detailTimer = null;
@@ -207,9 +217,14 @@ export function mount(ctx) {
 
   // ---- 列表 ----
   function sessionItem(item) {
-    const box = node('button', { type: 'button', className: 'sessions-item', attrs: { 'data-session-id': item.id } }, [
-      node('strong', { text: item.title || '会话' }),
-      node('span', { className: 'sessions-meta', text: [item.projectLabel, item.statusLabel, item.kindLabel, item.updatedLabel].filter(Boolean).join(' · ') }),
+    const status = item.status === 'running' ? 'active' : (item.status === 'idle' ? 'done' : 'neutral');
+    const box = node('button', { type: 'button', className: 'sessions-item session-item', attrs: { 'data-session-id': item.id } }, [
+      node('div', { className: 'item-top' }, [
+        node('strong', { className: 'item-title', text: item.title || '会话' }),
+        node('span', { className: 'status-chip', attrs: { 'data-status': status }, text: item.statusLabel || '状态未知' }),
+      ]),
+      node('span', { className: 'item-subtitle', text: [item.projectLabel, item.kindLabel].filter(Boolean).join(' · ') }),
+      node('span', { className: 'item-description', text: [item.updatedLabel, item.queuedCount ? `${item.queuedCount} 条排队消息` : ''].filter(Boolean).join(' · ') }),
     ]);
     box.addEventListener('click', () => { void openSession(item); });
     return box;
@@ -222,14 +237,14 @@ export function mount(ctx) {
         type: 'button',
         className: `sessions-chip${option.id === list.kindFilter.selected ? ' active' : ''}`,
         attrs: { 'data-kind': option.id, 'aria-pressed': String(option.id === list.kindFilter.selected) },
-        text: option.label,
+        text: `${option.label.replace('会话', '')} ${(Array.isArray(state.snapshot?.sessions) ? state.snapshot.sessions : []).filter(item => option.id === 'all' || item.kind === option.id).length}`,
       });
       chip.addEventListener('click', () => { state.kind = option.id; saveContext(); applyFilters(); });
       return chip;
     }));
 
     currentBox.replaceChildren();
-    if (list.current) {
+    if (list.current && !list.sessions.items.some(item => item.id === list.current.id)) {
       const open = node('button', { type: 'button', className: 'sessions-current-open', text: '进入会话 ›' });
       open.addEventListener('click', () => { void openSession(list.current); });
       currentBox.append(
@@ -694,12 +709,12 @@ export function mount(ctx) {
     })();
   });
   newView.querySelector('.sessions-back').addEventListener('click', goList);
-  filterRow.querySelector('.sessions-new-btn').addEventListener('click', () => {
+  newButton.addEventListener('click', () => {
     showView('new');
     renderNewForm();
     if (typeof ctx.hooks?.pushView === 'function') ctx.hooks.pushView({ type: 'sessions', view: 'new' });
   });
-  filterRow.querySelector('.sessions-search').addEventListener('input', event => {
+  searchInput.addEventListener('input', event => {
     state.query = event.target.value;
     saveContext();
     applyFilters();

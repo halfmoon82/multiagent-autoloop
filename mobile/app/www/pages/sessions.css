@@ -145,3 +145,43 @@
 /* 新建会话：提示词与麦克风同行，复用会话输入框同一套语音链路。 */
 .sessions-new-prompt-row { display: flex; align-items: flex-end; gap: 0.5rem; }
 .sessions-new-prompt-row .sessions-new-prompt { flex: 1 1 auto; width: auto; }
+
+/* 设计基线：会话管理列表。 */
+.page[data-page="sessions"] {
+  --brand: #137c64; --brand-ink: #103f34; --secondary: #66766f; --tertiary: #89958f;
+  padding-top: 0.25rem;
+}
+.page-heading { margin: 0 0 0.9rem; }
+.page-heading .eyebrow { margin: 0 0 0.35rem; color: var(--brand); font-size: 0.62rem; font-weight: 750; letter-spacing: 0.16em; }
+.page-heading .page-title { margin: 0; font-size: 1.65rem; line-height: 1.15; letter-spacing: -0.045em; font-weight: 650; }
+.page-heading .page-subtitle { margin: 0.45rem 0 0; color: var(--secondary); font-size: 0.78rem; line-height: 1.55; }
+.primary-btn { color: #fff; background: var(--brand, var(--ink)); border-color: var(--brand, var(--ink)); border-radius: 0.8rem; font-weight: 650; }
+.full-btn { width: 100%; }
+.sessions-new-btn.primary-btn.full-btn { min-height: 48px; margin: 0.9rem 0 0; }
+.sessions-search-box.search-box {
+  display: flex; align-items: center; gap: 0.55rem; height: 2.75rem; margin: 0.8rem 0;
+  padding: 0 0.8rem; border: 1px solid var(--line); border-radius: 0.75rem; background: #fff; color: var(--tertiary);
+}
+.sessions-search-box .search-icon { flex: none; width: 1.1rem; height: 1.1rem; }
+.sessions-search-box .inline-icon { width: 1.1rem; height: 1.1rem; }
+.sessions-search-box .sessions-search { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: 0.8rem; }
+.sessions-filters.filter-rail { display: flex; gap: 0.45rem; margin: 0.75rem -0.8rem 0.8rem; padding: 0 0.8rem 0.15rem; overflow-x: auto; scrollbar-width: none; }
+.sessions-chip { flex: none; min-height: 34px; margin: 0; padding: 0.35rem 0.8rem; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--secondary); font-size: 0.75rem; }
+.sessions-chip.active { border-color: var(--brand-ink); background: var(--brand-ink); color: #fff; }
+.sessions-items { display: flex; flex-direction: column; gap: 0.65rem; }
+.sessions-item {
+  display: block; width: 100%; min-height: 0; margin: 0; padding: 0.9rem; text-align: left;
+  background: var(--card); border: 1px solid var(--line); border-radius: 15px; box-shadow: 0 1px 2px rgba(15,61,46,0.025);
+}
+.sessions-item .item-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.55rem; }
+.sessions-item .item-title { min-width: 0; color: var(--ink); font-size: 0.86rem; font-weight: 650; line-height: 1.45; overflow-wrap: anywhere; }
+.sessions-item .item-subtitle { display: block; margin-top: 0.35rem; color: var(--tertiary); font-size: 0.7rem; line-height: 1.45; text-align: center; }
+.sessions-item .item-description { display: block; margin-top: 0.3rem; color: var(--secondary); font-size: 0.7rem; line-height: 1.45; text-align: center; }
+.status-chip { flex: none; padding: 0.2rem 0.45rem; border-radius: 999px; background: #eef1ef; color: var(--secondary); font-size: 0.62rem; white-space: nowrap; }
+.status-chip[data-status="active"] { background: #fff0d8; color: #9a6a24; }
+.status-chip[data-status="done"] { background: var(--mint); color: var(--brand-ink); }
+.sessions-current { margin-bottom: 0.65rem; }
+.sessions-current-card { padding: 0.9rem; border: 1px solid var(--line); border-radius: 15px; background: var(--mint); }
+.sessions-current-open { width: 100%; margin: 0.35rem 0 0.65rem; }
+.sessions-archived-toggle { min-height: 40px; margin: 0.45rem 0 0; padding: 0.35rem 0; border: 0; background: transparent; color: var(--secondary); font-size: 0.72rem; text-align: left; }
+.sessions-archived-list { margin-top: 0.5rem; }

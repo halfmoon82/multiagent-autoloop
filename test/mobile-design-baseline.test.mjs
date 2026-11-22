@@ -32,3 +32,29 @@ test('共享图标来自既有设计语义，六栏含管理后台图标', async
     assert.match(icons.icon(name), /viewBox="0 0 24 24"/);
   }
 });
+
+test('会话列表：标题组、全宽新建、独立搜索与数量筛选按设计顺序', () => {
+  const src = read('mobile/app/www/pages/sessions.mjs');
+  const cssSessions = read('mobile/app/www/pages/sessions.css');
+  assert.match(src, /className: 'page-heading sessions-heading'/);
+  assert.match(src, /text: 'SESSIONS'/);
+  assert.match(src, /text: '会话管理'/);
+  assert.match(src, /text: '对话、调度与 PRD 设计，各就其位。'/);
+  const headingAt = src.indexOf("className: 'page-heading sessions-heading'");
+  const newAt = src.indexOf("className: 'sessions-new-btn primary-btn full-btn'");
+  const searchAt = src.indexOf("className: 'sessions-search-box search-box'");
+  const filtersAt = src.indexOf("const filters = node('div', { className: 'sessions-filters filter-rail'");
+  assert.ok(headingAt > 0 && newAt > headingAt && searchAt > newAt && filtersAt > searchAt, '控件顺序应为标题→新建→搜索→筛选');
+  assert.match(src, /state\.snapshot\.sessions/);
+  assert.match(cssSessions, /\.sessions-new-btn\.primary-btn\.full-btn/);
+  assert.match(cssSessions, /\.sessions-search-box\.search-box/);
+});
+
+test('会话卡片：标题、状态胶囊、项目/类型与摘要分层，长标题可换行', () => {
+  const src = read('mobile/app/www/pages/sessions.mjs');
+  const cssSessions = read('mobile/app/www/pages/sessions.css');
+  for (const marker of ["className: 'item-top'", "className: 'item-title'", "className: 'status-chip'", "className: 'item-subtitle'", "className: 'item-description'"]) assert.ok(src.includes(marker), `缺少 ${marker}`);
+  assert.match(cssSessions, /\.sessions-item\s*\{[^}]*border-radius:\s*15px/);
+  assert.match(cssSessions, /\.sessions-item \.item-title\s*\{[^}]*overflow-wrap:\s*anywhere/);
+  assert.match(cssSessions, /\.sessions-chip\.active\s*\{[^}]*background:\s*var\(--brand-ink\)/);
+});
