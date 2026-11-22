@@ -47,6 +47,11 @@ function makeSessions(artifact) {
     async continueSession(id) { this.calls.push(['continue', id]); return { id, continued: true }; },
     async start(payload) { this.calls.push(['start', payload]); return { id: 'sess-new', ...payload }; },
     async list() { this.calls.push(['list']); return [{ id: 'sess-live', kind: 'scheduling', project: WORKTREE, status: 'running' }]; },
+    async updateQueued(id, itemId, text) { this.calls.push(['updateQueued', id, itemId, text]); return { id }; },
+    async moveQueued(id, itemId, direction) { this.calls.push(['moveQueued', id, itemId, direction]); return { id }; },
+    async steerQueued(id, itemId) { this.calls.push(['steerQueued', id, itemId]); return { id }; },
+    async removeQueued(id, itemId) { this.calls.push(['removeQueued', id, itemId]); return { id }; },
+    async clearQueued(id) { this.calls.push(['clearQueued', id]); return { id }; },
     async send(id, text, opts) {
       this.calls.push(['send', id, text, opts]);
       if (id === 'sess-closed') throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
@@ -362,4 +367,23 @@ test('绑定设备可经移动端网关向会话发消息，复用同一 session
   });
   assert.equal(closed.status, 409);
   assert.equal((await closed.json()).error, '会话已关闭，请开启新会话', '本地会话态错误透传用户可读文案，与网页端同口径');
+});
+
+test('绑定设备可编辑、排序、删除、清空并 steer 排队消息，复用同一会话管理器', async t => {
+  const ctx = await setup(t);
+  const base = '/api/mobile/sessions/sess-live/queue';
+  const cases = [
+    ['PUT', `${base}/q1`, { text: '改后' }, 'updateQueued'],
+    ['POST', `${base}/q1/move`, { direction: 'up' }, 'moveQueued'],
+    ['POST', `${base}/q1/steer`, {}, 'steerQueued'],
+    ['DELETE', `${base}/q1`, {}, 'removeQueued'],
+    ['POST', `${base}/clear`, {}, 'clearQueued'],
+  ];
+  for (const [method, route, body, name] of cases) {
+    const response = await mobileFetch(ctx.url, route, { method, token: ctx.deviceToken, body });
+    assert.equal(response.status, 200, `${method} ${route}`);
+    assert.ok(ctx.sessions.calls.some(call => call[0] === name && call[1] === 'sess-live'), `缺少 ${name} 调用`);
+  }
+  const unbound = await mobileFetch(ctx.url, `${base}/clear`, { method: 'POST', body: {} });
+  assert.equal(unbound.status, 401);
 });

@@ -227,3 +227,24 @@
 .sessions-new-prompt-row .sessions-new-prompt { border: 0; }
 .sessions-question { flex: none; }
 .sessions-message-window { min-height: 5rem; }
+
+/* 大历史区、按需详情与完整队列交互。 */
+.sessions-message-window { min-height: 12rem; }
+.sessions-info-toggle, .sessions-queue-toggle { min-height: 34px; margin: 0; padding: 0.35rem 0.65rem; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--secondary); font-size: 0.66rem; }
+.sessions-info-toggle[aria-expanded="true"], .sessions-queue-toggle[aria-expanded="true"] { background: var(--brand-ink); color: #fff; }
+.sessions-info-panel, .sessions-queue-panel { margin: 0.45rem 0; padding: 0.65rem; border: 1px solid var(--line); border-radius: 0.85rem; background: #fff; }
+.sessions-queue-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.55rem; }
+.sessions-queue-head strong { font-size: 0.78rem; }
+.sessions-queue-clear { min-height: 34px; margin: 0; padding: 0.3rem 0.55rem; color: var(--danger); font-size: 0.66rem; }
+.sessions-queue-item { padding: 0.55rem 0; border-top: 1px solid var(--line); }
+.sessions-queue-input { width: 100%; min-height: 3.5rem; padding: 0.55rem; border: 1px solid var(--line); border-radius: 0.65rem; font: inherit; font-size: 0.78rem; resize: none; }
+.sessions-queue-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
+.sessions-queue-actions button { flex: 1 1 4.2rem; min-height: 36px; margin: 0; padding: 0.3rem 0.45rem; font-size: 0.66rem; }
+.sessions-queue-actions .sessions-queue-steer { background: var(--brand); color: #fff; border-color: var(--brand); }
+.sessions-composer-wrap { flex: none; }
+.sessions-send-mode { display: block; margin: 0.25rem 0 0.2rem; color: var(--secondary); font-size: 0.64rem; }
+.sessions-steer-btn { flex: none; min-height: 2.75rem; margin: 0; padding: 0.45rem 0.6rem; border-color: var(--brand-ink); color: var(--brand-ink); font-size: 0.7rem; }
+.queue-chip { min-height: 30px; margin: 0; padding: 0.25rem 0.55rem; border: 0; border-radius: 999px; background: var(--mint); color: var(--brand-ink); font-size: 0.64rem; white-space: nowrap; }
+.sessions-composer { flex-wrap: wrap; }
+.sessions-send-mode { flex: 0 0 100%; }
+.sessions-back-bottom { position: absolute; right: 0.35rem; bottom: 5.5rem; z-index: 3; margin: 0; box-shadow: 0 2px 8px rgba(15,61,46,0.14); }

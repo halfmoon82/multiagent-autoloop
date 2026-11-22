@@ -1150,7 +1150,9 @@ try {
   await page.waitForTimeout(300);
   const openedAtBottom = await page.evaluate(() => { const el = document.querySelector('.sessions-message-window'); return el.scrollTop + el.clientHeight >= el.scrollHeight - 8; });
   assert.equal(openedAtBottom, true, '打开详情必须定位到最新一条（底部），不得停在顶部');
-  assert.equal(await page.locator('.sessions-detail-prompt').isVisible(), true, '提示词入口可见');
+  assert.equal(await page.locator('.sessions-info-panel').isVisible(), false, '提示词默认收进会话详情，把空间留给历史区');
+  await page.locator('.sessions-info-toggle').click();
+  assert.equal(await page.locator('.sessions-detail-prompt').isVisible(), true, '展开会话详情后提示词入口可见');
   assert.equal(await page.locator('.sessions-detail-prompt.expanded').count(), 0, '提示词默认折叠成一行');
   await page.locator('.sessions-detail-prompt').click();
   assert.equal(await page.locator('.sessions-detail-prompt.expanded').count(), 1, '点按展开完整提示词');

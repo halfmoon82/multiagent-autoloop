@@ -37,6 +37,11 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'sync', method: 'POST', pattern: /^\/api\/mobile\/sync$/ },
   { key: 'rule-action', method: 'POST', pattern: /^\/api\/mobile\/rules\/([^/]+)\/(run|pause|resume)$/ },
   { key: 'session-classify', method: 'POST', pattern: /^\/api\/mobile\/session-classify$/ },
+  { key: 'session-queue-clear', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/clear$/ },
+  { key: 'session-queue-update', method: 'PUT', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)$/ },
+  { key: 'session-queue-move', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)\/move$/ },
+  { key: 'session-queue-remove', method: 'DELETE', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)$/ },
+  { key: 'session-queue-steer', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)\/steer$/ },
   { key: 'session-message', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/messages$/ },
   { key: 'session-create', method: 'POST', pattern: /^\/api\/mobile\/sessions$/ },
 ]);
@@ -224,6 +229,28 @@ async function sessionMessageRoute(res, url, route, ctx, body, req) {
   jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
 }
 
+async function sessionQueueRoute(res, url, route, ctx, body, req) {
+  const sessions = ctx.config.schedulingSessions;
+  const match = url.pathname.match(route.pattern);
+  const id = decodeURIComponent(match[1]);
+  const itemId = match[2] ? decodeURIComponent(match[2]) : null;
+  const methods = {
+    'session-queue-clear': ['clearQueued', [id]],
+    'session-queue-update': ['updateQueued', [id, itemId, String(body.text ?? '')]],
+    'session-queue-move': ['moveQueued', [id, itemId, String(body.direction ?? '')]],
+    'session-queue-remove': ['removeQueued', [id, itemId]],
+    'session-queue-steer': ['steerQueued', [id, itemId]],
+  };
+  const [method, args] = methods[route.key] || [];
+  if (!method || typeof sessions?.[method] !== 'function') fail(503, '会话队列通道不可用');
+  const fields = { sessionId: id, queueItemId: itemId, sourceDeviceId: ctx.device.id };
+  let result;
+  try { result = await sessions[method](...args); }
+  catch (error) { auditFailure(ctx, req, 'session.queue', fields); throw error; }
+  audit(ctx, req, 'session.queue', fields);
+  jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
+}
+
 async function sessionCreateRoute(res, body, ctx, req) {
   const sessions = ctx.config.schedulingSessions;
   if (!sessions || typeof sessions.start !== 'function') fail(503, '会话通道不可用');
@@ -310,6 +337,7 @@ async function executeWrite(route, req, res, url, ctx) {
     if (route.key === 'session-classify') return sessionClassifyRoute(res, body);
     if (route.key === 'session-create') return await sessionCreateRoute(res, body, ctx, req);
     if (route.key === 'session-message') return await sessionMessageRoute(res, url, route, ctx, body, req);
+    if (route.key.startsWith('session-queue-')) return await sessionQueueRoute(res, url, route, ctx, body, req);
     jsonResponse(res, 501, { error: '该写操作尚未实现', route: route.key, declared: true });
   } catch (error) {
     writeError(res, error);

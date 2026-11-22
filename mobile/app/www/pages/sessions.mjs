@@ -134,10 +134,11 @@ export function mount(ctx) {
     artifactsBtn,
   ]);
   const detailContext = node('div', { className: 'sessions-context-bar' });
-  const queueMeta = node('span', { className: 'sessions-queue-meta' });
-  const sessionTools = node('div', { className: 'sessions-tools' }, [
-    node('span', { text: '会话详情' }), queueMeta,
-  ]);
+  const infoToggle = node('button', { type: 'button', className: 'sessions-info-toggle', text: '会话详情', attrs: { 'aria-expanded': 'false' } });
+  const queueToggle = node('button', { type: 'button', className: 'sessions-queue-toggle', attrs: { 'aria-expanded': 'false' } });
+  const sessionTools = node('div', { className: 'sessions-tools' }, [infoToggle, queueToggle]);
+  const infoPanel = node('div', { className: 'sessions-info-panel', attrs: { hidden: '' } }, [detailPrompt]);
+  const queuePanel = node('div', { className: 'sessions-queue-panel', attrs: { hidden: '' } });
   const pendingStrip = node('button', { type: 'button', className: 'sessions-pending-strip', attrs: { hidden: '' } });
   pendingStrip.addEventListener('click', () => { questionBox.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
   const questionBox = node('div', { className: 'sessions-question' });
@@ -154,10 +155,14 @@ export function mount(ctx) {
   const composerSend = node('button', { type: 'button', className: 'sessions-send send-btn', attrs: { disabled: '', 'aria-label': '发送' } }, [
     node('span', { attrs: { 'data-icon': 'send', 'aria-hidden': 'true' } }),
   ]);
-  const composerRow = node('div', { className: 'sessions-composer' }, [composerInput, micBtn, composerSend]);
+  const steerBtn = node('button', { type: 'button', className: 'sessions-steer-btn', text: '打断', attrs: { hidden: '', title: '打断当前轮并立即发送（steer）', 'aria-label': '打断当前轮并立即发送' } });
+  const sendMode = node('span', { className: 'sessions-send-mode', attrs: { hidden: '' } });
+  const composerRow = node('div', { className: 'sessions-composer' }, [
+    sendMode, composerInput, micBtn, steerBtn, composerSend,
+  ]);
   const queuePreview = node('div', { className: 'sessions-queue-preview', attrs: { hidden: '' } });
   const detailTop = node('div', { className: 'sessions-detail-top' }, [
-    detailHero, detailContext, sessionTools, detailPrompt, pendingStrip,
+    detailHero, detailContext, sessionTools, infoPanel, queuePanel, pendingStrip,
   ]);
   const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
     detailTop, messageWindow, backBottom, queuePreview, composerRow,
@@ -235,6 +240,16 @@ export function mount(ctx) {
     banner.querySelector('.sessions-banner-text').textContent = String(text || '');
     banner.hidden = !text;
   };
+
+  infoToggle.addEventListener('click', () => {
+    infoPanel.hidden = !infoPanel.hidden;
+    infoToggle.setAttribute('aria-expanded', String(!infoPanel.hidden));
+    if (!infoPanel.hidden) renderPrompt(state.session);
+  });
+  queueToggle.addEventListener('click', () => {
+    queuePanel.hidden = !queuePanel.hidden;
+    queueToggle.setAttribute('aria-expanded', String(!queuePanel.hidden));
+  });
 
   const goList = () => {
     if (typeof ctx.hooks?.popView === 'function' && state.view !== 'list') ctx.hooks.popView();
@@ -346,10 +361,75 @@ export function mount(ctx) {
   function renderDetailMeta(session) {
     detailMeta.textContent = [session?.kindLabel, session?.agent, session?.statusLabel].filter(Boolean).join(' · ');
     detailContext.textContent = `项目 ${session?.projectLabel || '未识别'} · 会话上下文`;
-    queueMeta.textContent = session?.queuedCount ? `排队消息 ${session.queuedCount}` : '消息与回答';
-    queuePreview.hidden = !session?.queuedCount;
-    queuePreview.replaceChildren();
-    if (session?.queuedCount) queuePreview.appendChild(node('span', { className: 'queue-chip', text: `排队 ${session.queuedCount} 条消息` }));
+    const queue = Array.isArray(session?.queue) ? session.queue : [];
+    queueToggle.textContent = `排队消息 ${queue.length}`;
+    queueToggle.setAttribute('aria-expanded', String(!queuePanel.hidden));
+    steerBtn.hidden = session?.busy !== true;
+    sendMode.hidden = session?.busy !== true;
+    sendMode.textContent = '当前正在执行：默认排队，点「打断」立即 steer';
+    composerSend.setAttribute('aria-label', session?.busy === true ? '排队发送' : '发送');
+    queuePreview.hidden = queue.length === 0;
+    queuePreview.replaceChildren(...queue.map(item => {
+      const chip = node('button', { type: 'button', className: 'queue-chip', text: `${item.id} · ${item.text}`, attrs: { title: '打开队列管理' } });
+      chip.addEventListener('click', () => { queuePanel.hidden = false; queueToggle.setAttribute('aria-expanded', 'true'); });
+      return chip;
+    }));
+    renderQueuePanel(session);
+  }
+
+  function renderQueuePanel(session) {
+    const items = Array.isArray(session?.queue) ? session.queue : [];
+    queuePanel.replaceChildren();
+    const clear = node('button', { type: 'button', className: 'sessions-queue-clear', text: '清空队列', attrs: { disabled: items.length ? '' : 'disabled' } });
+    clear.disabled = items.length === 0;
+    clear.addEventListener('click', () => { void runQueueAction('clearQueued', null); });
+    queuePanel.appendChild(node('div', { className: 'sessions-queue-head' }, [
+      node('strong', { text: `排队消息 · ${items.length}` }), clear,
+    ]));
+    if (!items.length) {
+      queuePanel.appendChild(node('p', { className: 'hint', text: '没有排队消息。忙碌时发送会默认加入队列。' }));
+      return;
+    }
+    items.forEach((item, index) => {
+      const input = node('textarea', { className: 'sessions-queue-input', attrs: { rows: '2', 'aria-label': `编辑排队消息 ${index + 1}` } });
+      input.value = item.text;
+      input.addEventListener('change', () => { void runQueueAction('updateQueued', item, { text: input.value }); });
+      const up = node('button', { type: 'button', text: '上移', attrs: { 'aria-label': `上移第 ${index + 1} 条` } });
+      up.disabled = index === 0;
+      up.addEventListener('click', () => { void runQueueAction('moveQueued', item, { direction: 'up' }); });
+      const down = node('button', { type: 'button', text: '下移', attrs: { 'aria-label': `下移第 ${index + 1} 条` } });
+      down.disabled = index === items.length - 1;
+      down.addEventListener('click', () => { void runQueueAction('moveQueued', item, { direction: 'down' }); });
+      const steer = node('button', { type: 'button', className: 'sessions-queue-steer', text: '立即引导' });
+      steer.addEventListener('click', () => { void runQueueAction('steerQueued', item); });
+      const remove = node('button', { type: 'button', text: '删除' });
+      remove.addEventListener('click', () => { void runQueueAction('removeQueued', item); });
+      queuePanel.appendChild(node('div', { className: 'sessions-queue-item', attrs: { 'data-queue-id': item.id } }, [
+        input,
+        node('div', { className: 'sessions-queue-actions' }, [up, down, steer, remove]),
+      ]));
+    });
+  }
+
+  async function refreshSessionState() {
+    await load({ quiet: true });
+    const current = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
+    if (!current) return;
+    state.session = current;
+    renderDetailMeta(current);
+  }
+
+  async function runQueueAction(action, item, payload = {}) {
+    if (!write || !state.detailSessionId) return;
+    try {
+      showBanner('');
+      const id = state.detailSessionId;
+      if (action === 'clearQueued') await write.clearQueued(id);
+      else await write[action](id, item.id, payload);
+      await refreshSessionState();
+    } catch (error) {
+      showBanner(`队列操作失败：${error?.message || '请重试'}`);
+    }
   }
 
   // 提示词默认折叠成一行（不再钉在顶部挤压转录区），点按展开/收起全文。
@@ -400,6 +480,7 @@ export function mount(ctx) {
         if (followNow) scrollToBottom();
         else messageWindow.scrollTop = keepScroll;
       }
+      state.session = session;
       detailTitle.textContent = session.title || '会话';
       renderDetailMeta(session);
     } catch { /* 轮询静默失败，等下一轮 */ }
@@ -587,7 +668,7 @@ export function mount(ctx) {
   });
 
   composerInput.value = state.drafts.composer;
-  const updateSend = () => { composerSend.disabled = !(autogrow ? autogrow.canSend(composerInput.value) : composerInput.value.trim().length > 0); };
+  const updateSend = () => { const disabled = !(autogrow ? autogrow.canSend(composerInput.value) : composerInput.value.trim().length > 0); composerSend.disabled = disabled; steerBtn.disabled = disabled; };
   updateSend();
   composerInput.addEventListener('input', () => { state.drafts.composer = composerInput.value; updateSend(); saveContext(); });
   growLater(composerInput);
@@ -596,31 +677,31 @@ export function mount(ctx) {
   growLater(newPrompt);
   // 双不可用（无录音能力且无原生识别器）：隐藏所有麦克风，键盘输入不受影响。
   window.addEventListener('autoloop:voice-unavailable', () => { micBtn.hidden = true; newMic.hidden = true; });
-  composerSend.addEventListener('click', () => {
-    void (async () => {
-      const text = composerInput.value.trim();
-      if (!text || !write || !state.session) return;
-      composerSend.disabled = true; // 发送中禁用，结束后按内容重算
-      try {
-        // 真正发送到控制台：此前这里只是本地回显，重开即丢（会话消息从未到达服务器）。
-        await write.sendMessage(state.session.id, { text });
-        state.messages.push({ role: '主人', text, at: '' });
-        composerInput.value = '';
-        composerInput.dispatchEvent(new Event('autoloop-autogrow')); // 发送后回弹到最少行数
-        state.drafts.composer = '';
-        state.follow = true;
-        ctx.hooks?.haptic?.tap?.();
-        renderMessages();
-        scrollToBottom();
-        saveContext();
-        setTimeout(() => { if (state.view === 'detail') void refreshDetail(); }, 1500);
-      } catch (error) {
-        showBanner(`发送失败：${error?.message || '请重试'}（内容已保留在输入框）`);
-      } finally {
-        updateSend();
-      }
-    })();
-  });
+  async function sendComposer(interrupt) {
+    const text = composerInput.value.trim();
+    if (!text || !write || !state.session) return;
+    composerSend.disabled = true;
+    steerBtn.disabled = true;
+    try {
+      await write.sendMessage(state.session.id, { text, interrupt });
+      state.messages.push({ role: '主人', text, at: '' });
+      composerInput.value = '';
+      composerInput.dispatchEvent(new Event('autoloop-autogrow'));
+      state.drafts.composer = '';
+      state.follow = true;
+      ctx.hooks?.haptic?.tap?.();
+      renderMessages();
+      scrollToBottom();
+      saveContext();
+      await refreshSessionState();
+    } catch (error) {
+      showBanner(`发送失败：${error?.message || '请重试'}（内容已保留在输入框）`);
+    } finally {
+      updateSend();
+    }
+  }
+  composerSend.addEventListener('click', () => { void sendComposer(false); });
+  steerBtn.addEventListener('click', () => { void sendComposer(true); });
 
   detailPrompt.addEventListener('click', () => {
     state.promptExpanded = state.promptExpanded !== true;

@@ -103,3 +103,65 @@ test('全局项目筛选使用设计稿卡片条，不改变原生选择器与�
   assert.match(src, /root\.replaceChildren\(bar, status\)/);
   assert.match(pfCss, /\.project-filter-bar\s*\{[^}]*border-radius:\s*13px/);
 });
+
+test('会话忙碌时提供排队与打断 steer 两种真实发送方式', async () => {
+  const src = read('mobile/app/www/pages/sessions.mjs');
+  const { createSessionsWrite } = await import('../mobile/src/features/sessions/browser.mjs');
+  assert.match(src, /sessions-steer-btn/);
+  assert.match(src, /sendComposer\(true\)/);
+  assert.match(src, /sendComposer\(false\)/);
+  const calls = [];
+  const write = createSessionsWrite(
+    { origin: 'https://console.example', tokenStore: { async get() { return 'device-token'; } } },
+    { fetchImpl: async (url, init) => { calls.push({ url, method: init.method, body: JSON.parse(init.body || '{}') }); return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }); } },
+  );
+  await write.sendMessage('session 1', { text: '立即处理', interrupt: true });
+  assert.deepEqual(calls[0], { url: 'https://console.example/api/mobile/sessions/session%201/messages', method: 'POST', body: { text: '立即处理', interrupt: true } });
+});
+
+test('队列投影和写操作覆盖编辑、排序、清空、删除与 steer', async () => {
+  const { mobileSessionSummaries } = await import('../mobile/src/features/sessions/projections.mjs');
+  const { createSessionsWrite } = await import('../mobile/src/features/sessions/browser.mjs');
+  const [session] = mobileSessionSummaries([{ id: 's1', queue: [{ id: 'q1', text: '第一条' }], queuedCount: 1 }]);
+  assert.deepEqual(session.queue, [{ id: 'q1', text: '第一条', at: '' }]);
+  const src = read('mobile/app/www/pages/sessions.mjs');
+  for (const marker of ['queuePanel', 'updateQueued', 'moveQueued', 'removeQueued', 'clearQueued', 'steerQueued']) assert.ok(src.includes(marker), `缺少 ${marker}`);
+  const calls = [];
+  const write = createSessionsWrite(
+    { origin: 'https://console.example', tokenStore: { async get() { return 'device-token'; } } },
+    { fetchImpl: async (url, init) => { calls.push({ url, method: init.method, body: JSON.parse(init.body || '{}') }); return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }); } },
+  );
+  await write.updateQueued('s1', 'q1', { text: '改后' });
+  await write.moveQueued('s1', 'q1', { direction: 'up' });
+  await write.steerQueued('s1', 'q1');
+  await write.removeQueued('s1', 'q1');
+  await write.clearQueued('s1');
+  assert.deepEqual(calls.map(call => [call.method, call.url]), [
+    ['PUT', 'https://console.example/api/mobile/sessions/s1/queue/q1'],
+    ['POST', 'https://console.example/api/mobile/sessions/s1/queue/q1/move'],
+    ['POST', 'https://console.example/api/mobile/sessions/s1/queue/q1/steer'],
+    ['DELETE', 'https://console.example/api/mobile/sessions/s1/queue/q1'],
+    ['POST', 'https://console.example/api/mobile/sessions/s1/queue/clear'],
+  ]);
+});
+
+test('历史区默认扩大，提示词和队列管理按需展开', () => {
+  const src = read('mobile/app/www/pages/sessions.mjs');
+  const cssSessions = read('mobile/app/www/pages/sessions.css');
+  assert.match(src, /sessions-info-toggle/);
+  assert.match(src, /sessions-info-panel/);
+  assert.match(cssSessions, /\.sessions-message-window\s*\{[^}]*min-height:\s*12rem/);
+});
+
+test('总览不再承载移动壳，管理后台新增独立移动壳分区', () => {
+  const core = /<div id="page-core"[\s\S]*?<div id="page-rules"/.exec(html)?.[0] || '';
+  assert.doesNotMatch(core, /移动端控制台壳|id="reconnect"|id="rebind"/);
+  assert.match(html, /data-admin-pane="admin-pane-mobile"/);
+  const mobile = /id="admin-pane-mobile"[\s\S]*?<\/section>/.exec(html)?.[0] || '';
+  assert.match(mobile, /移动端控制台壳/);
+  assert.match(mobile, /id="reconnect"/);
+  assert.match(mobile, /id="rebind"/);
+  assert.match(mobile, /id="connection-error"/);
+  const admin = read('mobile/app/www/pages/admin.mjs');
+  assert.match(admin, /'admin-pane-mobile'/);
+});

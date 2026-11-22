@@ -70,16 +70,7 @@
       <div class="content">
         <div id="page-core" class="page" data-page="core">
           <div class="page-heading"><p class="eyebrow">PILOT OVERVIEW</p><h1 class="page-title">今天的自动化</h1><p class="page-subtitle">看见进展，只处理真正需要你的事。</p></div>
-          <div class="card">
-            <h2>移动端控制台壳</h2>
-            <p class="hint">已通过生物识别与安全连接。总览、规则、轮次、待办、DAG 与产物由后续波次接入同一套控制台 API，不复制业务状态。</p>
-            <p id="connection-error" class="status error" role="alert"></p>
-            <div class="row">
-              <button id="reconnect" type="button">重新连接</button>
-              <button id="rebind" type="button">重新绑定 / 退出</button>
-            </div>
-          </div>
-          <p class="hint">本机控制台密钥与设备凭证不会写入页面或日志。</p>
+
         </div>
         <div id="page-rules" class="page" data-page="rules" hidden>
           <div class="page-heading"><p class="eyebrow">RULES</p><h1 class="page-title">调度规则</h1><p class="page-subtitle">每个事件都有去处，每次执行都有依据。</p></div>
@@ -98,9 +89,22 @@
           <nav class="admin-subnav" aria-label="管理后台分区">
             <a href="#" data-admin-pane="admin-pane-platform" class="active" aria-current="page">平台与模型</a>
             <a href="#" data-admin-pane="admin-pane-runtime">运行环境</a>
+            <a href="#" data-admin-pane="admin-pane-mobile">移动壳</a>
           </nav>
           <section id="admin-pane-platform" class="admin-pane" aria-label="平台与模型"></section>
           <section id="admin-pane-runtime" class="admin-pane" aria-label="运行环境" hidden></section>
+          <section id="admin-pane-mobile" class="admin-pane" aria-label="移动端控制台壳" hidden>
+          <div class="card">
+            <h2>移动端控制台壳</h2>
+            <p class="hint">已通过生物识别与安全连接。总览、规则、轮次、待办、DAG 与产物由后续波次接入同一套控制台 API，不复制业务状态。</p>
+            <p id="connection-error" class="status error" role="alert"></p>
+            <div class="row">
+              <button id="reconnect" type="button">重新连接</button>
+              <button id="rebind" type="button">重新绑定 / 退出</button>
+            </div>
+          </div>
+          <p class="hint">本机控制台密钥与设备凭证不会写入页面或日志。</p>
+          </section>
         </div>
         <div id="page-settings" class="page" data-page="settings" hidden>
           <div class="page-heading"><p class="eyebrow">DEVICES &amp; PREFERENCES</p><h1 class="page-title">设备与偏好</h1><p class="page-subtitle">多设备同时使用。任何手机都不能撤销其他设备。</p></div>
