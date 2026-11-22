@@ -1062,6 +1062,8 @@ try {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-console-request': '1' }, body: '{}',
   });
   assert.equal(revokeResponse.status, 200);
+  await page.locator('[data-tab="admin"]').click();
+  await page.locator('[data-admin-pane="admin-pane-mobile"]').click();
   await page.locator('#reconnect').click();
   await page.locator('#lock-screen').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.getElementById('lock-error')?.textContent?.includes('授权'));
@@ -1170,11 +1172,12 @@ try {
   // 阅读中追新不得拽走位置：追加一条消息后滚动位置应保持。
   await page.waitForTimeout(600);
   await page.evaluate(() => { document.querySelector('.sessions-message-window').scrollTop = 120; });
-  await page.waitForFunction(() => document.querySelector('.sessions-message-window').scrollTop === 120, null, { timeout: 5000 });
+  const readingPosition = await page.evaluate(() => document.querySelector('.sessions-message-window').scrollTop);
+  assert.ok(readingPosition > 30, '先进入历史阅读位置');
   schedulingSessions.records.find(item => item.id === 'browser-scroll').messages.push({ role: 'agent', text: '追加的新回复', at: '2026-11-15T01:02:00Z' });
-  await page.waitForFunction(() => document.querySelector('.sessions-message-window').scrollTop !== 120 || document.body.innerText.includes('追加的新回复'), null, { timeout: 12000 });
+  await page.waitForFunction(position => document.querySelector('.sessions-message-window').scrollTop !== position || document.body.innerText.includes('追加的新回复'), readingPosition, { timeout: 12000 });
   const keptPosition = await page.evaluate(() => document.querySelector('.sessions-message-window').scrollTop);
-  assert.ok(keptPosition > 30 && keptPosition <= 130, `阅读中追新后滚动位置应保持（实际 ${keptPosition}px）`);
+  assert.ok(Math.abs(keptPosition - readingPosition) <= 10, `阅读中追新后滚动位置应保持（从 ${readingPosition} 到 ${keptPosition}）`);
   await page.locator('.sessions-back-bottom').waitFor({ state: 'visible' });
   await page.locator('.sessions-back-bottom').click();
   await page.waitForFunction(() => { const el = document.querySelector('.sessions-message-window'); return el.scrollTop + el.clientHeight >= el.scrollHeight - 8; }, null, { timeout: 5000 });
