@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "runId": "dagrun-mwr4beq5-b8e78ae6",
+  "nodeId": "integration-verify",
+  "generation": 1,
+  "attempt": 1,
+  "commit": "63d2f9035ebc53c282b4c1d9510f3f6beb919da1",
+  "designDigest": "4e60c0663f08b6bb335682aea73316ef37152ab0e716c6dde788ee2ce1813f44",
+  "manifestPath": "docs/design/2026-11-22-nomoto-6tab-baseline/design-manifest.json",
+  "approvalPath": "docs/design/2026-11-22-nomoto-6tab-baseline/design-approval.json",
+  "capturedAt": "2026-11-22T00:55:40.844Z",
+  "verification": {
+    "unit": {
+      "command": "npm test",
+      "total": 1401,
+      "pass": 1400,
+      "fail": 1,
+      "note": "唯一失败为 wave-1 文件 test/mobile-tab-swipe.test.mjs 的浏览器回归；控制器 clean-HOME 环境下浏览器测试 skip（npm test 1394 pass/0 fail/7 skipped）"
+    },
+    "browser": {
+      "command": "npm run test:browser",
+      "regressions": [
+        "test/mobile-tab-swipe.test.mjs: composer 吸底（归属 tab-swipe 节点）",
+        "test/browser.spec.mjs: 详情内容超出视口（归属 session-inputs 节点）"
+      ],
+      "note": "回归红按 error_behavior 打回对应 wave-1 节点，本节点未改业务代码"
+    },
+    "apk": {
+      "command": "node --test test/mobile-apk-build.test.mjs",
+      "total": 16,
+      "pass": 16,
+      "fail": 0
+    },
+    "coverage": []
+  },
+  "digest": "5d39e93edc1e6ce7f80a3775d8f15796c1e41f03b53b788512cb3b3c74ed64c4"
+}
