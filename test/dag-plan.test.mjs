@@ -437,3 +437,76 @@ test('evidence directory failure is structured and leaves no dispatchable run', 
   mkdirSync(harness.store.directory);
   assert.equal(harness.store.listRuns().length, 0);
 });
+
+// ---- Issue #255 rework 1：所有 DAG 文件来源与常见前端 JS/TS 入口不得绕过 ----
+
+const reworkUiPaths = [
+  'public/app.js',
+  'mobile/app/www/pages/sessions.mjs',
+  'src/App.js',
+  'src/App.ts',
+  'src/components/session-list.js',
+  'src/pages/session-view.ts',
+  'client/main.js',
+  'frontend/main.ts',
+];
+
+function reworkNode(path, source, design) {
+  const nodeContract = { ...contract(source === 'contract' ? path : 'src/backend.mjs') };
+  if (design) nodeContract.design = design;
+  return {
+    id: 'entry-ui',
+    ...(source === 'node' ? { files: [path] } : {}),
+    contract: nodeContract,
+  };
+}
+
+test('rework1 rejects missing design from contract.files and top-level node.files without creating a run', async t => {
+  for (const source of ['contract', 'node']) {
+    for (const file of reworkUiPaths) {
+      await t.test(`${source}.files: ${file}`, async () => {
+        const fixture = coverageProject({ nodes: [reworkNode(file, source)] });
+        const harness = coverageService();
+        await assert.rejects(() => createCoverage(fixture, harness), error => {
+          assert.equal(error.code, 'DESIGN_CONTRACT_MISSING');
+          assert.equal(error.details.nodeId, 'entry-ui');
+          return true;
+        });
+        assert.equal(harness.store.listRuns().length, 0);
+        assert.equal(harness.calls.smoke.length, 0);
+      });
+    }
+  }
+});
+
+test('rework1 accepts the same UI paths when a legal design covers the full approved matrix', async t => {
+  for (const source of ['contract', 'node']) {
+    for (const file of reworkUiPaths) {
+      await t.test(`${source}.files: ${file}`, async () => {
+        const fixture = coverageProject({ nodes: [reworkNode(file, source, { surfaceIds: ['overview', 'sessions'] })] });
+        const harness = coverageService();
+        const run = await createCoverage(fixture, harness);
+        assert.equal(run.nodeId, ROOT_NODE);
+        assert.equal(harness.store.listRuns().length, 1);
+        assert.equal(harness.calls.smoke.length, 1);
+        assert.equal(harness.calls.fallback.length, 1);
+      });
+    }
+  }
+});
+
+test('rework1 keeps pure backend JavaScript and TypeScript on the original no-design path', async t => {
+  for (const file of ['src/server.js', 'src/server.ts', 'src/index.js', 'src/main.ts', 'src/dag-controller.js', 'src/dag-controller.ts']) {
+    await t.test(file, async () => {
+      const fixture = coverageProject({ nodes: [reworkNode(file, 'contract')] });
+      const harness = coverageService();
+      const loaded = loadNativePlan({ projectRoot: fixture.root, planId: 'native-coverage' });
+      assert.equal(loaded.designBaseline, null);
+      const run = await createCoverage(fixture, harness);
+      assert.equal(run.nodeId, ROOT_NODE);
+      assert.equal(run.designBaseline, null);
+      assert.equal(harness.calls.smoke.length, 0);
+      assert.equal(harness.calls.fallback.length, 0);
+    });
+  }
+});

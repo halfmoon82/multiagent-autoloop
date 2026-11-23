@@ -20,13 +20,19 @@ export class DesignCoverageError extends Error {
 const coverageFail = (code, message, details) => { throw new DesignCoverageError(code, message, details); };
 
 // 只用确定的写入范围识别 UI 节点，不猜测产品语义。已有 design 的节点始终属于 UI；
-// 常见前端源码后缀与仓库既有 public/、NoMoTo mobile/app/www/ 写入范围必须显式绑定合同。
+// DAG 实际同时接受 contract.files 与顶层 node.files，两个来源必须做同一套判定。
 function isUiNode(node) {
   if (node?.contract?.design != null) return true;
-  const files = Array.isArray(node?.contract?.files) ? node.contract.files : [];
-  return files.some(file => {
-    const name = String(file || '').replaceAll('\\', '/');
-    return name.startsWith('public/') || name.startsWith('mobile/app/www/') || /\.(?:html|css|jsx|tsx|vue|svelte)$/i.test(name);
+  const contractFiles = Array.isArray(node?.contract?.files) ? node.contract.files : [];
+  const nodeFiles = Array.isArray(node?.files) ? node.files : [];
+  return [...contractFiles, ...nodeFiles].some(file => {
+    const name = String(file || '').replaceAll('\\', '/').replace(/^\.\//, '');
+    if (name.startsWith('public/') || name.startsWith('mobile/app/www/')) return true;
+    if (/\.(?:html|css|jsx|tsx|vue|svelte)$/i.test(name)) return true;
+    // 不把全部 JS/TS 当 UI：仅认常见前端 App 入口、目录和 client/frontend/web 根。
+    if (!/\.(?:js|ts|mjs|mts|cjs|cts)$/i.test(name)) return false;
+    return /(?:^|\/)App\.(?:js|ts)$/.test(name)
+      || /(?:^|\/)(?:components|pages|views|layouts|hooks|contexts|client|frontend|web)(?:\/|$)/i.test(name);
   });
 }
 
