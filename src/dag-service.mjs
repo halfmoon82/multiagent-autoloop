@@ -1,20 +1,25 @@
 // 控制台 DAG 服务：创建/列表/详情/取消/slot-release。服务端生成授权快照；证据缺失 fail closed。
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ALLOWED_ACTIONS, DENIED_ACTIONS, HIGH_RISK_ACTIONS, HIGH_RISK_ACTION_INFO, MAX_SLOTS, ROOT_NODE, createRunStore, isTerminal } from './dag-run.mjs';
 import { reviveNode } from './dag-controller.mjs';
 import { seg } from './dag-slots.mjs';
 import { parallelShape } from './dag.mjs';
-import { loadNativePlan } from './dag-plan.mjs';
+import { assertDesignCoverage, loadNativePlan } from './dag-plan.mjs';
 import { checkCapabilities, checkInitialization } from './vibe-adapter.mjs';
 import { createPlanDigest, loadVibePlan } from './vibe-plan.mjs';
 import { defaultGit } from './git-safe.mjs';
 import { ensureMirror } from './dag-mirror.mjs';
 import { buildDagRing } from './dag-model.mjs';
 import { freezeDesignBaseline } from './design-baseline.mjs';
+import { smokeApprovedDesign as defaultSmokeApprovedDesign, verifyDesign as defaultVerifyDesign } from './design-verify.mjs';
 
 export class DagServiceError extends Error {
-  constructor(message, status = 400) { super(message); this.name = 'DagServiceError'; this.status = status; }
+  constructor(message, status = 400, { code = null, details = undefined } = {}) {
+    super(message); this.name = 'DagServiceError'; this.status = status;
+    if (code) this.code = code;
+    if (details !== undefined) this.details = details;
+  }
 }
 const CODE_STATUS = { CONFLICT: 409, RELEASE_DENIED: 409, CORRUPT_STATE: 500 };
 const wrap = fn => { try { return fn(); } catch (error) {
@@ -31,7 +36,10 @@ function loadPlan(project, planId) {
   catch (nativeError) {
     try { return loadVibePlan({ projectRoot: project, planId }); }
     catch (vibeError) {
-      throw new DagServiceError(`无法加载计划：原生（${nativeError.message}）；vibe（${vibeError.message}）`);
+      throw new DagServiceError(`无法加载计划：原生（${nativeError.code ? `${nativeError.code}：` : ''}${nativeError.message}）；vibe（${vibeError.message}）`, 400, {
+        code: nativeError.code || vibeError.code || 'PLAN_LOAD_FAILED',
+        details: nativeError.details || vibeError.details,
+      });
     }
   }
 }
@@ -133,9 +141,81 @@ export function mobileDagSummaries(runs = [], nodeRuns = []) {
   }).filter(Boolean);
 }
 
+async function preflightDesignRun({ loaded, project, store, resolveDesignCommit, smokeApprovedDesign, verifyDesign }) {
+  if (!loaded.designBaseline) return null;
+  let frozenDesign = null;
+  try { assertDesignCoverage({ designBaseline: loaded.designBaseline, nodes: loaded.nodes }); }
+  catch (error) {
+    if (error?.name !== 'DesignCoverageError') throw error;
+    throw new DagServiceError(error.message, 400, { code: error.code, details: error.details });
+  }
+  if (!loaded.designBaseline.manifest.fallbackVerifierPath || loaded.designBaseline.manifest.fallbackVerifierPath === loaded.designBaseline.manifest.verifierPath) {
+    const code = 'DESIGN_FALLBACK_MISSING';
+    throw new DagServiceError(`${code}：UI 计划必须声明独立、hash-covered 备用采集 verifier`, 400, { code });
+  }
+  try {
+    frozenDesign = freezeDesignBaseline({
+      projectRoot: project, designBaseline: loaded.designBaseline,
+      directory: path.join(store.directory, 'design-baselines'),
+    });
+  } catch (error) {
+    const code = error?.code || 'DESIGN_SNAPSHOT_INVALID';
+    throw new DagServiceError(`${code}：${error.message}`, 400, { code });
+  }
+  let commit;
+  try { commit = await resolveDesignCommit(project); }
+  catch (error) {
+    const code = 'DESIGN_COMMIT_UNAVAILABLE';
+    throw new DagServiceError(`${code}：无法取得设计预检所需的精确 commit：${error.message}`, 400, { code });
+  }
+  if (!/^[0-9a-f]{40,64}$/i.test(commit)) {
+    const code = 'DESIGN_COMMIT_UNAVAILABLE';
+    throw new DagServiceError(`${code}：设计预检 commit 无效`, 400, { code });
+  }
+        let preflightRoot;
+        try { preflightRoot = mkdtempSync(path.join(store.directory, 'design-preflight-')); }
+        catch (error) {
+          const code = 'DESIGN_EVIDENCE_PREFLIGHT';
+          const details = { stage: 'evidence-directory', reason: String(error?.message || error).slice(0, 1000) };
+          throw new DagServiceError(`${code}：设计证据目录不可用：${details.reason}`, 400, { code, details });
+        }
+  for (const node of loaded.nodes.filter(item => item.contract?.design != null)) {
+    const common = { nodeId: node.id, project, commit, contract: node.contract.design };
+    try {
+      const result = await smokeApprovedDesign({ ...common, designBaseline: frozenDesign, evidenceDir: path.join(preflightRoot, node.id, 'approved-sample') });
+      if (!result?.ok || result.status !== 'pass') throw new Error('批准样例 smoke 未通过');
+    } catch (error) {
+      const code = 'DESIGN_EVIDENCE_PREFLIGHT';
+      const details = { stage: 'approved-sample', nodeId: node.id, reason: String(error?.message || error).slice(0, 1000) };
+      throw new DagServiceError(`${code}：节点 ${node.id} 批准样例 smoke 失败：${details.reason}`, 400, { code, details });
+    }
+    // #256 的 verifyDesign 已拥有 fallback 执行与完整证据校验。只在这个临时输入副本里
+    // 破坏主 verifier 的声明 hash，强制走其备用路径；run 始终持有未修改的 frozenDesign。
+    const fallbackProbe = {
+      ...frozenDesign,
+      manifest: {
+        ...frozenDesign.manifest,
+        artifacts: frozenDesign.manifest.artifacts.map(artifact => artifact.path === frozenDesign.manifest.verifierPath
+          ? { ...artifact, sha256: '0'.repeat(64) } : { ...artifact }),
+      },
+    };
+    try {
+      const result = await verifyDesign({ ...common, designBaseline: fallbackProbe, evidenceDir: path.join(preflightRoot, node.id, 'fallback') });
+      if (result?.evidence?.collector !== 'fallback') throw new Error('未得到 fallback 完整证据');
+    } catch (error) {
+      const code = 'DESIGN_EVIDENCE_PREFLIGHT';
+      const details = { stage: 'fallback', nodeId: node.id, reason: String(error?.message || error).slice(0, 1000) };
+      throw new DagServiceError(`${code}：节点 ${node.id} 备用采集预检失败：${details.reason}`, 400, { code, details });
+    }
+  }
+  return frozenDesign;
+}
+
 // hubEvidence({ run }) → { workerOnline?, offlineSince? }：来自 Hub“接单程序没连上”卡片；默认无证据即 fail closed。
 export function createDagService({ root, store: injected, storeDirectory, hubEvidence = async () => ({}), now = Date.now,
-  log = console.error, writeAudit = (dir, name, content) => writeFileSync(path.join(dir, name), content) } = {}) {
+  log = console.error, writeAudit = (dir, name, content) => writeFileSync(path.join(dir, name), content),
+  smokeApprovedDesign = defaultSmokeApprovedDesign, verifyDesign = defaultVerifyDesign,
+  resolveDesignCommit = async project => String(await defaultGit(project, ['rev-parse', 'HEAD'])).trim() } = {}) {
   // 存储惰性创建：控制台启动不碰磁盘，root 不可写时只有 DAG 接口报错，不影响其它功能。
   let lazy = injected || null;
   const storeProxy = new Proxy({}, { get: (_, key) => { lazy ||= createRunStore({ directory: storeDirectory }); const value = lazy[key]; return typeof value === 'function' ? value.bind(lazy) : value; } });
@@ -198,7 +278,11 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
     },
     async create(body, project) {
       const loaded = loadPlan(project, String(body.planId || ''));
-      if (createPlanDigest({ ...loaded, authorizationSnapshot: null }) !== body.planDigest) throw new DagServiceError('planDigest 与服务端计划不一致，计划已变化需重新确认');
+      if (createPlanDigest({ ...loaded, authorizationSnapshot: null }) !== body.planDigest) {
+        const code = loaded.designBaseline ? 'DESIGN_DIGEST_MISMATCH' : 'PLAN_DIGEST_MISMATCH';
+        throw new DagServiceError(`${code}：planDigest 与服务端计划不一致，计划已变化需重新确认`, 400, { code });
+      }
+      const frozenDesign = await preflightDesignRun({ loaded, project, store, resolveDesignCommit, smokeApprovedDesign, verifyDesign });
       // 计划未声明的高风险动作即便勾选也不写入：planOptionalActions 作为授权白名单交给 store 校验。
       const planOptionalActions = optionalActionOptions(loaded).map(a => a.id);
       // run 创建时冻结用户确认的 remote URL；之后 worker 改 remote.origin.url/insteadOf 不影响 push 目标。
@@ -210,10 +294,7 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       let mirror = null;
       if (remoteUrl) mirror = await ensureMirror({ root, remoteUrl, baseBranch: 'main' });
       return wrap(() => {
-        const designBaseline = loaded.designBaseline ? freezeDesignBaseline({
-          projectRoot: project, designBaseline: loaded.designBaseline,
-          directory: path.join(store.directory, 'design-baselines'),
-        }) : null;
+        const designBaseline = frozenDesign;
         return store.createRun({
           project, planId: loaded.planId, planDigest: body.planDigest, confirmedActionIds: body.confirmedActionIds,
           selectedOptionalActions: body.selectedOptionalActions ?? [], planOptionalActions,
