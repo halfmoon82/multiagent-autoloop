@@ -1062,6 +1062,8 @@ try {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-console-request': '1' }, body: '{}',
   });
   assert.equal(revokeResponse.status, 200);
+  await page.locator('[data-tab="admin"]').click();
+  await page.locator('[data-admin-pane="admin-pane-mobile"]').click();
   await page.locator('#reconnect').click();
   await page.locator('#lock-screen').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.getElementById('lock-error')?.textContent?.includes('授权'));
