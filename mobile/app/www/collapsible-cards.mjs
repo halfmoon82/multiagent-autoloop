@@ -1,9 +1,11 @@
 // 非 DAG 卡片统一限高：只有实际超高的卡片才显示展开控件，短卡保持原样。
-const SELECTOR = '.card, .sessions-item, .sessions-question-card, .sessions-current-card, .sessions-archived-item, .sessions-queue-item';
+const SELECTOR = '.card, .core-card, .core-item, .sessions-item, .sessions-question-card, .sessions-current-card, .sessions-archived-item, .sessions-queue-item';
 const COLLAPSED_HEIGHT = 160;
 
 function prepare(el) {
   if (el.closest('#page-dag') || el.dataset.collapsible !== undefined) return;
+  // 可操作表单不参与自动折叠：模型、输入、待办和队列必须直接可操作。
+  if (el.querySelector('input,select,textarea')) { el.dataset.collapsible = 'interactive'; return; }
   if (el.scrollHeight <= COLLAPSED_HEIGHT + 8) { el.dataset.collapsible = 'not-needed'; return; }
   el.dataset.collapsible = '';
   el.dataset.expanded = 'false';

@@ -151,8 +151,8 @@ button:disabled { opacity: 0.6; cursor: default; }
 #app-main .header-meta { display: flex; flex: 1 1 auto; align-items: center; justify-content: flex-end; gap: 0.35rem; min-width: 0; }
 #app-main .header-meta .status-pill { flex: none; padding: 0.25rem 0.45rem; font-size: 0.62rem; }
 #app-main #project-filter-root { flex: 0 1 8rem; min-width: 0; }
-#app-main #project-filter-root .project-filter-bar { min-height: 2.25rem; margin: 0; padding: 0.15rem 0.35rem; border-radius: 0.65rem; }
-#app-main #project-filter-root .pf-select { min-height: 30px; font-size: 0.72rem; }
+#app-main #project-filter-root .project-filter-bar { min-height: 2.25rem; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; max-width: 100%; min-width: 0; overflow: hidden; }
+#app-main #project-filter-root .pf-select { min-height: 30px; font-size: 0.72rem; max-width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; }
 #app-main #project-filter-root .pf-label { display: none; }
 #app-main #project-filter-root .pf-clear { min-height: 28px; padding: 0.15rem 0.25rem; }
 #app-main #project-filter-root .pf-status:empty { display: none; }

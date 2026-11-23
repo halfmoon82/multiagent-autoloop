@@ -186,3 +186,16 @@ test('非 DAG 卡片统一限高可展开，短卡片不增加控件', async () 
   assert.match(src, /closest\('#page-dag'\)/);
   assert.match(src, /before\(button\)/, '展开按钮放在卡片外，允许原卡片本身是 button');
 });
+
+test('折叠只处理静态长内容，交互表单默认保持可操作', () => {
+  const src = read('mobile/app/www/collapsible-cards.mjs');
+  assert.match(src, /querySelector\('input,select,textarea'/);
+  assert.match(src, /dataset\.collapsible = 'interactive'/);
+  assert.match(src, /core-card/);
+  assert.match(src, /core-item/);
+});
+
+test('项目选择只保留一个无双重边框的控件且不溢出顶栏', () => {
+  assert.match(css, /#app-main #project-filter-root \.project-filter-bar\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent/);
+  assert.match(css, /#app-main #project-filter-root \.pf-select\s*\{[^}]*max-width:\s*100%/);
+});

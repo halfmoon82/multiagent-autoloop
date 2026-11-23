@@ -31,7 +31,7 @@ export function mount(ctx) {
   const clear = node('button', {
     className: 'pf-clear', text: '全部', attrs: { id: 'clear-project-filter', type: 'button', hidden: '' },
   });
-  const status = node('span', { className: 'pf-status', attrs: { 'aria-live': 'polite' } });
+  const status = node('span', { className: 'pf-status', attrs: { 'aria-live': 'polite', hidden: '' } });
   const bar = node('div', { className: 'project-filter-bar' }, [label, select, clear]);
   root.replaceChildren(bar, status);
 
@@ -60,6 +60,7 @@ export function mount(ctx) {
     status.textContent = loading
       ? '加载项目…'
       : (error || (filter.empty ? (filter.emptyReason || model.ALL_PROJECTS_LABEL) : ''));
+    status.hidden = !error;
   };
 
   modelPromise.then(model => {
@@ -85,6 +86,7 @@ export function mount(ctx) {
     // 锁屏期间不拉数据（客户端尚未绑定设备）；主界面一显示就加载，重连后再刷新。
     const load = async () => {
       status.textContent = '加载项目…';
+      status.hidden = true;
       await controller.reload();
     };
     const main = document.getElementById('app-main');
@@ -99,5 +101,6 @@ export function mount(ctx) {
     window.addEventListener('online', () => { void load(); });
   }).catch(error => {
     status.textContent = `项目筛选不可用：${error?.message || error || '加载失败'}`;
+    status.hidden = false;
   });
 }

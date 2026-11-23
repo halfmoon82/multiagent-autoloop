@@ -533,9 +533,11 @@ export function mount(ctx) {
     questionBox.replaceChildren();
     pendingStrip.hidden = true;
     if (!qmodel || !state.group || !state.group.questions.length) {
-      questionBox.appendChild(node('p', { className: 'hint', text: '当前会话没有需要回答的事项' }));
+      // 普通会话不使用 Hub 问题卡片；没有真实问题时保持干净，不显示误导性的空问题提示。
+      questionBox.hidden = true;
       return;
     }
+    questionBox.hidden = false;
     const binding = qmodel.buildQuestionGroupBinding(state.group);
     const remaining = Math.max(0, binding.total - binding.answeredCount);
     pendingStrip.hidden = remaining === 0;
