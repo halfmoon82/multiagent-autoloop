@@ -231,6 +231,22 @@ test('设计 checks 未通过时 reviewer 误判 accepted 也只能正常返工�
   assert.match(s.hub.last('ui', 'dev').prompt, /design-deviation/);
 });
 
+test('knownDeviations 未清零时 reviewer 误判 accepted 也正常返工，不走设施重试', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => ({
+    ok: true, tests: { exitCode: 0 },
+    designEvidence: { commit: input.commit, designDigest: baseline.designDigest, contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }), checks: [{ ok: true }], knownDeviations: [{ id: 'spacing', status: 'open' }] },
+  });
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  assert.ok(s.hub.last('ui', 'review'));
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.runOf('ui', 'dev').attempt, 2);
+  assert.equal(s.runOf('ui', 'dev').attemptReason, 'design-deviation');
+  assert.equal(s.publisher.calls.some(c => c[0] === 'merge'), false);
+  assert.ok(!['blocked', 'gated'].includes(s.ctl.snapshot().nodes.ui.state));
+});
+
 test('设计 runner 设施抛错不计 worker 失败，下一 tick 同 attempt 自动重试', async () => {
   const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
   const s = setup([ui], { designBaseline: designBaseline() });

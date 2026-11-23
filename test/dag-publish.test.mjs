@@ -194,6 +194,19 @@ test('verify：UI 缺 verifier 属设施错误；定向断言失败才返回实�
   );
 });
 
+test('verify：knownDeviations 是有效设计偏差证据，不误判为设施故障', async () => {
+  const designBaseline = uiDesign();
+  const t = await boot({
+    designBaseline, ui: true,
+    verifyDesign: async input => ({ ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit, { knownDeviations: [{ id: 'spacing', status: 'open' }] }) }),
+  });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
+  const result = await t.pub.verify({ ...t.ctx, commit: pr.commit });
+  assert.equal(result.ok, true);
+  assert.equal(result.designEvidence.knownDeviations.length, 1);
+  assert.match(result.designEvidenceWarning || '', /knownDeviations/);
+});
+
 test('merge：缺证据或身份错位进入补验，不在 merge 重跑浏览器', async () => {
   let verifyCalls = 0;
   const designBaseline = uiDesign();

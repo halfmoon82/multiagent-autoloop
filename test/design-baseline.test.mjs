@@ -81,6 +81,15 @@ test('frozen restore refuses a symlinked target parent instead of writing outsid
   assert.equal(existsSync(path.join(outside, 'design', 'demo', 'reference.png')), false);
 });
 
+test('freeze revalidates approved hashes after the load-to-freeze window and publishes no partial snapshot', () => {
+  const fixture = approvedProject();
+  const baseline = loadDesignBaseline(fixture);
+  const directory = mkdtempSync(path.join(tmpdir(), 'design-frozen-store-'));
+  writeFileSync(path.join(fixture.root, 'docs/design/demo/reference.png'), 'changed-after-validation');
+  assert.throws(() => freezeDesignBaseline({ projectRoot: fixture.root, designBaseline: baseline, directory }), /sha256|摘要/);
+  assert.equal(existsSync(path.join(directory, baseline.designDigest)), false);
+});
+
 test('rejects modified artifacts and references not covered by artifact hashes', () => {
   const changed = project();
   writeFileSync(path.join(changed.root, 'docs/design/demo/reference.png'), 'changed');

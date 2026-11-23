@@ -132,8 +132,14 @@ export function freezeDesignBaseline({ projectRoot, designBaseline, directory } 
       writeFileSync(target, bytes, { mode: 0o600 });
       snapshotFiles[relativePath] = sha256(bytes);
     }
+    // load 与 freeze 之间可能发生正常编辑：在临时目录内重新执行完整批准校验，
+    // 不接受“新字节 + 旧 manifest/approval/designDigest”的混合快照。
+    const revalidated = loadDesignBaseline({ projectRoot: temporary, manifestPath: designBaseline.manifestPath, approvalPath: designBaseline.approvalPath });
+    if (revalidated.designDigest !== designBaseline.designDigest) fail('DESIGN_SNAPSHOT_INVALID', '冻结前后 designDigest 不一致');
     if (existsSync(snapshotDirectory)) {
       // 同一 designDigest 可能被其他活跃 run 使用；校验后复用，绝不删除共享冻结副本。
+      const existing = loadDesignBaseline({ projectRoot: snapshotDirectory, manifestPath: designBaseline.manifestPath, approvalPath: designBaseline.approvalPath });
+      if (existing.designDigest !== designBaseline.designDigest) fail('DESIGN_SNAPSHOT_INVALID', '已有冻结副本 designDigest 不一致');
       for (const [relativePath, expected] of Object.entries(snapshotFiles)) {
         const target = snapshotFile(snapshotDirectory, relativePath);
         if (!existsSync(target) || sha256(readFileSync(target)) !== expected) fail('DESIGN_SNAPSHOT_INVALID', `已有冻结设计副本不一致：${relativePath}`);
