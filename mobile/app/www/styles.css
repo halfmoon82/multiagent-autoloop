@@ -144,3 +144,28 @@ button:disabled { opacity: 0.6; cursor: default; }
   width: 1.25rem; height: 1.25rem; display: block; fill: none; stroke: currentColor;
   stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
 }
+
+/* 顶栏压缩：项目、连接与设置同一行。 */
+#app-main .app-header { flex-wrap: nowrap; gap: 0.45rem; }
+#app-main .app-header .brand { flex: 0 0 auto; }
+#app-main .header-meta { display: flex; flex: 1 1 auto; align-items: center; justify-content: flex-end; gap: 0.35rem; min-width: 0; }
+#app-main .header-meta .status-pill { flex: none; padding: 0.25rem 0.45rem; font-size: 0.62rem; }
+#app-main #project-filter-root { flex: 0 1 8rem; min-width: 0; }
+#app-main #project-filter-root .project-filter-bar { min-height: 2.25rem; margin: 0; padding: 0.15rem 0.35rem; border-radius: 0.65rem; }
+#app-main #project-filter-root .pf-select { min-height: 30px; font-size: 0.72rem; }
+#app-main #project-filter-root .pf-label { display: none; }
+#app-main #project-filter-root .pf-clear { min-height: 28px; padding: 0.15rem 0.25rem; }
+#app-main #project-filter-root .pf-status:empty { display: none; }
+#app-main #project-filter-root .pf-status { font-size: 0.6rem; line-height: 1.25; text-align: left; }
+#app-main .header-meta .gear-btn { width: 2.5rem; min-height: 2.5rem; }
+
+/* 非 DAG 卡片默认限高，按需展开。 */
+.collapsible-card { position: relative; max-height: 160px; overflow: hidden; }
+.collapsible-card[data-expanded="true"] { max-height: none; overflow: auto; }
+.card-expand {
+  position: absolute; z-index: 4; top: 0.35rem; right: 0.35rem;
+  min-height: 30px; margin: 0; padding: 0.2rem 0.5rem;
+  border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,0.96);
+  color: var(--brand-ink); font-size: 0.66rem; box-shadow: 0 1px 4px rgba(15,61,46,0.08);
+}
+.collapsible-card + .card-expand { float: right; }

@@ -59,11 +59,12 @@
     <main id="app-main" class="screen" hidden aria-label="控制台">
       <header class="app-header">
         <div class="brand"><span class="brand-gem">N</span><div><strong>NoMoTo</strong><small id="device-name">未绑定设备</small></div></div>
-        <span id="connection-status" class="status-pill" data-state="offline">未连接</span>
-        <button id="open-settings" type="button" class="gear-btn" aria-label="设备与偏好">&#9881;</button>
+        <div class="header-meta">
+          <span id="connection-status" class="status-pill" data-state="offline">未连接</span>
+          <div id="project-filter-root" aria-label="全局项目筛选"></div>
+          <button id="open-settings" type="button" class="gear-btn" aria-label="设备与偏好">&#9881;</button>
+        </div>
       </header>
-
-      <div id="project-filter-root" aria-label="全局项目筛选"></div>
 
 
 

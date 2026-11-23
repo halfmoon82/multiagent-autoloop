@@ -165,3 +165,24 @@ test('总览不再承载移动壳，管理后台新增独立移动壳分区', ()
   const admin = read('mobile/app/www/pages/admin.mjs');
   assert.match(admin, /'admin-pane-mobile'/);
 });
+
+test('项目筛选与连接状态合并到顶栏，保持小屏空间', () => {
+  const header = /<header class="app-header">[\s\S]*?<\/header>/.exec(html)?.[0] || '';
+  assert.match(header, /class="header-meta"/);
+  assert.match(header, /id="connection-status"/);
+  assert.match(header, /id="project-filter-root"/);
+  assert.match(header, /id="open-settings"/);
+  assert.doesNotMatch(html, /<\/header>\s*<div id="project-filter-root"/);
+  assert.match(css, /#app-main \.header-meta\s*\{[^}]*display:\s*flex/);
+  assert.match(css, /#app-main #project-filter-root \.project-filter-bar\s*\{[^}]*min-height:\s*2\.25rem/);
+});
+
+test('非 DAG 卡片统一限高可展开，短卡片不增加控件', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../mobile/app/www/collapsible-cards.mjs', import.meta.url), 'utf8');
+  assert.match(src, /dataset\.collapsible/);
+  assert.match(src, /dataset\.expanded/);
+  assert.match(src, /card-expand/);
+  assert.match(src, /closest\('#page-dag'\)/);
+  assert.match(src, /before\(button\)/, '展开按钮放在卡片外，允许原卡片本身是 button');
+});

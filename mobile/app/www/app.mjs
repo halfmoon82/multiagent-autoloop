@@ -4,6 +4,7 @@
 import { ShellState, createTokenStore, createMobileClient, createBiometricGate, shouldAutoRetry } from './shell.mjs';
 import { createScanSession, createUserMediaCamera } from './scan.mjs';
 import { renderIcons } from './icons.mjs';
+import { observeCollapsibleCards } from './collapsible-cards.mjs';
 import * as corePage from './pages/core.mjs';
 import * as sessionsPage from './pages/sessions.mjs';
 import * as artifactsPage from './pages/artifacts.mjs';
@@ -138,6 +139,7 @@ function boot() {
     hooks,
   };
 
+  observeCollapsibleCards(document);
   renderIcons(document);
   const tabBar = $('tab-bar');
   const tabs = tabBar ? [...tabBar.querySelectorAll('.tab')] : [];
