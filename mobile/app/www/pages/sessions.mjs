@@ -162,8 +162,9 @@ export function mount(ctx) {
     node('span', { attrs: { 'data-icon': 'plus', 'aria-hidden': 'true' } }),
   ]);
   const attachmentList = node('div', { className: 'sessions-attachments' });
+  // + 附件按钮与发送键同组放在输入框之后：窄屏下输入框优先占宽，+ 不再被挤到独占一行。
   const composerRow = node('div', { className: 'sessions-composer' }, [
-    sendMode, attachBtn, composerInput, micBtn, steerBtn, composerSend,
+    sendMode, composerInput, micBtn, steerBtn, attachBtn, composerSend,
   ]);
   const queuePreview = node('div', { className: 'sessions-queue-preview', attrs: { hidden: '' } });
   const detailTop = node('div', { className: 'sessions-detail-top' }, [

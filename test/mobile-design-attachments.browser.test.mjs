@@ -47,3 +47,46 @@ test('输入框添加文本与图片附件并随消息发送', { skip }, async t
   assert.equal(attachments[1].name, '截图.png');
   assert.equal(attachments[1].type, 'image/png');
 });
+
+// 回归：附件「+」不得独占一行。真机反馈（2026-11-23）：窄屏下 + 按钮被挤到单独一行，
+// 挤占输入宽度；+ 必须与输入框、发送键在同一行（DOM 上紧邻发送键之前）。
+test('附件「+」与发送键同处输入栏一行，窄屏不独占行', { skip }, async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'mobile-attach-layout-'));
+  const rulesFile = path.join(root, 'rules.json'); writeFileSync(rulesFile, JSON.stringify({ sources: {}, agents: {}, rules: [] }));
+  const record = { id: 's1', sessionId: 's1', kind: 'normal', title: '布局验收', project: '/work/移动控制台', status: 'idle', statusText: '待命', agent: 'Codex', model: 'GPT', prompt: 'x', messages: [], queue: [], queued: [], queuedCount: 0, liveText: '', busy: false, createdAt: '2026-11-22T09:00:00Z', updatedAt: '2026-11-22T09:00:00Z' };
+  const sessions = { async list() { return [record]; }, async listArchived() { return []; }, async send() { return record; } };
+  const hub = await fakeHub((req, res) => json(res, req.url === '/v1/state' ? { runs: [], cards: [], lines: [], spending: {} } : { ok: true }));
+  const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'secret', host: '127.0.0.1', root, rulesFile, deviceAuth, projectRoots: [] }, sessions);
+  const url = await listen(server);
+  const browser = await chromium.launch({ headless: true });
+  t.after(async () => { await browser.close(); await close(server); await close(hub.server); rmSync(root, { recursive: true, force: true }); });
+  const page = await browser.newPage({ viewport: { width: 320, height: 700 } });
+  await page.addInitScript(() => { let stored = null; window.AutoloopSecureStorage = { async get() { return stored; }, async set(v) { stored = v; }, async remove() { stored = null; } }; window.AutoloopBiometric = { async verify() { return true; } }; });
+  await page.goto(`${url}/mobile/`);
+  await page.locator('#bind-payload').fill(deviceAuth.createBinding().qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.locator('#unlock').click();
+  await page.locator('[data-tab="sessions"]').click();
+  await page.locator('.sessions-item').click();
+  const layout = await page.evaluate(() => {
+    const composer = document.querySelector('.sessions-composer');
+    const attach = composer.querySelector('.sessions-attach-btn');
+    const send = composer.querySelector('.sessions-send');
+    const input = composer.querySelector('.sessions-composer-input');
+    const kids = [...composer.children].filter(el => !el.hidden);
+    return {
+      // 输入栏 align-items:flex-end：同行元素底边对齐、顶边因高度不同而不同，必须按底边判行。
+      rows: new Set([attach, send, input].map(el => Math.round(el.getBoundingClientRect().bottom))).size,
+      attachIndex: [...composer.children].indexOf(attach),
+      sendIndex: [...composer.children].indexOf(send),
+      inputIndex: [...composer.children].indexOf(input),
+      attachVisible: !!attach.offsetParent,
+      kidCount: kids.length,
+    };
+  });
+  assert.ok(layout.attachVisible, '+ 按钮必须可见');
+  assert.equal(layout.rows, 1, `+、输入框、发送必须在同一行（实测 ${layout.rows} 行）`);
+  assert.ok(layout.attachIndex > layout.inputIndex, '+ 在 DOM 上应位于输入框之后（与发送键同组）');
+  assert.equal(layout.attachIndex, layout.sendIndex - 1, '+ 紧邻发送键之前');
+});
