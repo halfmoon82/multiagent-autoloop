@@ -102,9 +102,9 @@ function parseId(text) {
   return id;
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = 65536) {
   let size = 0; const chunks = [];
-  for await (const chunk of req) { size += chunk.length; if (size > 65536) fail(413); chunks.push(chunk); }
+  for await (const chunk of req) { size += chunk.length; if (size > maxBytes) fail(413); chunks.push(chunk); }
   if (!size) return {};
   try {
     const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -347,7 +347,7 @@ async function syncRoute(req, res, url, ctx, body) {
 // 实际业务处理；由同步 handleMobileWrite 以 fire-and-forget 方式调用，自行捕获全部错误。
 async function executeWrite(route, req, res, url, ctx) {
   try {
-    const body = req.method === 'GET' ? {} : await readJson(req);
+    const body = req.method === 'GET' ? {} : await readJson(req, route.key === 'session-message' ? 20 * 1024 * 1024 : 65536);
     if (route.key === 'sync') return await syncRoute(req, res, url, ctx, body);
     if (route.key === 'card-answer' || route.key === 'card-authorize') return await cardWrite(route, req, res, url, ctx, body);
     if (route.key === 'session-continue') return await sessionContinue(res, url, route, ctx);

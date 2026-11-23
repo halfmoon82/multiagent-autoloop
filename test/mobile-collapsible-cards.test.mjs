@@ -17,6 +17,7 @@ test('长卡片默认限高可展开，短卡片不加按钮，button 卡片无�
   await page.setContent(`<div id="page-core">
     <button id="long" class="card sessions-item">${'很长的会话内容。'.repeat(80)}</button>
     <div id="short" class="card">短内容</div>
+    <div id="confirm" class="card"><button>确认保存</button>${'保存确认内容。'.repeat(80)}</div>
     <div id="model" class="card"><select><option>模型选择必须直接可用</option></select>${'模型配置内容。'.repeat(80)}</div>
     <div id="auth" class="core-card">${'执行授权与路径。'.repeat(80)}</div>
   </div><div id="page-dag"><div id="dag" class="card">${'DAG 不折叠。'.repeat(80)}</div></div>
@@ -25,7 +26,9 @@ test('长卡片默认限高可展开，短卡片不加按钮，button 卡片无�
   await page.addScriptTag({ type: 'module', content: "import { attachCollapsibleCards } from 'https://test.local/collapsible-cards.mjs'; attachCollapsibleCards(document);" });
   await page.waitForFunction(() => document.querySelector('.card-expand'), null, { timeout: 2000 });
   assert.equal(await page.locator('#long > .card-expand').count(), 0, '展开按钮不嵌套在原 button 内');
-  assert.equal(await page.locator('.card-expand').count(), 2, '短卡、模型表单与 DAG 都不加按钮');
+  assert.equal(await page.locator('.card-expand').count(), 2, '短卡、保存确认、模型表单与 DAG 都不加按钮');
+  assert.equal(await page.locator('#confirm').getAttribute('data-collapsible'), 'interactive');
+  assert.equal(await page.locator('#confirm').getAttribute('data-expanded'), 'true');
   assert.equal(await page.locator('#model').getAttribute('data-collapsible'), 'interactive');
   assert.equal(await page.evaluate(() => document.querySelector('#model select').disabled), false);
   assert.equal(await page.locator('#auth').getAttribute('data-expanded'), 'false');

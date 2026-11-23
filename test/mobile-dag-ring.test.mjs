@@ -180,7 +180,7 @@ test('浏览器：DAG 环中心进度与节点契约、切项目后各页同步�
   const rulesFile = path.join(root, 'rules.json');
   writeFileSync(rulesFile, JSON.stringify({
     sources: {}, agents: { codex: { name: 'Codex', use: 'acp', access: 'edit' } },
-    rules: [{ name: 'A 计划', when: { cron: '*/10 * * * *' }, to: 'codex', cwd: projectA, prompt: '推进' }],
+    rules: [{ name: 'A 计划', when: { cron: '*/10 * * * *' }, to: 'codex', cwd: projectA, prompt: '推进' }, { name: 'B 计划', when: { cron: '*/10 * * * *' }, to: 'codex', cwd: projectB, prompt: '推进' }],
   }));
 
   const mkRun = (runId, project, planId, nodeId) => ({
@@ -199,12 +199,19 @@ test('浏览器：DAG 环中心进度与节点契约、切项目后各页同步�
   const rootB = mkRun('dagrun-beta', projectB, 'plan-b', 'node-b');
   const nodeRunA = { runId: 'n-a', nodeId: 'node-a', project: projectA, planId: 'plan-a', role: 'dev', status: 'done', agent: 'Codex', usage: { cost: 1 } };
   const nodeRunB = { runId: 'n-b', nodeId: 'node-b', project: projectB, planId: 'plan-b', role: 'dev', status: 'done', agent: 'Codex', usage: { cost: 1 } };
+  const sessionsFake = {
+    async list() { return [
+      { id: 'session-a', kind: 'normal', project: projectA, prompt: '项目 A 会话', status: 'idle', messages: [], createdAt: '2026-11-20T09:00:00Z', updatedAt: '2026-11-20T09:00:00Z' },
+      { id: 'session-b', kind: 'normal', project: projectB, prompt: '项目 B 会话', status: 'idle', messages: [], createdAt: '2026-11-20T09:00:00Z', updatedAt: '2026-11-20T09:00:00Z' },
+    ]; },
+    async listArchived() { return []; },
+  };
   const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
   const server = createConsoleServer({
     hubUrl: hub.url, ownerKey: 'server-secret', host: '127.0.0.1', root, rulesFile, deviceAuth,
     projectRoots: [projectA, projectB],
     dagService: createDagService({ root, store: { listRuns: () => [rootA, rootB, nodeRunA, nodeRunB] } }),
-  });
+  }, sessionsFake);
   const url = await listen(server);
   let browser;
   t.after(async () => {
@@ -266,6 +273,23 @@ test('浏览器：DAG 环中心进度与节点契约、切项目后各页同步�
   await page.locator('#project-filter').selectOption(projectB);
   await page.waitForFunction(() => document.querySelectorAll('#page-dag [data-ring-task-id]').length === 1);
   assert.equal(await page.locator('#page-dag [data-ring-task-id]').first().getAttribute('data-project'), projectB);
+  assert.equal(await page.locator('#project-filter option:checked').innerText(), 'proj-beta');
+  assert.equal(await page.locator('#clear-project-filter').isVisible(), false, '重置走同一个下拉的全部选项，不再画第二个按钮');
+  await page.locator('[data-tab="core"]').click();
+  await page.waitForTimeout(150);
+  const scopedProjects = await page.locator('[data-core-section="projects"]').innerText();
+  assert.match(scopedProjects, /proj-beta/);
+  assert.doesNotMatch(scopedProjects, /proj-alpha/);
+  await page.locator('[data-tab="rules"]').click();
+  await page.waitForTimeout(150);
+  const scopedRules = await page.locator('[data-core-section="rules"]').innerText();
+  assert.match(scopedRules, /B 计划/);
+  assert.doesNotMatch(scopedRules, /A 计划/);
+  await page.locator('[data-tab="sessions"]').click();
+  await page.waitForTimeout(150);
+  const scopedSessions = await page.locator('#page-sessions').innerText();
+  assert.match(scopedSessions, /项目 B 会话/);
+  assert.doesNotMatch(scopedSessions, /项目 A 会话/);
   assert.deepEqual(await page.evaluate(() => window.__filterEvents.at(-1)), projectB);
   assert.equal(await page.evaluate(() => window.AutoloopHooks.projectFilter.current().selectedId), projectB);
   assert.deepEqual(pageErrors, []);

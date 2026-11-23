@@ -409,3 +409,11 @@ test('会话消息附件经移动网关原样传给会话管理器', async t => 
   assert.equal(response.status, 200);
   assert.deepEqual(ctx.sessions.calls.find(call => call[0] === 'send'), ['send', 'sess-live', '看附件', { interrupt: false, attachments: [attachment] }]);
 });
+
+test('会话附件请求不再被旧 64KB 上限误拦截', async t => {
+  const ctx = await setup(t);
+  const dataBase64 = Buffer.alloc(100 * 1024, 7).toString('base64');
+  const response = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/messages', { method: 'POST', token: ctx.deviceToken, body: { text: '大附件', attachments: [{ name: '大文件.bin', type: 'application/octet-stream', dataBase64 }] } });
+  assert.equal(response.status, 200);
+  assert.equal(ctx.sessions.calls.find(call => call[0] === 'send')[3].attachments[0].dataBase64.length, dataBase64.length);
+});

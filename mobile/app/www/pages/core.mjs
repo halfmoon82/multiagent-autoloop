@@ -5,6 +5,9 @@
 const loadViewModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/core/index.mjs');
+const loadFilterModel = typeof window === 'undefined'
+  ? () => Promise.resolve(null)
+  : () => import('../src/features/project-filter/index.mjs');
 
 export { loadViewModel };
 
@@ -57,7 +60,8 @@ const LABELS = { run: '运行', pause: '暂停', resume: '恢复' };
 export function mount(ctx) {
   if (typeof document === 'undefined') return;
   const modelPromise = loadViewModel();
-  if (!modelPromise) return;
+  const filterPromise = loadFilterModel();
+  if (!modelPromise || !filterPromise) return;
 
   const drafts = new Map();
   const refs = {};
@@ -270,20 +274,61 @@ export function mount(ctx) {
     });
   }
 
+  let fullSnapshot = null;
+  let activeFilter = ctx.hooks?.projectFilter?.current?.() || null;
+  let coreModel = null;
+  let filterModel = null;
+
+  function filteredSnapshot() {
+    if (!fullSnapshot || !activeFilter || activeFilter.isAll || !filterModel) return fullSnapshot;
+    const filter = activeFilter;
+    const byProject = filterModel.filterByProject;
+    const rules = fullSnapshot.rules ? {
+      ...fullSnapshot.rules,
+      rules: byProject(fullSnapshot.rules.rules || [], filter, item => item?.cwd),
+      mobileRules: byProject(fullSnapshot.rules.mobileRules || [], filter),
+    } : null;
+    const projectByRule = new Map();
+    for (const rule of fullSnapshot.rules?.mobileRules || []) projectByRule.set(rule.name, rule.project);
+    for (const rule of fullSnapshot.rules?.rules || []) projectByRule.set(rule.name, rule.cwd);
+    const state = fullSnapshot.state ? {
+      ...fullSnapshot.state,
+      runs: byProject(fullSnapshot.state.runs || [], filter, item => item?.project || item?.cwd),
+      cards: byProject(fullSnapshot.state.cards || [], filter, item => item?.project || item?.cwd),
+      lines: byProject(fullSnapshot.state.lines || [], filter, item => projectByRule.get(item?.name) || ''),
+    } : null;
+    return {
+      ...fullSnapshot,
+      rules, state,
+      projects: byProject(fullSnapshot.projects || [], filter, item => item?.path || item?.id),
+      dagRuns: byProject(fullSnapshot.dagRuns || [], filter),
+    };
+  }
+
+  function renderCurrent() {
+    if (!fullSnapshot || !coreModel) return;
+    const pages = coreModel.buildPages(filteredSnapshot());
+    renderOverview(pages.overview);
+    renderRules(pages.rules);
+    renderRuns(pages.runs);
+    renderTodos(pages.todos);
+    renderAuthorize(pages.authorize);
+    const open = (pages.todos?.items?.items || []).filter(item => item.state === 'open').length;
+    ctx.hooks?.notify?.setBadge?.(open);
+  }
+  ctx.hooks?.projectFilter?.onChange?.(filter => { activeFilter = filter; renderCurrent(); });
+  filterPromise.then(model => { filterModel = model; renderCurrent(); });
+
   async function load() {
     try {
       const model = await modelPromise;
       if (!model) return;
+      coreModel = model;
       if (!write) write = model.createCoreWrite(ctx.client);
       const core = model.createMobileCore({ api: key => ctx.client.api(key) });
-      const { pages } = await core.load();
-      renderOverview(pages.overview);
-      renderRules(pages.rules);
-      renderRuns(pages.runs);
-      renderTodos(pages.todos);
-      renderAuthorize(pages.authorize);
-      const open = (pages.todos?.items?.items || []).filter(item => item.state === 'open').length;
-      ctx.hooks?.notify?.setBadge?.(open);
+      const { snapshot } = await core.load();
+      fullSnapshot = snapshot;
+      renderCurrent();
       for (const banner of banners) banner.clear();
     } catch (error) {
       const message = `读取失败：${error?.message || error}（点「重试」再试）`;

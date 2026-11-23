@@ -716,6 +716,12 @@ export function mount(ctx) {
   const updateSend = () => { const disabled = !(autogrow ? autogrow.canSend(composerInput.value) : composerInput.value.trim().length > 0); composerSend.disabled = disabled; steerBtn.disabled = disabled; };
   updateSend();
   composerInput.addEventListener('input', () => { state.drafts.composer = composerInput.value; updateSend(); saveContext(); });
+  composerInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      void sendComposer(false);
+    }
+  });
   growLater(composerInput);
   micBtn.addEventListener('click', () => { ctx.hooks?.attachVoice?.(composerInput); });
   newMic.addEventListener('click', () => { ctx.hooks?.attachVoice?.(newPrompt); });
@@ -926,7 +932,7 @@ export function mount(ctx) {
       state.snapshot = result.snapshot;
       state.list = result.list;
       state.rawArchives = result.rawArchives;
-      renderList(result.list);
+      applyFilters();
       if (!quiet) showBanner('');
       ctx.hooks?.notify?.refresh?.();
     } catch (error) {
@@ -938,7 +944,20 @@ export function mount(ctx) {
   // 类型筛选与搜索在已缓存快照上本地即时过滤，不再每次点击都走网络（手机隧道往返数秒，反馈像没点上）。
   function applyFilters() {
     if (!state.snapshot || !smodel) return;
-    state.list = smodel.buildSessionList(state.snapshot, { kind: state.kind, query: state.query });
+    const filter = ctx.hooks?.projectFilter?.current?.();
+    let snapshot = state.snapshot;
+    if (filter && !filter.isAll) {
+      const matches = item => {
+        const raw = String(item?.project || '').trim();
+        return raw === filter.selectedId || raw === filter.selectedLabel || item?.projectLabel === filter.selectedId || item?.projectLabel === filter.selectedLabel;
+      };
+      snapshot = {
+        ...snapshot,
+        sessions: Array.isArray(snapshot.sessions) ? snapshot.sessions.filter(matches) : snapshot.sessions,
+        archives: Array.isArray(snapshot.archives) ? snapshot.archives.filter(matches) : snapshot.archives,
+      };
+    }
+    state.list = smodel.buildSessionList(snapshot, { kind: state.kind, query: state.query });
     renderList(state.list);
   }
 
@@ -950,6 +969,7 @@ export function mount(ctx) {
     });
     observer.observe(main, { attributes: true, attributeFilter: ['hidden'] });
   }
+  ctx.hooks?.projectFilter?.onChange?.(() => { applyFilters(); });
   window.addEventListener('online', () => { void load(); });
   window.addEventListener('pagehide', () => {
     if (detailTimer) { clearInterval(detailTimer); detailTimer = null; }

@@ -26,7 +26,12 @@ test('普通会话不伪造问题区，消息可见且可直接发送', { skip }
   await page.goto(`${url}/mobile/`);await page.locator('#bind-payload').fill(deviceAuth.createBinding().qrPayload);await page.locator('#bind-submit').click();await page.locator('#unlock').click();await page.locator('[data-tab="sessions"]').click();await page.locator('.sessions-item').click();
   assert.match(await page.locator('.sessions-message').innerText(), /这是普通会话的真实回复。/);
   assert.equal(await page.locator('text=当前会话没有需要回答的事项').count(), 0, '普通会话不得显示假问题提示');
-  await page.locator('.sessions-composer-input').fill('请继续回复');await page.locator('.sessions-send').click();
+  await page.locator('.sessions-composer-input').fill('请继续回复');await page.locator('.sessions-composer-input').press('Enter');
   await page.waitForFunction(()=>document.querySelector('.sessions-composer-input').value==='');
   assert.equal(calls.length,1);assert.equal(calls[0].text,'请继续回复');
+  await page.locator('.sessions-composer-input').fill('第一行');await page.locator('.sessions-composer-input').press('Shift+Enter');await page.locator('.sessions-composer-input').pressSequentially('第二行');
+  assert.equal(await page.locator('.sessions-composer-input').inputValue(), '第一行\n第二行');
+  await page.locator('.sessions-composer-input').press('Enter');
+  await page.waitForFunction(() => document.querySelector('.sessions-composer-input').value === '');
+  assert.equal(calls.length,2);assert.equal(calls[1].text,'第一行\n第二行');
 });

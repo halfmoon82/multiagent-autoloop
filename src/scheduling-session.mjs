@@ -634,7 +634,7 @@ export class SchedulingSessionManager {
   }
 
   // §6.3 send：向同一 subject 发新事件；重复 id 幂等；失败保留输入，不回退 ACP。
-  async #sendToHub(record, raw, { interrupt }) {
+  async #sendToHub(record, raw, { interrupt, maxPrompt = 4000 }) {
     if (interrupt) {
       record.interruptRequested = true;
       try {
@@ -658,7 +658,7 @@ export class SchedulingSessionManager {
       this.#persist(record);
       return toPublicSession(record);
     }
-    const message = this.#validatePrompt(enriched);
+    const message = this.#validatePrompt(raw, maxPrompt);
     const turn = record.hub.turn + 1;
     const hubState = await this.#readHubSnapshot();
     const messageText = await this.#hubTurnText(record, turn, message, { hubState });
@@ -729,9 +729,9 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
     if ((record.kind || 'scheduling') === 'design' && raw.startsWith('/')) {
       throw new SchedulingSessionError('设计会话不接受斜杠命令（防止切换模式），请用自然语言描述需求', { status: 400 });
     }
-    if (record.hub) return this.#sendToHub(record, enriched, { interrupt });
+    if (record.hub) return this.#sendToHub(record, enriched, { interrupt, maxPrompt: attachments.length ? 12000 : 4000 });
     if (record.status === 'idle') {
-      const message = this.#validatePrompt(enriched);
+      const message = this.#validatePrompt(enriched, attachments.length ? 12000 : 4000);
       this.#pushMessage(record, 'user', message);
       this.#runTurn(record, message);
       return toPublicSession(record);
@@ -747,7 +747,7 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
       try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
       return toPublicSession(record);
     }
-    const message = this.#validatePrompt(enriched);
+    const message = this.#validatePrompt(enriched, attachments.length ? 12000 : 4000);
     const pendingMessages = record.queue.length;
     if (pendingMessages >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
     record.queue.push({ id: randomUUID(), text: message, at: this.now().toISOString() });

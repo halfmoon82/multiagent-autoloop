@@ -3,9 +3,16 @@ const SELECTOR = '.card, .core-card, .core-item, .sessions-item, .sessions-quest
 const COLLAPSED_HEIGHT = 160;
 
 function prepare(el) {
-  if (el.closest('#page-dag') || el.dataset.collapsible !== undefined) return;
-  // 可操作表单不参与自动折叠：模型、输入、待办和队列必须直接可操作。
-  if (el.querySelector('input,select,textarea')) { el.dataset.collapsible = 'interactive'; return; }
+  if (el.closest('#page-dag')) return;
+  // 可操作内容不参与自动折叠：模型、保存确认、输入、待办和队列必须直接可操作。
+  if (el.querySelector('button,input,select,textarea')) {
+    el.previousElementSibling?.classList?.contains('card-expand') && el.previousElementSibling.remove();
+    el.classList.remove('collapsible-card');
+    el.dataset.collapsible = 'interactive';
+    el.dataset.expanded = 'true';
+    return;
+  }
+  if (el.dataset.collapsible !== undefined) return;
   if (el.scrollHeight <= COLLAPSED_HEIGHT + 8) { el.dataset.collapsible = 'not-needed'; return; }
   el.dataset.collapsible = '';
   el.dataset.expanded = 'false';

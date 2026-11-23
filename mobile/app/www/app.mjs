@@ -28,11 +28,16 @@ const PAGE_MODULES = {
 
 // 默认钩子全部是空操作：未就绪时调用不抛错，后续节点只覆盖自己的钩子。
 export function createDefaultHooks() {
+  const projectFilterListeners = new Set();
   return {
     attachVoice() {},
     notify: { setBadge() {}, refresh() {} },
     openSessionArtifacts() {},
-    projectFilter: { current() { return null; }, onChange() {} },
+    projectFilter: {
+      _listeners: projectFilterListeners,
+      current() { return null; },
+      onChange(listener) { if (typeof listener !== 'function') return () => {}; projectFilterListeners.add(listener); return () => projectFilterListeners.delete(listener); },
+    },
     pushView() {},
     popView() {},
     haptic: { tap() {}, success() {} },

@@ -8,6 +8,7 @@ export const MAX_ATTACHMENT_FILES = 4;
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 export const MAX_ATTACHMENT_TOTAL_BYTES = 12 * 1024 * 1024;
 const TEXT_BYTES = 32 * 1024;
+const TEXT_CHARS = 1200;
 const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.json', '.mjs', '.js', '.ts', '.css', '.html', '.csv', '.yaml', '.yml', '.xml', '.log']);
 const fail = message => { throw new SchedulingSessionError(message, { status: 400 }); };
 const safeName = value => {
@@ -49,8 +50,8 @@ export function attachmentPrompt(saved) {
   for (const file of saved) {
     lines.push(`- ${file.name}（${file.type}，${file.size} 字节）：${file.path}`);
     if (file.type.startsWith('text/') || TEXT_EXTENSIONS.has(path.extname(file.name).toLowerCase())) {
-      const text = readFileSync(file.path, 'utf8').slice(0, TEXT_BYTES);
-      lines.push(`  文本附件内容（最多 ${TEXT_BYTES} 字节）：\n${text}`);
+      const text = readFileSync(file.path, 'utf8').slice(0, TEXT_CHARS);
+      lines.push(`  文本附件内容（最多 ${TEXT_CHARS} 字）：\n${text}`);
     }
   }
   return lines.join('\n');
