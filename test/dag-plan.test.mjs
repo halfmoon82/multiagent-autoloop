@@ -130,7 +130,12 @@ test('native UI plan binds the approved design baseline into planDigest', async 
   const service = createDagService({ store });
   const created = await service.create({ planId: 'native-ui', planDigest, confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true }, root);
   assert.equal(created.nodeId, ROOT_NODE);
-  assert.deepEqual(created.designBaseline, loaded.designBaseline);
+  assert.equal(created.designBaseline.designDigest, loaded.designBaseline.designDigest);
+  assert.ok(created.designBaseline.snapshotDirectory);
+  for (const relative of loaded.designBaseline.readOnlyPaths) {
+    assert.ok(created.designBaseline.snapshotFiles[relative]);
+    assert.equal(readFileSync(path.join(created.designBaseline.snapshotDirectory, relative), 'utf8'), readFileSync(path.join(root, relative), 'utf8'));
+  }
 });
 
 test('native plans without UI contracts do not load design facilities', () => {

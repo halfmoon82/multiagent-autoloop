@@ -112,11 +112,13 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     if (design) lines.push(
       `设计基线：${root.designBaseline.designDigest}（冻结于本 DAG；不得读取新稿替代）`,
       `设计合同：${JSON.stringify(node.contract.design)}`,
-      '设计基线、参考图与验证器只读；如需改变设计语义，返回 DESIGN_CHANGE_REQUIRED，不得自行修改基线或阈值。',
+      '设计基线、参考图与验证器只读；不得自行修改基线或阈值，不得要求用户中途做工程选择。',
     );
+    if (design && run.role === 'review') lines.push('证据不完整、checks 失败、knownDeviations 非空或真实渲染偏离合同时必须 rework；不得宣称设计验收通过。设施故障只报告并重建证据，不得转成 blocked/gated。');
     const warnings = n.warnings ? Object.entries(n.warnings).map(([kind, value]) => `${kind}: ${Array.isArray(value) ? value.join(', ') : value}`).join('；') : '';
     if (warnings) lines.push(`本节点已上报警示（只作参考，不阻断）：${warnings}`);
-    if (design && run.role === 'review') lines.push(`设计验证证据：${JSON.stringify(n.designEvidence ? { commit: n.designEvidence.commit, designDigest: n.designEvidence.designDigest, contractDigest: n.designEvidence.contractDigest, checks: n.designEvidence.checks, visualDiffs: n.designEvidence.visualDiffs || [] } : null)}`);
+    if (design && run.role === 'review') lines.push(`设计验证证据：${JSON.stringify(n.designEvidence ? { commit: n.designEvidence.commit, designDigest: n.designEvidence.designDigest, contractDigest: n.designEvidence.contractDigest, checks: n.designEvidence.checks, captures: n.designEvidence.captures || n.designEvidence.artifacts || [], visualDiffs: n.designEvidence.visualDiffs || [], knownDeviations: n.designEvidence.knownDeviations || [] } : null)}`);
+    if (run.attemptReason) lines.push(`本次重派原因：${run.attemptReason}`);
     return lines.join('\n');
   };
 
@@ -193,6 +195,12 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       && evidence.commit === n.commit && evidence.designDigest === root.designBaseline.designDigest
       && evidence.contractDigest === designContractDigest({ designDigest: root.designBaseline.designDigest, contract: node.contract.design }));
   };
+  const designDeviation = (root, id, n) => {
+    const node = root.nodes.find(item => item.id === id);
+    if (!node?.contract?.design || !designEvidenceCurrent(root, id, n)) return false;
+    const evidence = n.designEvidence;
+    return (Array.isArray(evidence.checks) && evidence.checks.some(check => check.ok === false)) || (Array.isArray(evidence.knownDeviations) && evidence.knownDeviations.length > 0);
+  };
 
   async function onDone(root, st, id, run) {
     const n = st.nodes[id];
@@ -229,6 +237,10 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       if (!ver.ok) return failure(root, st, id, dev, 'verify-failed');
       n.todo = { kind: 'review' }; return;
     }
+    if (designDeviation(root, id, n)) {
+      // 设计未通过是正常实现返工，不是异常门禁。即使 reviewer 误判 accepted 也不能合并。
+      return failure(root, st, id, latest(root, id, 'dev'), 'design-deviation');
+    }
     // PR 在审阅后被变基/强推：审阅基准已不等于远端 head。绝不合并未审提交——
     // 在新 head 上补跑测试，下一阶段以新 attempt 重派独立审阅，通过后再合并同一 SHA。
     if (n.rebasedTo && n.rebasedTo === n.commit) {
@@ -244,6 +256,13 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     try { merged = await publisher.merge({ nodeId: id, prUrl: n.prUrl, commit: n.commit, runId: root.runId, evidence: n.designEvidence }); }
     catch (error) {
       const head = String(error?.head ?? '');
+      if (error?.code === 'DESIGN_DEVIATION') return failure(root, st, id, latest(root, id, 'dev'), 'design-deviation');
+      if (error?.code === 'DESIGN_EVIDENCE_INCOMPLETE') {
+        // merge 只做最后一道身份防线；清掉旧证据后下一 tick 自动补验并重审，不原地重试合并。
+        n.designEvidence = null; n.state = 'review'; n.todo = null;
+        n.lastError = `设计证据待重建：${msg(error)}`;
+        return;
+      }
       if (error?.code === 'HEAD_MISMATCH' && /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(head)) {
         n.commit = head; n.rebasedTo = head; n.state = 'review'; n.todo = { kind: 'review', rebase: true };
         n.warnings = { ...(n.warnings || {}), rebasedHead: head };
@@ -251,7 +270,6 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       }
       throw error;
     }
-    if (merged.designWarning) n.warnings = { ...(n.warnings || {}), designEvidence: merged.designWarning };
     store.markPrMerged(root.runId, n.prUrl, { mergeCommit: merged.mergeCommit });
     await publisher.baseline({ nodeId: id, mergeCommit: merged.mergeCommit });
     n.state = 'accepted'; n.mergeCommit = merged.mergeCommit;
@@ -380,7 +398,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       }
       await reattempt(root, st, id, role, todo.reason, true); return;
     }
-    const reason = todo.reason === 'change-approach' || (role === 'review' && latest(root, id, role).attempt >= MAX_ATTEMPTS) ? 'change-approach' : 'retry';
+    const reason = todo.reason === 'change-approach' || (role === 'review' && latest(root, id, role).attempt >= MAX_ATTEMPTS) ? 'change-approach' : (todo.reason || 'retry');
     if (role === 'dev' && todo.newSlot === false) { // 原槽位重试：保持分支与槽位
       if (!devSlotReusable(id, n)) {
         // 槽位已被审阅 prepare 改成本节点的 commit 基准/审阅分支：直接复用会让 prepareBase == commit，

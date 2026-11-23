@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { designContractDigest } from './design-baseline.mjs';
+import { designContractDigest, restoreDesignBaseline } from './design-baseline.mjs';
 import { chmodSync } from 'node:fs';
 import { createGitRunner, removeWorktree, restoreWorktree } from './git-safe.mjs';
 
@@ -53,6 +53,9 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
   try {
     await safeGit(project, ['worktree', 'add', '--no-checkout', '--detach', source, commit]);
     await restoreWorktree({ git: safeGit, cwd: source, commit });
+    // 实现仍来自精确 commit；设计基线则覆盖为创建 DAG 时冻结的批准字节。
+    // 因此源文件丢失/损坏不需要中途重新批准，也不会信任 worker 提交的 verifier。
+    if (designBaseline.snapshotDirectory) restoreDesignBaseline({ designBaseline, targetRoot: source });
     const root = realpathSync(source);
     const file = realpathSync(path.resolve(root, verifierPath));
     if (file !== root && !file.startsWith(`${root}${path.sep}`)) throw new Error('设计 verifier 逃逸精确 commit worktree');
@@ -168,6 +171,8 @@ export async function verifyDesign({ nodeId, project, commit, designBaseline, co
       commit, designDigest: designBaseline.designDigest,
       contractDigest: designContractDigest({ designDigest: designBaseline.designDigest, contract }),
       checks: result.checks,
+      captures: Array.isArray(result.captures) ? result.captures : (Array.isArray(result.artifacts) ? result.artifacts : []),
+      knownDeviations: Array.isArray(result.knownDeviations) ? result.knownDeviations : [],
       ...(result.visualDiffs ? { visualDiffs: result.visualDiffs } : {}),
       ...(result.artifacts ? { artifacts: result.artifacts } : {}),
     },

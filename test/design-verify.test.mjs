@@ -60,6 +60,25 @@ test('a worker-committed verifier with a different hash is rejected before impor
   assert.equal(readFileSync(path.join(f.project, verifierPath), 'utf8'), attacker);
 });
 
+test('a frozen baseline restores deleted verifier bytes without trusting the worker commit', async () => {
+  const f = makeVerifierProject();
+  const snapshotDirectory = mkdtempSync(path.join(tmpdir(), 'design-frozen-verifier-'));
+  mkdirSync(path.join(snapshotDirectory, path.dirname(verifierPath)), { recursive: true });
+  writeFileSync(path.join(snapshotDirectory, verifierPath), f.approved);
+  f.designBaseline.snapshotDirectory = snapshotDirectory;
+  f.designBaseline.snapshotFiles = { [verifierPath]: sha256(f.approved) };
+  rmSync(path.join(f.project, verifierPath));
+  sh(f.project, 'add', verifierPath); sh(f.project, 'commit', '-qm', 'delete baseline verifier');
+  const commit = sh(f.project, 'rev-parse', 'HEAD');
+  const result = await verifyDesignModule({
+    nodeId: 'ui', worktree: f.project, project: f.project, git: defaultGit,
+    commit, designBaseline: f.designBaseline, contract: f.contract,
+    evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-verify-frozen-')),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.evidence.checks[0].id, 'normal');
+});
+
 test('git hooks cannot execute in the controller environment while creating the verifier worktree', async () => {
   const f = makeVerifierProject();
   const hook = path.join(f.project, '.git', 'hooks', 'post-checkout');

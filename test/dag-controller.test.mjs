@@ -207,6 +207,46 @@ test('UI 证据丢失但 SHA 未变：自动补验并重新 review，不直接 m
   assert.equal(s.publisher.calls.filter(c => c[0] === 'merge').length, 1);
 });
 
+test('设计 checks 未通过时 reviewer 误判 accepted 也只能正常返工，不 merge、不 blocked/gated', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => {
+    s.publisher.calls.push(['verify', input.nodeId]);
+    return {
+      ok: true, tests: { exitCode: 0 },
+      designEvidence: {
+        commit: input.commit, designDigest: baseline.designDigest,
+        contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }),
+        checks: [{ id: 'overview-normal', ok: false }], captures: [], visualDiffs: [], knownDeviations: [],
+      },
+    };
+  };
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  assert.match(s.hub.last('ui', 'review').prompt, /不得宣称设计验收通过/);
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.publisher.calls.some(c => c[0] === 'merge'), false);
+  assert.equal(s.ctl.snapshot().nodes.ui.state, 'dev');
+  assert.equal(s.runOf('ui', 'dev').attempt, 2);
+  assert.ok(!['blocked', 'gated'].includes(s.ctl.snapshot().nodes.ui.state));
+  assert.match(s.hub.last('ui', 'dev').prompt, /design-deviation/);
+});
+
+test('knownDeviations 未清零时 reviewer 误判 accepted 也正常返工，不走设施重试', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => ({
+    ok: true, tests: { exitCode: 0 },
+    designEvidence: { commit: input.commit, designDigest: baseline.designDigest, contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }), checks: [{ ok: true }], knownDeviations: [{ id: 'spacing', status: 'open' }] },
+  });
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  assert.ok(s.hub.last('ui', 'review'));
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.runOf('ui', 'dev').attempt, 2);
+  assert.equal(s.runOf('ui', 'dev').attemptReason, 'design-deviation');
+  assert.equal(s.publisher.calls.some(c => c[0] === 'merge'), false);
+  assert.ok(!['blocked', 'gated'].includes(s.ctl.snapshot().nodes.ui.state));
+});
+
 test('设计 runner 设施抛错不计 worker 失败，下一 tick 同 attempt 自动重试', async () => {
   const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
   const s = setup([ui], { designBaseline: designBaseline() });
@@ -222,6 +262,28 @@ test('设计 runner 设施抛错不计 worker 失败，下一 tick 同 attempt �
   fail = false; await s.ctl.tick();
   assert.ok(s.hub.last('ui', 'review'));
   assert.equal(s.runOf('ui', 'dev').attempt, 1);
+});
+
+test('merge 前证据失效：回到补验与重审，不 blocked/gated、不重复硬撞 merge', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => ({
+    ok: true, tests: { exitCode: 0 },
+    designEvidence: { commit: input.commit, designDigest: baseline.designDigest, contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }), checks: [{ ok: true }] },
+  });
+  const realMerge = s.publisher.merge; let failMerge = true;
+  s.publisher.merge = async input => {
+    if (failMerge) { const error = new Error('evidence disappeared'); error.code = 'DESIGN_EVIDENCE_INCOMPLETE'; throw error; }
+    return realMerge(input);
+  };
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.ui.state, 'review');
+  assert.equal(s.ctl.snapshot().nodes.ui.designEvidence, null);
+  await s.ctl.tick();
+  assert.equal(s.runOf('ui', 'review').attempt, 2);
+  failMerge = false; s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.ui.state, 'accepted');
 });
 
 test('崩溃收养路径把 prepare 返回的实际 base commit 传给 commitPr', async () => {

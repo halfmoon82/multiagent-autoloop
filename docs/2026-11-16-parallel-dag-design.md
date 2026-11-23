@@ -14,11 +14,19 @@
 ### 可选设计基线与定向执行门（2026-11-17 精简审阅后）
 - 只有包含 `contract.design.surfaceIds` 的 UI 节点才加载 `design-manifest.json` 与批准记录；纯后端节点和旧数组计划无需新增字段，也不读取设计设施。设计批准只绑定 `designDigest`，不绑定 PRD 全文；只有设计语义或产物变化才重新确认。
 - `designDigest` 纳入现有 `planDigest`，根 run 保存一份不可变快照，节点 run/attempt 原样继承。活跃 run 不读取当前工作目录的新稿；新稿只用于新 run，用户显式修改活跃计划范围时才修订并重新确认。
-- 发布时做一次设计确认，执行时做一次定向设计验证。preview/create/dispatch/review/merge 只做廉价一致性检查；merge 不重跑浏览器。controller 在槽位分配、prepare、claim 前按节点校验快照，单节点失败不影响其他 ready 节点。
+- 发布时做一次设计确认，创建根 run 前完成合同、产物 hash、冻结副本恢复演练；预览不冻结，创建失败不得留下可派发 run。执行时做定向设计验证，merge 不重跑浏览器。controller 在槽位分配、prepare、claim 前按节点校验快照，单节点失败不影响其他 ready 节点。
 - `createDagRuntime` 默认从精确 commit 建临时只读 worktree，校验已批准 `design-manifest.verifierPath` 的 sha256 后，把批准字节复制到 worker 不可写目录并在净化子进程执行；只验证该节点声明的 surface/viewport/state/interaction，并把证据写入服务端 `dag-runs/design-evidence/`。结果走专用 fd、一次性 nonce 与忽略 `toJSON` 的安全序列化，stdout/stderr 仅作有上限日志，不可伪造结果。`checks` 是硬断言；PNG 与 `visualDiffs` 默认仅为审阅证据。runner/证据设施故障自动重试，不计 worker 实现失败。
 - run 创建时在服务端 root run 冻结 origin URL，并在 `AGENT_AUTOLOOP_HOME/dag-mirrors/` 建控制器 owned mirror；base 从 mirror 获取，push/fetch 也从 mirror 走显式 URL，不信任 worker 可改的项目 ref/config。remote URL 纳入授权记录摘要。
-- 证据绑定 `commit/designDigest/contractDigest`。同 SHA 证据丢失时自动补验并重新独立 review；只有实际设计语义改变才以 `DESIGN_CHANGE_REQUIRED` 升级。worker 不得修改基线、参考图、批准记录或验证阈值。控制器侧 Git 统一走 `src/git-safe.mjs`：禁 hooks、fsmonitor、untrackedCache、external diff/textconv，不继承控制器环境，不在 worker worktree 执行 `git add`/`checkout`/`restore`；WIP 与提交用 `hash-object --no-filters`、`update-index`、`write-tree`、`commit-tree` 构树，恢复用 `ls-tree`/`cat-file` 写文件，避免 clean/smudge filter。`npm test` 使用净化环境。`prepare` 从 mirror 冻结实际 base commit SHA 并在 claim/派发前写入服务端 root run；`commitPr` 的已提交/未提交 scope 均相对该 SHA 核对，不信任 worker 可移动的 `origin/main` 或 slot 状态。
+- 证据绑定 `commit/designDigest/contractDigest`。同 SHA 证据丢失时自动补验并重新独立 review；worker 不得修改基线、参考图、批准记录或验证阈值。控制器侧 Git 统一走 `src/git-safe.mjs`：禁 hooks、fsmonitor、untrackedCache、external diff/textconv，不继承控制器环境，不在 worker worktree 执行 `git add`/`checkout`/`restore`；WIP 与提交用 `hash-object --no-filters`、`update-index`、`write-tree`、`commit-tree` 构树，恢复用 `ls-tree`/`cat-file` 写文件，避免 clean/smudge filter。`npm test` 使用净化环境。`prepare` 从 mirror 冻结实际 base commit SHA 并在 claim/派发前写入服务端 root run；`commitPr` 的已提交/未提交 scope 均相对该 SHA 核对，不信任 worker 可移动的 `origin/main` 或 slot 状态。
 - 共享 surface 的跨节点回归只复用现有 integration-review，且只阻塞 DAG 最终完成与对应返工节点；不新增 Hub 协议或第二套状态机。
+
+### 无阻塞执行保证（2026-11-23）
+
+- **启动前一次预检**：UI 合同、批准 digest、全部 artifacts/reference/verifier 必须可读且 hash 一致；服务端把全部批准字节冻结到 `dag-runs/design-baselines/<designDigest>/`，完成逐文件恢复演练后才原子创建根 run。缺批准、合同越界、产物损坏或冻结失败均在创建前拒绝，不留下活跃 DAG。
+- **启动后不重新批准**：活跃 run 不读取当前工作目录的新稿。源基线丢失或损坏时，从冻结副本恢复进精确 commit 的临时验证 worktree；实现代码仍来自待审 commit，verifier 与设计参考只认冻结字节。
+- **故障与偏差分流**：缺证据、证据身份/形态无效、verifier/浏览器/依赖/截图失败属于设施故障，同 attempt 自动重试并重建证据，不消耗 worker 实现失败次数，不派 reviewer 空转。checks 失败或 `knownDeviations` 非空属于正常设计返工；即使 reviewer 误判 accepted 也不能合并，但不得因此新设设计专用 blocked/gated。
+- **证据可审**：证据包含 checks、captures、visualDiffs、knownDeviations；reviewer 必须对照真实渲染，证据不完整或设计偏差未清零时不得宣称设计验收通过，也不得要求主人中途选择工程方案。
+- **恢复路径**：同 SHA 完整证据可复用，否则精确 commit 重建并重审；设施故障由调度修复环境、换采集器或无模型脚本，worker 多次失败沿用既有换 worker/模型、拆任务纪律。仅全局“所有替代方式穷尽仍失败”的既有升级规则保持不变。纯后端节点不加载设计设施。
 
 ## 原生 Codex Plan Mode + 只读沙箱
 - kind=design 使用现有 ACP 底座；普通会话不变。

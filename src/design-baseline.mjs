@@ -1,7 +1,7 @@
 // 可选设计基线：只读加载、内容 hash、一次批准记录与节点合同子集校验。
 // 本模块不读 PRD 自由文本，不执行浏览器，也不拥有执行授权。
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const HEX_64 = /^[0-9a-f]{64}$/;
@@ -104,6 +104,83 @@ export function loadDesignBaseline({ projectRoot, manifestPath, approvalPath } =
   }
   if (approval.designDigest !== loaded.designDigest) fail('DESIGN_APPROVAL_MISMATCH', '设计批准记录 designDigest 与当前设计清单不一致，请重新确认');
   return { ...loaded, approvalPath: normalizedApproval, approval: JSON.parse(JSON.stringify(approval)), readOnlyPaths: [...loaded.readOnlyPaths, normalizedApproval] };
+}
+
+function snapshotFile(snapshotDirectory, relativePath) {
+  if (typeof relativePath !== 'string' || !relativePath || path.isAbsolute(relativePath)) fail('INVALID_DESIGN_PATH', '冻结设计路径无效');
+  const root = path.resolve(snapshotDirectory || '');
+  const resolved = path.resolve(root, relativePath);
+  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) fail('DESIGN_PATH_ESCAPE', '冻结设计路径逃逸');
+  return resolved;
+}
+
+// 创建 DAG 前冻结所有批准字节。目标目录按 designDigest 内容寻址；重复创建幂等，
+// 但每次都会重读并校验冻结副本，避免把已有的半截目录当成可恢复基线。
+export function freezeDesignBaseline({ projectRoot, designBaseline, directory } = {}) {
+  if (!designBaseline?.designDigest || !Array.isArray(designBaseline.readOnlyPaths)) fail('DESIGN_BASELINE_MISSING', '冻结设计需要完整基线');
+  if (!String(directory ?? '').trim()) fail('INVALID_DESIGN_PATH', '冻结设计目录不能为空');
+  const snapshotDirectory = path.join(path.resolve(directory), designBaseline.designDigest);
+  const temporary = path.join(path.resolve(directory), `.${designBaseline.designDigest}.tmp-${process.pid}`);
+  mkdirSync(temporary, { recursive: true, mode: 0o700 });
+  const snapshotFiles = {};
+  try {
+    for (const relativePath of designBaseline.readOnlyPaths) {
+      const source = projectFile(projectRoot, relativePath).resolved;
+      const bytes = readFileSync(source);
+      const target = snapshotFile(temporary, relativePath);
+      mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+      writeFileSync(target, bytes, { mode: 0o600 });
+      snapshotFiles[relativePath] = sha256(bytes);
+    }
+    // load 与 freeze 之间可能发生正常编辑：在临时目录内重新执行完整批准校验，
+    // 不接受“新字节 + 旧 manifest/approval/designDigest”的混合快照。
+    const revalidated = loadDesignBaseline({ projectRoot: temporary, manifestPath: designBaseline.manifestPath, approvalPath: designBaseline.approvalPath });
+    if (revalidated.designDigest !== designBaseline.designDigest) fail('DESIGN_SNAPSHOT_INVALID', '冻结前后 designDigest 不一致');
+    if (existsSync(snapshotDirectory)) {
+      // 同一 designDigest 可能被其他活跃 run 使用；校验后复用，绝不删除共享冻结副本。
+      const existing = loadDesignBaseline({ projectRoot: snapshotDirectory, manifestPath: designBaseline.manifestPath, approvalPath: designBaseline.approvalPath });
+      if (existing.designDigest !== designBaseline.designDigest) fail('DESIGN_SNAPSHOT_INVALID', '已有冻结副本 designDigest 不一致');
+      for (const [relativePath, expected] of Object.entries(snapshotFiles)) {
+        const target = snapshotFile(snapshotDirectory, relativePath);
+        if (!existsSync(target) || sha256(readFileSync(target)) !== expected) fail('DESIGN_SNAPSHOT_INVALID', `已有冻结设计副本不一致：${relativePath}`);
+      }
+      rmSync(temporary, { recursive: true, force: true });
+    } else renameSync(temporary, snapshotDirectory);
+  } catch (error) {
+    rmSync(temporary, { recursive: true, force: true });
+    throw error;
+  }
+  const frozen = { ...JSON.parse(JSON.stringify(designBaseline)), snapshotDirectory, snapshotFiles };
+  // 恢复演练：所有字节必须能从冻结目录独立读出且 hash 一致，才允许创建根 run。
+  for (const [relativePath, expected] of Object.entries(snapshotFiles)) {
+    const file = snapshotFile(snapshotDirectory, relativePath);
+    if (!existsSync(file) || sha256(readFileSync(file)) !== expected) fail('DESIGN_SNAPSHOT_INVALID', `冻结设计恢复演练失败：${relativePath}`);
+  }
+  return frozen;
+}
+
+// 运行中只信任创建时冻结的批准字节；可恢复到任意精确 commit 的临时验证 worktree。
+export function restoreDesignBaseline({ designBaseline, targetRoot } = {}) {
+  if (!designBaseline?.snapshotDirectory || !designBaseline.snapshotFiles) fail('DESIGN_SNAPSHOT_INVALID', '缺少冻结设计副本');
+  if (!String(targetRoot ?? '').trim()) fail('INVALID_PROJECT', '恢复设计需要 targetRoot');
+  const realTargetRoot = realpathSync(targetRoot);
+  const restored = [];
+  for (const relativePath of designBaseline.readOnlyPaths || []) {
+    const expected = designBaseline.snapshotFiles[relativePath];
+    const source = snapshotFile(designBaseline.snapshotDirectory, relativePath);
+    let bytes;
+    try { bytes = readFileSync(source); } catch { fail('DESIGN_SNAPSHOT_INVALID', `冻结设计副本不可读：${relativePath}`); }
+    if (!HEX_64.test(String(expected || '')) || sha256(bytes) !== expected) fail('DESIGN_SNAPSHOT_INVALID', `冻结设计副本摘要不一致：${relativePath}`);
+    const target = snapshotFile(targetRoot, relativePath);
+    mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+    const realParent = realpathSync(path.dirname(target));
+    if (realParent !== realTargetRoot && !realParent.startsWith(`${realTargetRoot}${path.sep}`)) fail('DESIGN_PATH_ESCAPE', `恢复设计目标通过符号链接逃逸：${relativePath}`);
+    const temporary = `${target}.design-restore-${process.pid}`;
+    writeFileSync(temporary, bytes, { mode: 0o600 });
+    renameSync(temporary, target);
+    restored.push(relativePath);
+  }
+  return { restored };
 }
 
 const subset = (requested, available, label) => {
