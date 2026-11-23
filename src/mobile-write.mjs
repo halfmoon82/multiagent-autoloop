@@ -303,7 +303,7 @@ async function ruleAction(req, res, url, route, ctx, body) {
   let result;
   try {
     result = await hubRequest(ctx.config, `/v1/rules/${encodeURIComponent(name)}/${action}`, {
-      method: 'POST', body: { ...payload, sourceDeviceId: ctx.device.id },
+      method: 'POST', body: payload,
     });
   } catch (error) { auditFailure(ctx, req, 'rule.action', fields); throw error; }
   audit(ctx, req, 'rule.action', fields);

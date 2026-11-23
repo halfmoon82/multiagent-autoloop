@@ -245,7 +245,8 @@ function boot() {
     els.bindStatus.textContent = bindMessage;
     els.lockError.textContent = state.lockError || '';
     els.deviceName.textContent = state.device?.name || '未绑定设备';
-    els.connectionStatus.textContent = connectionLabel();
+    els.connectionStatus.setAttribute('aria-label', connectionLabel());
+    els.connectionStatus.title = connectionLabel();
     els.connectionStatus.dataset.state = state.connection;
     els.connectionError.textContent = ['error', 'offline'].includes(state.connection) ? (state.error || '') : '';
     els.unlock.disabled = state.phase === 'unlocking';

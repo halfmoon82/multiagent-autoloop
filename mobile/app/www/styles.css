@@ -169,3 +169,6 @@ button:disabled { opacity: 0.6; cursor: default; }
   color: var(--brand-ink); font-size: 0.66rem; box-shadow: 0 1px 4px rgba(15,61,46,0.08);
 }
 .collapsible-card + .card-expand { float: right; }
+#app-main .connection-dot { flex: none; width: 0.65rem; height: 0.65rem; border-radius: 50%; background: #16835c; box-shadow: 0 0 0 3px rgba(22,131,92,0.14); }
+#app-main .connection-dot[data-state="offline"], #app-main .connection-dot[data-state="error"] { background: #b64a43; box-shadow: 0 0 0 3px rgba(182,74,67,0.14); }
+#app-main .connection-dot[data-state="connecting"] { background: #b98a32; box-shadow: 0 0 0 3px rgba(185,138,50,0.14); }

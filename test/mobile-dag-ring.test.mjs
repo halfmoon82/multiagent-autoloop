@@ -234,7 +234,7 @@ test('浏览器：DAG 环中心进度与节点契约、切项目后各页同步�
   await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.querySelector('#connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.querySelector('#connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
 
   // 头部全局筛选：「全部」+ 两个真实项目，挂载在 scaffold 预留点。
   await page.waitForFunction(() => document.querySelectorAll('#project-filter option').length >= 3);

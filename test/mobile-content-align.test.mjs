@@ -161,7 +161,7 @@ test('浏览器：管理后台分区切换、保存前确认、失败保留表�
   await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.querySelector('#connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.querySelector('#connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
 
   // 总览：四组 + 空态 + 项目 DAG 入口所在区。
   await page.waitForFunction(() => document.querySelector('[data-core-section="metrics"]')?.textContent?.includes('待调度处理'));

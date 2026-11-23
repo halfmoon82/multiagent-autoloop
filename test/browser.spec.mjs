@@ -1033,7 +1033,7 @@ try {
   await page.evaluate(() => { window.__autoloopBiometricOutcome = 'success'; });
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
   assert.equal(await page.locator('#lock-screen').isVisible(), false);
   assert.ok((await page.locator('#device-name').innerText()).includes('Mobile Shell 测试机'), '只显示自身绑定信息');
 
@@ -1045,14 +1045,14 @@ try {
   await page.evaluate(() => { window.__autoloopBiometricOutcome = 'success'; });
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
 
   // 断线：标记离线；网络恢复：自动重连回安全连接。
   await page.evaluate(() => window.dispatchEvent(new Event('offline')));
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('网络已断开'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('网络已断开'));
   assert.equal(await page.locator('#app-main').isVisible(), true);
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
 
   // 网页管理后台解除授权：移动端同一凭据立即失效，回锁定/重绑，主界面隐藏。
   const devices = await (await fetch(`${url}/api/devices`)).json();

@@ -201,7 +201,8 @@ test('规则 run/pause/resume 复用网页同一规则操作并记录来源设�
   assert.equal(response.status, 200);
   const ruleCall = ctx.hub.requests.find(request => request.url === '/v1/rules/%E5%B7%A1%E6%A3%80/run');
   assert.ok(ruleCall);
-  assert.equal(JSON.parse(ruleCall.body).sourceDeviceId, ctx.deviceId);
+  assert.deepEqual(JSON.parse(ruleCall.body), { subject: '#1' });
+  assert.doesNotMatch(ruleCall.body, /sourceDeviceId/, '规则 Hub 白名单字段外不得额外注入 sourceDeviceId');
   assert.equal((await mobileFetch(ctx.url, '/api/mobile/rules/x/delete', { method: 'POST', token: ctx.deviceToken, body: {} })).status, 404);
 });
 
