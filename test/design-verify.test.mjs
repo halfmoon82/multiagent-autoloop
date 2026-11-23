@@ -339,3 +339,18 @@ test('a valid implementation deviation stays primary evidence and never invokes 
   assert.equal(result.evidence.verifierOk, false);
   assert.equal(result.evidence.recovery, undefined);
 });
+
+
+test('rework1：主偏差与部分 captures 并存时 fallback 只补证据、不覆盖偏差', async () => {
+  const f = makeVerifierProject();
+  const primary = `export async function verify() { return { ok: false, checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }], knownDeviations: [{ id: 'spacing', status: 'open' }], captures: [] }; }\n`;
+  const commit = approveVerifier(f, primary, capturingFallback);
+  const result = await verifyDesignModule({ nodeId: 'ui', project: f.project, commit, designBaseline: f.designBaseline, contract: f.contract, evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-deviation-partial-')) });
+  assert.equal(result.status, 'deviation');
+  assert.equal(result.ok, false);
+  assert.equal(result.evidence.collector, 'fallback');
+  assert.equal(result.evidence.verifierOk, false);
+  assert.equal(result.evidence.checks.some(check => check.ok === false), true);
+  assert.equal(result.evidence.knownDeviations.length, 1);
+  assert.equal(result.evidence.coverage.complete, true);
+});

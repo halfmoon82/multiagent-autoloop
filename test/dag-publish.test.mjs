@@ -1,6 +1,7 @@
 // publish：commit-pr / verify / merge 在真实 git（本地 bare 远端）+ 假 gh 上的行为。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,10 +12,21 @@ import { designContractDigest } from '../src/design-baseline.mjs';
 import { ensureMirror } from '../src/dag-mirror.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 import { dagReviewHolder } from '../src/review-claim.mjs';
+import { verifyDesign as verifyDesignModule } from '../src/design-verify.mjs';
 
+const sha256 = value => createHash('sha256').update(value).digest('hex');
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
-async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, aFiles = null, readToken = async () => 'test-gh-token' } = {}) {
+async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, aFiles = null, readToken = async () => 'test-gh-token', approvedVerifiers = null } = {}) {
   const { project, remote } = makeRepo();
+  if (approvedVerifiers) {
+    const primaryPath = 'docs/design/demo/verify.mjs'; const fallbackPath = 'docs/design/demo/fallback.mjs';
+    for (const [file, source] of [[primaryPath, approvedVerifiers.primary], [fallbackPath, approvedVerifiers.fallback]]) {
+      mkdirSync(path.dirname(path.join(project, file)), { recursive: true }); writeFileSync(path.join(project, file), source);
+      designBaseline.manifest.artifacts.push({ path: file, sha256: sha256(source) }); designBaseline.readOnlyPaths.push(file);
+    }
+    designBaseline.manifest.verifierPath = primaryPath; designBaseline.manifest.fallbackVerifierPath = fallbackPath;
+    sh(project, 'add', primaryPath, fallbackPath); sh(project, 'commit', '-qm', 'approved verifier pair'); sh(project, 'push', '-q', 'origin', 'main');
+  }
   const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-pub-'));
   const store = createRunStore({ directory: storeDirectory });
   const mirror = await ensureMirror({ root: storeDirectory, remoteUrl: remote, baseBranch: 'main' });
@@ -538,4 +550,50 @@ test('verify：设施异常显式为 infrastructure-error，不转成 worker 实
     assert.equal(error.ok, undefined, '设施异常不得伪装成 tests/deviation 的 ok=false');
     return true;
   });
+});
+
+
+const partialDeviationVerifier = `export async function verify() {
+  return { ok: false,
+    checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }, { surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }],
+    knownDeviations: [{ id: 'spacing', status: 'open' }], captures: [] };
+}
+`;
+const greenFallbackVerifier = `import { mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+export async function capture({ evidenceDir }) {
+  mkdirSync(evidenceDir, { recursive: true }); const file = path.join(evidenceDir, 'complete.png'); writeFileSync(file, 'complete');
+  return { ok: true,
+    checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }, { surfaceId: 'overview', kind: 'layout', id: 'normal', ok: true }],
+    knownDeviations: [], captures: [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: file }] };
+}
+`;
+async function deviationFallbackBoot() {
+  const designBaseline = uiDesign();
+  const t = await boot({ designBaseline, ui: true, verifyDesign: verifyDesignModule, approvedVerifiers: { primary: partialDeviationVerifier, fallback: greenFallbackVerifier } });
+  t.write('src/a.mjs', 'deviation-with-partial-captures\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  return { t, pr };
+}
+
+test('rework1 verify/cache：主 ok:false/失败 checks/knownDeviations + 部分 captures 不得被全绿 fallback 覆盖', async () => {
+  const { t } = await deviationFallbackBoot();
+  const first = await t.pub.verify({ ...t.ctx, commit: t.ctx.commit || sh(t.ctx.worktree, 'rev-parse', 'HEAD') });
+  assert.equal(first.designStatus, 'deviation');
+  assert.equal(first.designEvidence.verifierOk, false);
+  assert.equal(first.designEvidence.checks.some(check => check.ok === false), true, '必须保留主侧失败 checks');
+  assert.equal(first.designEvidence.knownDeviations.length, 1, '必须保留主侧 knownDeviations');
+  assert.equal(first.designEvidence.coverage.complete, true, 'fallback 可以补全 captures');
+  const cached = await t.pub.verify({ ...t.ctx, commit: first.designEvidence.commit });
+  assert.equal(cached.designEvidenceCache, 'hit');
+  assert.equal(cached.designStatus, 'deviation', 'deviation 缓存也不得变成 pass');
+  assert.equal(cached.designEvidence.checks.some(check => check.ok === false), true);
+});
+
+test('rework1 merge：fallback 补全 captures 后仍按主偏差拒绝合并', async () => {
+  const { t, pr } = await deviationFallbackBoot();
+  const verified = await t.pub.verify({ ...t.ctx, commit: pr.commit });
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: verified.designEvidence }), error => {
+    assert.equal(error.code, 'DESIGN_DEVIATION'); assert.equal(error.status, 'deviation'); return true;
+  });
+  assert.deepEqual(t.gh.merged, []);
 });

@@ -244,8 +244,18 @@ async function runDesignVerification({ nodeId, project, commit, designBaseline, 
         ...(result.renderer ? { renderer: result.renderer } : {}),
         ...(result.collectedAt ? { collectedAt: result.collectedAt } : {}),
       };
-      const evidence = validateDesignEvidence({ evidence: rawEvidence, designBaseline, contract, nodeId, evidenceDir: directory });
-      const deviation = !result.ok || evidence.checks.some(check => !check.ok) || evidence.knownDeviations.length > 0;
+      // 偏差事实必须先于 captures 完整性校验保存：部分证据可触发备用采集，
+      // 但备用全绿结果绝不能抹掉主 verifier 已确认的实现偏差。
+      const deviation = !result.ok || rawEvidence.checks.some(check => !check.ok) || rawEvidence.knownDeviations.length > 0;
+      const deviationFacts = deviation ? {
+        verifierOk: rawEvidence.verifierOk, checks: [...rawEvidence.checks], knownDeviations: [...rawEvidence.knownDeviations],
+      } : null;
+      let evidence;
+      try { evidence = validateDesignEvidence({ evidence: rawEvidence, designBaseline, contract, nodeId, evidenceDir: directory }); }
+      catch (error) {
+        if (exportKind === 'primary' && deviationFacts) error.primaryDeviation = deviationFacts;
+        throw error;
+      }
       return { ok: result.ok, status: deviation ? 'deviation' : 'pass', evidence };
     };
     try {
@@ -256,7 +266,21 @@ async function runDesignVerification({ nodeId, project, commit, designBaseline, 
       const fallbackDir = path.join(evidenceDir, 'fallback'); mkdirSync(fallbackDir, { recursive: true });
       try {
         const recovered = await collect(fallback, 'fallback', fallbackDir);
-        recovered.evidence.recovery = { primaryError: String(primaryError?.reason || primaryError?.message || primaryError).slice(0, 1000) };
+        const primaryDeviation = primaryError?.primaryDeviation;
+        if (primaryDeviation) {
+          // fallback 只负责补齐采集矩阵；主侧 ok/checks/knownDeviations 必须进入最终证据与缓存。
+          recovered.ok = false; recovered.status = 'deviation';
+          recovered.evidence = {
+            ...recovered.evidence,
+            verifierOk: primaryDeviation.verifierOk && recovered.evidence.verifierOk,
+            checks: [...primaryDeviation.checks, ...recovered.evidence.checks],
+            knownDeviations: [...primaryDeviation.knownDeviations, ...recovered.evidence.knownDeviations],
+          };
+        }
+        recovered.evidence.recovery = {
+          primaryError: String(primaryError?.reason || primaryError?.message || primaryError).slice(0, 1000),
+          ...(primaryDeviation ? { primaryDeviationPreserved: true } : {}),
+        };
         return recovered;
       } catch (fallbackError) {
         if (primaryError?.status === 'incomplete' && fallbackError?.status === 'incomplete') {
