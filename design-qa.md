@@ -9,7 +9,7 @@
 
 ## Implementation evidence
 
-- 实现提交：`75e49c4`（之后仅新增测试与本 QA 文件）
+- 实现提交：`2851757`（之后仅新增测试与本 QA 文件）
 - 会话列表：`work/design-baseline-qa/02-current-sessions.png`
 - 会话详情（三个待回答问题、两条排队消息）：`work/design-baseline-qa/04-current-conversation.png`
 - 其余六页：`work/design-baseline-qa/11-other-tabs-contact-sheet.png`
@@ -63,13 +63,21 @@
 - 正式服务已切换到 `75e49c4`，本机与远程 HTML 一致；远程六栏、连接点、项目顶栏、管理网关和未授权 401 均已复核，浏览器无脚本错误。
 - 管理接口未裸暴露：App 使用 `/api/mobile/admin/platform-models`，设备未授权时按预期返回 401。
 
+## 折叠误伤与普通会话修正
+
+- 可操作表单不再被折叠；模型选择、输入、队列与待办直接可用。
+- 执行授权等静态 `.core-card/.core-item` 才按固定高度折叠并可展开。
+- 项目选择去掉双重边框、空状态占位和横向溢出；连接点保持绿/红状态。
+- 普通会话不再显示伪造的“没有需要回答”提示；真实消息显示与发送回归通过。
+- 正式服务已切换至 `2851757`；远程资源与本机一致，390px 无横向溢出，浏览器无脚本错误。
+
 ## Functional verification
 
-- `npm test`：1428/1428 通过。
+- `npm test`：1431/1431 通过。
 - `npm run test:browser`：全部通过。
 - 390×844 浏览器渲染：无 `pageerror`。
 - Release APK：构建、zipalign、v1/v2/v3 签名、ZIP 完整性和基线资源检查通过；生物识别类字节码确认 `Activity.runOnUiThread`。
-- APK：`/Users/macmini/Downloads/NoMoTo-2026-11-23-rules-dot.apk`
-- SHA-256：`457e2ad3ed8ba1348074f23091f7dbb963e0baf3b7ec9ca18ea853f041c88ada`
+- APK：`/Users/macmini/Downloads/NoMoTo-2026-11-23-collapsible-fix.apk`
+- SHA-256：`b447e712bdadd93ef37ad7ce08c9b5130d1374ffc0a425df0951f8908e7a21d4`
 
 final result: passed
