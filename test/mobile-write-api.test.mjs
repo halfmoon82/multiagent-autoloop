@@ -387,3 +387,16 @@ test('绑定设备可编辑、排序、删除、清空并 steer 排队消息，�
   const unbound = await mobileFetch(ctx.url, `${base}/clear`, { method: 'POST', body: {} });
   assert.equal(unbound.status, 401);
 });
+
+test('平台与模型走设备鉴权移动网关：未绑定 401，绑定可读且保存仍校验', async t => {
+  const ctx = await setup(t);
+  const route = '/api/mobile/admin/platform-models';
+  assert.equal((await mobileFetch(ctx.url, route)).status, 401);
+  const response = await mobileFetch(ctx.url, route, { token: ctx.deviceToken });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(typeof body.enabled, 'boolean');
+  assert.ok(Array.isArray(body.platforms));
+  const save = await mobileFetch(ctx.url, route, { method: 'PUT', token: ctx.deviceToken, body: { enabled: true, platforms: [] } });
+  assert.notEqual(save.status, 404, '保存必须到达既有平台模型处理逻辑');
+});

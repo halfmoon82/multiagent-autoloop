@@ -7,7 +7,9 @@
 import { createReadStream } from 'node:fs';
 import { hubRequest, HubError } from './hub.mjs';
 import { discoverGitProjects } from './projects.mjs';
-import { readRuleOptions } from './rules.mjs';
+import { readRuleOptions, defaultCheck } from './rules.mjs';
+import { readPlatformModels, applyPlatformModels } from './platform-models.mjs';
+import { loadPolicy } from './detour-policy.mjs';
 import { reconcile, syncPrompt, createSyncState } from '../mobile/src/features/device-sync/index.mjs';
 import { classifySessionRequest } from './session-classify.mjs';
 import { SchedulingSessionError } from './scheduling-session.mjs';
@@ -37,6 +39,8 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'sync', method: 'POST', pattern: /^\/api\/mobile\/sync$/ },
   { key: 'rule-action', method: 'POST', pattern: /^\/api\/mobile\/rules\/([^/]+)\/(run|pause|resume)$/ },
   { key: 'session-classify', method: 'POST', pattern: /^\/api\/mobile\/session-classify$/ },
+  { key: 'admin-platform-models', method: 'GET', pattern: /^\/api\/mobile\/admin\/platform-models$/ },
+  { key: 'admin-platform-models', method: 'PUT', pattern: /^\/api\/mobile\/admin\/platform-models$/ },
   { key: 'session-queue-clear', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/clear$/ },
   { key: 'session-queue-update', method: 'PUT', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)$/ },
   { key: 'session-queue-move', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)\/move$/ },
@@ -251,6 +255,21 @@ async function sessionQueueRoute(res, url, route, ctx, body, req) {
   jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
 }
 
+async function adminPlatformModelsRoute(res, ctx, body, req) {
+  const { config, device } = ctx;
+  if (req.method === 'GET') {
+    let policy = null; try { policy = loadPolicy(config); } catch { policy = null; }
+    jsonResponse(res, 200, readPlatformModels(config, { policy }));
+    return;
+  }
+  const dagProjects = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).map(item => item.path);
+  let result;
+  try { result = await applyPlatformModels(config, body, { check: config.platformCheck || defaultCheck, dagProjects }); }
+  catch (error) { auditFailure(ctx, req, 'admin.platform-models', { sourceDeviceId: device.id }); throw error; }
+  audit(ctx, req, 'admin.platform-models', { sourceDeviceId: device.id });
+  jsonResponse(res, 200, { ...result, sourceDeviceId: device.id });
+}
+
 async function sessionCreateRoute(res, body, ctx, req) {
   const sessions = ctx.config.schedulingSessions;
   if (!sessions || typeof sessions.start !== 'function') fail(503, '会话通道不可用');
@@ -335,6 +354,7 @@ async function executeWrite(route, req, res, url, ctx) {
     if (route.key === 'session-download') return await sessionDownload(res, url, route, ctx);
     if (route.key === 'rule-action') return await ruleAction(req, res, url, route, ctx, body);
     if (route.key === 'session-classify') return sessionClassifyRoute(res, body);
+    if (route.key === 'admin-platform-models') return await adminPlatformModelsRoute(res, ctx, body, req);
     if (route.key === 'session-create') return await sessionCreateRoute(res, body, ctx, req);
     if (route.key === 'session-message') return await sessionMessageRoute(res, url, route, ctx, body, req);
     if (route.key.startsWith('session-queue-')) return await sessionQueueRoute(res, url, route, ctx, body, req);

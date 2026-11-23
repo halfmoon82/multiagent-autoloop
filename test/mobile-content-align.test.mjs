@@ -110,13 +110,13 @@ test('管理后台·运行环境：在线/离线与待复查取真实字段，�
   assert.match(down.environmentReason, /挂了/);
 });
 
-test('管理后台写：只走既有 /api/admin/platform-models，失败回显服务端原因', async () => {
+test('管理后台写：只走既有 /api/mobile/admin/platform-models，失败回显服务端原因', async () => {
   const calls = [];
   const client = { api() {}, origin: 'https://c.example', tokenStore: { get: async () => 't' } };
   const ok = createCoreWrite(client, { fetchImpl: async (url, init) => { calls.push([init.method, new URL(url).pathname, init.body]); return { ok: true, json: async () => ({ backup: 'b1' }) }; } });
   await ok.getPlatformModels();
   await ok.savePlatformModels({ enabled: true });
-  assert.deepEqual(calls, [['GET', '/api/admin/platform-models', undefined], ['PUT', '/api/admin/platform-models', '{"enabled":true}']]);
+  assert.deepEqual(calls, [['GET', '/api/mobile/admin/platform-models', undefined], ['PUT', '/api/mobile/admin/platform-models', '{"enabled":true}']]);
   const bad = createCoreWrite(client, { fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ error: '平台未配齐三档' }) }) });
   await assert.rejects(() => bad.savePlatformModels({}), /平台未配齐三档/);
   const offline = createCoreWrite(client, { fetchImpl: async () => { throw new Error('x'); } });
@@ -142,7 +142,7 @@ test('浏览器：管理后台分区切换、保存前确认、失败保留表�
   page.on('pageerror', error => pageErrors.push(error.message));
   const puts = [];
   let failNext = true;
-  await page.route('**/api/admin/platform-models', async route => {
+  await page.route('**/api/mobile/admin/platform-models', async route => {
     const request = route.request();
     if (request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PLATFORM_DATA()) });
     puts.push(request.postData());
