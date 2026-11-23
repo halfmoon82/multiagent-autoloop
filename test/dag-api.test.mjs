@@ -8,6 +8,7 @@ import { createDagService, withHubUsage } from '../src/dag-service.mjs';
 import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
 import { createPlanDigest } from '../src/vibe-plan.mjs';
 import { loadNativePlan } from '../src/dag-plan.mjs';
+import { loadDesignManifest } from '../src/design-baseline.mjs';
 import { fileURLToPath } from 'node:url';
 import { listen, close } from './helpers.mjs';
 
@@ -258,14 +259,30 @@ function setupNative() {
   const project = path.join(projectRoot, 'native-demo');
   mkdirSync(path.join(project, '.git'), { recursive: true });
   const plans = path.join(project, 'docs', 'dag-plans'); mkdirSync(plans, { recursive: true });
-  writeFileSync(path.join(plans, `${BOOTSTRAP_PLAN_ID}.json`), JSON.stringify(bootstrapPlan()));
+  const plan = bootstrapPlan();
+  for (const node of plan.nodes.filter(item => item.contract?.design)) {
+    delete node.contract.design.states;
+    delete node.contract.design.viewports;
+    delete node.contract.design.interactions;
+  }
+  writeFileSync(path.join(plans, `${BOOTSTRAP_PLAN_ID}.json`), JSON.stringify(plan));
   cpSync(path.join(repoRoot, 'docs', 'design', '2026-11-16-parallel-dag'), path.join(project, 'docs', 'design', '2026-11-16-parallel-dag'), { recursive: true });
   cpSync(path.join(repoRoot, 'docs', 'prd', BOOTSTRAP_PLAN_ID), path.join(project, 'docs', 'prd', BOOTSTRAP_PLAN_ID), { recursive: true });
+  const manifestPath = plan.design.manifestPath;
+  const manifest = JSON.parse(readFileSync(path.join(project, manifestPath), 'utf8'));
+  manifest.fallbackVerifierPath = 'docs/design/2026-11-16-parallel-dag/render.mjs';
+  writeFileSync(path.join(project, manifestPath), JSON.stringify(manifest));
+  const designDigest = loadDesignManifest({ projectRoot: project, manifestPath }).designDigest;
+  writeFileSync(path.join(project, plan.design.approvalPath), JSON.stringify({ schema: 1, designDigest, confirmedAt: '2026-11-23T00:00:00.000Z' }));
   writeFileSync(path.join(root, 'rules.json'), JSON.stringify({ rules: [] }));
   const loaded = loadNativePlan({ projectRoot: project, planId: BOOTSTRAP_PLAN_ID });
   const planDigest = createPlanDigest({ ...loaded, authorizationSnapshot: null });
   const store = createRunStore({ directory: path.join(root, 'dag-runs') });
-  const dagService = createDagService({ root, store });
+  const dagService = createDagService({
+    root, store, resolveDesignCommit: async () => 'a'.repeat(40),
+    smokeApprovedDesign: async () => ({ ok: true, status: 'pass', evidence: { collector: 'approved-sample' } }),
+    verifyDesign: async () => ({ ok: true, status: 'pass', evidence: { collector: 'fallback' } }),
+  });
   const sessions = { async start() { return { id: 's' }; }, dispose() {} };
   const server = createConsoleServer({ hubUrl: 'http://127.0.0.1:1', ownerKey: 'k', host: '127.0.0.1', root, rulesFile: path.join(root, 'rules.json'), projectRoots: [projectRoot], dagService }, sessions);
   const payload = over => JSON.stringify({ project, planId: BOOTSTRAP_PLAN_ID, planDigest, confirmedActionIds: [...ALLOWED_ACTIONS], confirm: true, ...over });
@@ -527,4 +544,18 @@ test('GET /api/dag-runs/:id 经假 Hub：首页之外的已完成节点仍带执
       assert.equal(ruleData.agents.find(agent => agent.id === 'claude-tier-heavy').model, 'opus');
     } finally { await close(server); await new Promise(resolve => hub.close(resolve)); }
   } finally { /* t.server 已在上面关闭 */ }
+});
+
+test('Issue #255：NoMoTo 同类漏 design 经 API 在创建前拒绝且无 run', async () => {
+  const t = setupNative(); const url = await listen(t.server);
+  try {
+    const file = path.join(t.project, 'docs', 'dag-plans', `${BOOTSTRAP_PLAN_ID}.json`);
+    const plan = JSON.parse(readFileSync(file, 'utf8'));
+    delete plan.nodes.find(node => node.id === 'card-delegation').contract.design;
+    writeFileSync(file, JSON.stringify(plan));
+    const res = await post(url, '/api/dag-runs', t.payload());
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /DESIGN_CONTRACT_MISSING/);
+    assert.equal(t.store.listRuns().length, 0);
+  } finally { await close(t.server); }
 });

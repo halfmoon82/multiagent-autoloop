@@ -8,6 +8,74 @@ import { loadDesignBaseline, assertNodeDesignSnapshot } from './design-baseline.
 const PLAN_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 
+export class DesignCoverageError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = 'DesignCoverageError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
+const coverageFail = (code, message, details) => { throw new DesignCoverageError(code, message, details); };
+
+// 只用确定的写入范围识别 UI 节点，不猜测产品语义。已有 design 的节点始终属于 UI；
+// 常见前端源码后缀与仓库既有 public/、NoMoTo mobile/app/www/ 写入范围必须显式绑定合同。
+function isUiNode(node) {
+  if (node?.contract?.design != null) return true;
+  const files = Array.isArray(node?.contract?.files) ? node.contract.files : [];
+  return files.some(file => {
+    const name = String(file || '').replaceAll('\\', '/');
+    return name.startsWith('public/') || name.startsWith('mobile/app/www/') || /\.(?:html|css|jsx|tsx|vue|svelte)$/i.test(name);
+  });
+}
+
+// 批准 manifest 是全集，节点合同是归属关系。每个 surface 及其三个维度都必须恰好有一个节点 owner。
+// 单个节点的重复数组项也不能被 assertNodeDesignSnapshot 的 Set 规范化静默吞掉。
+export function assertDesignCoverage({ designBaseline, nodes } = {}) {
+  if (!designBaseline?.manifest || !Array.isArray(nodes)) coverageFail('DESIGN_BASELINE_MISSING', 'UI 计划缺少设计基线或节点合同', {});
+  const owners = new Map();
+  const add = (kind, surfaceId, id, nodeId) => {
+    const key = `${kind}\0${surfaceId}\0${id}`;
+    const item = owners.get(key) || { kind, surfaceId, id, nodeIds: [] };
+    item.nodeIds.push(nodeId);
+    owners.set(key, item);
+  };
+  const uiNodes = nodes.filter(node => node?.contract?.design != null);
+  for (const node of uiNodes) {
+    assertNodeDesignSnapshot({ designBaseline }, node);
+    const contract = node.contract.design;
+    for (const surfaceId of contract.surfaceIds) {
+      const surface = designBaseline.manifest.surfaces.find(item => item.id === surfaceId);
+      add('surface', surfaceId, surfaceId, node.id);
+      for (const [field, kind] of [['viewports', 'viewport'], ['states', 'state'], ['interactions', 'interaction']]) {
+        const values = contract[field] === undefined ? surface[field] : contract[field];
+        for (const id of values) add(kind, surfaceId, id, node.id);
+      }
+    }
+  }
+  const missing = [];
+  for (const surface of designBaseline.manifest.surfaces) {
+    const required = [
+      ['surface', surface.id, surface.id],
+      ...surface.viewports.map(id => ['viewport', surface.id, id]),
+      ...surface.states.map(id => ['state', surface.id, id]),
+      ...surface.interactions.map(id => ['interaction', surface.id, id]),
+    ];
+    for (const [kind, surfaceId, id] of required) {
+      if (!owners.has(`${kind}\0${surfaceId}\0${id}`)) missing.push({ kind, surfaceId, id });
+    }
+  }
+  const duplicate = [...owners.values()].filter(item => item.nodeIds.length > 1).map(item => ({
+    kind: item.kind, surfaceId: item.surfaceId, id: item.id, nodeIds: [...new Set(item.nodeIds)],
+  }));
+  if (missing.length || duplicate.length) {
+    const code = duplicate.length ? 'DESIGN_COVERAGE_DUPLICATE' : 'DESIGN_COVERAGE_MISSING';
+    coverageFail(code, `${code}：批准设计覆盖必须完整且每项只能归属一个 UI 节点`, { missing, duplicate });
+  }
+  return { ok: true, covered: owners.size, nodeIds: uiNodes.map(node => node.id) };
+}
+
 function readJson(file) {
   const name = path.basename(file);
   let size;
@@ -43,14 +111,18 @@ export function loadNativePlan({ projectRoot, planId }) {
   // 原生计划可用 optionalHighRiskActions 声明本计划开放哪些高风险动作（默认关闭）。
   const declared = !Array.isArray(data) && Array.isArray(data.optionalHighRiskActions)
     ? data.optionalHighRiskActions.filter(id => typeof id === 'string') : [];
-  // 只有显式 UI 合同才加载设计设施；旧数组计划和纯后端计划完全保持原路径。
-  const uiNodes = nodes.filter(node => node.contract?.design != null);
+  // 显式 UI 合同或确定的 UI 写入范围加载设计设施；旧数组计划和纯后端计划完全保持原路径。
+  const uiNodes = nodes.filter(isUiNode);
   let designBaseline = null;
   if (uiNodes.length) {
-    if (Array.isArray(data) || !data.design || typeof data.design !== 'object') throw new Error('UI 节点必须声明 plan.design.manifestPath 与 approvalPath');
+    if (Array.isArray(data) || !data.design || typeof data.design !== 'object') coverageFail('DESIGN_BASELINE_MISSING', 'UI 节点必须声明 plan.design.manifestPath 与 approvalPath', {});
     designBaseline = loadDesignBaseline({ projectRoot: root, manifestPath: data.design.manifestPath, approvalPath: data.design.approvalPath });
     const rootSnapshot = { designBaseline };
-    for (const node of uiNodes) assertNodeDesignSnapshot(rootSnapshot, node);
+    for (const node of uiNodes) {
+      if (node.contract?.design == null) coverageFail('DESIGN_CONTRACT_MISSING', `UI 节点 ${node.id} 缺少 contract.design`, { nodeId: node.id });
+      assertNodeDesignSnapshot(rootSnapshot, node);
+    }
+
   }
   return { planId, plan, nodes, productSpec: {}, optionalHighRiskActions: declared, designBaseline };
 }
