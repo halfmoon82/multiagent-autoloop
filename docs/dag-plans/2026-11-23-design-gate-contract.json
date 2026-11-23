@@ -1,0 +1,102 @@
+{
+  "plan_id": "2026-11-23-design-gate-contract",
+  "title": "设计稿门：前置确认、基线遵守与无门禁自愈",
+  "nodes": [
+    {
+      "id": "contract-docs",
+      "title": "明确设计稿门契约与无阻塞执行保证",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "已确认 PRD/spec、PR #82/#109/#248 与独立防阻塞审阅",
+        "output": "更新调度契约、架构与协作规则，明确触发条件、责任矩阵、前置预检、运行中自愈和两类验收结论",
+        "error_behavior": "发现语义冲突先修文档，不进入实现；不增加运行中人工门禁",
+        "acceptance_example": "文档明确启动前一次确认、启动后无设计专用 blocked/gated、只报不拦不等于可以不遵守",
+        "files": ["docs/scheduling-contract.md", "docs/architecture.md", "docs/2026-11-16-parallel-dag-design.md", "AGENTS.md", "docs/design-gate/"]
+      }
+    },
+    {
+      "id": "baseline-freeze",
+      "title": "实现完整设计包冻结存储与恢复",
+      "depends_on": ["contract-docs"],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "heavy",
+      "contract": {
+        "input": "既有 design-baseline/run 快照与控制器运行目录",
+        "output": "manifest/approval/artifacts/reference/verifier 内容寻址冻结、hash 校验、恢复演练和损坏恢复",
+        "error_behavior": "预检恢复失败不创建 run；运行中从冻结副本恢复并审计，不读取新稿",
+        "acceptance_example": "删除/损坏工作区基线后仍按冻结副本继续；hash 不符拒绝预检并给出修复路径",
+        "files": ["src/design-baseline.mjs", "src/dag-run.mjs", "test/design-baseline.test.mjs", "test/dag-run.test.mjs"]
+      }
+    },
+    {
+      "id": "plan-preflight",
+      "title": "实现计划双向覆盖与事务性创建预检",
+      "depends_on": ["baseline-freeze"],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "complexity": "heavy",
+      "contract": {
+        "input": "冻结设计包、计划 Schema、页面/状态/交互覆盖矩阵",
+        "output": "UI 节点和批准 surface 双向覆盖校验、证据能力 smoke、原子 run 创建",
+        "error_behavior": "缺基线/合同/覆盖/恢复能力时留在预检，不留可派发 run；不向本人抛工程选项",
+        "acceptance_example": "NoMoTo 缺 design 或漏会话 surface 在创建前失败；纯后端计划不受影响；失败无半成品 run",
+        "files": ["src/dag-plan.mjs", "src/dag-service.mjs", "test/dag-plan.test.mjs", "test/dag-api.test.mjs"]
+      }
+    },
+    {
+      "id": "evidence-recovery",
+      "title": "实现证据独立重建与设施自愈",
+      "depends_on": ["baseline-freeze"],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "heavy",
+      "contract": {
+        "input": "精确实现 commit、冻结设计覆盖层、证据缓存与 verifier",
+        "output": "pass/deviation/infrastructure-error/incomplete 分流、同 SHA 缓存、独立重建、备用采集与恢复退避",
+        "error_behavior": "设施故障进入 evidence-recovery 且不计 worker 实现失败；设计偏差进入正常返工，不进入设计专用门禁",
+        "acceptance_example": "证据丢失/verifier 超时/浏览器缺失均能恢复；不同 SHA 不复用；部分证据不得验收",
+        "files": ["src/design-verify.mjs", "src/dag-publish.mjs", "test/design-verify.test.mjs", "test/dag-publish.test.mjs"]
+      }
+    },
+    {
+      "id": "review-conformance",
+      "title": "分离代码审阅与设计符合性并保证正常返工",
+      "depends_on": ["plan-preflight", "evidence-recovery"],
+      "integration_after": [],
+      "parallel_group": "wave-3",
+      "status": "planned",
+      "complexity": "heavy",
+      "contract": {
+        "input": "独立重建证据、批准覆盖矩阵与现有 review/rework 流程",
+        "output": "codeReviewAccepted/designConformance 分离、knownDeviations 返工映射、同 SHA 有效独立审阅结论",
+        "error_behavior": "偏差正常返工；不得以 warning 冒充设计通过；不得中途询问工程选项",
+        "acceptance_example": "视觉偏差可返工重审但不 designConformance；证据不完整不得通过；合并结论不冒充设计结论",
+        "files": ["src/dag-controller.mjs", "src/dag-publish.mjs", "public/dag-app.mjs", "public/dag-views.mjs", "test/dag-controller.test.mjs", "test/dag-publish.test.mjs"]
+      }
+    },
+    {
+      "id": "integration-verify",
+      "title": "全量回归、故障注入与无门禁证明",
+      "depends_on": ["review-conformance"],
+      "integration_after": [],
+      "parallel_group": "wave-4",
+      "status": "planned",
+      "complexity": "heavy",
+      "contract": {
+        "input": "全部设计稿门实现",
+        "output": "单元/集成/浏览器回归与故障注入证据，NoMoTo 同类缺陷防回归，未覆盖边界清单",
+        "error_behavior": "红项回到对应节点修复；不把部署或真机验收混入本计划",
+        "acceptance_example": "npm test 与 npm run test:browser 全绿；故障矩阵无设计专用 blocked/gated；纯后端行为不变",
+        "files": ["test/design-gate-integration.test.mjs", "test/browser-design-verify.spec.mjs", "docs/design-gate/"]
+      }
+    }
+  ]
+}
