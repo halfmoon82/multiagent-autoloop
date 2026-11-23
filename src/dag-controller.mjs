@@ -6,6 +6,7 @@ import { MAX_SLOTS, MAX_ATTEMPTS, QUARANTINE_AFTER_MS, isTerminal, ROOT_NODE, Da
 import { seg } from './dag-slots.mjs';
 import { nodeTier } from './dag-tier.mjs';
 import { closeoutSupersededRuns } from './dag-stall.mjs';
+import { mapKnownDeviations } from './dag-publish.mjs';
 
 export const HUB_TERMINAL = new Set(['done', 'cancelled', 'failed', 'nothing']);
 const SUCCESS = new Set(['done', 'accepted', 'merged']);
@@ -34,7 +35,41 @@ export function loadNodeStates(root) {
   const saved = root.publish?.nodes || {};
   const nodes = {};
   for (const node of (root.nodes || []).filter(item => item.id !== ROOT_NODE)) {
-    nodes[node.id] = saved[node.id] || { state: 'pending', slot: null, branch: `feat/dag-${seg(root.runId)}-${seg(node.id)}`, model: null, todo: null };
+    const ui = Boolean(node.contract?.design);
+    const n = {
+      codeReviewAccepted: false, codeReviewStatus: 'missing', codeReviewEvidence: null,
+      designConformance: ui ? false : null, designStatus: ui ? 'missing' : 'not-required',
+      designEvidenceState: ui ? 'missing' : 'not-required', designEvidenceIdentity: null,
+      reworkRecords: [],
+      ...(saved[node.id] || { state: 'pending', slot: null, branch: `feat/dag-${seg(root.runId)}-${seg(node.id)}`, model: null, todo: null }),
+    };
+    // 查询视图每次都按当前 SHA 失效；旧 accepted/merged 不得反推两项结论。
+    const review = n.codeReviewEvidence;
+    if (!review) {
+      n.codeReviewAccepted = false;
+      if (!['pending', 'missing'].includes(n.codeReviewStatus)) n.codeReviewStatus = 'missing';
+    } else if (review.commit !== n.commit) {
+      n.codeReviewAccepted = false; n.codeReviewStatus = 'stale';
+    } else if (n.codeReviewAccepted === true && review.source === 'independent-review') n.codeReviewStatus = 'accepted';
+    else if (!['pending', 'rework'].includes(n.codeReviewStatus)) { n.codeReviewAccepted = false; n.codeReviewStatus = 'missing'; }
+    if (ui) {
+      const evidence = n.designEvidence;
+      const expectedDigest = root.designBaseline ? designContractDigest({ designDigest: root.designBaseline.designDigest, contract: node.contract.design }) : null;
+      const identity = n.designEvidenceIdentity || (evidence ? { source: 'legacy.designEvidence', ...evidence } : null);
+      const current = Boolean(evidence && identity && identity.commit === n.commit
+        && identity.designDigest === root.designBaseline?.designDigest && identity.contractDigest === expectedDigest
+        && evidence.commit === n.commit && evidence.designDigest === root.designBaseline?.designDigest && evidence.contractDigest === expectedDigest);
+      if (!evidence) { n.designConformance = false; n.designEvidenceState = 'missing'; }
+      else if (!current) { n.designConformance = false; n.designEvidenceState = 'stale'; }
+      else {
+        const deviation = n.designStatus === 'deviation' || evidence.verifierOk === false
+          || (Array.isArray(evidence.checks) && evidence.checks.some(check => check.ok === false))
+          || (Array.isArray(evidence.knownDeviations) && evidence.knownDeviations.length > 0);
+        if (deviation || n.designConformance !== true) n.designConformance = false;
+        n.designEvidenceState = deviation ? 'deviation' : n.designConformance === true ? 'pass' : 'unconfirmed';
+      }
+    } else { n.designConformance = null; n.designEvidenceState = 'not-required'; }
+    nodes[node.id] = n;
   }
   return { nodes, approachChanges: root.publish?.approachChanges || [] };
 }
@@ -118,6 +153,7 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     const warnings = n.warnings ? Object.entries(n.warnings).map(([kind, value]) => `${kind}: ${Array.isArray(value) ? value.join(', ') : value}`).join('；') : '';
     if (warnings) lines.push(`本节点已上报警示（只作参考，不阻断）：${warnings}`);
     if (design && run.role === 'review') lines.push(`设计验证证据：${JSON.stringify(n.designEvidence ? { commit: n.designEvidence.commit, designDigest: n.designEvidence.designDigest, contractDigest: n.designEvidence.contractDigest, checks: n.designEvidence.checks, captures: n.designEvidence.captures || n.designEvidence.artifacts || [], visualDiffs: n.designEvidence.visualDiffs || [], knownDeviations: n.designEvidence.knownDeviations || [] } : null)}`);
+    if (run.role === 'dev' && run.attemptReason === 'design-deviation' && n.reworkRecords?.length) lines.push(`设计偏差返工记录：${JSON.stringify(n.reworkRecords.at(-1))}`);
     if (run.attemptReason) lines.push(`本次重派原因：${run.attemptReason}`);
     return lines.join('\n');
   };
@@ -145,6 +181,10 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       persist(root, st);
     }
     const claimed = store.claim(run.runId, { slot });
+    if (run.role === 'review') {
+      n.codeReviewAccepted = false; n.codeReviewStatus = 'pending';
+      n.codeReviewEvidence = { source: 'independent-review', runId: claimed.runId, commit: n.commit, generation: claimed.generation, attempt: claimed.attempt, status: 'pending' };
+    }
     await send(root, id, claimed, n);
   }
 
@@ -202,8 +242,60 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
     return (Array.isArray(evidence.checks) && evidence.checks.some(check => check.ok === false)) || (Array.isArray(evidence.knownDeviations) && evidence.knownDeviations.length > 0);
   };
 
+  const applyVerification = (root, id, n, ver) => {
+    const node = root.nodes.find(item => item.id === id);
+    const design = node?.contract?.design;
+    n.tests = ver.tests ?? null;
+    if (!design) {
+      n.designEvidence = null; n.designEvidenceIdentity = null;
+      n.designConformance = null; n.designStatus = 'not-required'; n.designEvidenceState = 'not-required';
+    } else {
+      const evidence = ver.designEvidence ? mapKnownDeviations({ root, node, evidence: ver.designEvidence }) : null;
+      n.designEvidence = evidence;
+      n.designEvidenceIdentity = ver.designEvidenceIdentity || (evidence ? {
+        source: 'publisher.verify', commit: evidence.commit, designDigest: evidence.designDigest,
+        contractDigest: evidence.contractDigest, status: ver.designStatus || null,
+      } : null);
+      n.designStatus = ver.designStatus || (evidence ? 'unconfirmed' : 'missing');
+      const deviation = n.designStatus === 'deviation' || evidence?.verifierOk === false
+        || (Array.isArray(evidence?.checks) && evidence.checks.some(check => check.ok === false))
+        || (Array.isArray(evidence?.knownDeviations) && evidence.knownDeviations.length > 0);
+      const current = Boolean(evidence && designEvidenceCurrent(root, id, n));
+      n.designConformance = Boolean(current && !deviation && ver.designConformance === true);
+      n.designEvidenceState = !evidence ? 'missing' : !current ? 'stale' : deviation ? 'deviation' : n.designConformance ? 'pass' : 'unconfirmed';
+    }
+    if (ver.designEvidenceWarning) n.warnings = { ...(n.warnings || {}), designEvidence: ver.designEvidenceWarning };
+  };
+
+  const recordDesignRework = (id, n, reviewRun) => {
+    const evidence = n.designEvidence || {};
+    n.reworkRecords ||= [];
+    n.reworkRecords.push({
+      reason: 'design-deviation', at: now(), commit: n.commit, reviewRunId: reviewRun.runId,
+      codeReviewAccepted: n.codeReviewAccepted === true, designConformance: false,
+      failedChecks: (evidence.checks || []).filter(check => check.ok === false).map(check => ({ surfaceId: check.surfaceId, kind: check.kind, id: check.id })),
+      knownDeviations: evidence.knownDeviations || [],
+    });
+  };
+
   async function onDone(root, st, id, run) {
     const n = st.nodes[id];
+    if (run.role === 'review') {
+      const reviewedHead = String(run.appliedAdvance?.result?.detail?.head || '');
+      if (reviewedHead && reviewedHead !== n.commit) {
+        n.codeReviewAccepted = false; n.codeReviewStatus = 'stale';
+        n.codeReviewEvidence = { source: 'independent-review', runId: run.runId, commit: reviewedHead, generation: run.generation, attempt: run.attempt, status: 'stale' };
+        n.state = 'review'; n.todo = { kind: 'review' };
+        n.lastError = `独立审阅 SHA ${reviewedHead} 与当前节点 SHA ${n.commit} 不一致，已安排重审`;
+        return;
+      }
+      n.codeReviewAccepted = run.outcome === 'accepted';
+      n.codeReviewStatus = run.outcome === 'accepted' ? 'accepted' : run.outcome === 'rework' ? 'rework' : 'missing';
+      n.codeReviewEvidence = {
+        source: 'independent-review', runId: run.runId, commit: n.commit,
+        generation: run.generation, attempt: run.attempt, outcome: run.outcome, recordedAt: now(),
+      };
+    }
     if (!SUCCESS.has(run.outcome)) return failure(root, st, id, run.role === 'dev' ? run : latest(root, id, 'dev'), `outcome:${run.outcome}`);
     if (run.role === 'dev') {
       const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, base: n.prepareBase };
@@ -216,11 +308,16 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
         if (error?.code === 'NOTHING_TO_PUBLISH') return failure(root, st, id, run, 'nothing-to-publish');
         throw error;
       }
-      store.registerPr(root.runId, id, pr.prUrl); n.prUrl = pr.prUrl; n.commit = pr.commit;
+      store.registerPr(root.runId, id, pr.prUrl); n.prUrl = pr.prUrl;
+      if (n.commit !== pr.commit) {
+        n.codeReviewAccepted = false; n.codeReviewStatus = n.codeReviewEvidence ? 'stale' : 'missing';
+        if (n.designConformance !== null) n.designConformance = false;
+        if (n.designEvidence) n.designEvidenceState = 'stale';
+      }
+      n.commit = pr.commit;
       if (pr.outOfScope?.length) n.warnings = { ...(n.warnings || {}), outOfScope: pr.outOfScope };
       const ver = await publisher.verify({ ...ctx, commit: pr.commit });
-      n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
-      if (ver.designEvidenceWarning) n.warnings = { ...(n.warnings || {}), designEvidence: ver.designEvidenceWarning };
+      applyVerification(root, id, n, ver);
       if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
       if (!ver.ok) return failure(root, st, id, run, 'verify-failed');
       n.state = 'review'; n.todo = { kind: 'review' }; return;
@@ -231,39 +328,55 @@ export function createController({ store, rootRunId, hub, rt, wip, publisher, no
       const dev = latest(root, id, 'dev');
       const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, commit: n.commit };
       const ver = await publisher.verify(ctx);
-      n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
-      if (ver.designEvidenceWarning) n.warnings = { ...(n.warnings || {}), designEvidence: ver.designEvidenceWarning };
+      applyVerification(root, id, n, ver);
       if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
       if (!ver.ok) return failure(root, st, id, dev, 'verify-failed');
       n.todo = { kind: 'review' }; return;
     }
     if (designDeviation(root, id, n)) {
       // 设计未通过是正常实现返工，不是异常门禁。即使 reviewer 误判 accepted 也不能合并。
+      recordDesignRework(id, n, run);
       return failure(root, st, id, latest(root, id, 'dev'), 'design-deviation');
+    }
+    if (root.nodes.find(node => node.id === id)?.contract?.design && n.designConformance !== true) {
+      // checks 全绿也只说明证据内容；缺显式设计结论时重新补验并重审，不能把内部判定当成 designConformance。
+      n.designEvidence = null; n.designEvidenceIdentity = null; n.designStatus = 'unconfirmed'; n.designEvidenceState = 'missing';
+      n.state = 'review'; n.todo = null; return;
     }
     // PR 在审阅后被变基/强推：审阅基准已不等于远端 head。绝不合并未审提交——
     // 在新 head 上补跑测试，下一阶段以新 attempt 重派独立审阅，通过后再合并同一 SHA。
     if (n.rebasedTo && n.rebasedTo === n.commit) {
       const ctx = { nodeId: id, slot: n.slot, branch: n.branch, worktree: rt.slotPath(n.slot), runId: root.runId, commit: n.commit };
       const ver = await publisher.verify({ ...ctx, commit: n.commit });
-      n.tests = ver.tests ?? null; n.designEvidence = ver.designEvidence ?? null;
-      if (ver.designEvidenceWarning) n.warnings = { ...(n.warnings || {}), designEvidence: ver.designEvidenceWarning };
+      applyVerification(root, id, n, ver);
       if (ver.slotStateChanged) { n.state = 'blocked'; n.blockedRole = 'dev'; n.blockedReason = 'verify-changed-slot'; await releaseNodeSlot(root, st, id); return; }
       if (!ver.ok) { delete n.rebasedTo; return failure(root, st, id, latest(root, id, 'dev'), 'verify-failed'); }
       delete n.rebasedTo;
     }
     let merged;
-    try { merged = await publisher.merge({ nodeId: id, prUrl: n.prUrl, commit: n.commit, runId: root.runId, evidence: n.designEvidence }); }
+    try { merged = await publisher.merge({ nodeId: id, prUrl: n.prUrl, commit: n.commit, runId: root.runId, evidence: n.designEvidence,
+      codeReviewAccepted: n.codeReviewAccepted, codeReviewEvidence: n.codeReviewEvidence, designConformance: n.designConformance }); }
     catch (error) {
       const head = String(error?.head ?? '');
-      if (error?.code === 'DESIGN_DEVIATION') return failure(root, st, id, latest(root, id, 'dev'), 'design-deviation');
+      if (error?.code === 'DESIGN_DEVIATION') { recordDesignRework(id, n, run); return failure(root, st, id, latest(root, id, 'dev'), 'design-deviation'); }
+      if (error?.code === 'CODE_REVIEW_REQUIRED') {
+        n.codeReviewAccepted = false; n.codeReviewStatus = 'missing'; n.codeReviewEvidence = null;
+        n.state = 'review'; n.todo = { kind: 'review' }; return;
+      }
+      if (error?.code === 'DESIGN_CONFORMANCE_REQUIRED') {
+        n.designConformance = false; n.designStatus = 'unconfirmed'; n.designEvidenceState = 'missing'; n.designEvidence = null; n.designEvidenceIdentity = null;
+        n.state = 'review'; n.todo = null; return;
+      }
       if (error?.code === 'DESIGN_EVIDENCE_INCOMPLETE') {
         // merge 只做最后一道身份防线；清掉旧证据后下一 tick 自动补验并重审，不原地重试合并。
-        n.designEvidence = null; n.state = 'review'; n.todo = null;
+        n.designEvidence = null; n.designEvidenceIdentity = null; n.designConformance = false; n.designStatus = 'missing'; n.designEvidenceState = 'missing'; n.state = 'review'; n.todo = null;
         n.lastError = `设计证据待重建：${msg(error)}`;
         return;
       }
       if (error?.code === 'HEAD_MISMATCH' && /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(head)) {
+        n.codeReviewAccepted = false; n.codeReviewStatus = n.codeReviewEvidence ? 'stale' : 'missing';
+        if (n.designConformance !== null) n.designConformance = false;
+        if (n.designEvidence) n.designEvidenceState = 'stale';
         n.commit = head; n.rebasedTo = head; n.state = 'review'; n.todo = { kind: 'review', rebase: true };
         n.warnings = { ...(n.warnings || {}), rebasedHead: head };
         return;
