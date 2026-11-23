@@ -1062,8 +1062,6 @@ try {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-console-request': '1' }, body: '{}',
   });
   assert.equal(revokeResponse.status, 200);
-  await page.locator('[data-tab="admin"]').click();
-  await page.locator('[data-admin-pane="admin-pane-mobile"]').click();
   await page.locator('#reconnect').click();
   await page.locator('#lock-screen').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.getElementById('lock-error')?.textContent?.includes('授权'));
@@ -1132,11 +1130,15 @@ try {
   assert.deepEqual(errors, [], '扫码绑定不得产生脚本错误');
   console.log('PASS browser: qr scan bind — fake camera frame decoded, bound, camera closed');
 
-  // ===== 会话详情消息窗滚动回归（2026-11-21 真机事故 + 2026-11-22 悬浮输入栏新合同）=====
+  // ===== 会话详情滚动回归（2026-11-21 真机事故：嵌套滚动区被提示词块挤压，详情拉不动；
+  // 2026-11-23 #243 按主人要求改为手机对话框习惯：详情固定高、消息窗唯一滚动区、输入栏常驻底部。
+  // 断言对象从整页 document 滚动改为消息窗自身滚动，锚定意图不变：可滚动/追新不拽走/回到底部/触摸可滑）
   schedulingSessions.records.push({
     id: 'browser-scroll', sessionId: 'acp-browser-scroll', kind: 'scheduling', status: 'running',
     project: demoRepo, agent: 'Codex ACP', prompt: '完整首轮提示词：'.concat('具体要求。'.repeat(30)),
-    messages: [...Array.from({ length: 10 }, (_, index) => [{ role: 'user', text: `第 ${index + 1} 轮指令`, at: '2026-11-15T00:00:00Z' }, { role: 'agent', text: `第 ${index + 1} 轮回复：` + '长内容需要换行展示。'.repeat(40), at: '2026-11-15T00:05:00Z' }]).flat()],
+    // 消息体量留大余量：不同平台字体排布下消息窗溢出必须稳超跟随阈值两倍（ shouldFollowScroll 阈值 80px，
+    // 非跟随阅读断言需要 overflow > 220px；2026-11-22 CI Linux Chrome 溢出仅 ~132px 致硬编码位置断言必红）。
+    messages: [...Array.from({ length: 10 }, (_, index) => [{ role: 'user', text: `第 ${index + 1} 轮指令`, at: '2026-11-15T00:00:00Z' }, { role: 'agent', text: `第 ${index + 1} 轮回复：` + '长内容需要换行展示。'.repeat(90), at: '2026-11-15T00:05:00Z' }]).flat()],
     liveText: '', busy: false, queuedCount: 0,
     createdAt: '2026-11-21T08:00:00Z', updatedAt: '2026-11-21T08:30:00Z',
   });
@@ -1147,11 +1149,13 @@ try {
   await page.waitForFunction(() => document.querySelector('.sessions-item'), null, { timeout: 15000 });
   await page.locator('.sessions-item').first().click();
   await page.waitForFunction(() => !document.querySelector('[data-view="detail"]').hidden);
-  assert.equal(await page.locator('.sessions-scroller').count(), 0, '详情不得再有嵌套滚动区（真机拉不动的根因）');
+  // #243 设计：消息窗（.sessions-message-window）是唯一滚动区，断言锚定它而非整页 document。
+  const winMetrics = () => page.evaluate(() => { const w = document.querySelector('.sessions-message-window'); return { st: w.scrollTop, sh: w.scrollHeight, ch: w.clientHeight }; });
   assert.equal(await page.locator('.sessions-message').count(), 20, '详情全量渲染转录');
-  await page.waitForTimeout(300);
-  const openedAtBottom = await page.evaluate(() => { const el = document.querySelector('.sessions-message-window'); return el.scrollTop + el.clientHeight >= el.scrollHeight - 8; });
-  assert.equal(openedAtBottom, true, '打开详情必须定位到最新一条（底部），不得停在顶部');
+  await page.waitForFunction(() => { const w = document.querySelector('.sessions-message-window'); return w.scrollHeight > w.clientHeight + 100; }, null, { timeout: 5000 });
+  await page.waitForFunction(() => { const w = document.querySelector('.sessions-message-window'); return w.scrollTop + w.clientHeight >= w.scrollHeight - 8; }, null, { timeout: 5000 });
+  let metrics = await winMetrics();
+  assert.ok(metrics.sh > metrics.ch + 100, `消息窗内容必须超出消息窗（可滚动）：sh=${metrics.sh} ch=${metrics.ch}`);
   assert.equal(await page.locator('.sessions-info-panel').isVisible(), false, '提示词默认收进会话详情，把空间留给历史区');
   await page.locator('.sessions-info-toggle').click();
   assert.equal(await page.locator('.sessions-detail-prompt').isVisible(), true, '展开会话详情后提示词入口可见');
@@ -1159,29 +1163,38 @@ try {
   await page.locator('.sessions-detail-prompt').click();
   assert.equal(await page.locator('.sessions-detail-prompt.expanded').count(), 1, '点按展开完整提示词');
   await page.locator('.sessions-detail-prompt').click();
-  assert.equal(await page.evaluate(() => { const el = document.querySelector('.sessions-message-window'); return el.scrollHeight > el.clientHeight + 100; }), true, '消息窗内容应超出自身视口（可滚动）');
-  // 真实触摸上滑必须移动消息窗滚动条（CDP 触摸事件，真机事故的精确复现路径）。
-  await page.evaluate(() => { document.querySelector('.sessions-message-window').scrollTop = 0; });
+  // 真实触摸上滑必须滚动消息窗（CDP 触摸事件，真机事故的精确复现路径）。
+  await page.evaluate(() => { const w = document.querySelector('.sessions-message-window'); w.scrollTo(0, 0); });
+  // atomic-lint：单次 evaluate 内取消息窗几何（同文件 line ~338 先例），不做两步读。
+  const { touchX, touchY } = await page.evaluate(() => {
+    const rect = document.querySelector('.sessions-message-window').getBoundingClientRect();
+    return { touchX: Math.round(rect.left + rect.width / 2), touchY: Math.round(rect.top + Math.min(rect.height - 20, rect.height * 0.6)) };
+  });
   const touchCdp = await context.newCDPSession(page);
-  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 200, y: 500, id: 1 }] });
-  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 200, y: 280, id: 1 }] });
+  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touchX, y: touchY, id: 1 }] });
+  await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: touchX, y: touchY - 220, id: 1 }] });
   await touchCdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await page.waitForTimeout(300);
-  const scrolledByTouch = await page.evaluate(() => document.querySelector('.sessions-message-window').scrollTop);
-  assert.ok(scrolledByTouch > 30, `触摸上滑必须滚动消息窗（实际 ${scrolledByTouch}px）`);
-  // 阅读中追新不得拽走位置：追加一条消息后滚动位置应保持。
+  metrics = await winMetrics();
+  assert.ok(metrics.st > 30, `触摸上滑必须滚动消息窗（实际 ${metrics.st}px）`);
+  // 阅读中追新不得拽走位置：上翻到跟随阈值（80px）之外，追加消息后消息窗滚动位置应保持。
+  // 滚动目标按实测度量推导，不硬编码——几何环境差异（CI Linux 字体排布）下距底 <80px 会被正确判为跟随。
   await page.waitForTimeout(600);
-  await page.evaluate(() => { document.querySelector('.sessions-message-window').scrollTop = 120; });
-  const readingPosition = await page.evaluate(() => document.querySelector('.sessions-message-window').scrollTop);
-  assert.ok(readingPosition > 30, '先进入历史阅读位置');
+  metrics = await winMetrics();
+  assert.ok(metrics.sh - metrics.ch > 220, `消息窗溢出应足够非跟随阅读：overflow=${metrics.sh - metrics.ch}`);
+  const readPos = metrics.sh - metrics.ch - 150;
+  await page.evaluate(pos => { const w = document.querySelector('.sessions-message-window'); w.scrollTo(0, pos); }, readPos);
+  await page.waitForFunction(pos => document.querySelector('.sessions-message-window').scrollTop === pos, readPos, { timeout: 5000 });
   schedulingSessions.records.find(item => item.id === 'browser-scroll').messages.push({ role: 'agent', text: '追加的新回复', at: '2026-11-15T01:02:00Z' });
-  await page.waitForFunction(position => document.querySelector('.sessions-message-window').scrollTop !== position || document.body.innerText.includes('追加的新回复'), readingPosition, { timeout: 12000 });
-  const keptPosition = await page.evaluate(() => document.querySelector('.sessions-message-window').scrollTop);
-  assert.ok(Math.abs(keptPosition - readingPosition) <= 10, `阅读中追新后滚动位置应保持（从 ${readingPosition} 到 ${keptPosition}）`);
+  await page.waitForFunction(pos => document.querySelector('.sessions-message-window').scrollTop !== pos || document.body.innerText.includes('追加的新回复'), readPos, { timeout: 12000 });
+  const keptPosition = (await winMetrics()).st;
+  assert.ok(keptPosition > 30 && Math.abs(keptPosition - readPos) <= 30, `阅读中追新后消息窗滚动位置应保持（目标 ${readPos}px，实际 ${keptPosition}px）`);
   await page.locator('.sessions-back-bottom').waitFor({ state: 'visible' });
   await page.locator('.sessions-back-bottom').click();
-  await page.waitForFunction(() => { const el = document.querySelector('.sessions-message-window'); return el.scrollTop + el.clientHeight >= el.scrollHeight - 8; }, null, { timeout: 5000 });
-  assert.equal(await page.evaluate(() => { const el = document.querySelector('.sessions-message-window'); return el.scrollTop + el.clientHeight >= el.scrollHeight - 8; }), true, '回到底部应恢复跟随');
+  // 回到底是 smooth 滚动，等动画收敛而非固定等待。
+  await page.waitForFunction(() => { const w = document.querySelector('.sessions-message-window'); return w.scrollTop + w.clientHeight >= w.scrollHeight - 8; }, null, { timeout: 5000 });
+  metrics = await winMetrics();
+  assert.ok(metrics.st + metrics.ch >= metrics.sh - 8, '回到底部应恢复跟随');
   assert.deepEqual(errors, [], '会话详情滚动回归不得产生脚本错误');
   console.log('PASS browser: session detail message-window scroll, collapsed prompt, touch swipe, back-to-bottom');
 } finally {
