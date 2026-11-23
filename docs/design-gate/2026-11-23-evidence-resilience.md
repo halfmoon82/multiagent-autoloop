@@ -12,7 +12,7 @@
 
 manifest 可增加 `fallbackVerifierPath`。该路径必须同时列入 `artifacts`（含 sha256）与冻结 `readOnlyPaths`，因此会随 #252 的冻结包恢复。
 
-- 主 verifier 抛错、实际超时、依赖/浏览器缺失、返回形态无效或 captures 不完整时，在同一个精确 commit worktree 中执行备用模块。
+- 主 verifier 抛错、实际超时、依赖/浏览器缺失、返回形态无效或 captures 不完整时，在同一个精确 commit worktree 中执行备用模块。`knownDeviations` 若存在则必须是数组，并在任何默认值规范化前校验；对象等无效类型按设施错误进入 fallback，无 fallback 时抛错，不得静默清空为主路径 pass。
 - 备用模块优先导出 `capture(payload)`，也可导出 `verify(payload)`；输出合同与主 verifier 相同。
 - 备用 captures 写入 `evidenceDir/fallback/`，不与主路径的半截文件混合。成功结果标记 `collector=fallback` 与 `recovery.primaryError`。若主 verifier 在 captures 不完整前已给出 `ok:false`、失败 checks 或 knownDeviations，这些偏差事实会与备用完整 captures 合并，最终结果及缓存仍为 deviation；备用全绿不得覆盖主偏差。
 - 主备均失败时抛 `DesignVerifyError`，`status=infrastructure-error`；两者都只是部分证据时为 `status=incomplete`。不会转成 worker deviation。

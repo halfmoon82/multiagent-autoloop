@@ -354,3 +354,26 @@ test('rework1：主偏差与部分 captures 并存时 fallback 只补证据、�
   assert.equal(result.evidence.knownDeviations.length, 1);
   assert.equal(result.evidence.coverage.complete, true);
 });
+
+test('rework2：完整 captures/checks + 非数组 knownDeviations 不得在主路径静默 pass', async () => {
+  const f = makeVerifierProject();
+  const invalid = `import { mkdirSync, writeFileSync } from 'node:fs';\nimport path from 'node:path';\nexport async function verify({ evidenceDir }) {\n  mkdirSync(evidenceDir, { recursive: true }); const file = path.join(evidenceDir, 'complete.png'); writeFileSync(file, 'complete');\n  return { ok: true, checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: true }], captures: [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: file }], knownDeviations: { id: 'spacing', status: 'open' } };\n}\n`;
+  const commit = approveVerifier(f, invalid);
+  await assert.rejects(() => verifyDesignModule({ nodeId: 'ui', project: f.project, commit, designBaseline: f.designBaseline, contract: f.contract, evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-invalid-deviations-')) }), error => {
+    assert.equal(error.code, 'DESIGN_EVIDENCE_INFRASTRUCTURE');
+    assert.equal(error.status, 'infrastructure-error');
+    assert.match(error.message, /knownDeviations.*数组|knownDeviations.*array/i);
+    return true;
+  });
+});
+
+test('rework2：非数组 knownDeviations 走既定 fallback，而不是主路径直接 pass', async () => {
+  const f = makeVerifierProject();
+  const invalid = `import { mkdirSync, writeFileSync } from 'node:fs';\nimport path from 'node:path';\nexport async function verify({ evidenceDir }) {\n  mkdirSync(evidenceDir, { recursive: true }); const file = path.join(evidenceDir, 'complete.png'); writeFileSync(file, 'complete');\n  return { ok: true, checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: true }], captures: [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: file }], knownDeviations: { id: 'spacing', status: 'open' } };\n}\n`;
+  const commit = approveVerifier(f, invalid, capturingFallback);
+  const result = await verifyDesignModule({ nodeId: 'ui', project: f.project, commit, designBaseline: f.designBaseline, contract: f.contract, evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-invalid-deviations-fallback-')) });
+  assert.equal(result.status, 'pass');
+  assert.equal(result.evidence.collector, 'fallback');
+  assert.match(result.evidence.recovery.primaryError, /knownDeviations.*数组|knownDeviations.*array/i);
+  assert.equal(result.evidence.coverage.complete, true);
+});

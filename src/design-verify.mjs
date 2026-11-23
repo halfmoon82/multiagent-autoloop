@@ -207,6 +207,10 @@ async function executeVerifier({ source, execRoot, spec, exportKind, payload, ch
     if (!result || typeof result.ok !== 'boolean' || !Array.isArray(result.checks) || result.checks.some(check => !check || typeof check.ok !== 'boolean')) {
       throw new DesignVerifyError('设计 verifier 返回形态无效：需要 ok 与 checks');
     }
+    // 必须在规范化前拒绝：非数组值若被改成 []，会把已声明偏差静默变成主路径 pass。
+    if (result.knownDeviations !== undefined && !Array.isArray(result.knownDeviations)) {
+      throw new DesignVerifyError('设计 verifier 返回形态无效：knownDeviations 必须是数组');
+    }
     return result;
   } finally { rmSync(execDir, { recursive: true, force: true }); }
 }
