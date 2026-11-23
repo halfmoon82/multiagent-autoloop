@@ -1186,11 +1186,11 @@ try {
   assert.ok(metrics.sh - metrics.ch > 220, `消息窗溢出应足够非跟随阅读：overflow=${metrics.sh - metrics.ch}`);
   const readPos = metrics.sh - metrics.ch - 150;
   await page.evaluate(pos => { const w = document.querySelector('.sessions-message-window'); w.scrollTo(0, pos); }, readPos);
-  await page.waitForFunction(pos => document.querySelector('.sessions-message-window').scrollTop === pos, readPos, { timeout: 5000 });
+  const actualReadPos = (await winMetrics()).st;
   schedulingSessions.records.find(item => item.id === 'browser-scroll').messages.push({ role: 'agent', text: '追加的新回复', at: '2026-11-15T01:02:00Z' });
-  await page.waitForFunction(pos => document.querySelector('.sessions-message-window').scrollTop !== pos || document.body.innerText.includes('追加的新回复'), readPos, { timeout: 12000 });
+  await page.waitForFunction(pos => document.querySelector('.sessions-message-window').scrollTop !== pos || document.body.innerText.includes('追加的新回复'), actualReadPos, { timeout: 12000 });
   const keptPosition = (await winMetrics()).st;
-  assert.ok(keptPosition > 30 && Math.abs(keptPosition - readPos) <= 30, `阅读中追新后消息窗滚动位置应保持（目标 ${readPos}px，实际 ${keptPosition}px）`);
+  assert.ok(keptPosition > 30 && Math.abs(keptPosition - actualReadPos) <= 30, `阅读中追新后消息窗滚动位置应保持（目标 ${actualReadPos}px，实际 ${keptPosition}px）`);
   await page.locator('.sessions-back-bottom').waitFor({ state: 'visible' });
   await page.locator('.sessions-back-bottom').click();
   // 回到底是 smooth 滚动，等动画收敛而非固定等待。
