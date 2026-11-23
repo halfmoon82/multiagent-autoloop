@@ -66,11 +66,14 @@ button:disabled { opacity: 0.6; cursor: default; }
   flex-wrap: wrap; margin: 0 0 1rem;
 }
 .app-header .brand { margin: 0; }
-.status-pill {
-  padding: 0.35rem 0.7rem; border-radius: 999px; font-size: 0.85rem;
-  background: var(--mint); color: var(--ink); border: 1px solid var(--line);
+/* 连接状态只占一个圆点，与品牌同一行：绿=已连接，红=未连接/异常。文字在 sr-only 里。 */
+.status-pill { display: inline-flex; align-items: center; flex: 0 0 auto; padding: 0.45rem; }
+.status-dot { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: var(--danger); }
+.status-pill[data-state="online"] .status-dot { background: #1fae76; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
-.status-pill[data-state="offline"], .status-pill[data-state="error"] { background: #fbe9e7; color: var(--danger); }
 /* 左右滑动切 Tab：竖向滚动交给浏览器，横向手势交给 tab-swipe；可横向滚动的容器保留自己的横向滚动。
    overflow-x: clip 裁剪越界的跟手偏移，但不建立滚动容器——hidden 会把 overflow-y 计算为 auto，
    使 .content 成为滚动容器，令会话页 sticky 输入栏脱离视口。 */

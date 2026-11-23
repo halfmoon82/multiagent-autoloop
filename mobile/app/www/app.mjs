@@ -243,7 +243,8 @@ function boot() {
     els.bindStatus.textContent = bindMessage;
     els.lockError.textContent = state.lockError || '';
     els.deviceName.textContent = state.device?.name || '未绑定设备';
-    els.connectionStatus.textContent = connectionLabel();
+    // 状态只以圆点呈现；文字进 sr-only 供读屏与测试读取，避免 pill 占 header 一整行。
+    els.connectionStatus.querySelector('.connection-label').textContent = connectionLabel();
     els.connectionStatus.dataset.state = state.connection;
     els.connectionError.textContent = ['error', 'offline'].includes(state.connection) ? (state.error || '') : '';
     els.unlock.disabled = state.phase === 'unlocking';
