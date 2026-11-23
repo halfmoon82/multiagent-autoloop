@@ -8,7 +8,7 @@ import { createReadStream } from 'node:fs';
 import { hubRequest, HubError } from './hub.mjs';
 import { discoverGitProjects } from './projects.mjs';
 import { readRuleOptions, defaultCheck } from './rules.mjs';
-import { readPlatformModels, applyPlatformModels } from './platform-models.mjs';
+import { readPlatformModels, applyPlatformModels, PlatformModelsError } from './platform-models.mjs';
 import { loadPolicy } from './detour-policy.mjs';
 import { reconcile, syncPrompt, createSyncState } from '../mobile/src/features/device-sync/index.mjs';
 import { classifySessionRequest } from './session-classify.mjs';
@@ -121,7 +121,8 @@ function writeError(res, error) {
         : 502;
   // 本地会话态错误（已关闭/异常等）的 message 本就是给用户看的中文文案，与网页端同口径透传；
   // 其余非 WriteError 一律回落固定文案，不回显 Hub 错误体或内部细节。
-  const passthrough = error instanceof SchedulingSessionError && status >= 400 && status < 500 && error.message;
+  // PlatformModelsError 与网页端同口径：校验文案（如「三档要么都填，要么都不填」）直接给人看，不吞成「请求无效」。
+  const passthrough = (error instanceof SchedulingSessionError || error instanceof PlatformModelsError) && status >= 400 && status < 500 && error.message;
   jsonResponse(res, status, { error: error instanceof WriteError ? error.message : passthrough || (SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试') });
 }
 
@@ -265,8 +266,8 @@ async function adminPlatformModelsRoute(res, ctx, body, req) {
   const dagProjects = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).map(item => item.path);
   let result;
   try { result = await applyPlatformModels(config, body, { check: config.platformCheck || defaultCheck, dagProjects }); }
-  catch (error) { auditFailure(ctx, req, 'admin.platform-models', { sourceDeviceId: device.id }); throw error; }
-  audit(ctx, req, 'admin.platform-models', { sourceDeviceId: device.id });
+  catch (error) { auditFailure(ctx, req, 'admin.platform.models', { sourceDeviceId: device.id }); throw error; }
+  audit(ctx, req, 'admin.platform.models', { sourceDeviceId: device.id });
   jsonResponse(res, 200, { ...result, sourceDeviceId: device.id });
 }
 

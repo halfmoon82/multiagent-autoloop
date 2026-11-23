@@ -4,7 +4,7 @@
 // 全部走本机假 Hub 与注入会话管理器，不调用真实模型或真实规则。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,10 +92,12 @@ async function setup(t, { cards = [], conflictCards = new Set(), boomCards = new
     rulesFile,
     projectRoots: [WORKTREE],
     deviceAuth: store,
+    // 平台模型保存的 CLI 校验换成桩：本测试只验网关与审计链路，不跑真实 cli check。
+    platformCheck: async () => {},
   }, sessions);
   const url = await listen(server);
   t.after(async () => { await close(server); await close(hub.server); });
-  return { url, hub, store, sessions, deviceToken: bound.deviceToken, deviceId: bound.device.id, artifactBytes };
+  return { url, hub, store, sessions, deviceToken: bound.deviceToken, deviceId: bound.device.id, artifactBytes, root };
 }
 
 function mobileFetch(base, pathname, { method = 'GET', token, body, headers = {} } = {}) {
@@ -400,6 +402,44 @@ test('平台与模型走设备鉴权移动网关：未绑定 401，绑定可读�
   assert.ok(Array.isArray(body.platforms));
   const save = await mobileFetch(ctx.url, route, { method: 'PUT', token: ctx.deviceToken, body: { enabled: true, platforms: [] } });
   assert.notEqual(save.status, 404, '保存必须到达既有平台模型处理逻辑');
+});
+
+// 回归：保存成功路径的审计动作名必须过 device-auth 的 /^[a-z][a-z.]{1,40}$/ 校验。
+// 曾用带连字符的 'admin.platform-models'，保存实际写盘成功后审计抛 400，
+// 手机端收到「请求无效」误以为保存失败（2026-11-23 真机事故）。
+test('平台与模型经移动网关保存成功：200、落盘且审计留痕', async t => {
+  const ctx = await setup(t);
+  writeFileSync(path.join(ctx.root, 'rules.json'), JSON.stringify({
+    sources: { local: { name: 'local' } },
+    agents: {
+      workbuddy: { name: 'WorkBuddy AI', worker: 'w', use: 'acp', command: ['/bin/wb.sh', '--acp'], access: 'full' },
+      claude: { name: 'Claude Code', worker: 'w', use: 'claude', access: 'full', model: 'claude-sonnet-5-5' },
+      'codex-full': { name: 'Codex 可写调度', worker: 'w', use: 'codex', access: 'full' },
+    },
+    rules: [
+      { name: 'DAG自动开发', when: { source: 'local', types: ['dag.auto.dev'] }, to: 'workbuddy', cwd: WORKTREE, prompt: 'dev', parallel: 5, resume: false },
+      { name: '调度会话执行', when: { source: 'local', types: ['scheduling.message'] }, to: 'codex-full', cwd: WORKTREE, prompt: 's', resume: true },
+    ],
+  }));
+  const payload = {
+    enabled: true,
+    platforms: {
+      workbuddy: { light: 'hy4flash-free', standard: 'hy4std', heavy: 'deepseek-v4-pro' },
+      claude: { light: 'haiku', standard: 'claude-sonnet-5-5', heavy: 'opus' },
+      'codex-full': { light: 'deepseek-v4.1-flash', standard: 'kimi-for-coding', heavy: 'k3.1-pro' },
+    },
+    roles: { dev: { primary: 'workbuddy', fallback: 'claude' }, review: { primary: 'claude', fallback: 'codex-full' }, coord: { primary: 'codex-full', fallback: 'claude' } },
+    sessions: { coord: { tier: 'light' }, design: { platform: 'codex-full', tier: 'standard' }, normal: { platform: 'codex-full', tier: 'light' } },
+  };
+  const save = await mobileFetch(ctx.url, '/api/mobile/admin/platform-models', { method: 'PUT', token: ctx.deviceToken, body: payload });
+  if (save.status !== 200) assert.fail(`保存应成功：${await save.text()}`);
+  const body = await save.json();
+  assert.equal(body.saved, true);
+  assert.ok(body.backup, '应返回备份名');
+  const audit = JSON.parse(readFileSync(path.join(ctx.root, 'device-auth.json'), 'utf8')).audit || [];
+  const hits = audit.filter(entry => String(entry.action || '').includes('platform'));
+  assert.equal(hits.length, 1, '成功保存必须留一条审计');
+  assert.equal(hits[0].result, 'ok');
 });
 
 test('会话消息附件经移动网关原样传给会话管理器', async t => {
