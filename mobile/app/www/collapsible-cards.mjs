@@ -13,6 +13,9 @@ function prepare(el) {
     return;
   }
   if (el.dataset.collapsible !== undefined) return;
+  // 隐藏容器（非激活 Tab / 锁屏）里量不到真实高度：先不判定，等 visible 后由 hidden 变化触发再评估，
+  // 避免 scrollHeight=0 被永久打上 not-needed（2026-11-23 真机：待办页执行授权长卡从不折叠）。
+  if (el.offsetParent === null) return;
   if (el.scrollHeight <= COLLAPSED_HEIGHT + 8) { el.dataset.collapsible = 'not-needed'; return; }
   el.dataset.collapsible = '';
   el.dataset.expanded = 'false';
@@ -46,6 +49,6 @@ export function observeCollapsibleCards(root = document) {
     if (frame !== null) return;
     frame = requestAnimationFrame(() => { frame = null; attachCollapsibleCards(root); });
   });
-  observer.observe(root, { childList: true, subtree: true });
+  observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
   return observer;
 }

@@ -189,7 +189,7 @@ test('非 DAG 卡片统一限高可展开，短卡片不增加控件', async () 
 
 test('折叠只处理静态长内容，交互表单默认保持可操作', () => {
   const src = read('mobile/app/www/collapsible-cards.mjs');
-  assert.match(src, /querySelector\('input,select,textarea'/);
+  assert.match(src, /querySelector\('button,input,select,textarea'/);
   assert.match(src, /dataset\.collapsible = 'interactive'/);
   assert.match(src, /core-card/);
   assert.match(src, /core-item/);
