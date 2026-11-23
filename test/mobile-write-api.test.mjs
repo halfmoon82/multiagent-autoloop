@@ -400,3 +400,11 @@ test('平台与模型走设备鉴权移动网关：未绑定 401，绑定可读�
   const save = await mobileFetch(ctx.url, route, { method: 'PUT', token: ctx.deviceToken, body: { enabled: true, platforms: [] } });
   assert.notEqual(save.status, 404, '保存必须到达既有平台模型处理逻辑');
 });
+
+test('会话消息附件经移动网关原样传给会话管理器', async t => {
+  const ctx = await setup(t);
+  const attachment = { name: '说明.md', type: 'text/markdown', size: 4, dataBase64: Buffer.from('正文').toString('base64') };
+  const response = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/messages', { method: 'POST', token: ctx.deviceToken, body: { text: '看附件', attachments: [attachment] } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(ctx.sessions.calls.find(call => call[0] === 'send'), ['send', 'sess-live', '看附件', { interrupt: false, attachments: [attachment] }]);
+});

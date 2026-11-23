@@ -122,10 +122,10 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
       const payload = choice !== undefined ? { choice: Number(choice) } : { text: String(text ?? '') };
       return call(`/api/mobile/cards/${cardId}/answer`, payload);
     },
-    sendMessage(id, { text, interrupt = false } = {}) {
+    sendMessage(id, { text, interrupt = false, attachments = [] } = {}) {
       const value = encodeURIComponent(String(id ?? '').trim());
       if (!value) throw new Error('会话不存在或已失效');
-      return call(`/api/mobile/sessions/${value}/messages`, { text: String(text ?? ''), ...(interrupt === true ? { interrupt: true } : {}) });
+      return call(`/api/mobile/sessions/${value}/messages`, { text: String(text ?? ''), ...(interrupt === true ? { interrupt: true } : {}), ...(attachments.length ? { attachments } : {}) });
     },
     updateQueued(id, itemId, { text } = {}) {
       return call(`/api/mobile/sessions/${encodeURIComponent(String(id))}/queue/${encodeURIComponent(String(itemId))}`, { text: String(text ?? '') }, 'PUT');

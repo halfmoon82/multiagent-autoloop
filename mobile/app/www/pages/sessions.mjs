@@ -157,15 +157,20 @@ export function mount(ctx) {
   ]);
   const steerBtn = node('button', { type: 'button', className: 'sessions-steer-btn', text: '打断', attrs: { hidden: '', title: '打断当前轮并立即发送（steer）', 'aria-label': '打断当前轮并立即发送' } });
   const sendMode = node('span', { className: 'sessions-send-mode', attrs: { hidden: '' } });
+  const attachmentInput = node('input', { className: 'sessions-attachment-input', attrs: { type: 'file', hidden: '', multiple: '', accept: 'image/*,text/*,.md,.json,.mjs,.js,.ts,.css,.html,.csv,.yaml,.yml,.xml,.log,.pdf' } });
+  const attachBtn = node('button', { type: 'button', className: 'sessions-attach-btn', attrs: { 'aria-label': '添加附件', title: '添加文件或图片附件' } }, [
+    node('span', { attrs: { 'data-icon': 'plus', 'aria-hidden': 'true' } }),
+  ]);
+  const attachmentList = node('div', { className: 'sessions-attachments' });
   const composerRow = node('div', { className: 'sessions-composer' }, [
-    sendMode, composerInput, micBtn, steerBtn, composerSend,
+    sendMode, attachBtn, composerInput, micBtn, steerBtn, composerSend,
   ]);
   const queuePreview = node('div', { className: 'sessions-queue-preview', attrs: { hidden: '' } });
   const detailTop = node('div', { className: 'sessions-detail-top' }, [
     detailHero, detailContext, sessionTools, infoPanel, queuePanel, pendingStrip,
   ]);
   const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
-    detailTop, messageWindow, backBottom, queuePreview, composerRow,
+    detailTop, messageWindow, backBottom, queuePreview, attachmentInput, attachmentList, composerRow,
   ]);
 
   const archiveBody = node('div', { className: 'sessions-archive-body' });
@@ -410,6 +415,44 @@ export function mount(ctx) {
       ]));
     });
   }
+
+  let pendingAttachments = [];
+  function renderAttachments() {
+    attachmentList.replaceChildren(...pendingAttachments.map((item, index) => {
+      const chip = node('span', { className: 'sessions-attachment-chip' });
+      if (item.type.startsWith('image/')) chip.appendChild(node('img', { className: 'sessions-attachment-image', attrs: { alt: `预览 ${item.name}`, src: `data:${item.type};base64,${item.dataBase64}` } }));
+      chip.appendChild(node('span', { text: `${item.name} · ${Math.ceil(item.size / 1024)}KB` }));
+      const remove = node('button', { type: 'button', text: '移除', attrs: { 'aria-label': `移除附件 ${item.name}` } });
+      remove.addEventListener('click', () => { pendingAttachments.splice(index, 1); renderAttachments(); });
+      chip.appendChild(remove);
+      return chip;
+    }));
+  }
+  function readAttachment(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error(`无法读取附件 ${file.name}`));
+      reader.onload = () => resolve({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, dataBase64: String(reader.result).split(',')[1] || '' });
+      reader.readAsDataURL(file);
+    });
+  }
+  attachmentInput.addEventListener('change', async () => {
+    try {
+      showBanner('');
+      const files = [...(attachmentInput.files || [])];
+      if (pendingAttachments.length + files.length > 4) throw new Error('最多添加 4 个附件');
+      for (const file of files) {
+        if (file.size > 5 * 1024 * 1024) throw new Error(`${file.name} 超过 5MB`);
+        pendingAttachments.push(await readAttachment(file));
+      }
+      attachmentInput.value = '';
+      renderAttachments();
+    } catch (error) {
+      attachmentInput.value = '';
+      showBanner(`添加附件失败：${error?.message || '请重试'}`);
+    }
+  });
+  attachBtn.addEventListener('click', () => { attachmentInput.click(); });
 
   async function refreshSessionState() {
     await load({ quiet: true });
@@ -683,7 +726,7 @@ export function mount(ctx) {
     composerSend.disabled = true;
     steerBtn.disabled = true;
     try {
-      await write.sendMessage(state.session.id, { text, interrupt });
+      await write.sendMessage(state.session.id, { text, interrupt, attachments: pendingAttachments });
       state.messages.push({ role: '主人', text, at: '' });
       composerInput.value = '';
       composerInput.dispatchEvent(new Event('autoloop-autogrow'));
@@ -693,6 +736,8 @@ export function mount(ctx) {
       renderMessages();
       scrollToBottom();
       saveContext();
+      pendingAttachments = [];
+      renderAttachments();
       await refreshSessionState();
     } catch (error) {
       showBanner(`发送失败：${error?.message || '请重试'}（内容已保留在输入框）`);

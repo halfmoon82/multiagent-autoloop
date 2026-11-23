@@ -1150,3 +1150,23 @@ test('#102 a closed Hub session can still be continued from the history area', a
   assert.equal(continued.project, project);
   await revived.close(continued.id);
 });
+
+test('attachments are saved and included in the next agent prompt', async () => {
+  const fake = fakeAdapter();
+  const archiveRoot = mkdtempSync(path.join(tmpdir(), 'session-attachments-manager-'));
+  const manager = new SchedulingSessionManager({ hubScheduling: false, archiveRoot, adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
+  try {
+    const started = await manager.start({ project: '/workspace/demo' });
+    await waitFor(() => manager.list()[0]?.status === 'idle');
+    await manager.send(started.id, '请分析附件', { attachments: [{ name: '说明.md', type: 'text/markdown', dataBase64: Buffer.from('附件正文').toString('base64') }, { name: '截图.png', type: 'image/png', dataBase64: Buffer.from([1, 2]).toString('base64') }] });
+    await waitFor(() => fake.requests.filter(request => request.method === 'session/prompt').length >= 2);
+    const text = fake.requests.filter(request => request.method === 'session/prompt').at(-1).params.prompt[0].text;
+    assert.match(text, /请分析附件/);
+    assert.match(text, /附件正文/);
+    assert.match(text, /截图\.png/);
+    assert.match(text, /session-attachments/);
+    await manager.close(started.id);
+  } finally {
+    rmSync(archiveRoot, { recursive: true, force: true });
+  }
+});

@@ -16,6 +16,7 @@ import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_L
 import { buildSchedulingContext, contextTrailer, composeTurnText, prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation, exchangesFrom, HANDOVER_ROUNDS } from './scheduling-context.mjs';
 import { readFinalMessage } from './run-output.mjs';
 import { ROOT_NODE } from './dag-run.mjs';
+import { saveSessionAttachments, attachmentPrompt } from './session-attachments.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -657,7 +658,7 @@ export class SchedulingSessionManager {
       this.#persist(record);
       return toPublicSession(record);
     }
-    const message = this.#validatePrompt(raw);
+    const message = this.#validatePrompt(enriched);
     const turn = record.hub.turn + 1;
     const hubState = await this.#readHubSnapshot();
     const messageText = await this.#hubTurnText(record, turn, message, { hubState });
@@ -694,16 +695,23 @@ export class SchedulingSessionManager {
     return toPublicSession(record);
   }
 
-  async send(id, text, { interrupt = false } = {}) {
+  async send(id, text, { interrupt = false, attachments = [] } = {}) {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
     if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
     if (record.status === 'error') throw new SchedulingSessionError('会话处于异常状态，请关闭后重新开启', { status: 409 });
     const raw = String(text ?? '').trim();
+    let enriched = raw;
+    if (!interrupt && attachments.length) {
+      if (!this.runtimeRoot) throw new SchedulingSessionError('会话附件存储不可用', { status: 500 });
+      enriched = `${raw}
+
+${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
+    }
     // B4 空上下文守卫：只拦「继续/已解决」这类续接话术，且仅当确实没有可续接的东西——
     // 转录里没有 worker 结论、首轮 run 不在进行中、Hub 同事项也没有未收尾卡片。
     // 先比正则再读 Hub（不是续接话术不花一次请求）；读 Hub 失败按「有上下文」放行，宁可放过不误拦。
-    if (record.hub && !['closing', 'closed'].includes(record.status) && isBareContinuation(raw)) {
+    if (record.hub && !['closing', 'closed'].includes(record.status) && isBareContinuation(enriched)) {
       const hasAgentTurn = (record.messages || []).some(m => m.role === 'agent');
       const runActive = ['running', 'unknown'].includes(record.status);
       if (!hasAgentTurn && !runActive) {
@@ -721,9 +729,9 @@ export class SchedulingSessionManager {
     if ((record.kind || 'scheduling') === 'design' && raw.startsWith('/')) {
       throw new SchedulingSessionError('设计会话不接受斜杠命令（防止切换模式），请用自然语言描述需求', { status: 400 });
     }
-    if (record.hub) return this.#sendToHub(record, raw, { interrupt });
+    if (record.hub) return this.#sendToHub(record, enriched, { interrupt });
     if (record.status === 'idle') {
-      const message = this.#validatePrompt(raw);
+      const message = this.#validatePrompt(enriched);
       this.#pushMessage(record, 'user', message);
       this.#runTurn(record, message);
       return toPublicSession(record);
@@ -739,7 +747,7 @@ export class SchedulingSessionManager {
       try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
       return toPublicSession(record);
     }
-    const message = this.#validatePrompt(raw);
+    const message = this.#validatePrompt(enriched);
     const pendingMessages = record.queue.length;
     if (pendingMessages >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
     record.queue.push({ id: randomUUID(), text: message, at: this.now().toISOString() });

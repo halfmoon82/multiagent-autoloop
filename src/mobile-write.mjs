@@ -227,7 +227,7 @@ async function sessionMessageRoute(res, url, route, ctx, body, req) {
   const fields = { sessionId: id, sourceDeviceId: ctx.device.id };
   let result;
   try {
-    result = await sessions.send(id, text, { interrupt: body.interrupt === true });
+    result = await sessions.send(id, text, { interrupt: body.interrupt === true, ...(Array.isArray(body.attachments) && body.attachments.length ? { attachments: body.attachments } : {}) });
   } catch (error) { auditFailure(ctx, req, 'session.message', fields); throw error; }
   audit(ctx, req, 'session.message', fields);
   jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
