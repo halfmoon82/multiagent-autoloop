@@ -9,7 +9,7 @@
 
 ## Implementation evidence
 
-- 实现提交：`c4613ef`（之后仅新增测试与本 QA 文件）
+- 实现提交：`75e49c4`（之后仅新增测试与本 QA 文件）
 - 会话列表：`work/design-baseline-qa/02-current-sessions.png`
 - 会话详情（三个待回答问题、两条排队消息）：`work/design-baseline-qa/04-current-conversation.png`
 - 其余六页：`work/design-baseline-qa/11-other-tabs-contact-sheet.png`
@@ -56,13 +56,20 @@
 - 附件：文本与图片均可选择、预览、移除和发送；文件落盘、文本内容与图片路径进入 Agent prompt，纯打断不保存附件。
 - 新截图：`02-current-sessions.png`、`04-current-conversation.png`、`15-current-admin-mobile.png`。
 
+## 2026-11-23 规则与部署复核
+
+- 规则 run/pause/resume 不再向 Hub 注入白名单外的 `sourceDeviceId`，避免 Hub 返回“请求无效”；设备来源仅保留本地审计。
+- 顶栏连接状态改为绿点/红点，项目筛选与设置位于同一行。
+- 正式服务已切换到 `75e49c4`，本机与远程 HTML 一致；远程六栏、连接点、项目顶栏、管理网关和未授权 401 均已复核，浏览器无脚本错误。
+- 管理接口未裸暴露：App 使用 `/api/mobile/admin/platform-models`，设备未授权时按预期返回 401。
+
 ## Functional verification
 
 - `npm test`：1428/1428 通过。
 - `npm run test:browser`：全部通过。
 - 390×844 浏览器渲染：无 `pageerror`。
 - Release APK：构建、zipalign、v1/v2/v3 签名、ZIP 完整性和基线资源检查通过；生物识别类字节码确认 `Activity.runOnUiThread`。
-- APK：`/Users/macmini/Downloads/NoMoTo-2026-11-23-admin-attachments.apk`
-- SHA-256：`bdcf2e1c59b6de5e2aa7b404ee6b5e246cda60e66308f5916d408f74ce4e9f91`
+- APK：`/Users/macmini/Downloads/NoMoTo-2026-11-23-rules-dot.apk`
+- SHA-256：`457e2ad3ed8ba1348074f23091f7dbb963e0baf3b7ec9ca18ea853f041c88ada`
 
 final result: passed
