@@ -31,6 +31,7 @@ function isUiNode(node) {
     if (/\.(?:html|css|jsx|tsx|vue|svelte)$/i.test(name)) return true;
     // 不把全部 JS/TS 当 UI：仅认常见前端 App 入口、目录和 client/frontend/web 根。
     if (!/\.(?:js|ts|mjs|mts|cjs|cts)$/i.test(name)) return false;
+    if (/(?:^|\/)pages\/api\//i.test(name)) return false;
     return /(?:^|\/)App\.(?:js|ts)$/.test(name)
       || /(?:^|\/)(?:components|pages|views|layouts|hooks|contexts|client|frontend|web)(?:\/|$)/i.test(name);
   });

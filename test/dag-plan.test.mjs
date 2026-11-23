@@ -510,3 +510,42 @@ test('rework1 keeps pure backend JavaScript and TypeScript on the original no-de
     });
   }
 });
+
+// ---- Issue #255 rework 2：Next.js pages/api 是纯后端，真正 pages UI 仍受覆盖门约束 ----
+
+test('rework2 keeps Next.js pages/api and other backend routes on the no-design path for both file sources', async t => {
+  for (const source of ['contract', 'node']) {
+    for (const file of ['pages/api/users.ts', 'src/pages/api/users.ts', 'app/api/users/route.ts', 'src/server.js']) {
+      await t.test(`${source}.files: ${file}`, async () => {
+        const fixture = coverageProject({ nodes: [reworkNode(file, source)] });
+        const harness = coverageService();
+        const loaded = loadNativePlan({ projectRoot: fixture.root, planId: 'native-coverage' });
+        assert.equal(loaded.designBaseline, null);
+        const run = await createCoverage(fixture, harness);
+        assert.equal(run.nodeId, ROOT_NODE);
+        assert.equal(run.designBaseline, null);
+        assert.equal(harness.calls.smoke.length, 0);
+        assert.equal(harness.calls.fallback.length, 0);
+        assert.equal(harness.store.listRuns().length, 1);
+      });
+    }
+  }
+});
+
+test('rework2 retains real Next.js pages UI coverage for both file sources', async t => {
+  for (const source of ['contract', 'node']) {
+    await t.test(`${source}.files: pages/dashboard.ts`, async () => {
+      const missing = coverageProject({ nodes: [reworkNode('pages/dashboard.ts', source)] });
+      const rejected = coverageService();
+      await assert.rejects(() => createCoverage(missing, rejected), error => error.code === 'DESIGN_CONTRACT_MISSING');
+      assert.equal(rejected.store.listRuns().length, 0);
+
+      const approved = coverageProject({ nodes: [reworkNode('pages/dashboard.ts', source, { surfaceIds: ['overview', 'sessions'] })] });
+      const accepted = coverageService();
+      const run = await createCoverage(approved, accepted);
+      assert.equal(run.nodeId, ROOT_NODE);
+      assert.equal(accepted.calls.smoke.length, 1);
+      assert.equal(accepted.calls.fallback.length, 1);
+    });
+  }
+});

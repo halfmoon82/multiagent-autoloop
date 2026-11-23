@@ -4,7 +4,7 @@
 
 `src/dag-plan.mjs` 导出 `assertDesignCoverage({ designBaseline, nodes })`。批准 manifest 是覆盖全集：每个 surface 及其 viewport/state/interaction 必须恰好归属一个 UI 节点。节点省略维度数组时表示承担该 surface 的全部对应维度；显式数组仍必须是批准集合的子集。
 
-UI 节点由显式 `contract.design` 或确定的 UI 写入范围识别。DAG 接受的 `contract.files` 与顶层 `node.files` 使用同一规则：`public/`、`mobile/app/www/`、前端专用源码后缀、`App.js/App.ts`、常见前端目录及 `client/frontend/web` 根必须绑定合同；不把所有 JS/TS 都视为 UI，`src/server.js`、后端入口和 DAG/controller 文件保持原路径。该规则只检查机器可读归属，不推断原型或自由文本的产品语义。纯后端节点和无数组设计设施旧计划保持原路径。
+UI 节点由显式 `contract.design` 或确定的 UI 写入范围识别。DAG 接受的 `contract.files` 与顶层 `node.files` 使用同一规则：`public/`、`mobile/app/www/`、前端专用源码后缀、`App.js/App.ts`、常见前端目录及 `client/frontend/web` 根必须绑定合同；通用 pages 判定前明确排除 `(?:^|/)pages/api/`，Next.js API 与 `app/api` 保持后端路径。不把所有 JS/TS 都视为 UI，`src/server.js`、后端入口和 DAG/controller 文件保持原路径。该规则只检查机器可读归属，不推断原型或自由文本的产品语义。纯后端节点和无数组设计设施旧计划保持原路径。
 
 失败使用带 `code/details` 的结构化错误：`DESIGN_BASELINE_MISSING`、`DESIGN_CONTRACT_MISSING`、`DESIGN_CONTRACT_MISMATCH`、`DESIGN_COVERAGE_MISSING`、`DESIGN_COVERAGE_DUPLICATE`、`DESIGN_DIGEST_MISMATCH`。`details.missing` / `details.duplicate` 按 surface 与维度列出归属问题。
 
