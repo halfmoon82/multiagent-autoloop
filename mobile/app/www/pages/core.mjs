@@ -302,6 +302,7 @@ export function mount(ctx) {
       rules, state,
       projects: byProject(fullSnapshot.projects || [], filter, item => item?.path || item?.id),
       dagRuns: byProject(fullSnapshot.dagRuns || [], filter),
+      serial: fullSnapshot.serial ? { ...fullSnapshot.serial, chains: byProject(fullSnapshot.serial.chains || [], filter) } : fullSnapshot.serial,
     };
   }
 
