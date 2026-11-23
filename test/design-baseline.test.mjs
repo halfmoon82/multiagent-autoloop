@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  loadDesignManifest, loadDesignBaseline, assertNodeDesignSnapshot, designContractDigest,
+  loadDesignManifest, loadDesignBaseline, freezeDesignBaseline, restoreDesignBaseline, assertNodeDesignSnapshot, designContractDigest,
 } from '../src/design-baseline.mjs';
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
@@ -51,6 +51,34 @@ test('loads a content-hashed design manifest and its matching approval', () => {
     'docs/design/demo/reference.png',
     'docs/prd/demo/design-approval.json',
   ].sort());
+});
+
+test('freezes every approved design byte and restores it after mutable source loss', () => {
+  const fixture = approvedProject();
+  const baseline = loadDesignBaseline(fixture);
+  const directory = mkdtempSync(path.join(tmpdir(), 'design-frozen-store-'));
+  const frozen = freezeDesignBaseline({ projectRoot: fixture.root, designBaseline: baseline, directory });
+  assert.equal(frozen.designDigest, baseline.designDigest);
+  assert.ok(frozen.snapshotFiles[fixture.manifestPath]);
+  assert.ok(frozen.snapshotFiles[fixture.approvalPath]);
+  for (const relative of baseline.readOnlyPaths) rmSync(path.join(fixture.root, relative));
+  const restored = restoreDesignBaseline({ designBaseline: frozen, targetRoot: fixture.root });
+  assert.deepEqual(restored.restored.sort(), baseline.readOnlyPaths.sort());
+  for (const relative of baseline.readOnlyPaths) assert.equal(existsSync(path.join(fixture.root, relative)), true);
+  const reloaded = loadDesignBaseline({ projectRoot: fixture.root, manifestPath: fixture.manifestPath, approvalPath: fixture.approvalPath });
+  assert.equal(reloaded.designDigest, baseline.designDigest);
+  assert.match(readFileSync(path.join(fixture.root, fixture.manifestPath), 'utf8'), /dag-detail/);
+});
+
+test('frozen restore refuses a symlinked target parent instead of writing outside the worktree', () => {
+  const fixture = approvedProject();
+  const baseline = loadDesignBaseline(fixture);
+  const frozen = freezeDesignBaseline({ projectRoot: fixture.root, designBaseline: baseline, directory: mkdtempSync(path.join(tmpdir(), 'design-frozen-store-')) });
+  const targetRoot = mkdtempSync(path.join(tmpdir(), 'design-restore-target-'));
+  const outside = mkdtempSync(path.join(tmpdir(), 'design-restore-outside-'));
+  symlinkSync(outside, path.join(targetRoot, 'docs'));
+  assert.throws(() => restoreDesignBaseline({ designBaseline: frozen, targetRoot }), /逃逸/);
+  assert.equal(existsSync(path.join(outside, 'design', 'demo', 'reference.png')), false);
 });
 
 test('rejects modified artifacts and references not covered by artifact hashes', () => {

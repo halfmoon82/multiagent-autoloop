@@ -37,7 +37,7 @@
 | `src/chain-closeout.mjs` | 串行链收口巡检（无模型）：完成链独占 cron 规则暂停（中台 pause）、链文件归档（`.done-<日期>` 后缀）、无限期暂停规则幽灵排队 run 的宽限取消与收口审计（`closeouts.jsonl`） | rules.json 编辑、编排状态写入、事件路由 |
 | `src/dag-stall.mjs` | DAG 巡检（无模型）：读节点持续报错（`errorSince/errorCount`）、「等待人工决策」（`gated`）与「claimed 接单未回执」发现卡住；读控制器本轮 `progress` 把需要调度会话接手的变化（blocked/gated 与整条链完成）合并成一条 `scheduling.message` 唤醒调度会话，正常推进不叫醒（凭据去敏、按事件 ID 去重）；链终结时收尾「已被更高 attempt 取代且从未派出」的非终态孤儿 run | 节点推进与重试、修复动作本身、中台规则、claimed 存活 run 的处置 |
 | `src/detour.mjs` | 频限绕行登记（`detours.json`）、冷却核实、rules.json 原子回归与状态锁（`withStateLock`，rules.mjs 表单保存共用） | 探测命令实现、Hub 事件、规则表单校验 |
-| `src/design-baseline.mjs` | 可选设计清单、产物 hash、一次批准记录、不可变 run 快照与 UI 节点合同子集校验 | 浏览器渲染、PRD 自由文本语义判定、执行授权 |
+| `src/design-baseline.mjs` | 可选设计清单、产物 hash、一次批准记录、创建前冻结字节与恢复演练、不可变 run 快照与 UI 节点合同子集校验 | 浏览器渲染、PRD 自由文本语义判定、执行授权、运行中重新批准 |
 | `src/git-safe.mjs` | 控制器侧 hardened Git、无 clean/smudge filter 的 tree 构造与工作区恢复 | worker 可信 Git config、任意 hooks/filter/shell 执行 |
 | `src/dag-mirror.mjs` | 控制器 owned mirror、可信 remote/base 快照与 remote URL 校验 | worker 可写项目 ref/config、任意 ext transport |
 | `src/design-verify.mjs` | 从精确 commit 建临时只读 worktree、校验 verifier sha256，在净化子进程执行并用专用 fd+nonce 回传有上限结果 | PRD 语义、执行授权、任意 shell 命令、控制器进程内导入项目代码 |

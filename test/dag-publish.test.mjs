@@ -188,33 +188,35 @@ test('verify：UI 缺 verifier 属设施错误；定向断言失败才返回实�
   assert.match(result.designEvidenceWarning || '', /未全部通过/);
   const noEvidence = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async () => ({ ok: true }) });
   noEvidence.write('src/a.mjs', 'x\n'); const ne = await noEvidence.pub.commitPr(noEvidence.ctx);
-  const neResult = await noEvidence.pub.verify({ ...noEvidence.ctx, commit: ne.commit });
-  assert.equal(neResult.ok, true, 'verifier 不返回证据时不抛裸错，只记警示');
-  assert.match(neResult.designEvidenceWarning || '', /未返回证据/);
+  await assert.rejects(
+    noEvidence.pub.verify({ ...noEvidence.ctx, commit: ne.commit }),
+    error => error.code === 'DESIGN_EVIDENCE_INCOMPLETE' && /未返回证据/.test(error.message),
+  );
 });
 
-test('merge：设计证据只作汇报，不阻断合并，merge 本身不重跑验证', async () => {
+test('merge：缺证据或身份错位进入补验，不在 merge 重跑浏览器', async () => {
   let verifyCalls = 0;
   const designBaseline = uiDesign();
   const t = await boot({ designBaseline, ui: true, verifyDesign: async input => { verifyCalls++; return { ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit) }; } });
   t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
-  const noEvidence = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit });
-  assert.ok(noEvidence.mergeCommit); assert.match(noEvidence.designWarning || '', /证据/);
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), error => error.code === 'DESIGN_EVIDENCE_INCOMPLETE');
   const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit);
   t.gh.merged.length = 0;
-  const mismatch = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, designDigest: 'c'.repeat(64) } });
-  assert.ok(mismatch.mergeCommit); assert.match(mismatch.designWarning || '', /不一致/);
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, designDigest: 'c'.repeat(64) } }), error => error.code === 'DESIGN_EVIDENCE_INCOMPLETE');
+  assert.equal(t.gh.merged.length, 0);
+  const merged = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence });
+  assert.ok(merged.mergeCommit);
+  assert.equal(t.gh.merged.length, 1);
   assert.equal(verifyCalls, 0, 'merge 不得重跑浏览器验证');
 });
 
-test('merge：失败 checks 依然合并，但结果里带警示', async () => {
+test('merge：失败 checks 返回正常设计返工信号，不合并', async () => {
   const designBaseline = uiDesign();
   const t = await boot({ designBaseline, ui: true, verifyDesign: async () => { throw new Error('not called'); } });
   t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
   const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] });
-  const out = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence });
-  assert.ok(out.mergeCommit); assert.match(out.designWarning || '', /未全部通过/);
-  assert.equal(t.gh.merged.length, 1);
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence }), error => error.code === 'DESIGN_DEVIATION');
+  assert.equal(t.gh.merged.length, 0);
 });
 
 test('commitPr：越界文件只汇报、不阻断', async () => {

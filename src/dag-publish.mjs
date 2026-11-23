@@ -89,6 +89,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       return '设计证据缺少定向 checks 或 checks 形态无效';
     }
     if (requirePassed && evidence.checks.some(check => !check.ok)) return '设计定向 checks 未全部通过';
+    if (requirePassed && Array.isArray(evidence.knownDeviations) && evidence.knownDeviations.length) return '设计 knownDeviations 未清零';
     return null;
   };
 
@@ -217,6 +218,9 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       const evidence = result?.evidence ?? null;
       const issue = evidence ? evidenceIssues(root, node, evidence, commit, { requirePassed: true }) : '设计 verifier 未返回证据';
       const after = (await changed(worktree)).sort().join('\n');
+      // 无证据、身份错位或返回形态无效属于证据设施故障：交控制器同 attempt 重试，
+      // 不派 reviewer 空转，也不消耗 worker 实现失败次数。checks=false 是有效偏差证据，正常返工。
+      if (issue && issue !== '设计定向 checks 未全部通过') throw new PublishError(issue, 'DESIGN_EVIDENCE_INCOMPLETE');
       // 设计证据只报不拦：节点是否继续由测试结果决定，证据问题记入警示。
       return { tests, slotStateChanged: before !== after, nodeId, ok: tests.exitCode === 0, designEvidence: evidence, ...(issue ? { designEvidenceWarning: issue } : {}) };
     },
@@ -239,12 +243,16 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
         if (holder && holder !== dagReviewHolder(nodeId)) throw new PublishError(`PR ${prUrl} 正被 ${holder} 审阅占位，暂缓合并（占位释放或过期后自动重试）`, 'REVIEW_CLAIMED');
       }
       const designWarning = evidenceIssues(root, nodeOf(root, nodeId), evidence, commit, { requirePassed: true });
+      if (designWarning) {
+        const code = ['设计定向 checks 未全部通过', '设计 knownDeviations 未清零'].includes(designWarning) ? 'DESIGN_DEVIATION' : 'DESIGN_EVIDENCE_INCOMPLETE';
+        throw new PublishError(designWarning, code);
+      }
       const result = (await gh.mergePr(prUrl, { strategy: root.authorizationSnapshot.mergeStrategy })) || {};
       // fetch/rev-parse 失败直接抛错由控制器下一 tick 重试：mergePr 与 markPrMerged 均幂等，
       // 不再回退到本地陈旧 baseRef tip 冒充 mergeCommit。
       await rt.git(rt.project, ['fetch', '-q', root.remoteUrl, '+refs/heads/main:refs/heads/main']);
       const tip = (await rt.git(rt.project, ['rev-parse', baseRef])).trim();
-      return { mergeCommit: result.mergeCommit || tip, ...(designWarning ? { designWarning } : {}) };
+      return { mergeCommit: result.mergeCommit || tip };
     },
 
     // 下游基线推进：fetch 更新后，后续 prepare 从合并后的基线建分支。

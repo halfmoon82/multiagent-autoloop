@@ -11,6 +11,7 @@ import { createPlanDigest, loadVibePlan } from './vibe-plan.mjs';
 import { defaultGit } from './git-safe.mjs';
 import { ensureMirror } from './dag-mirror.mjs';
 import { buildDagRing } from './dag-model.mjs';
+import { freezeDesignBaseline } from './design-baseline.mjs';
 
 export class DagServiceError extends Error {
   constructor(message, status = 400) { super(message); this.name = 'DagServiceError'; this.status = status; }
@@ -208,11 +209,17 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
       }
       let mirror = null;
       if (remoteUrl) mirror = await ensureMirror({ root, remoteUrl, baseBranch: 'main' });
-      return wrap(() => store.createRun({
-        project, planId: loaded.planId, planDigest: body.planDigest, confirmedActionIds: body.confirmedActionIds,
-        selectedOptionalActions: body.selectedOptionalActions ?? [], planOptionalActions,
-        confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes, designBaseline: loaded.designBaseline || null, remoteUrl: mirror?.remoteUrl ?? remoteUrl, mirrorPath: mirror?.mirrorPath ?? null, baseBranch: mirror?.baseBranch ?? null, baseCommit: mirror?.baseCommit ?? null,
-      }));
+      return wrap(() => {
+        const designBaseline = loaded.designBaseline ? freezeDesignBaseline({
+          projectRoot: project, designBaseline: loaded.designBaseline,
+          directory: path.join(store.directory, 'design-baselines'),
+        }) : null;
+        return store.createRun({
+          project, planId: loaded.planId, planDigest: body.planDigest, confirmedActionIds: body.confirmedActionIds,
+          selectedOptionalActions: body.selectedOptionalActions ?? [], planOptionalActions,
+          confirm: body.confirm, nodeId: ROOT_NODE, role: 'dev', nodes: loaded.nodes, designBaseline, remoteUrl: mirror?.remoteUrl ?? remoteUrl, mirrorPath: mirror?.mirrorPath ?? null, baseBranch: mirror?.baseBranch ?? null, baseCommit: mirror?.baseCommit ?? null,
+        });
+      });
     },
     cancel(id) {
       const run = getRoot(id);
