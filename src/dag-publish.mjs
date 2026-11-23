@@ -16,6 +16,34 @@ export class PublishError extends Error {
   constructor(message, code = 'PUBLISH_ERROR') { super(message); this.name = 'PublishError'; this.code = code; }
 }
 
+// knownDeviations 不是自由文本豁免：每一项都必须落到本节点批准合同的 surface/维度或失败 check。
+// controller 也复用此纯映射，保证 fake/旧适配器与真实 verifier 留下同一种返工记录。
+export function mapKnownDeviations({ root, node, evidence } = {}) {
+  const design = assertNodeDesignSnapshot(root, node).design;
+  if (!design || !Array.isArray(evidence?.knownDeviations) || !evidence.knownDeviations.length) return evidence;
+  const invalid = message => new PublishError(message, 'DESIGN_EVIDENCE_INCOMPLETE');
+  const mapped = evidence.knownDeviations.map((deviation, index) => {
+    if (!deviation || typeof deviation !== 'object' || Array.isArray(deviation)) throw invalid(`设计 knownDeviations[${index}] 必须是对象`);
+    const failedChecks = (evidence.checks || []).filter(check => check && check.ok === false);
+    const linkedCheck = failedChecks.find(check => check.id === deviation.checkId)
+      || (failedChecks.length === 1 ? failedChecks[0] : null);
+    const explicit = deviation.contractItem;
+    if (explicit !== undefined && (!explicit || typeof explicit !== 'object' || Array.isArray(explicit))) throw invalid(`设计 knownDeviations[${index}].contractItem 形态无效`);
+    const surfaceId = explicit?.surfaceId || deviation.surfaceId || linkedCheck?.surfaceId || (design.surfaces.length === 1 ? design.surfaces[0].id : null);
+    const surface = design.surfaces.find(item => item.id === surfaceId);
+    if (!surface) throw invalid(`设计 knownDeviations[${index}] 无法映射批准合同 surface`);
+    const contractItem = { ...(explicit || {}), surfaceId };
+    for (const [field, approved] of [['viewport', surface.viewports], ['state', surface.states], ['interaction', surface.interactions]]) {
+      const value = contractItem[field] ?? deviation[field];
+      if (value !== undefined && !approved.includes(value)) throw invalid(`设计 knownDeviations[${index}] 的 ${field} 不属于批准合同`);
+      if (value !== undefined) contractItem[field] = value;
+    }
+    if (linkedCheck) contractItem.check = { kind: linkedCheck.kind, id: linkedCheck.id };
+    return { ...deviation, contractItem };
+  });
+  return { ...evidence, knownDeviations: mapped };
+}
+
 const execFileAsync = promisify(execFile);
 const TOKEN_UNAVAILABLE = '无法读取发布凭据（gh 登录 token）：push 已取消';
 // 默认凭据源：gh CLI 已登录态。只取 token 字符串，任何失败/输出都不带进错误信息，避免泄露。
@@ -93,6 +121,7 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
     let normalized;
     try {
       normalized = validateDesignEvidence({ evidence, designBaseline: root.designBaseline, contract: node.contract.design, nodeId: node.id, evidenceDir: evidenceDirectory(root, node.id), requireCaptures });
+      normalized = mapKnownDeviations({ root, node, evidence: normalized });
     } catch (error) { return { evidence, issue: incomplete(error?.message || '设计证据不完整') }; }
     if (requirePassed && normalized.verifierOk === false) return { evidence: normalized, issue: deviation('设计 verifier 总结论未全部通过') };
     if (requirePassed && normalized.checks.some(check => !check.ok)) return { evidence: normalized, issue: deviation('设计定向 checks 未全部通过') };
@@ -118,6 +147,10 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
     finally { rmSync(temporary, { force: true }); }
   };
   const evidenceStatus = evidence => (evidence.verifierOk === false || evidence.checks.some(check => !check.ok) || (Array.isArray(evidence.knownDeviations) && evidence.knownDeviations.length) ? 'deviation' : 'pass');
+  const evidenceIdentity = (evidence, status) => evidence ? {
+    source: 'publisher.verify', commit: evidence.commit, designDigest: evidence.designDigest,
+    contractDigest: evidence.contractDigest, status,
+  } : null;
   const facilityError = error => {
     const kind = error?.status === 'incomplete' || error?.code === 'DESIGN_EVIDENCE_INCOMPLETE' ? 'incomplete' : 'infrastructure-error';
     const code = kind === 'incomplete' ? 'DESIGN_EVIDENCE_INCOMPLETE' : 'DESIGN_EVIDENCE_INFRASTRUCTURE';
@@ -236,7 +269,8 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       const design = assertNodeDesignSnapshot(root, node).design;
       if (!design || tests.exitCode !== 0) {
         const after = (await changed(worktree)).sort().join('\n');
-        return { tests, slotStateChanged: before !== after, nodeId, ok: tests.exitCode === 0 };
+        return { tests, slotStateChanged: before !== after, nodeId, ok: tests.exitCode === 0,
+          designConformance: design ? false : null, designEvidenceIdentity: null };
       }
       // 设施缺失/抛错属于控制器可重试错误，不计 worker 实现失败。
       if (typeof verifyDesign !== 'function') { const error = new PublishError(`UI 节点 ${nodeId} 缺少设计 verifier`, 'DESIGN_VERIFIER_UNAVAILABLE'); error.status = 'infrastructure-error'; throw error; }
@@ -272,11 +306,13 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       return {
         tests, slotStateChanged: before !== after, nodeId, ok: tests.exitCode === 0,
         designStatus, designEvidence: evidence, designEvidenceCache: cacheState,
+        designConformance: !issue && designStatus === 'pass',
+        designEvidenceIdentity: evidenceIdentity(evidence, designStatus),
         ...(issue ? { designEvidenceWarning: issue.message } : {}),
       };
     },
 
-    async merge({ nodeId, prUrl, commit, evidence }) {
+    async merge({ nodeId, prUrl, commit, evidence, codeReviewAccepted, codeReviewEvidence, designConformance }) {
       const root = need(['squash-merge'], 'merge');
       const pr = (store.getRun(root.runId).prs || []).find(entry => entry.prUrl === prUrl);
       if (!pr || pr.nodeId !== nodeId) throw new PublishError(`PR ${prUrl} 未登记或不属于节点 ${nodeId}，publish 拒绝`, 'PR_NOT_REGISTERED');
@@ -288,6 +324,10 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
         error.head = head;
         throw error;
       }
+      if (codeReviewAccepted !== true || !codeReviewEvidence || codeReviewEvidence.source !== 'independent-review'
+        || typeof codeReviewEvidence.runId !== 'string' || !codeReviewEvidence.runId || codeReviewEvidence.commit !== commit) {
+        throw new PublishError(`PR ${prUrl} 缺少同一 SHA 的有效独立代码审阅结论，拒绝合并`, 'CODE_REVIEW_REQUIRED');
+      }
       // 审阅占位：他人（非本节点 DAG 审阅）正在审时暂缓合并，抛错由控制器下一 tick 重试，节点状态不变。
       if (typeof gh.claimHolder === 'function') {
         const holder = await gh.claimHolder(prUrl);
@@ -297,6 +337,11 @@ export function createPublisher({ store, rootRunId, rt, gh, runTests, verifyDesi
       if (designWarning) {
         const code = designWarning.kind === 'deviation' ? 'DESIGN_DEVIATION' : 'DESIGN_EVIDENCE_INCOMPLETE';
         const error = new PublishError(designWarning.message, code); error.status = designWarning.kind === 'deviation' ? 'deviation' : 'incomplete'; throw error;
+      }
+      const design = assertNodeDesignSnapshot(root, nodeOf(root, nodeId)).design;
+      if (design && designConformance !== true) {
+        const error = new PublishError(`PR ${prUrl} 缺少同一 SHA 的有效 designConformance 结论，拒绝合并`, 'DESIGN_CONFORMANCE_REQUIRED');
+        error.status = 'incomplete'; throw error;
       }
       const result = (await gh.mergePr(prUrl, { strategy: root.authorizationSnapshot.mergeStrategy })) || {};
       // fetch/rev-parse 失败直接抛错由控制器下一 tick 重试：mergePr 与 markPrMerged 均幂等，
