@@ -5,17 +5,24 @@
     {
       "id": "coverage-preflight",
       "title": "实现 UI 双向覆盖与事务性创建预检",
-      "depends_on": [],
+      "depends_on": [
+        "evidence-resilience"
+      ],
       "integration_after": [],
-      "parallel_group": "wave-0",
+      "parallel_group": "wave-1",
       "status": "planned",
       "complexity": "heavy",
       "contract": {
         "input": "#252 冻结设计包、计划 Schema、页面/状态/交互覆盖矩阵",
         "output": "UI 节点和批准 surface 双向覆盖校验、批准样例 verifier smoke、备用采集预检、原子 run 创建",
         "error_behavior": "缺基线/合同/覆盖/恢复能力时留在预检，不留可派发 run；不向本人抛工程选项",
-        "acceptance_example": "NoMoTo 缺 design 或漏会话 surface 在创建前失败；纯后端计划不受影响；失败无半成品 run",
-        "files": ["src/dag-plan.mjs", "src/dag-service.mjs", "test/dag-plan.test.mjs", "test/dag-api.test.mjs"]
+        "acceptance_example": "NoMoTo 缺 design、漏会话 surface、归属重复/遗漏或 digest 不一致在创建前失败；纯后端计划不受影响；失败无半成品 run；产品语义一致性由设计阶段确认",
+        "files": [
+          "src/dag-plan.mjs",
+          "src/dag-service.mjs",
+          "test/dag-plan.test.mjs",
+          "test/dag-api.test.mjs"
+        ]
       }
     },
     {
@@ -31,15 +38,23 @@
         "output": "批准样例与备用采集路径、完整设施结果分流、同 SHA 缓存和精确 commit 独立重建补强",
         "error_behavior": "设施故障进入 evidence-recovery 且不计 worker 实现失败；不同 SHA 不复用；部分证据不得验收",
         "acceptance_example": "证据丢失/verifier 超时/浏览器缺失均能恢复；备用采集可生成全量 captures；无设计专用 blocked/gated",
-        "files": ["src/design-verify.mjs", "src/dag-publish.mjs", "test/design-verify.test.mjs", "test/dag-publish.test.mjs"]
+        "files": [
+          "src/design-verify.mjs",
+          "src/dag-publish.mjs",
+          "test/design-verify.test.mjs",
+          "test/dag-publish.test.mjs"
+        ]
       }
     },
     {
       "id": "conformance-contract",
       "title": "显式分离代码审阅与设计符合性结论",
-      "depends_on": ["coverage-preflight", "evidence-resilience"],
+      "depends_on": [
+        "coverage-preflight",
+        "evidence-resilience"
+      ],
       "integration_after": [],
-      "parallel_group": "wave-1",
+      "parallel_group": "wave-2",
       "status": "planned",
       "complexity": "heavy",
       "contract": {
@@ -47,15 +62,23 @@
         "output": "显式可查询的 codeReviewAccepted/designConformance、knownDeviations 返工映射、同 SHA 有效独立审阅结论；不修改 public/ 视觉页面",
         "error_behavior": "偏差正常返工；不得以 warning 或内部 accepted 冒充设计通过；不得中途询问工程选项",
         "acceptance_example": "两项结论可独立读取；视觉偏差可返工重审但不 designConformance；证据不完整不得通过；无 public/ 写范围",
-        "files": ["src/dag-controller.mjs", "src/dag-publish.mjs", "test/dag-controller.test.mjs", "test/dag-publish.test.mjs", "docs/design-gate/"]
+        "files": [
+          "src/dag-controller.mjs",
+          "src/dag-publish.mjs",
+          "test/dag-controller.test.mjs",
+          "test/dag-publish.test.mjs",
+          "docs/design-gate/"
+        ]
       }
     },
     {
       "id": "integration-verify",
       "title": "全量回归、故障注入与无门禁证明",
-      "depends_on": ["conformance-contract"],
+      "depends_on": [
+        "conformance-contract"
+      ],
       "integration_after": [],
-      "parallel_group": "wave-2",
+      "parallel_group": "wave-3",
       "status": "planned",
       "complexity": "heavy",
       "contract": {
@@ -63,7 +86,11 @@
         "output": "单元/集成/浏览器回归与故障注入证据，NoMoTo 同类缺陷防回归，未覆盖边界清单",
         "error_behavior": "红项回到对应节点修复；不把部署或真机验收混入本计划；#252 已落地能力只复核不重复派发",
         "acceptance_example": "npm test 与 npm run test:browser 全绿；故障矩阵无设计专用 blocked/gated；纯后端行为不变；无 public/ 无基线修改",
-        "files": ["test/design-gate-integration.test.mjs", "test/browser-design-verify.spec.mjs", "docs/design-gate/"]
+        "files": [
+          "test/design-gate-integration.test.mjs",
+          "test/browser-design-verify.spec.mjs",
+          "docs/design-gate/"
+        ]
       }
     }
   ]
