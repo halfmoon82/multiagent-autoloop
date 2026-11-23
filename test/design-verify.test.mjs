@@ -14,13 +14,13 @@ const verifierPath = 'docs/design/demo/verify.mjs';
 function makeVerifierProject() {
   const { project } = makeRepo();
   mkdirSync(path.dirname(path.join(project, verifierPath)), { recursive: true });
-  const approved = `export async function verify() {\n  if (process.env.AGENT_AUTOLOOP_HOME !== undefined) return { ok: false, checks: [{ id: 'env', ok: false }] };\n  return { ok: true, checks: [{ id: 'normal', ok: true }] };\n}\n`;
+  const approved = `import { mkdirSync, writeFileSync } from 'node:fs';\nimport path from 'node:path';\nexport async function verify({ evidenceDir }) {\n  if (process.env.AGENT_AUTOLOOP_HOME !== undefined) return { ok: false, checks: [{ id: 'env', ok: false }] };\n  mkdirSync(evidenceDir, { recursive: true });\n  const capture = path.join(evidenceDir, 'overview-1440x900-normal.png');\n  writeFileSync(capture, 'approved-normal');\n  return { ok: true, checks: [{ id: 'normal', ok: true }], captures: [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: capture }] };\n}\n`;
   writeFileSync(path.join(project, verifierPath), approved);
   sh(project, 'add', verifierPath); sh(project, 'commit', '-qm', 'approved verifier');
   const approvedCommit = sh(project, 'rev-parse', 'HEAD');
   const designBaseline = {
     designDigest: 'a'.repeat(64), manifestPath: 'docs/design/demo/design-manifest.json',
-    manifest: { schema: 1, designId: 'demo', verifierPath, artifacts: [{ path: verifierPath, sha256: sha256(approved) }] },
+    manifest: { schema: 1, designId: 'demo', verifierPath, artifacts: [{ path: verifierPath, sha256: sha256(approved) }], surfaces: [{ id: 'overview', route: '/', viewports: ['1440x900'], states: ['normal'], interactions: [], referencePaths: [] }] },
     readOnlyPaths: [verifierPath],
   };
   const contract = { surfaceIds: ['overview'], states: ['normal'], interactions: [] };
@@ -205,4 +205,137 @@ test('project cannot spoof fd3 results through inherited or own toJSON', async (
   });
   assert.equal(result.ok, false, 'toJSON 不得伪造结果');
   assert.equal(result.evidence.checks[0].id, 'real');
+});
+
+
+function approveVerifier(f, primary, fallback = null) {
+  writeFileSync(path.join(f.project, verifierPath), primary);
+  f.designBaseline.manifest.artifacts.find(artifact => artifact.path === verifierPath).sha256 = sha256(primary);
+  const files = [verifierPath];
+  if (fallback) {
+    const fallbackPath = 'docs/design/demo/fallback.mjs';
+    writeFileSync(path.join(f.project, fallbackPath), fallback);
+    f.designBaseline.manifest.fallbackVerifierPath = fallbackPath;
+    f.designBaseline.manifest.artifacts.push({ path: fallbackPath, sha256: sha256(fallback) });
+    f.designBaseline.readOnlyPaths.push(fallbackPath);
+    files.push(fallbackPath);
+  }
+  sh(f.project, 'add', ...files); sh(f.project, 'commit', '-qm', 'approve resilient verifier');
+  return sh(f.project, 'rev-parse', 'HEAD');
+}
+
+const throwingVerifier = message => `export async function verify() { throw new Error(${JSON.stringify(message)}); }\n`;
+const capturingFallback = `import { mkdirSync, writeFileSync } from 'node:fs';\nimport path from 'node:path';\nexport async function capture({ evidenceDir, commit }) {\n  mkdirSync(evidenceDir, { recursive: true });\n  const file = path.join(evidenceDir, 'fallback.png');\n  writeFileSync(file, 'fallback:' + commit);\n  return { ok: true, checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: true }], captures: [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: file }], renderer: { name: 'static-fallback', version: '1' } };\n}\n`;
+
+test('approved reference samples support an isolated pre-creation verifier smoke', async () => {
+  const f = makeVerifierProject();
+  const primary = `import { mkdirSync, writeFileSync } from 'node:fs';\nimport path from 'node:path';\nexport async function verify() { throw new Error('implementation verifier must not run during smoke'); }\nexport async function smoke({ evidenceDir, approvedSamples, mode }) {\n  if (mode !== 'approved-sample' || approvedSamples?.[0]?.surfaceId !== 'overview') throw new Error('approved sample missing');\n  mkdirSync(evidenceDir, { recursive: true });\n  const file = path.join(evidenceDir, 'smoke.png');\n  writeFileSync(file, 'smoke:' + approvedSamples[0].path);\n  return { ok: true, checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: true }], captures: [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: file }] };\n}\n`;
+  // A hash-covered approved reference is the smoke input, not a worker-produced screenshot.
+  const reference = 'docs/design/demo/reference.png';
+  writeFileSync(path.join(f.project, reference), 'approved-reference');
+  f.designBaseline.manifest.artifacts.push({ path: reference, sha256: sha256('approved-reference') });
+  f.designBaseline.manifest.surfaces[0].referencePaths = [reference];
+  f.designBaseline.readOnlyPaths.push(reference);
+  sh(f.project, 'add', reference); sh(f.project, 'commit', '-qm', 'approved sample');
+  const commit = approveVerifier(f, primary);
+  const { smokeApprovedDesign } = await import('../src/design-verify.mjs');
+  assert.equal(typeof smokeApprovedDesign, 'function', '必须导出批准样例 smoke 入口');
+  const result = await smokeApprovedDesign({
+    nodeId: 'ui', project: f.project, commit, designBaseline: f.designBaseline, contract: f.contract,
+    evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-approved-smoke-')), timeoutMs: 1000,
+  });
+  assert.equal(result.status, 'pass');
+  assert.equal(result.evidence.collector, 'approved-sample');
+  assert.match(result.evidence.captures[0].sha256, /^[0-9a-f]{64}$/);
+  assert.match(readFileSync(result.evidence.captures[0].path, 'utf8'), /reference\.png$/);
+});
+
+test('browser failure in the primary verifier falls back to approved full captures on the same commit', async () => {
+  const f = makeVerifierProject();
+  const commit = approveVerifier(f, throwingVerifier('browser executable missing'), capturingFallback);
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), 'design-fallback-success-'));
+  const result = await verifyDesignModule({ nodeId: 'ui', project: f.project, commit, designBaseline: f.designBaseline, contract: f.contract, evidenceDir });
+  assert.equal(result.status, 'pass');
+  assert.equal(result.evidence.collector, 'fallback');
+  assert.equal(result.evidence.recovery.primaryError, 'browser executable missing');
+  assert.equal(readFileSync(result.evidence.captures[0].path, 'utf8'), `fallback:${commit}`);
+});
+
+test('verifier timeout and dependency failures use fallback; dual facility failure is not deviation', async () => {
+  const recovered = makeVerifierProject();
+  const recoveredCommit = approveVerifier(recovered, throwingVerifier('verifier timeout after dependency missing'), capturingFallback);
+  const result = await verifyDesignModule({ nodeId: 'ui', project: recovered.project, commit: recoveredCommit, designBaseline: recovered.designBaseline, contract: recovered.contract, evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-timeout-fallback-')) });
+  assert.equal(result.evidence.collector, 'fallback');
+  const failed = makeVerifierProject();
+  const failedCommit = approveVerifier(failed, throwingVerifier('browser missing'), throwingVerifier('fallback dependency missing'));
+  await assert.rejects(() => verifyDesignModule({ nodeId: 'ui', project: failed.project, commit: failedCommit, designBaseline: failed.designBaseline, contract: failed.contract, evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-dual-failure-')) }), error => {
+    assert.equal(error.status, 'infrastructure-error');
+    assert.equal(error.code, 'DESIGN_EVIDENCE_INFRASTRUCTURE');
+    assert.notEqual(error.status, 'deviation');
+    return true;
+  });
+});
+
+test('partial primary captures are incomplete and cannot bypass fallback recovery', async () => {
+  const f = makeVerifierProject();
+  const partial = `export async function verify() { return { ok: true, checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: true }], captures: [] }; }\n`;
+  const commit = approveVerifier(f, partial);
+  await assert.rejects(() => verifyDesignModule({ nodeId: 'ui', project: f.project, commit, designBaseline: f.designBaseline, contract: f.contract, evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-partial-captures-')) }), error => {
+    assert.equal(error.status, 'incomplete');
+    assert.equal(error.code, 'DESIGN_EVIDENCE_INCOMPLETE');
+    assert.match(error.message, /captures|证据/);
+    return true;
+  });
+});
+
+test('evidence is rebuilt from the exact historical commit rather than the current checkout', async () => {
+  const f = makeVerifierProject();
+  writeFileSync(path.join(f.project, 'implementation.txt'), 'historical-commit\n');
+  sh(f.project, 'add', 'implementation.txt'); sh(f.project, 'commit', '-qm', 'historical implementation');
+  const historical = sh(f.project, 'rev-parse', 'HEAD');
+  const primary = `import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';\nimport path from 'node:path';\nexport async function verify({ evidenceDir, worktree }) {\n  mkdirSync(evidenceDir, { recursive: true });\n  const file = path.join(evidenceDir, 'historical.png');\n  writeFileSync(file, readFileSync(path.join(worktree, 'implementation.txt')));\n  return { ok: true, checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: true }], captures: [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: file }] };\n}\n`;
+  const approved = approveVerifier(f, primary);
+  writeFileSync(path.join(f.project, 'implementation.txt'), 'current-checkout\n');
+  const result = await verifyDesignModule({ nodeId: 'ui', project: f.project, commit: approved, designBaseline: f.designBaseline, contract: f.contract, evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-exact-rebuild-')) });
+  assert.equal(result.evidence.commit, approved);
+  assert.equal(readFileSync(result.evidence.captures[0].path, 'utf8'), 'historical-commit\n');
+  assert.notEqual(approved, historical);
+});
+
+test('a real child timeout recovers through fallback with the full viewport/state capture matrix', async () => {
+  const f = makeVerifierProject();
+  f.designBaseline.manifest.surfaces[0].viewports = ['1440x900', '390x844'];
+  f.designBaseline.manifest.surfaces[0].states = ['normal', 'empty'];
+  f.designBaseline.manifest.surfaces[0].interactions = ['open'];
+  f.contract = { surfaceIds: ['overview'], viewports: ['1440x900', '390x844'], states: ['normal', 'empty'], interactions: ['open'] };
+  const hanging = `export async function verify() { setInterval(() => {}, 1000); await new Promise(() => {}); }\n`;
+  const fallback = `import { mkdirSync, writeFileSync } from 'node:fs';\nimport path from 'node:path';\nexport async function capture({ evidenceDir, contract }) {\n  mkdirSync(evidenceDir, { recursive: true }); const captures = [];\n  for (const viewport of contract.viewports) for (const state of contract.states) {\n    const file = path.join(evidenceDir, viewport + '-' + state + '.png'); writeFileSync(file, viewport + ':' + state);\n    captures.push({ surfaceId: 'overview', viewport, state, path: file });\n  }\n  return { ok: true, checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }], captures };\n}\n`;
+  const commit = approveVerifier(f, hanging, fallback);
+  const result = await verifyDesignModule({ nodeId: 'ui', project: f.project, commit, designBaseline: f.designBaseline, contract: f.contract, evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-real-timeout-')), timeoutMs: 1000 });
+  assert.equal(result.evidence.collector, 'fallback');
+  assert.equal(result.evidence.captures.length, 4);
+  assert.equal(result.evidence.coverage.complete, true);
+  assert.equal(result.evidence.coverage.requiredCaptures, 4);
+  assert.match(result.evidence.recovery.primaryError, /超时/);
+});
+
+test('a real missing verifier dependency falls back instead of becoming an implementation deviation', async () => {
+  const f = makeVerifierProject();
+  const missingDependency = `export async function verify() { await import('design-verify-dependency-that-does-not-exist-256'); }\n`;
+  const commit = approveVerifier(f, missingDependency, capturingFallback);
+  const result = await verifyDesignModule({ nodeId: 'ui', project: f.project, commit, designBaseline: f.designBaseline, contract: f.contract, evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-real-dependency-')) });
+  assert.equal(result.status, 'pass');
+  assert.equal(result.evidence.collector, 'fallback');
+  assert.match(result.evidence.recovery.primaryError, /design-verify-dependency-that-does-not-exist-256/);
+});
+
+test('a valid implementation deviation stays primary evidence and never invokes fallback', async () => {
+  const f = makeVerifierProject();
+  const deviation = `import { mkdirSync, writeFileSync } from 'node:fs';\nimport path from 'node:path';\nexport async function verify({ evidenceDir }) {\n  mkdirSync(evidenceDir, { recursive: true }); const file = path.join(evidenceDir, 'deviation.png'); writeFileSync(file, 'deviation');\n  return { ok: false, checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }], captures: [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: file }] };\n}\n`;
+  const commit = approveVerifier(f, deviation, throwingVerifier('fallback must not hide deviation'));
+  const result = await verifyDesignModule({ nodeId: 'ui', project: f.project, commit, designBaseline: f.designBaseline, contract: f.contract, evidenceDir: mkdtempSync(path.join(tmpdir(), 'design-primary-deviation-')) });
+  assert.equal(result.status, 'deviation');
+  assert.equal(result.evidence.collector, 'primary');
+  assert.equal(result.evidence.verifierOk, false);
+  assert.equal(result.evidence.recovery, undefined);
 });
