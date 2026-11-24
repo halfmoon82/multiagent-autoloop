@@ -20,6 +20,14 @@ export function macosNotify({ title, body }) {
   } catch { /* 同上 */ }
 }
 
+// 生产装配：会话管理器由 createConsoleServer 装进它自己的 config 副本，启动脚本的原始 config 里没有，
+// 所以会话来源必须从 server 取；server 未暴露时退回 CardNotifier 的缺省（读 config，没有则不启用）。
+export function createConsoleNotifier({ config, server, ...options } = {}) {
+  const fetchSessions = options.fetchSessions
+    || (typeof server?.listSessions === 'function' ? () => server.listSessions() : undefined);
+  return new CardNotifier({ config, ...options, fetchSessions });
+}
+
 // 单一通知事件分发：轮询「待我处理」开放卡片、「节点成功完成」回执与「会话新回复」，分别构建独立系统通知并去重。
 // 去重状态只此一份（this.notified）；角标数量由 badgeCount(open) 同步；通知失败不影响主流程。
 // 首次轮询只做种子（避免重启后对存量刷屏）；重开产生新 revision 才是新决策，已处理事项不重复提交。
