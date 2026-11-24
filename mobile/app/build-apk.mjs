@@ -2,8 +2,9 @@
 // 首版 Android APK 打包门禁 + release 签名（Spec §5.2.7 / §3、Issue 1、Nomoto App 修复）。
 // 真机打包、签名、安装与验证需要单独授权且必须人工值守；CI 与 PR 合并不得自动触发。
 // 未获授权时只给出可读阻塞原因并以非零码退出，绝不改动任何文件——APK 打包失败不阻塞其他节点。
-// 授权后：生成平台 → 注入 CAMERA 权限/相机非必需声明与 minSdk 23 → 让内置壳同源加载远程
-// /mobile/ → 用仓库外密钥库 zipalign + apksigner 签名 → 产物与 sha256 写入 work/apk/。
+// 授权后：生成平台 → 注入 CAMERA 权限/相机非必需声明与 minSdk 23 → 内置壳加载本地 www（不烧死任何
+// 控制台地址，首启引导添加）并经原生 HTTP 连接用户添加的控制台 → 用仓库外密钥库 zipalign + apksigner 签名
+// → 产物与 sha256 写入 work/apk/。
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -14,11 +15,12 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const authorized = process.env.AUTOLOOP_APK_BUILD_AUTHORIZED === '1';
 const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || '';
 
-// 远程控制台同源入口：内置页若停留在 https://localhost，调用 /api/mobile/bind 属跨站，
-// 服务端按设计拒绝跨站且无 CORS 预检，真机会报「无法连接控制台」。指向 /mobile/ 后同源。
-const CONSOLE_BASE = 'https://auto.socialmore.net';
-const CONSOLE_MOBILE_URL = `${CONSOLE_BASE}/mobile/`;
-const CONSOLE_HOST = new URL(CONSOLE_BASE).host;
+// 多控制台（console-hub）：不再把单个控制台地址烧进 APK。内置壳从本地 https://localhost 加载，
+// 首启未绑定时引导用户添加控制台；连接各控制台的 API 请求走 Capacitor 原生 HTTP（CapacitorHttp），
+// 不经浏览器跨站请求，服务端同源/凭证规则保持不变、无需放宽 CORS。
+const LOCAL_SHELL_URL = 'https://localhost/';
+// 页面模块按 ../src/... 动态导入视图模型；本地壳没有控制台的 /mobile/src 路由，构建期把 mobile/src 拷进 assets。
+const MOBILE_SRC = process.env.AUTOLOOP_MOBILE_SRC_DIR || path.join(here, '..', 'src');
 
 // 自写原生源码与离线兜底页：一次性预留并入库在 native/，构建期拷入并合并生成的 android 工程。
 const NATIVE_SRC = path.join(here, 'native');
@@ -119,21 +121,33 @@ function mergeGradle(gradlePath, additions) {
   writeFileSync(gradlePath, gradle);
 }
 
+function generatedAssetDirs() {
+  // cap sync 把 www/ 拷进生成的 assets（Capacitor 版本不同目录名可能是 public 或 www）。
+  return [
+    path.join(here, 'android', 'app', 'src', 'main', 'assets', 'public'),
+    path.join(here, 'android', 'app', 'src', 'main', 'assets', 'www'),
+  ].filter(dir => existsSync(dir));
+}
+
+// 离线兜底页的「重试」回到本地壳入口（不再指向任何固定控制台）；连哪台控制台由壳内的控制台列表决定。
 function injectOfflineUrl() {
   if (!existsSync(OFFLINE_HTML)) fail(11, '缺少内置 www/offline.html 离线兜底页');
   const original = readFileSync(OFFLINE_HTML, 'utf8');
-  const meta = `<meta name="autoloop-console-mobile-url" content="${CONSOLE_MOBILE_URL}">`;
+  const meta = `<meta name="autoloop-console-mobile-url" content="${LOCAL_SHELL_URL}">`;
   const html = /<meta\s+name="autoloop-console-mobile-url"/.test(original)
     ? original.replace(/<meta\s+name="autoloop-console-mobile-url"[^>]*>/, meta)
     : original.replace(/<\/head>/, `  ${meta}\n  </head>`);
-  // cap sync 把 www/ 拷进生成的 assets（Capacitor 版本不同目录名可能是 public 或 www）。
-  const candidates = [
-    path.join(here, 'android', 'app', 'src', 'main', 'assets', 'public', 'offline.html'),
-    path.join(here, 'android', 'app', 'src', 'main', 'assets', 'www', 'offline.html'),
-  ];
-  const targets = candidates.filter(file => existsSync(path.dirname(file)));
+  const targets = generatedAssetDirs().map(dir => path.join(dir, 'offline.html'));
   if (!targets.length) fail(11, '未找到生成的 Android assets 目录，无法注入离线兜底页');
   for (const file of targets) writeFileSync(file, html);
+}
+
+// 本地壳的页面模块需要 mobile/src 视图模型：拷到 assets/<public|www>/src，与浏览器里 /mobile/src 同一相对路径。
+function copyMobileSources() {
+  if (!existsSync(MOBILE_SRC)) fail(11, '缺少 mobile/src 视图模型目录，本地壳无法加载页面模块');
+  const dirs = generatedAssetDirs();
+  if (!dirs.length) fail(11, '未找到生成的 Android assets 目录，无法拷入页面视图模型');
+  for (const dir of dirs) cpSync(MOBILE_SRC, path.join(dir, 'src'), { recursive: true });
 }
 
 function mergeNativeSources() {
@@ -148,6 +162,7 @@ function mergeNativeSources() {
   mergeManifest(manifestPath, readFileSync(MANIFEST_ADDITIONS, 'utf8'));
   mergeGradle(gradlePath, readFileSync(GRADLE_DEPS, 'utf8'));
   injectOfflineUrl();
+  copyMobileSources();
 }
 
 function patchAndroidPlatform() {
@@ -181,17 +196,17 @@ function patchAndroidPlatform() {
       : `${vars.trimEnd()}\nminSdkVersion = ${MIN_SDK}\n`);
   }
 
-  // 3) 让 WebView 直接加载同源远程入口；只改生成产物的配置，不写回被跟踪的源文件。
+  // 3) WebView 加载本地内置壳（不设 server.url、不放行任何远程导航），API 请求走原生 HTTP；
+  //    只改生成产物的配置，不写回被跟踪的源文件。
   if (!existsSync(assetCfgPath)) {
     fail(8, '未找到生成的 assets/capacitor.config.json：请先成功执行 cap sync android。');
   }
   const assetCfg = JSON.parse(readFileSync(assetCfgPath, 'utf8'));
-  assetCfg.server = {
-    ...(assetCfg.server || {}),
-    androidScheme: 'https',
-    errorPath: 'offline.html',
-    url: CONSOLE_MOBILE_URL,
-    allowNavigation: [CONSOLE_HOST],
+  const { url: _legacyUrl, allowNavigation: _legacyNavigation, ...server } = assetCfg.server || {};
+  assetCfg.server = { ...server, androidScheme: 'https', errorPath: 'offline.html' };
+  assetCfg.plugins = {
+    ...(assetCfg.plugins || {}),
+    CapacitorHttp: { ...(assetCfg.plugins?.CapacitorHttp || {}), enabled: true },
   };
   writeFileSync(assetCfgPath, `${JSON.stringify(assetCfg, null, 2)}\n`);
 }
