@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "designDigest": "67343d478f1f8de79260d1e09bd8e962cf15fa83dfef424753eda66c6405eca3",
+  "confirmedAt": "2026-11-24",
+  "evidence": "调度会话 d824e22e 内主人 2026-11-24 12:36 确认（『就这样吧，我确认吧』）；依据 docs/2026-11-24-fix2-design-review.md + docs/2026-11-24-nomoto-app-fix2.md（PRD v4）"
+}
