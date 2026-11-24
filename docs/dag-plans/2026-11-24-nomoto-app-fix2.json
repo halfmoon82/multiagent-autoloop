@@ -255,7 +255,7 @@
       "depends_on": [],
       "integration_after": [],
       "parallel_group": "wave-0",
-      "status": "planned",
+      "status": "merged",
       "complexity": "light",
       "contract": {
         "input": "hooks.artifacts / hooks.artifactsForSession 全仓无任何页面赋值（仅 www/pages/artifacts.mjs 消费），全局产物页初始化恒为空列表；网页版产物来自 GET /api/scheduling-sessions/:id/artifacts（server.mjs:210 → listSessionArtifacts），移动端无对应只读路由。",
@@ -273,7 +273,8 @@
             "artifacts-page"
           ]
         }
-      }
+      },
+      "delivered": "PR #299（产物路由+数据源接线+A+预览）；PR #300（客户端请求标记修复，真机可达）"
     },
     {
       "id": "integration-verify",
