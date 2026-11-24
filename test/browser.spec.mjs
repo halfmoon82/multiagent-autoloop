@@ -1073,6 +1073,37 @@ try {
   const mobileText = await page.locator('body').innerText();
   assert.ok(!mobileText.includes(qr.token), '一次性二维码令牌不得留在页面');
   assert.ok(!/deviceToken|tokenHash|server-secret|not-returned/.test(mobileText), '页面不得出现密钥或设备凭证');
+  // 安全存储不可用（Keystore 失效等）：原生桥广播错误事件，绑定页必须给出可读的重新绑定指引，
+  // 而不是停在一个毫无提示的绑定页（2026-11-24 真机：覆盖安装后 Keystore 失效，用户无从知晓原因）。
+  // 重新走一次真实绑定拿到已授权凭证，再验证「重新绑定 / 退出」的二次确认与错误事件指引。
+  const qr2 = await (await fetch(`${url}/api/devices/bindings`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-console-request': '1' }, body: '{}',
+  })).json();
+  await page.reload();
+  await page.locator('#lock-screen').waitFor({ state: 'visible' });
+  await page.locator('#bind-payload').fill(qr2.qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  await page.evaluate(() => { window.__autoloopBiometricOutcome = 'success'; });
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  // 「重新绑定 / 退出」在管理后台·移动壳分区：第一次点击只是确认提示，3 秒内不重复点击自动复位。
+  await page.locator('[data-tab="admin"]').click();
+  await page.locator('[data-admin-pane="admin-pane-mobile"]').click();
+  await page.locator('#rebind').click();
+  await page.waitForFunction(() => document.getElementById('rebind').textContent.includes('确认'));
+  assert.equal(await page.locator('#bind-card').isVisible(), false, '第一次点击只是确认提示，不得直接清凭证');
+  await page.waitForFunction(() => !document.getElementById('rebind').textContent.includes('确认'), null, { timeout: 5000 });
+  await page.locator('#rebind').click();
+  await page.locator('#rebind').click();
+  await page.waitForFunction(() => !document.getElementById('bind-card')?.hidden, null, { timeout: 3000 });
+  assert.equal(await page.evaluate(() => sessionStorage.getItem('__fake_secure_token')), null, '二次确认后凭证才清除');
+  // 原生安全存储错误事件必须变成绑定页上的可读指引。
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('autoloop:secure-storage-error', { detail: { code: 'AUTOLOOP_STORAGE_UNAVAILABLE', message: '安全存储不可用，请重启 App 后重新绑定' } }));
+  });
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('安全存储不可用'));
+
   await page.screenshot({ path: path.join(output, 'console-mobile-shell.png'), fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '移动端壳无横向溢出');
   assert.deepEqual(errors, [], '移动端壳不得产生脚本错误');
