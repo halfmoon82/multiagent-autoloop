@@ -5,11 +5,20 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { chromium } from '@playwright/test';
 import {
   NOTIFICATION_KINDS, buildSessionReplyNotification, shouldPushSessionReply,
   createNotifyBridge, openSessionFromNotification,
+  setActiveSession, takePendingSession, takeLaunchRoute, OPEN_SESSION_EVENT,
 } from '../mobile/src/features/notifications/index.mjs';
+import * as notifyFeature from '../mobile/src/features/notifications/index.mjs';
+import { mount as mountNotifyPage } from '../mobile/app/www/pages/notify.mjs';
 import { CardNotifier } from '../src/notifier.mjs';
+import { createConsoleServer } from '../src/server.mjs';
+import { createDeviceStore } from '../src/device-auth.mjs';
+import { fakeHub, json, listen, close } from './helpers.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = rel => readFileSync(path.join(root, rel), 'utf8');
@@ -223,4 +232,158 @@ test('事件源默认惰性读控制台会话管理器；未装配时不通知�
   config.schedulingSessions = { list: async () => [session('late', 'design', 1)] };
   await notifier.poll();
   assert.equal(notes.filter(n => n.kind === 'session-reply').length, 1);
+});
+
+// ---- 审阅 P2 返工（g1 两轮）：会话页接线——正在看的会话不推送、点击通知打开具体会话 ----
+test('setActiveSession：同步 H5 全局与原生桥；空值清除；原生抛错不影响', () => {
+  const calls = [];
+  const win = { AutoloopNotify: { setActiveSession: id => calls.push(id) } };
+  assert.equal(setActiveSession(win, 's1'), true);
+  assert.equal(win.AutoloopActiveSession, 's1');
+  setActiveSession(win, null);
+  assert.equal(win.AutoloopActiveSession, null);
+  assert.deepEqual(calls, ['s1', '']);
+  const broken = { AutoloopNotify: { setActiveSession() { throw new Error('bridge gone'); } } };
+  assert.equal(setActiveSession(broken, 's2'), true);
+  assert.equal(broken.AutoloopActiveSession, 's2');
+  assert.equal(setActiveSession({}, 's3'), true, '无原生桥（浏览器）也能记录');
+  assert.equal(setActiveSession(null, 's1'), false);
+});
+
+test('正在看的会话经 setActiveSession 记下后，前台不再推送它的新回复', () => {
+  const log = [];
+  const win = {};
+  const bridge = createNotifyBridge({ bridge: { start() {}, stop() {}, setBadge() {}, notify: j => log.push(JSON.parse(j)) } });
+  setActiveSession(win, 's1');
+  const view = { appVisible: true, activeSessionId: win.AutoloopActiveSession };
+  assert.equal(bridge.publishSessionReply(session('s1', 'normal', 1), view), false);
+  assert.equal(bridge.publishSessionReply(session('s2', 'normal', 1), view), true);
+  assert.deepEqual(log.map(d => d.sessionId), ['s2']);
+});
+
+test('takePendingSession：只消费一次；缺失返回 null', () => {
+  const win = { AutoloopPendingSession: ' s7 ' };
+  assert.equal(takePendingSession(win), 's7');
+  assert.equal(takePendingSession(win), null);
+  assert.equal(takePendingSession(null), null);
+  assert.equal(OPEN_SESSION_EVENT, 'autoloop:open-session');
+});
+
+test('takeLaunchRoute：读原生暂存的冷启动点击路由；空/坏 JSON/无桥都返回 null', () => {
+  assert.deepEqual(takeLaunchRoute({ AutoloopNotify: { takeLaunchRoute: () => '{"page":"session","sessionId":"s1"}' } }), { page: 'session', sessionId: 's1' });
+  assert.equal(takeLaunchRoute({ AutoloopNotify: { takeLaunchRoute: () => '' } }), null);
+  assert.equal(takeLaunchRoute({ AutoloopNotify: { takeLaunchRoute: () => '{bad' } }), null);
+  assert.equal(takeLaunchRoute({ AutoloopNotify: { takeLaunchRoute() { throw new Error('x'); } } }), null);
+  assert.equal(takeLaunchRoute({}), null);
+});
+
+function miniDoc() {
+  const mk = () => ({ children: [], attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, addEventListener() {}, replaceChildren(...c) { this.children = c; } });
+  const root = mk();
+  return { getElementById: id => (id === 'notify-root' ? root : null), createElement: () => mk() };
+}
+
+test('通知页挂载时消费冷启动路由：点通知冷启动 App 也能定位到该会话', () => {
+  const calls = [];
+  const listeners = {};
+  const win = {
+    AutoloopNotify: { takeLaunchRoute: () => '{"page":"session","sessionId":"cold-1"}', onReply() {} },
+    AutoloopNav: { selectTab: name => calls.push(['tab', name]) },
+    addEventListener: (t, fn) => { listeners[t] = fn; }, removeEventListener() {},
+    dispatchEvent: e => calls.push(['event', e.type, e.detail]),
+    CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
+  };
+  const ctx = { state: {}, hooks: { notify: {} }, client: {} };
+  const dispose = mountNotifyPage(ctx, { doc: miniDoc(), win, feature: notifyFeature, setTimer: () => 1, clearTimer() {} });
+  assert.deepEqual(calls[0], ['tab', 'sessions']);
+  assert.deepEqual(calls[1], ['event', 'autoloop:open-session', { sessionId: 'cold-1' }]);
+  assert.equal(win.AutoloopPendingSession, 'cold-1');
+  // 热启动：原生事件到达后也要清掉暂存路由，避免之后页面重载再次误跳。
+  let drained = 0;
+  win.AutoloopNotify.takeLaunchRoute = () => { drained += 1; return ''; };
+  listeners['autoloop:notify-open']({ detail: { page: 'session', sessionId: 'warm-1' } });
+  assert.equal(win.AutoloopPendingSession, 'warm-1');
+  assert.equal(drained, 1);
+  dispose();
+});
+
+test('会话页接线：进出详情同步正在看的会话，消费待开会话并监听 open-session', () => {
+  const page = read('mobile/app/www/pages/sessions.mjs');
+  assert.match(page, /setActiveSession/);
+  assert.match(page, /takePendingSession/);
+  assert.match(page, /OPEN_SESSION_EVENT|autoloop:open-session/);
+});
+
+test('原生：JS 桥暴露 setActiveSession/takeLaunchRoute；冷启动路由暂存；会话回复走会话渠道', () => {
+  const bridge = read(`${NATIVE}/AutoloopNotifyBridge.java`);
+  assert.match(bridge, /@JavascriptInterface\s+public void setActiveSession\(/);
+  assert.match(bridge, /@JavascriptInterface\s+public String takeLaunchRoute\(/);
+  assert.match(bridge, /CHANNEL_SESSION/, 'JS 发来的会话回复不能落到节点完成渠道');
+  const plugin = read(`${NATIVE}/AutoLoopNotifications.java`);
+  assert.match(plugin, /pendingLaunchRoute/);
+  assert.match(plugin, /removeExtra\(NotifyChannels\.EXTRA_ROUTE_PAGE\)/, '读过的路由要从 Intent 移除，避免重复跳转');
+});
+
+// 真实浏览器：点击通知 → 打开该会话详情；在详情页时登记正在看的会话，返回列表后清除。
+const browserSkip = (() => {
+  try { return existsSync(chromium.executablePath()) ? false : '未安装 Playwright Chromium，跳过浏览器回归'; }
+  catch { return '无法探测 Playwright Chromium，跳过浏览器回归'; }
+})();
+
+test('浏览器：点通知打开对应会话详情，正在看的会话同步给原生，离开后清除', { skip: browserSkip }, async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'notify-events-'));
+  const hub = await fakeHub((req, res) => json(res, req.url === '/v1/state' ? { runs: [], cards: [], lines: [], spending: {} } : { ok: true }));
+  const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
+  const mk = (id, prompt, at) => ({ id, kind: 'normal', project: root, status: 'idle', prompt, messages: [{ role: 'user', text: '开始', at }, { role: 'agent', text: `${prompt} 的回复`, at }], createdAt: at, updatedAt: at });
+  const sessions = {
+    records: [mk('n-old', '较早的会话甲', '2026-11-20T00:00:00Z'), mk('n-new', '最新的会话乙', '2026-11-24T00:00:00Z')],
+    async list() { return this.records; }, async listArchived() { return []; },
+  };
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'server-secret', host: '127.0.0.1', root, rulesFile: path.join(root, 'rules.json'), deviceAuth, projectRoots: [root] }, sessions);
+  const url = await listen(server);
+  let browser;
+  t.after(async () => { if (browser) await browser.close(); await close(server); await close(hub.server); rmSync(root, { recursive: true, force: true }); });
+  const qr = deviceAuth.createBinding();
+  browser = await chromium.launch({ headless: true });
+  const page = await (await browser.newContext()).newPage();
+  const errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  await page.addInitScript(() => {
+    let stored = null;
+    window.AutoloopSecureStorage = { async get() { return stored; }, async set(v) { stored = v; }, async remove() { stored = null; } };
+    window.AutoloopBiometric = { async verify() { return true; } };
+    window.__active = [];
+    window.AutoloopNotify = {
+      start() {}, stop() {}, notify() {}, cancel() {}, onReply() {}, setBadge() {},
+      setActiveSession(id) { window.__active.push(id); }, takeLaunchRoute() { return ''; },
+    };
+  });
+  await page.goto(`${url}/mobile/`);
+  await page.locator('#bind-payload').fill(qr.qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  await page.waitForTimeout(300); // 通知页接线是异步 import
+
+  // 原生点击回拨：打开较早的那个会话（不是列表默认的当前会话）
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('autoloop:notify-open', { detail: { page: 'session', sessionId: 'n-old' } })));
+  await page.waitForFunction(() => document.querySelector('#page-sessions .sessions-view[data-view="detail"]')?.hidden === false, null, { timeout: 15000 });
+  assert.equal(await page.locator('.sessions-detail-title').innerText(), '较早的会话甲');
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll('#tab-bar .tab')].find(x => x.getAttribute('aria-selected') === 'true')?.dataset.tab), 'sessions');
+  await page.waitForFunction(() => window.AutoloopActiveSession === 'n-old');
+  assert.equal(await page.evaluate(() => window.__active.at(-1)), 'n-old', '原生前台服务据此不推送正在看的会话');
+  assert.equal(await page.evaluate(() => window.AutoloopPendingSession ?? null), null, '待开会话已消费');
+
+  // 返回列表：清除
+  await page.locator('.sessions-back').first().click();
+  await page.waitForFunction(() => window.AutoloopActiveSession === null);
+  assert.equal(await page.evaluate(() => window.__active.at(-1)), '');
+
+  // 在详情页时切到别的 Tab：也视为不在会话详情
+  await page.locator('.sessions-item[data-session-id="n-new"]').click();
+  await page.waitForFunction(() => window.AutoloopActiveSession === 'n-new');
+  await page.locator('[data-tab="core"]').click();
+  await page.waitForFunction(() => window.AutoloopActiveSession === null);
+  assert.deepEqual(errors, []);
 });

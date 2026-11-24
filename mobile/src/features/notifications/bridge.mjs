@@ -185,7 +185,9 @@ export function createNotifyBridge({
   };
 }
 
-// 点击通知回到对应会话页：切到会话 Tab，并经事件 + 待开会话标记交付 sessionId（页面就绪后自取）。
+export const OPEN_SESSION_EVENT = 'autoloop:open-session';
+
+// 点击通知回到对应会话页：切到会话 Tab，并经事件 + 待开会话标记交付 sessionId（会话页就绪后用 takePendingSession 自取）。
 export function openSessionFromNotification(win, click) {
   if (!win || typeof win !== 'object' || !click || click.page !== 'session') return false;
   const sessionId = str(click.sessionId).trim();
@@ -194,7 +196,37 @@ export function openSessionFromNotification(win, click) {
   win.AutoloopPendingSession = sessionId;
   try {
     const Ctor = win.CustomEvent || globalThis.CustomEvent;
-    if (Ctor && typeof win.dispatchEvent === 'function') win.dispatchEvent(new Ctor('autoloop:open-session', { detail: { sessionId } }));
+    if (Ctor && typeof win.dispatchEvent === 'function') win.dispatchEvent(new Ctor(OPEN_SESSION_EVENT, { detail: { sessionId } }));
   } catch { /* 同上 */ }
   return true;
+}
+
+// 会话页取走待开会话（只取一次）：事件先于会话页就绪到达时也不丢。
+export function takePendingSession(win) {
+  if (!win || typeof win !== 'object') return null;
+  const sessionId = str(win.AutoloopPendingSession).trim();
+  win.AutoloopPendingSession = null;
+  return sessionId || null;
+}
+
+// 会话页进入/离开详情时登记「正在看的会话」：H5 侧供 syncCards 判断，原生侧供前台服务判断，
+// 两边都只在 App 前台且停在该会话详情时抑制它的新回复通知。原生桥缺失或抛错只降级，不影响页面。
+export function setActiveSession(win, sessionId) {
+  if (!win || typeof win !== 'object') return false;
+  const id = str(sessionId).trim() || null;
+  win.AutoloopActiveSession = id;
+  try { if (typeof win.AutoloopNotify?.setActiveSession === 'function') win.AutoloopNotify.setActiveSession(id || ''); }
+  catch { /* 原生桥失败不影响页面 */ }
+  return true;
+}
+
+// 冷启动点击路由：原生在 WebView 就绪前收到点击 Intent，事件会丢，故暂存一份由 H5 挂载后来取（只取一次）。
+export function takeLaunchRoute(win) {
+  if (!win || typeof win !== 'object' || typeof win.AutoloopNotify?.takeLaunchRoute !== 'function') return null;
+  try {
+    const raw = str(win.AutoloopNotify.takeLaunchRoute()).trim();
+    if (!raw) return null;
+    const route = JSON.parse(raw);
+    return route && typeof route === 'object' && !Array.isArray(route) ? route : null;
+  } catch { return null; }
 }
