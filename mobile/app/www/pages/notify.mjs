@@ -125,9 +125,13 @@ function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs, now }) {
   render();
 
   controller.registerReply(win, REPLY_CALLBACK_NAME);
-  // 点击系统通知拉起 App：原生回拨 autoloop:notify-open，切到对应会话页。
-  const onNotifyOpen = event => { try { F.openSessionFromNotification?.(win, event?.detail); } catch { /* 定位失败不影响 App */ } };
+  // 点击系统通知拉起 App：热启动由原生回拨 autoloop:notify-open；冷启动时回拨早于页面就绪会丢，
+  // 挂载时再向原生取一次暂存路由。两条路径都清掉暂存，避免之后重载再次误跳。
+  const openRoute = route => { try { F.openSessionFromNotification?.(win, route); } catch { /* 定位失败不影响 App */ } };
+  const onNotifyOpen = event => { F.takeLaunchRoute?.(win); openRoute(event?.detail); };
   win?.addEventListener?.('autoloop:notify-open', onNotifyOpen);
+  const launch = F.takeLaunchRoute?.(win);
+  if (launch) openRoute(launch);
   const handle = setTimer(() => syncService(), checkMs);
   return () => {
     clearTimer(handle);

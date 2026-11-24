@@ -12,6 +12,12 @@ const loadAutogrow = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/composer-autogrow/index.mjs');
 
+// 通知接线：点击通知打开具体会话（takePendingSession / open-session），进出详情登记正在看的会话（setActiveSession）。
+const loadNotifyModel = typeof window === 'undefined'
+  ? () => Promise.resolve(null)
+  : () => import('../src/features/notifications/index.mjs');
+const OPEN_SESSION_EVENT_NAME = 'autoloop:open-session';
+
 export { loadViewModel };
 
 const CONTEXT_KEY = 'nomoto-sessions-context';
@@ -32,6 +38,12 @@ export function mount(ctx) {
   if (!host) return;
 
   const modelPromise = Promise.all([loadViewModel(), loadQuestionModel()]);
+  const notifyPromise = loadNotifyModel().catch(() => null);
+  // 正在看的会话：只有会话页可见且停在详情时才算，其余一律清空（切 Tab、返回列表、进设置页）。
+  const syncActiveSession = () => {
+    const id = !host.hidden && state.view === 'detail' ? state.detailSessionId : null;
+    void notifyPromise.then(nmodel => { nmodel?.setActiveSession?.(window, id); });
+  };
   // 自动长高模块与视图模型并行加载；到位前输入框保持 CSS 最小高度，到位后统一接管。
   let autogrow = null;
   const growers = [];
@@ -48,6 +60,7 @@ export function mount(ctx) {
   let reader = null;
   let write = null;
   let reload = () => {};
+  let pendingOpener = null;
 
   const state = {
     kind: 'all', query: '', archivedExpanded: false, error: '',
@@ -187,6 +200,7 @@ export function mount(ctx) {
   const showView = name => {
     state.view = name;
     if (name !== 'detail' && detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+    if (name !== 'detail') syncActiveSession();
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
     host.classList.toggle('sessions-detail-open', name === 'detail'); // 详情页自己按视口定高，去掉页面底部留白
     if (name === 'detail') { window.scrollTo(0, 0); fitDetail(); }
@@ -296,6 +310,7 @@ export function mount(ctx) {
     if (state.follow) scrollToBottom();
     if (typeof ctx.hooks?.pushView === 'function') ctx.hooks.pushView({ type: 'sessions', view: 'detail', id: session.id });
     state.detailSessionId = session.id;
+    syncActiveSession();
     startDetailPolling();
     saveContext();
   }
@@ -742,6 +757,7 @@ export function mount(ctx) {
       state.rawArchives = result.rawArchives;
       renderList(result.list);
       if (!quiet) showBanner('');
+      if (!quiet && typeof pendingOpener === 'function') void pendingOpener();
       ctx.hooks?.notify?.refresh?.();
     } catch (error) {
       if (!quiet) showBanner(`读取失败：${error?.message || error}（点「重试」再试）`);
@@ -772,6 +788,22 @@ export function mount(ctx) {
   window.addEventListener('autoloop:view-popped', event => {
     if (event.detail?.type === 'sessions') showView('list');
   });
+  // 点击通知打开对应会话：事件可能早于首轮加载到达，所以加载完成后再取一次待开会话。
+  async function openPendingSession() {
+    const nmodel = await notifyPromise;
+    const id = nmodel?.takePendingSession?.(window);
+    if (!id) return;
+    const find = () => (state.snapshot?.sessions || []).find(item => item.id === id);
+    if (!find()) await load({ quiet: true });
+    const target = find();
+    if (target) await openSession(target);
+    else if (state.view !== 'list') showView('list'); // 会话已不在：停在列表
+  }
+  pendingOpener = openPendingSession;
+  window.addEventListener(OPEN_SESSION_EVENT_NAME, () => { void openPendingSession(); });
+  if (typeof MutationObserver !== 'undefined') {
+    new MutationObserver(syncActiveSession).observe(host, { attributes: true, attributeFilter: ['hidden'] });
+  }
   window.addEventListener('autoloop:sessions-stream', event => { appendStream(event.detail?.text); });
   window.addEventListener('autoloop:sessions-voice', event => {
     if (!qmodel || !state.group || !event.detail?.text || !bindingActiveId()) return;
