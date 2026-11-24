@@ -24,7 +24,14 @@
           "mobile/app/build-apk.mjs（去烧死地址）",
           "test/mobile-console-hub.test.mjs",
           "test/mobile-reconnect.test.mjs"
-        ]
+        ],
+        "design": {
+          "surfaceIds": [
+            "console-picker",
+            "settings-console",
+            "reconnect"
+          ]
+        }
       }
     },
     {
@@ -47,7 +54,13 @@
           "mobile/app/www/pages/sessions.mjs",
           "mobile/app/www/pages/sessions.css",
           "mobile/src/features/design-authorize/（新增）"
-        ]
+        ],
+        "design": {
+          "surfaceIds": [
+            "sessions-list",
+            "design-authorize"
+          ]
+        }
       }
     },
     {
@@ -71,7 +84,12 @@
           "mobile/app/www/pages/sessions.mjs（输入区与轮询部分）",
           "mobile/app/www/pages/sessions.css",
           "test/mobile-composer-ux.test.mjs"
-        ]
+        ],
+        "design": {
+          "surfaceIds": [
+            "session-composer"
+          ]
+        }
       }
     },
     {
@@ -110,7 +128,12 @@
         "files": [
           "mobile/app/www/collapsible-cards.mjs",
           "test/mobile-collapsible-cards.test.mjs"
-        ]
+        ],
+        "design": {
+          "surfaceIds": [
+            "collapsible-cards"
+          ]
+        }
       }
     },
     {
@@ -173,7 +196,12 @@
           "public/（上限展示）",
           "docs/setup.md",
           "test/session-limit-config.test.mjs"
-        ]
+        ],
+        "design": {
+          "surfaceIds": [
+            "session-limit-display"
+          ]
+        }
       }
     },
     {
@@ -194,7 +222,12 @@
           "mobile/app/www/app.mjs（仅懒加载清单）",
           "mobile/app/build-apk.mjs（hash 指纹）",
           "test/mobile-startup-perf.test.mjs"
-        ]
+        ],
+        "design": {
+          "surfaceIds": [
+            "app-startup"
+          ]
+        }
       }
     },
     {
@@ -234,7 +267,12 @@
           "mobile/src/features/artifacts/",
           "mobile/app/www/pages/artifacts.mjs",
           "test/mobile-artifacts-sync.test.mjs"
-        ]
+        ],
+        "design": {
+          "surfaceIds": [
+            "artifacts-page"
+          ]
+        }
       }
     },
     {
@@ -288,5 +326,9 @@
         ]
       }
     }
-  ]
+  ],
+  "design": {
+    "manifestPath": "docs/design/2026-11-24-nomoto-fix2-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-24-nomoto-fix2-baseline/design-approval.json"
+  }
 }

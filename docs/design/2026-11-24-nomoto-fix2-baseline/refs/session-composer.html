@@ -1,0 +1,15 @@
+<!doctype html><html><head><title>session-composer</title><meta charset="utf-8"><style>body{margin:0;font:15px/1.5 -apple-system,"PingFang SC",sans-serif;background:#eef0f3;color:#1d2129}.wrap{width:390px;margin:0 auto;background:#fff;min-height:640px;padding-bottom:14px}.hd{padding:16px;font-size:19px;font-weight:700}.lbl{margin:16px 14px 6px;font-size:13px;color:#2563eb;font-weight:600}.card{margin:8px 14px;padding:12px 14px;background:#fff;border:1px solid #e5e7eb;border-radius:12px}.card .t{font-weight:600}.card .s{font-size:12.5px;color:#6b7280;margin-top:2px}.row{position:relative;margin:8px 14px;border-radius:12px;overflow:hidden}.row .under{position:absolute;inset:0;display:flex;justify-content:flex-end;align-items:center;background:#dc2626;color:#fff;padding-right:16px;font-weight:600}.row .over{position:relative;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px 14px;transform:translateX(-84px)}.btn{display:inline-block;margin:6px 14px 0;padding:10px 14px;background:#2563eb;color:#fff;border-radius:10px;font-size:13.5px;font-weight:600}.btn2{background:#fff;color:#2563eb;border:1.5px solid #2563eb}.chip{display:inline-block;padding:3px 10px;border-radius:99px;background:#ecfdf5;color:#047857;font-size:12px}.chip2{background:#eff6ff;color:#2563eb}.bubble{margin:8px 14px;padding:10px 13px;background:#f3f4f6;border-radius:12px;max-width:78%}.bubble.me{background:#2563eb;color:#fff;margin-left:auto}.toolbar{display:flex;gap:8px;align-items:flex-end;margin:8px 14px;padding:9px;border:1px solid #e5e7eb;border-radius:14px}.toolbar .ic{width:34px;height:34px;border-radius:10px;background:#f3f4f6;text-align:center;line-height:34px;flex:none}.toolbar .inp{flex:1;min-height:34px}.toolbar .snd{background:#2563eb;color:#fff;border-radius:10px;padding:7px 13px;flex:none}.dim{color:#9ca3af}.err{margin:8px 14px;padding:10px 13px;background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:10px;font-size:13px}.arrow{float:right;color:#6b7280}</style></head><body>
+<div class="wrap"><div class="hd">会话详情</div>
+<div class="lbl">状态 idle：工具行 + 自适应行高</div>
+<div class="toolbar"><div class="ic">＋</div><div class="ic">🎙</div><div class="inp dim">输入消息…</div><div class="snd">发送</div></div>
+<div class="lbl">状态 optimistic-sent：发送中本地可见</div>
+<div class="bubble me">按计划继续 <span class="dim">（发送中…）</span></div>
+<div class="lbl">状态 responding：即时响应态，不等轮询</div>
+<div class="bubble me">按计划继续</div><div class="chip chip2" style="margin:0 14px">Agent 正在响应…</div>
+<div class="lbl">状态 streaming：流式合帧渲染</div>
+<div class="bubble">好的，已完成前三项：多控制台、左滑关闭、授权按钮。<span class="dim">▍正在输出…</span></div>
+<div class="lbl">状态 input-expanded：多行行高正确扩展</div>
+<div class="toolbar"><div class="ic">＋</div><div class="inp">第一行内容<br>第二行内容<br>第三行内容</div><div class="snd">发送</div></div>
+<div class="lbl">交互 page-hidden-pause：页面隐藏即停轮询</div>
+<div class="card dim"><div class="t">后台行为</div><div class="s">切后台停轮询，新消息靠通知送达</div></div>
+</div></body></html>

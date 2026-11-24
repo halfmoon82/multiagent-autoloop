@@ -1,0 +1,47 @@
+{
+  "plan.design": {
+    "manifestPath": "docs/design/2026-11-24-nomoto-fix2-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-24-nomoto-fix2-baseline/design-approval.json"
+  },
+  "nodes": {
+    "console-hub": {
+      "surfaceIds": [
+        "console-picker",
+        "settings-console",
+        "reconnect"
+      ]
+    },
+    "session-actions": {
+      "surfaceIds": [
+        "sessions-list",
+        "design-authorize"
+      ]
+    },
+    "composer-ux": {
+      "surfaceIds": [
+        "session-composer"
+      ]
+    },
+    "collapsible-expand": {
+      "surfaceIds": [
+        "collapsible-cards"
+      ]
+    },
+    "session-limit-config": {
+      "surfaceIds": [
+        "session-limit-display"
+      ]
+    },
+    "app-startup-perf": {
+      "surfaceIds": [
+        "app-startup"
+      ]
+    },
+    "artifacts-sync": {
+      "surfaceIds": [
+        "artifacts-page"
+      ]
+    }
+  },
+  "note": "每个界面的 viewports/states/interactions 由基线 surface 全量继承；覆盖校验：10 界面各恰属一个节点。"
+}

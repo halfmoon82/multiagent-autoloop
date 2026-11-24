@@ -1,0 +1,282 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix2-2026-11-24",
+  "artifacts": [
+    {
+      "path": "docs/2026-11-24-nomoto-app-fix2.md",
+      "sha256": "a71814652d03a46c3f2f3a0665b35f67884b04c8c3cbc9a463919c346d92096c"
+    },
+    {
+      "path": "docs/2026-11-24-fix2-design-review.md",
+      "sha256": "eb80eb8cbf74fba456ca641874997266afe944c1bba6f1bf06d5873944f8e15f"
+    },
+    {
+      "path": "docs/design/2026-11-17-mobile-app/DESIGN_REVIEW.md",
+      "sha256": "25e57ebe537270ac211827395d0ddf8406a1ff815745e7bf24f0baa84ba16ce7"
+    },
+    {
+      "path": "docs/design/2026-11-17-mobile-app/screenshots/phone-sessions.png",
+      "sha256": "7b89b5bcc1ae15496d3d9883cbce95886b2e743a4bd194729e7695f97d0080b5"
+    },
+    {
+      "path": "docs/design/2026-11-17-mobile-app/screenshots/phone-cards.png",
+      "sha256": "cb2f32d97a6be7596c4dd2a9ff3dadbef70ad89352f0f114ef6b850b79882c2e"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/refs/app-startup.html",
+      "sha256": "39ef0563693786d77fdf8e4cd016577f04dc6cf505c433885297ea163c627270"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/refs/console-picker.html",
+      "sha256": "b5b2d968ceae820037ad53f285d357c1f2713626404660192259e70a430c6a61"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/refs/design-authorize.html",
+      "sha256": "97d5f6defd3a665b3d094b2c2dbe2082e93d40fbf63050956a3ad755e9dc61ec"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/refs/reconnect.html",
+      "sha256": "e1025355801adc6818e4d0428a53849c86d25a9c6dd15cee20772a77883e23eb"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/refs/session-limit-display.html",
+      "sha256": "a7413cf9e218df0a84791c616a3abd6144b675ce30628313fe399cac12ec3378"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/refs/settings-console.html",
+      "sha256": "a5e3b32db51a05df208c4aabc4bd139daf39f84cc33a21aa4b579d689a86e0df"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/refs/sessions-list.html",
+      "sha256": "0f23ed4cbc164ad2f10259f83bab9cc63e2a74f601020a5844094d2c526d2ffd"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/refs/session-composer.html",
+      "sha256": "8d2e0995861c5a182579e05227ba1d0e206067d31b9c0d12edf3f4da5430a7c8"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/refs/collapsible-cards.html",
+      "sha256": "431da779c282023ef4f19bc7ee24bf3b5d83b6a051305f390c41e89f11419fa5"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/refs/artifacts-page.html",
+      "sha256": "2a2a2b2f2b71b061d47630c1f0e06edd2205222e860fd6920df6f3ee07b0e72c"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/verifiers/fix2-design.verify.mjs",
+      "sha256": "e0e2de3bc88c2253d5494366d74d9a11d71507a02fc2889e3e62dd0fda6c1188"
+    },
+    {
+      "path": "docs/design/2026-11-24-nomoto-fix2-baseline/verifiers/fix2-design-fallback.mjs",
+      "sha256": "93e760151752d6ae4ee51668de038783d5a251b6b6e73e80b47253143be4436a"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "console-picker",
+      "route": "#boot",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "unbound",
+        "bound",
+        "add-error"
+      ],
+      "interactions": [
+        "select-console",
+        "add-console",
+        "add-error-show"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-24-nomoto-fix2-baseline/refs/console-picker.html"
+      ]
+    },
+    {
+      "id": "settings-console",
+      "route": "#settings",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "normal",
+        "empty"
+      ],
+      "interactions": [
+        "switch-console",
+        "remove-console",
+        "add-console"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-24-nomoto-fix2-baseline/refs/settings-console.html"
+      ]
+    },
+    {
+      "id": "reconnect",
+      "route": "#sessions",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "online",
+        "reconnecting",
+        "offline-persistent"
+      ],
+      "interactions": [
+        "auto-retry",
+        "foreground-probe",
+        "manual-retry",
+        "resume-page"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-24-nomoto-fix2-baseline/refs/reconnect.html"
+      ]
+    },
+    {
+      "id": "sessions-list",
+      "route": "#sessions",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "normal",
+        "empty",
+        "swipe-revealed",
+        "design-pending",
+        "close-confirm"
+      ],
+      "interactions": [
+        "swipe-close",
+        "close-confirm",
+        "approve-plan",
+        "open-scope"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-24-nomoto-fix2-baseline/refs/sessions-list.html"
+      ]
+    },
+    {
+      "id": "design-authorize",
+      "route": "#design-authorize",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "loading",
+        "ready",
+        "checked",
+        "submit-error"
+      ],
+      "interactions": [
+        "check-item",
+        "submit-confirm"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-24-nomoto-fix2-baseline/refs/design-authorize.html"
+      ]
+    },
+    {
+      "id": "session-composer",
+      "route": "#sessions",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "idle",
+        "optimistic-sent",
+        "responding",
+        "streaming",
+        "input-expanded"
+      ],
+      "interactions": [
+        "send-message",
+        "input-autogrow",
+        "stream-render",
+        "page-hidden-pause"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-24-nomoto-fix2-baseline/refs/session-composer.html"
+      ]
+    },
+    {
+      "id": "collapsible-cards",
+      "route": "#overview",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "expanded",
+        "collapsed"
+      ],
+      "interactions": [
+        "collapse-card",
+        "expand-card"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-24-nomoto-fix2-baseline/refs/collapsible-cards.html"
+      ]
+    },
+    {
+      "id": "session-limit-display",
+      "route": "#admin",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "normal",
+        "missing",
+        "fallback-warn"
+      ],
+      "interactions": [],
+      "referencePaths": [
+        "docs/design/2026-11-24-nomoto-fix2-baseline/refs/session-limit-display.html"
+      ]
+    },
+    {
+      "id": "app-startup",
+      "route": "#boot",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "loading",
+        "ready"
+      ],
+      "interactions": [],
+      "referencePaths": [
+        "docs/design/2026-11-24-nomoto-fix2-baseline/refs/app-startup.html"
+      ]
+    },
+    {
+      "id": "artifacts-page",
+      "route": "#artifacts",
+      "viewports": [
+        "390x844",
+        "844x390"
+      ],
+      "states": [
+        "populated",
+        "empty",
+        "group-error"
+      ],
+      "interactions": [
+        "open-artifact",
+        "retry-group"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-24-nomoto-fix2-baseline/refs/artifacts-page.html"
+      ]
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-24-nomoto-fix2-baseline/verifiers/fix2-design.verify.mjs",
+  "fallbackVerifierPath": "docs/design/2026-11-24-nomoto-fix2-baseline/verifiers/fix2-design-fallback.mjs"
+}
