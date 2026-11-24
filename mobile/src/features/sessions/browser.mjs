@@ -64,7 +64,11 @@ export function createSessionsReader({ origin = '', fetchImpl, getToken, isActiv
   const recency = item => stamp(item.updatedAt) || stamp(item.createdAt);
   // null 代表读取失败：视图模型会给出明确空态，绝不把失败伪装成「暂无数据」。
   const assemble = ({ active, archived, sessionsError, archivesError, summarizedArchives }, options) => {
-    const summaries = mobileSessionSummaries(active).sort((a, b) => recency(b) - recency(a));
+    // 放行状态来自后端公开会话的 planApproved；摘要投影不带它，这里按 id 并回（只并布尔值）。
+    const approved = new Set((active || []).filter(item => item?.planApproved === true).map(item => item.id));
+    const summaries = mobileSessionSummaries(active)
+      .map(item => ({ ...item, planApproved: approved.has(item.id) }))
+      .sort((a, b) => recency(b) - recency(a));
     const snapshot = {
       sessions: active === null ? null : summaries,
       archives: archived === null ? null : (summarizedArchives ?? mobileArchiveSummaries(archived)),
@@ -138,6 +142,17 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
       if (!cardId) throw new Error('事项不存在或已失效');
       const payload = choice !== undefined ? { choice: Number(choice) } : { text: String(text ?? '') };
       return call(`/api/mobile/cards/${cardId}/answer`, payload);
+    },
+    // 关闭会话：会话已结束时服务端返回 alreadyClosed，不重复操作。
+    closeSession(id) {
+      const value = encodeURIComponent(String(id ?? '').trim());
+      if (!value) throw new Error('会话不存在或已失效');
+      return call(`/api/mobile/sessions/${value}/close`, {});
+    },
+    approvePlan(id) {
+      const value = encodeURIComponent(String(id ?? '').trim());
+      if (!value) throw new Error('会话不存在或已失效');
+      return call(`/api/mobile/sessions/${value}/approve-plan`, {});
     },
     sendMessage(id, { text, interrupt = false, attachments = [] } = {}) {
       const value = encodeURIComponent(String(id ?? '').trim());
