@@ -1,7 +1,8 @@
 import http from 'node:http';
 import { createReadStream } from 'node:fs';
 import { classifySessionRequest } from './session-classify.mjs';
-import { mkdirSync, readFileSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HubError, hubRequest } from './hub.mjs';
@@ -103,6 +104,45 @@ const MOBILE_API_ALLOWLIST = new Map([
   ['sessions', '/api/scheduling-sessions'], ['session-archives', '/api/session-archives'],
   ['detours', '/api/detours'], ['serial-progress', '/api/serial-progress'], ['project-usage', '/api/project-usage'],
 ]);
+// 移动端静态资源内容 hash 长缓存：版本 = 全部移动端文件内容的 sha256 前 16 位。
+// 入口文档仍 no-store，并把本地 css/mjs 引用与模块 import 改写成带 ?v=<版本>；URL 版本与当前内容一致才发 immutable，
+// 内容变化 → 版本变化 → 全部 URL 变化，旧缓存自然失效。不带或带错版本一律保持 no-store。符号链接不进入版本计算。
+const MOBILE_CACHE_IMMUTABLE = 'public, max-age=31536000, immutable';
+let mobileVersionMemo = null;
+function walkMobileFiles(root, rel = '') {
+  const out = [];
+  for (const entry of readdirSync(path.join(root, rel), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    const next = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...walkMobileFiles(root, next));
+    else if (entry.isFile()) out.push(next);
+  }
+  return out;
+}
+export function mobileAssetVersion({ roots = [MOBILE, MOBILE_SRC], now = Date.now() } = {}) {
+  const key = roots.join('\0');
+  if (mobileVersionMemo && mobileVersionMemo.key === key && now - mobileVersionMemo.at < 1000) return mobileVersionMemo.value;
+  const hash = createHash('sha256');
+  try {
+    for (const root of roots) for (const rel of walkMobileFiles(root)) hash.update(`${path.basename(root)}/${rel}\0`).update(readFileSync(path.join(root, rel)));
+  } catch { return null; }
+  const value = hash.digest('hex').slice(0, 16);
+  mobileVersionMemo = { key, at: now, value };
+  return value;
+}
+export function versionMobileText(text, type, version) {
+  if (!version) return text;
+  if (type.startsWith('text/javascript')) return text.replace(/(\bfrom\s*|\bimport\s*\(\s*)(['"])(\.{1,2}\/[^'"?#]+\.mjs)\2/g, `$1$2$3?v=${version}$2`);
+  if (type.startsWith('text/html')) return text.replace(/\b(href|src)="(\.\/[^"?#]+\.(?:css|mjs))"/g, `$1="$2?v=${version}"`);
+  return text;
+}
+function sendMobileAsset(res, url, body, type) {
+  const version = mobileAssetVersion();
+  const requested = url.searchParams.get('v');
+  const immutable = Boolean(version) && requested === version && !type.startsWith('text/html');
+  const payload = /^(text\/(javascript|html))/.test(type) ? versionMobileText(body.toString('utf8'), type, version) : body;
+  res.writeHead(200, { ...securityHeaders(), ...(immutable ? { 'cache-control': MOBILE_CACHE_IMMUTABLE } : {}), 'content-type': type });
+  res.end(payload);
+}
 export function securityHeaders() {
   return { 'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'", 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'cache-control': 'no-store' };
 }
@@ -515,14 +555,13 @@ export function createConsoleServer(config, schedulingSessions) {
     }
     const mobileAsset = MOBILE_FILES.get(url.pathname);
     if (mobileAsset && req.method === 'GET') {
-      try { const body = readFileSync(path.join(MOBILE, mobileAsset[0])); res.writeHead(200, { ...securityHeaders(), 'content-type': mobileAsset[1] }); return res.end(body); }
+      try { return sendMobileAsset(res, url, readFileSync(path.join(MOBILE, mobileAsset[0])), mobileAsset[1]); }
       catch { return jsonResponse(res, 404, { error: '移动端资源尚未安装' }); }
     }
     if (req.method === 'GET') {
       const resolved = resolveMobileAsset(url.pathname);
       if (resolved) {
-        res.writeHead(200, { ...securityHeaders(), 'content-type': resolved.type });
-        return res.end(resolved.body);
+        return sendMobileAsset(res, url, resolved.body, resolved.type);
       }
     }
     return jsonResponse(res, 404, { error: '没有这个控制台地址' });
