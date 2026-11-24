@@ -387,3 +387,67 @@ test('浏览器：点通知打开对应会话详情，正在看的会话同步�
   await page.waitForFunction(() => window.AutoloopActiveSession === null);
   assert.deepEqual(errors, []);
 });
+
+// ---- 审阅返工（g1a3 P1）：生产启动路径要真的接上会话来源 ----
+test('生产装配：createConsoleNotifier 从 server 的会话管理器读会话，原始 config 没有会话也能通知', async () => {
+  const { createConsoleNotifier } = await import('../src/notifier.mjs');
+  const root = mkdtempSync(path.join(tmpdir(), 'notify-wire-'));
+  const records = [session('w1', 'normal', 1)];
+  const sessions = { async list() { return records; }, async listArchived() { return []; } };
+  const config = { hubUrl: 'http://127.0.0.1:9', ownerKey: 'k', host: '127.0.0.1', root, rulesFile: path.join(root, 'rules.json'), projectRoots: [root] };
+  const server = createConsoleServer(config, sessions);
+  try {
+    assert.equal(config.schedulingSessions, undefined, '前提：启动脚本手里的原始 config 不带会话管理器');
+    const notes = [];
+    const notifier = createConsoleNotifier({ config, server, routing: null, fetchState: async () => ({ cards: [] }), notify: d => notes.push(d) });
+    await notifier.poll(); // 种子
+    records.splice(0, 1, session('w1', 'normal', 2));
+    await notifier.poll();
+    assert.deepEqual(notes.map(n => [n.kind, n.sessionId]), [['session-reply', 'w1']]);
+  } finally { server.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('生产装配：scripts/start.mjs 用 createConsoleNotifier 并传入 server', () => {
+  const start = read('scripts/start.mjs');
+  assert.match(start, /createConsoleNotifier\(\{[^}]*server[^}]*\}\)/);
+  assert.ok(!/new CardNotifier\(\{\s*config\s*\}\)/.test(start), '不能再只传原始 config');
+});
+
+// ---- 审阅返工（g1a3 P2）：App 冷启动/页面重载不对历史会话刷屏 ----
+test('桥接：首次带会话的同步只种子历史回复，之后的新回复才推送', () => {
+  const api = fakeBridge();
+  const bridge = createNotifyBridge({ bridge: api });
+  const old = [1, 2, 3, 4, 5].map(i => session(`h${i}`, 'normal', 1));
+  assert.equal(bridge.syncCards([], [], old, { appVisible: false }), 0, '历史回复不刷屏');
+  assert.equal(bridge.syncCards([], [], old, { appVisible: false }), 0);
+  assert.equal(bridge.syncCards([], [], [...old.slice(1), session('h1', 'normal', 2)], { appVisible: false }), 1);
+  assert.equal(api.log.filter(([k]) => k === 'notify').length, 1);
+});
+
+test('桥接：会话来源不可用（null）时不种子，恢复后首轮仍只种子', () => {
+  const api = fakeBridge();
+  const bridge = createNotifyBridge({ bridge: api });
+  assert.equal(bridge.syncCards([], [], null, { appVisible: false }), 0);
+  assert.equal(bridge.syncCards([], [], [session('a', 'design', 1)], { appVisible: false }), 0, '来源恢复后的首轮是种子');
+  assert.equal(bridge.syncCards([], [], [session('a', 'design', 2)], { appVisible: false }), 1);
+});
+
+test('桥接：授权失效重绑后重新种子，不对历史会话补发', () => {
+  const api = fakeBridge();
+  const bridge = createNotifyBridge({ bridge: api });
+  bridge.syncCards([], [], [session('r', 'normal', 1)], { appVisible: false });
+  bridge.handleUnauthorized();
+  assert.equal(bridge.syncCards([], [], [session('r', 'normal', 1), session('q', 'normal', 1)], { appVisible: false }), 0);
+});
+
+test('通知页：会话接口失败时传 null（不种子），不是空数组', () => {
+  const page = read('mobile/app/www/pages/notify.mjs');
+  assert.match(page, /let sessions = null;/);
+});
+
+test('原生：JS 转发的通知走持久化去重，与常驻服务共用同一键，进程重启不重复', () => {
+  const bridge = read(`${NATIVE}/AutoloopNotifyBridge.java`);
+  assert.match(bridge, /claimPersistent\(plugin\.getContext\(\), key\)/);
+  assert.ok(!/"notified:"\s*\+/.test(bridge), '键不加前缀，和 ForegroundService 的 kind:id:revision 一致');
+  assert.ok(!/NotifyChannels\.claim\(key\)/.test(bridge));
+});
