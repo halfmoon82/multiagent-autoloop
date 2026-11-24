@@ -100,6 +100,8 @@ export class ShellState {
     this.token = null;
     this.needsBind = true;
     this.retryAttempt = 0;
+    // 持续连不上（退避档位走完仍失败）才置位，由壳切到带「立即重试」的重连页；任何一次成功即清除。
+    this.unreachable = false;
   }
   canShowMain() { return this.phase === 'unlocked'; }
   setToken(token) { this.token = token ?? null; this.needsBind = !this.token; }
@@ -112,7 +114,7 @@ export class ShellState {
 
   connectStart() { this.connection = 'connecting'; this.error = null; }
   connectSuccess(device = null) {
-    this.connection = 'online'; this.error = null; this.retryAttempt = 0;
+    this.connection = 'online'; this.error = null; this.retryAttempt = 0; this.unreachable = false;
     if (device) this.device = device;
   }
   connectFailure(message = '连接失败，请重试', status = null) {
@@ -122,7 +124,7 @@ export class ShellState {
   revokeDetected(message = '设备授权已失效，请重新绑定') {
     this.clearToken();
     this.phase = 'locked'; this.connection = 'offline';
-    this.error = message; this.lockError = message; this.retryAttempt = 0;
+    this.error = message; this.lockError = message; this.retryAttempt = 0; this.unreachable = false;
   }
   networkLost() { this.connection = 'offline'; this.error = '网络已断开，等待网络恢复后自动重连'; }
   networkRestored() { this.error = null; this.retryAttempt = 0; return 0; }
@@ -147,7 +149,9 @@ export function shouldAutoRetry(error, state) {
 }
 
 // 移动端客户端：所有请求都钉在固定路径上，设备凭证只放在 x-device-token 头里。
-export function createMobileClient({ base, state = new ShellState(), tokenStore = createTokenStore(), fetchImpl = null } = {}) {
+// onTransportError：任何请求连不上控制台（网络层失败）时回调，供断联重连控制器立即探测；
+// 只上报「连不上」这一事实，不带 URL、凭证或响应内容。
+export function createMobileClient({ base, state = new ShellState(), tokenStore = createTokenStore(), fetchImpl = null, onTransportError = null } = {}) {
   const origin = normalizeBaseUrl(base);
   const doFetch = fetchImpl || ((input, init) => globalThis.fetch(input, init));
   const request = async (url, { method = 'GET', body, token } = {}) => {
@@ -156,7 +160,10 @@ export function createMobileClient({ base, state = new ShellState(), tokenStore 
     if (token) headers['x-device-token'] = token;
     let response;
     try { response = await doFetch(url, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }); }
-    catch { throw new MobileShellError('NETWORK', '无法连接控制台，请检查网络或地址'); }
+    catch {
+      if (typeof onTransportError === 'function') { try { onTransportError(); } catch { /* 观察者异常不影响请求结果 */ } }
+      throw new MobileShellError('NETWORK', '无法连接控制台，请检查网络或地址');
+    }
     let payload = {};
     try { payload = await response.json(); } catch { /* 非 JSON 响应用通用错误文案 */ }
     if (!response.ok) {
@@ -207,5 +214,305 @@ export function createMobileClient({ base, state = new ShellState(), tokenStore 
       if (!token) throw new MobileShellError('DEVICE_NOT_BOUND', '尚未绑定设备，请先扫码绑定');
       return request(url, { token });
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 多控制台（console-hub）：一个 App 连多台电脑上的中台。
+// 数据源：原生安全存储（Android Keystore）按键分存——控制台清单、当前控制台、每台控制台的设备凭证
+// （键 `<host>:device-token`，host 含端口）。清单只含地址与显示名，凭证绝不进 DOM / 日志 / 浏览器存储。
+// 首屏控制台列表与设置页「当前控制台」区块共用同一份 registry 与同一组 select/add/remove 逻辑。
+
+export const CONSOLES_KEY = 'consoles';
+export const CURRENT_CONSOLE_KEY = 'current-console';
+
+/** 每台控制台设备凭证的安全存储键：`<host>:device-token`（host 含端口，按控制台隔离）。 */
+export function consoleTokenKey(origin) {
+  return `${new URL(normalizeBaseUrl(origin)).host}:device-token`;
+}
+
+/**
+ * 原生安全存储的按键访问适配器（Capacitor 插件 AutoloopSecureStorage 的 nativeGet/nativeSet/nativeRemove 带 key）。
+ * fail-closed：插件拒绝或报存储不可用时一律抛 STORAGE_FAILED，由壳退回添加页，不在内存里假装成功。
+ */
+export function createKeyedSecureStorage(plugin) {
+  if (!plugin || typeof plugin.nativeGet !== 'function') return null;
+  const fail = () => new MobileShellError('STORAGE_FAILED', '安全存储读写失败，请重新添加控制台');
+  const call = async (method, args) => {
+    let result;
+    try { result = await plugin[method](args); } catch { throw fail(); }
+    if (result && result.error) throw fail();
+    return result || {};
+  };
+  return {
+    async get(key) { const r = await call('nativeGet', { key }); return typeof r.value === 'string' ? r.value : null; },
+    async set(key, value) { await call('nativeSet', { key, value: String(value) }); },
+    async remove(key) { await call('nativeRemove', { key }); },
+    // 解锁一次管全部控制台：进程内存里的会话解锁标记（App 被杀即失效），切换控制台重建页面时免重复生物识别。
+    async sessionUnlocked() {
+      if (typeof plugin.nativeSessionGet !== 'function') return false;
+      try { return Boolean((await plugin.nativeSessionGet())?.unlocked); } catch { return false; }
+    },
+    async markSessionUnlocked(unlocked) {
+      if (typeof plugin.nativeSessionSet !== 'function') return;
+      try { await plugin.nativeSessionSet({ unlocked: Boolean(unlocked) }); } catch { /* 标记失败只会多一次生物识别 */ }
+    },
+  };
+}
+
+const sameConsole = (a, b) => a === b;
+
+/** 控制台清单：add（绑定成功才写入）/ select / remove，按 host 分 key 存凭证。 */
+export function createConsoleRegistry({ storage }) {
+  if (!storage || typeof storage.get !== 'function') throw new TypeError('createConsoleRegistry 需要按键访问的安全存储');
+  let consoles = [];
+  let current = null;
+  let loaded = false;
+
+  const persist = async () => {
+    await storage.set(CONSOLES_KEY, JSON.stringify(consoles.map(({ origin, name }) => ({ origin, name }))));
+    if (current) await storage.set(CURRENT_CONSOLE_KEY, current);
+    else await storage.remove(CURRENT_CONSOLE_KEY);
+  };
+
+  const registry = {
+    async load() {
+      const raw = await storage.get(CONSOLES_KEY);
+      let parsed = [];
+      if (raw) {
+        try { parsed = JSON.parse(raw); } catch { throw new MobileShellError('STORAGE_FAILED', '控制台清单已损坏，请重新添加控制台'); }
+      }
+      consoles = [];
+      for (const item of Array.isArray(parsed) ? parsed : []) {
+        try {
+          const origin = normalizeBaseUrl(item?.origin);
+          if (!consoles.some(entry => sameConsole(entry.origin, origin))) {
+            consoles.push({ origin, name: typeof item?.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 80) : new URL(origin).host });
+          }
+        } catch { /* 非法条目丢弃，不让一条坏数据挡住其他控制台 */ }
+      }
+      const stored = await storage.get(CURRENT_CONSOLE_KEY);
+      current = consoles.some(entry => entry.origin === stored) ? stored : (consoles[0]?.origin ?? null);
+      loaded = true;
+      return registry.list();
+    },
+    get loaded() { return loaded; },
+    list() { return consoles.map(entry => ({ ...entry, current: entry.origin === current })); },
+    current() { return current; },
+    currentEntry() { return consoles.find(entry => entry.origin === current) || null; },
+    has(origin) { return consoles.some(entry => entry.origin === origin); },
+    /** 某台控制台专属的凭证存储（键 `<host>:device-token`）；切换控制台即换一个 tokenStore。 */
+    tokenStoreFor(origin) {
+      const key = consoleTokenKey(origin);
+      return createTokenStore({ secureStorage: {
+        get: () => storage.get(key),
+        set: token => storage.set(key, token),
+        remove: () => storage.remove(key),
+      } });
+    },
+    /**
+     * 添加新控制台：先校验地址，再由 bind(origin, tokenStore) 完成绑定（写入该控制台凭证），
+     * 绑定成功后才写入清单并设为当前。地址非法/不可达一律不写入清单，错误原样给就地提示。
+     */
+    async addConsole({ base, name } = {}, bind) {
+      const origin = normalizeBaseUrl(base); // INVALID_BASE / INSECURE_BASE 就地报错
+      const tokenStore = registry.tokenStoreFor(origin);
+      try {
+        await bind(origin, tokenStore);
+      } catch (error) {
+        if (error instanceof MobileShellError && error.code === 'NETWORK') {
+          throw new MobileShellError('ADD_UNREACHABLE', '地址不可达：无法连接该控制台，未加入列表');
+        }
+        throw error;
+      }
+      const label = typeof name === 'string' && name.trim() ? name.trim().slice(0, 80) : new URL(origin).host;
+      const existing = consoles.find(entry => entry.origin === origin);
+      if (existing) existing.name = label;
+      else consoles.push({ origin, name: label });
+      current = origin;
+      try { await persist(); }
+      catch (error) {
+        // 清单写不进去时不留下孤儿凭证：回滚该控制台凭证，fail-closed。
+        await tokenStore.clear().catch(() => {});
+        consoles = consoles.filter(entry => entry.origin !== origin || existing);
+        throw error instanceof MobileShellError ? error : new MobileShellError('STORAGE_FAILED', '安全存储读写失败，请重新添加控制台');
+      }
+      return registry.list();
+    },
+    /** 点选切换：只改「当前控制台」指针；连接上下文由壳整页重建。 */
+    async selectConsole(origin) {
+      if (!registry.has(origin)) throw new MobileShellError('CONSOLE_UNKNOWN', '该控制台不在列表中');
+      current = origin;
+      await storage.set(CURRENT_CONSOLE_KEY, origin);
+      return origin;
+    },
+    /** 移除控制台：同时删除它的设备凭证；移除的是当前控制台时改指向剩余第一台（没有则清空）。 */
+    async removeConsole(origin) {
+      if (!registry.has(origin)) return current;
+      await storage.remove(consoleTokenKey(origin));
+      consoles = consoles.filter(entry => entry.origin !== origin);
+      if (current === origin) current = consoles[0]?.origin ?? null;
+      await persist();
+      return current;
+    },
+  };
+  return registry;
+}
+
+/**
+ * 首屏路由（纯函数）：决定锁屏区显示哪一块。
+ * - 单控制台网页模式（hub=false）：沿用「绑定 → 解锁 → 主界面」。
+ * - 多控制台 App 模式：未解锁时有已存控制台显示解锁卡（解锁一次管全部），否则引导添加；解锁后默认先到
+ *   控制台列表，点选（或刚绑定/刚切换）且该控制台凭证在位才进主界面；凭证读写失败 fail-closed 回添加页。
+ */
+export function bootScreen({ hub = false, phase = 'locked', bound = false, consoles = 0, entered = false, adding = false, storageFailed = false } = {}) {
+  if (storageFailed) return 'bind';
+  if (!hub) {
+    if (phase === 'unlocked') return 'main';
+    return bound ? 'unlock' : 'bind';
+  }
+  if (phase !== 'unlocked') return consoles > 0 ? 'unlock' : 'bind';
+  if (adding || consoles === 0) return 'bind';
+  return entered && bound ? 'main' : 'picker';
+}
+
+// ---------------------------------------------------------------------------
+// 断联重连控制器（reconnect）：App 存活期间按既有指数退避自动重连；切回前台（visibilitychange / resume）
+// 立即探测；页面请求连不上时立即探测；在线时低频心跳发现中台不可达。退避档位走完仍失败才置 unreachable，
+// 由壳显示带「立即重试」的重连页；恢复后回到原来的页面（resumePage 回调），重连全程不动页面与输入。
+export function createReconnectController({
+  state,
+  probe,
+  onChange = () => {},
+  resumePage = () => {},
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  clearTimer = id => clearTimeout(id),
+  unreachableAfter = 5,
+  heartbeatMs = 30000,
+  isVisible = () => true,
+} = {}) {
+  if (!state || typeof probe !== 'function') throw new TypeError('createReconnectController 需要 state 与 probe');
+  let retryTimer = null;
+  let heartbeatTimer = null;
+  let inFlight = null;
+  let stopped = false;
+  let nextDelayMs = null;
+
+  const clearRetry = () => { if (retryTimer !== null) { clearTimer(retryTimer); retryTimer = null; } nextDelayMs = null; };
+  const clearHeartbeat = () => { if (heartbeatTimer !== null) { clearTimer(heartbeatTimer); heartbeatTimer = null; } };
+  const active = () => !stopped && state.canShowMain() && !state.needsBind;
+
+  const scheduleRetry = delay => {
+    clearRetry();
+    nextDelayMs = delay;
+    retryTimer = setTimer(() => { retryTimer = null; nextDelayMs = null; void controller.attempt(); }, delay);
+  };
+  const scheduleHeartbeat = () => {
+    clearHeartbeat();
+    if (!heartbeatMs || !active()) return;
+    heartbeatTimer = setTimer(() => {
+      heartbeatTimer = null;
+      // 页面隐藏时不发心跳；回前台由 onForeground 立即探测。
+      if (isVisible()) void controller.attempt({ heartbeat: true });
+    }, heartbeatMs);
+  };
+
+  const controller = {
+    /** 发起一次连接探测；同一时刻只跑一个探测，重复触发复用同一个。 */
+    attempt({ heartbeat = false } = {}) {
+      if (stopped) return Promise.resolve(false);
+      if (inFlight) return inFlight;
+      clearRetry();
+      clearHeartbeat();
+      const wasUnreachable = state.unreachable;
+      // 心跳只在已在线时静默探测，不把状态条闪成「正在连接」。
+      const delay = heartbeat && state.connection === 'online' ? null : state.retry();
+      if (delay !== null) onChange();
+      inFlight = (async () => {
+        try {
+          await probe();
+          if (state.connection !== 'online') state.connectSuccess();
+          onChange();
+          if (wasUnreachable) resumePage(); // 恢复后回到原来的页面，不停留在错误页
+          scheduleHeartbeat();
+          return true;
+        } catch (error) {
+          if (state.connection === 'connecting' || state.connection === 'online') state.connectFailure(error?.message || '连接失败，请重试', error?.status ?? null);
+          if (shouldAutoRetry(error, state) && !stopped) {
+            if (state.retryAttempt >= unreachableAfter) state.unreachable = true;
+            scheduleRetry(delay ?? state.nextRetryDelay());
+          }
+          onChange();
+          return false;
+        } finally {
+          inFlight = null;
+        }
+      })();
+      return inFlight;
+    },
+    /** 立即重试（重连页按钮）：不清退避计数，立刻探测一次。 */
+    manualRetry() { return controller.attempt(); },
+    /** 切回前台：立即探测，不等退避计时。 */
+    onForeground() { if (active()) return controller.attempt(); return Promise.resolve(false); },
+    /** 页面请求连不上控制台：在线态下立即探测，进入退避重连。 */
+    onTransportError() {
+      if (active() && state.connection === 'online' && !inFlight) return controller.attempt();
+      return Promise.resolve(false);
+    },
+    /** 系统报网络断开：标记离线；旧鸿蒙 WebView 的 online 事件不可靠，仍按退避排一次探测兜底。 */
+    onOffline() {
+      if (stopped) return;
+      clearHeartbeat();
+      state.networkLost();
+      onChange();
+      if (active()) scheduleRetry(state.nextRetryDelay());
+    },
+    onOnline() {
+      if (!active()) return Promise.resolve(false);
+      state.networkRestored();
+      return controller.attempt();
+    },
+    start() { stopped = false; },
+    stop() { stopped = true; clearRetry(); clearHeartbeat(); },
+    view() {
+      return {
+        connection: state.connection,
+        unreachable: Boolean(state.unreachable),
+        attempt: state.retryAttempt,
+        nextDelayMs,
+        retrying: retryTimer !== null || Boolean(inFlight),
+      };
+    },
+  };
+  return controller;
+}
+
+/** 重连状态文案（与设计稿一致）：重连中（第 N 次，退避 X 秒后重试）· 已保留当前页面与输入。 */
+export function reconnectStatusText(view) {
+  if (!view || view.connection === 'online') return '';
+  const attempt = Math.max(1, Number(view.attempt) || 1);
+  const seconds = view.nextDelayMs ? Math.max(1, Math.round(view.nextDelayMs / 1000)) : null;
+  const wait = seconds ? `，退避 ${seconds} 秒后重试` : '';
+  return `状态：重连中（第 ${attempt} 次${wait}）· 已保留当前页面与输入`;
+}
+
+/**
+ * 把 App 生命周期接到重连控制器：回前台（visibilitychange 变可见 / Capacitor resume）立即探测，
+ * offline/online 走控制器。返回解绑函数。旧鸿蒙 WebView 的 online 事件不可靠，回前台探测与心跳兜底。
+ */
+export function attachReconnectLifecycle({ win, doc, controller }) {
+  const onVisibility = () => { if (doc.visibilityState !== 'hidden') void controller.onForeground(); };
+  const onResume = () => { void controller.onForeground(); };
+  const onOffline = () => controller.onOffline();
+  const onOnline = () => { void controller.onOnline(); };
+  doc.addEventListener('visibilitychange', onVisibility);
+  doc.addEventListener('resume', onResume);
+  win.addEventListener('offline', onOffline);
+  win.addEventListener('online', onOnline);
+  return () => {
+    doc.removeEventListener('visibilitychange', onVisibility);
+    doc.removeEventListener('resume', onResume);
+    win.removeEventListener('offline', onOffline);
+    win.removeEventListener('online', onOnline);
   };
 }
