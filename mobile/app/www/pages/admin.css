@@ -8,3 +8,9 @@
 .admin-pane { padding: 0.2rem 0; }
 .admin-state { margin: 0 0 0.6rem; color: var(--ink-soft); font-size: 0.9rem; }
 .admin-state[data-state="error"] { color: var(--danger); }
+
+/* 设计基线：管理后台分区与表单卡片。 */
+.admin-subnav { display: flex; gap: 0.3rem; margin: 0.6rem 0 0.9rem; padding: 0.25rem; border: 1px solid var(--line); border-radius: 999px; background: #fff; }
+.admin-subnav a { flex: 1; padding: 0.5rem 0.7rem; border-radius: 999px; color: var(--secondary); font-size: 0.75rem; text-align: center; text-decoration: none; }
+.admin-subnav a.active { background: var(--brand-ink); color: #fff; }
+.admin-pane .card, .admin-card { border-radius: 15px; }

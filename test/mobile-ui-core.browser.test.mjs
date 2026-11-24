@@ -39,6 +39,11 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   };
   const hub = await fakeHub((req, res) => {
     if (req.url === '/v1/state') return json(res, hubState);
+    if (req.method === 'POST' && req.url === '/v1/cards/9/answer') {
+      hubState.cards[0].state = 'decided';
+      hubState.cards[0].choice = '仅私网';
+      return json(res, { ok: true });
+    }
     return json(res, { ok: true });
   });
   const rulesFile = path.join(root, 'rules.json');
@@ -94,7 +99,28 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.querySelector('#connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.querySelector('#connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
+
+  // 运行后的主导航也必须保持六栏；执行授权并入待办，不再动态追加第七个 Tab。
+  const runtimeTabs = await page.evaluate(() => [...document.querySelectorAll('#tab-bar .tab')].map(el => el.textContent.trim()));
+  assert.deepEqual(runtimeTabs, ['总览', '规则', '会话', '轮次', '待办', '管理后台']);
+
+  // 回归：底部六栏图标渲染与折叠卡片全局接线不能被启动优化打断
+  // （2026-11-24 merge 事故：boot 调用被删，图标静默缺失、折叠整体失活，现有静态测试均未捕获）。
+  await page.waitForFunction(() => {
+    const icons = [...document.querySelectorAll('#tab-bar .nav-icon')];
+    return icons.length === 6 && icons.every(el => el.childElementCount > 0);
+  }, null, { timeout: 5000 });
+  await page.evaluate(() => {
+    const tall = document.createElement('div');
+    tall.className = 'card';
+    tall.textContent = '折叠接线回归长卡片。'.repeat(120);
+    document.querySelector('#page-core').append(tall);
+  });
+  await page.waitForFunction(() => {
+    const expand = document.querySelector('#page-core .card-expand');
+    return expand && expand.nextElementSibling?.textContent?.includes('折叠接线回归');
+  }, null, { timeout: 5000 });
 
   // 总览：四组计数、最近一条标题、费用、项目 DAG 全部来自后端。
   await page.waitForFunction(() => document.querySelector('[data-core-section="metrics"]')?.textContent?.includes('正在运行'));
@@ -121,8 +147,8 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   assert.match(rounds, /dag-ui-core-pages/);
   assert.match(rounds, /模型 .+/);
 
-  // 执行授权：只读展示真实授权快照。
-  await page.locator('[data-tab="authorize"]').click();
+  // 待办页同时承载执行授权：只读展示真实授权快照，不增加第七个 Tab。
+  await page.locator('[data-tab="todos"]').click();
   await page.waitForFunction(() => document.querySelector('[data-core-section="authorize"]')?.textContent?.includes('移动控制台'));
   const authorize = await page.locator('[data-core-section="authorize"]').innerText();
   assert.match(authorize, /mobile-app/);
@@ -131,7 +157,6 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   assert.match(authorize, /部署/);
 
   // 待办：计数经 hooks.notify.setBadge 同步。
-  await page.locator('[data-tab="todos"]').click();
   await page.waitForFunction(() => document.querySelector('[data-card-id="9"]')?.textContent?.includes('移动网络的访问边界'));
   assert.deepEqual(await page.evaluate(() => window.__badges.at(-1)), 1);
   const card = page.locator('[data-card-id="9"]');
@@ -148,12 +173,9 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   assert.equal(await card.locator('[data-card-text]').inputValue(), '我先填着的草稿');
 
   // 模拟 mobile-write-api 节点上线：回答成功 → 重新拉取 → 列表显示已回答，角标归零。
+  // 成功路径走真实服务端写路由，让 Hub 写代际与状态缓存失效按生产逻辑执行；
+  // 不能在浏览器侧伪造成 200，否则绕过服务端缓存失效，重载仍会读到旧状态。
   await page.unroute('**/api/mobile/cards/*/answer');
-  await page.route('**/api/mobile/cards/*/answer', async route => {
-    hubState.cards[0].state = 'decided';
-    hubState.cards[0].choice = '仅私网';
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
-  });
   await card.locator('[data-card-submit]').click();
   await page.waitForFunction(() => document.querySelector('[data-card-id="9"]')?.textContent?.includes('已回答'));
   assert.deepEqual(await page.evaluate(() => window.__badges.at(-1)), 0);

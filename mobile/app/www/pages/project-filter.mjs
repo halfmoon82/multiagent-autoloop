@@ -31,21 +31,22 @@ export function mount(ctx) {
   const clear = node('button', {
     className: 'pf-clear', text: '全部', attrs: { id: 'clear-project-filter', type: 'button', hidden: '' },
   });
-  const status = node('span', { className: 'pf-status', attrs: { 'aria-live': 'polite' } });
-  root.replaceChildren(label, select, clear, status);
+  const status = node('span', { className: 'pf-status', attrs: { 'aria-live': 'polite', hidden: '' } });
+  const bar = node('div', { className: 'project-filter-bar' }, [label, select, clear]);
+  root.replaceChildren(bar, status);
 
-  // 同步覆盖默认空钩子：mount 顺序在 DAG/核心页之后，先订阅的页面也要能收到后续广播。
+  // 保留同一 hooks 对象和早期订阅：核心/DAG/会话先于本页 mount，不能因覆盖对象而丢监听器。
   let controller = null;
-  const pending = new Set();
-  ctx.hooks.projectFilter = {
-    current: () => (controller ? controller.filter : null),
-    onChange(listener) {
-      if (typeof listener !== 'function') return () => {};
-      if (controller) return controller.subscribe(listener);
-      pending.add(listener);
-      return () => pending.delete(listener);
-    },
+  const hook = ctx.hooks.projectFilter || {};
+  const pending = new Set(hook._listeners || []);
+  hook.current = () => (controller ? controller.filter : null);
+  hook.onChange = listener => {
+    if (typeof listener !== 'function') return () => {};
+    if (controller) return controller.subscribe(listener);
+    pending.add(listener);
+    return () => pending.delete(listener);
   };
+  ctx.hooks.projectFilter = hook;
 
   const render = (model, snapshot) => {
     const { filter, error, loading } = snapshot;
@@ -55,10 +56,11 @@ export function mount(ctx) {
       return optionEl;
     }));
     select.value = filter.selectedId;
-    clear.hidden = filter.isAll;
+    clear.hidden = true;
     status.textContent = loading
       ? '加载项目…'
       : (error || (filter.empty ? (filter.emptyReason || model.ALL_PROJECTS_LABEL) : ''));
+    status.hidden = !error;
   };
 
   modelPromise.then(model => {
@@ -84,6 +86,7 @@ export function mount(ctx) {
     // 锁屏期间不拉数据（客户端尚未绑定设备）；主界面一显示就加载，重连后再刷新。
     const load = async () => {
       status.textContent = '加载项目…';
+      status.hidden = true;
       await controller.reload();
     };
     const main = document.getElementById('app-main');
@@ -98,5 +101,6 @@ export function mount(ctx) {
     window.addEventListener('online', () => { void load(); });
   }).catch(error => {
     status.textContent = `项目筛选不可用：${error?.message || error || '加载失败'}`;
+    status.hidden = false;
   });
 }
