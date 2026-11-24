@@ -119,13 +119,31 @@ function mergeGradle(gradlePath, additions) {
   writeFileSync(gradlePath, gradle);
 }
 
+// 内置 www 的内容指纹（sha256 前 16 位）：写入离线页 meta，便于核对包内壳与服务端 hash 长缓存版本的对应关系。
+function wwwFingerprint() {
+  const hash = createHash('sha256');
+  const walk = rel => {
+    for (const entry of readdirSync(path.join(here, 'www', rel), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const next = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(next);
+      else if (entry.isFile()) hash.update(`${next}\0`).update(readFileSync(path.join(here, 'www', next)));
+    }
+  };
+  walk('');
+  return hash.digest('hex').slice(0, 16);
+}
+
 function injectOfflineUrl() {
   if (!existsSync(OFFLINE_HTML)) fail(11, '缺少内置 www/offline.html 离线兜底页');
   const original = readFileSync(OFFLINE_HTML, 'utf8');
   const meta = `<meta name="autoloop-console-mobile-url" content="${CONSOLE_MOBILE_URL}">`;
-  const html = /<meta\s+name="autoloop-console-mobile-url"/.test(original)
+  const withUrl = /<meta\s+name="autoloop-console-mobile-url"/.test(original)
     ? original.replace(/<meta\s+name="autoloop-console-mobile-url"[^>]*>/, meta)
     : original.replace(/<\/head>/, `  ${meta}\n  </head>`);
+  const fingerprint = `<meta name="autoloop-www-fingerprint" content="${wwwFingerprint()}">`;
+  const html = /<meta\s+name="autoloop-www-fingerprint"/.test(withUrl)
+    ? withUrl.replace(/<meta\s+name="autoloop-www-fingerprint"[^>]*>/, fingerprint)
+    : withUrl.replace(/<\/head>/, `  ${fingerprint}\n  </head>`);
   // cap sync 把 www/ 拷进生成的 assets（Capacitor 版本不同目录名可能是 public 或 www）。
   const candidates = [
     path.join(here, 'android', 'app', 'src', 'main', 'assets', 'public', 'offline.html'),

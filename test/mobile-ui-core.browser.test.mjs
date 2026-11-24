@@ -105,6 +105,23 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   const runtimeTabs = await page.evaluate(() => [...document.querySelectorAll('#tab-bar .tab')].map(el => el.textContent.trim()));
   assert.deepEqual(runtimeTabs, ['总览', '规则', '会话', '轮次', '待办', '管理后台']);
 
+  // 回归：底部六栏图标渲染与折叠卡片全局接线不能被启动优化打断
+  // （2026-11-24 merge 事故：boot 调用被删，图标静默缺失、折叠整体失活，现有静态测试均未捕获）。
+  await page.waitForFunction(() => {
+    const icons = [...document.querySelectorAll('#tab-bar .nav-icon')];
+    return icons.length === 6 && icons.every(el => el.childElementCount > 0);
+  }, null, { timeout: 5000 });
+  await page.evaluate(() => {
+    const tall = document.createElement('div');
+    tall.className = 'card';
+    tall.textContent = '折叠接线回归长卡片。'.repeat(120);
+    document.querySelector('#page-core').append(tall);
+  });
+  await page.waitForFunction(() => {
+    const expand = document.querySelector('#page-core .card-expand');
+    return expand && expand.nextElementSibling?.textContent?.includes('折叠接线回归');
+  }, null, { timeout: 5000 });
+
   // 总览：四组计数、最近一条标题、费用、项目 DAG 全部来自后端。
   await page.waitForFunction(() => document.querySelector('[data-core-section="metrics"]')?.textContent?.includes('正在运行'));
   const metrics = await page.locator('[data-core-section="metrics"]').innerText();
