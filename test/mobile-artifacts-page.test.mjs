@@ -2,10 +2,10 @@
 // 真机事故（2026-11-24）：数据源从未接线，页面恒空；预览缺失。DOM 断言跑在真实 Chromium 上。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { chromium } from '@playwright/test';
 
-const skip = (() => { try { return require.resolve ? false : false; } catch { return true; } })() ? false : (() => { try { chromium.executablePath(); return false; } catch { return true; } })();
+const skip = existsSync(chromium.executablePath()) ? false : '未安装 Playwright Chromium';
 
 const pageSource = readFileSync(new URL('../mobile/app/www/pages/artifacts.mjs', import.meta.url), 'utf8');
 
