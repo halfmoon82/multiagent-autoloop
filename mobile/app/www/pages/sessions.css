@@ -145,3 +145,114 @@
 /* 新建会话：提示词与麦克风同行，复用会话输入框同一套语音链路。 */
 .sessions-new-prompt-row { display: flex; align-items: flex-end; gap: 0.5rem; }
 .sessions-new-prompt-row .sessions-new-prompt { flex: 1 1 auto; width: auto; }
+
+/* 设计基线：会话管理列表。 */
+.page[data-page="sessions"] {
+  --brand: #137c64; --brand-ink: #103f34; --secondary: #66766f; --tertiary: #89958f;
+  padding-top: 0.25rem;
+}
+.page-heading { margin: 0 0 0.9rem; }
+.page-heading .eyebrow { margin: 0 0 0.35rem; color: var(--brand); font-size: 0.62rem; font-weight: 750; letter-spacing: 0.16em; }
+.page-heading .page-title { margin: 0; font-size: 1.65rem; line-height: 1.15; letter-spacing: -0.045em; font-weight: 650; }
+.page-heading .page-subtitle { margin: 0.45rem 0 0; color: var(--secondary); font-size: 0.78rem; line-height: 1.55; }
+.primary-btn { color: #fff; background: var(--brand, var(--ink)); border-color: var(--brand, var(--ink)); border-radius: 0.8rem; font-weight: 650; }
+.full-btn { width: 100%; }
+.sessions-new-btn.primary-btn.full-btn { min-height: 48px; margin: 0.9rem 0 0; }
+.sessions-search-box.search-box {
+  display: flex; align-items: center; gap: 0.55rem; height: 2.75rem; margin: 0.8rem 0;
+  padding: 0 0.8rem; border: 1px solid var(--line); border-radius: 0.75rem; background: #fff; color: var(--tertiary);
+}
+.sessions-search-box .search-icon { flex: none; width: 1.1rem; height: 1.1rem; }
+.sessions-search-box .inline-icon { width: 1.1rem; height: 1.1rem; }
+.sessions-search-box .sessions-search { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: 0.8rem; }
+.sessions-filters.filter-rail { display: flex; gap: 0.45rem; margin: 0.75rem -0.8rem 0.8rem; padding: 0 0.8rem 0.15rem; overflow-x: auto; scrollbar-width: none; }
+.sessions-chip { flex: none; min-height: 34px; margin: 0; padding: 0.35rem 0.8rem; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--secondary); font-size: 0.75rem; }
+.sessions-chip.active { border-color: var(--brand-ink); background: var(--brand-ink); color: #fff; }
+.sessions-items { display: flex; flex-direction: column; gap: 0.65rem; }
+.sessions-item {
+  display: block; width: 100%; min-height: 0; margin: 0; padding: 0.9rem; text-align: left;
+  background: var(--card); border: 1px solid var(--line); border-radius: 15px; box-shadow: 0 1px 2px rgba(15,61,46,0.025);
+}
+.sessions-item .item-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.55rem; }
+.sessions-item .item-title { min-width: 0; color: var(--ink); font-size: 0.86rem; font-weight: 650; line-height: 1.45; overflow-wrap: anywhere; }
+.sessions-item .item-subtitle { display: block; margin-top: 0.35rem; color: var(--tertiary); font-size: 0.7rem; line-height: 1.45; text-align: center; }
+.sessions-item .item-description { display: block; margin-top: 0.3rem; color: var(--secondary); font-size: 0.7rem; line-height: 1.45; text-align: center; }
+.status-chip { flex: none; padding: 0.2rem 0.45rem; border-radius: 999px; background: #eef1ef; color: var(--secondary); font-size: 0.62rem; white-space: nowrap; }
+.status-chip[data-status="active"] { background: #fff0d8; color: #9a6a24; }
+.status-chip[data-status="done"] { background: var(--mint); color: var(--brand-ink); }
+.sessions-current { margin-bottom: 0.65rem; }
+.sessions-current-card { padding: 0.9rem; border: 1px solid var(--line); border-radius: 15px; background: var(--mint); }
+.sessions-current-open { width: 100%; margin: 0.35rem 0 0.65rem; }
+.sessions-archived-toggle { min-height: 40px; margin: 0.45rem 0 0; padding: 0.35rem 0; border: 0; background: transparent; color: var(--secondary); font-size: 0.72rem; text-align: left; }
+.sessions-archived-list { margin-top: 0.5rem; }
+
+/* 设计基线：会话详情、问题组与 composer。 */
+.sessions-detail-hero { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 0.55rem; }
+.sessions-detail-title-block { flex: 1 1 auto; min-width: 0; }
+.sessions-detail-title { display: block; font-size: 1rem; line-height: 1.35; overflow-wrap: anywhere; }
+.sessions-detail-meta { display: block; margin-top: 0.2rem; color: var(--secondary); font-size: 0.68rem; }
+.sessions-back.icon-btn, .sessions-artifacts-btn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 0.25rem;
+  width: 2.75rem; min-height: 2.75rem; margin: 0; padding: 0.55rem; border: 0; background: transparent; color: var(--ink);
+}
+.sessions-artifacts-btn { width: auto; font-size: 0.72rem; }
+.sessions-context-bar { padding: 0.55rem 0.7rem; border: 1px solid var(--line); border-radius: 0.75rem; background: #fff; color: var(--secondary); font-size: 0.7rem; }
+.sessions-tools { display: flex; gap: 0.45rem; margin: 0.55rem 0; }
+.sessions-tools > * { padding: 0.35rem 0.65rem; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--secondary); font-size: 0.66rem; }
+.sessions-pending-strip {
+  width: 100%; min-height: 40px; margin: 0.45rem 0; padding: 0.55rem 0.7rem; text-align: left;
+  border: 1px solid #eadfc8; border-radius: 0.75rem; background: #fff8e9; color: #8c672e; font-size: 0.7rem;
+}
+.sessions-question { flex: none; }
+.sessions-queue-preview { flex: none; display: flex; gap: 0.4rem; overflow-x: auto; }
+.sessions-queue-preview .queue-chip { padding: 0.25rem 0.55rem; border-radius: 999px; background: var(--mint); color: var(--brand-ink); font-size: 0.64rem; white-space: nowrap; }
+.sessions-message { display: flex; flex-direction: column; gap: 0.2rem; }
+.sessions-message .sessions-role, .sessions-message .sessions-time { font-size: 0.64rem; color: var(--tertiary); }
+.sessions-message .sessions-bubble { max-width: 88%; margin: 0; padding: 0.7rem 0.8rem; border-radius: 1rem; font-size: 0.78rem; line-height: 1.55; }
+.sessions-message:not(.user) .sessions-bubble { background: #fff; border: 1px solid var(--line); color: var(--ink); }
+.sessions-message.user .sessions-bubble { background: var(--brand-ink); border: 1px solid var(--brand-ink); color: #fff; }
+.sessions-composer {
+  flex: none; display: flex; align-items: flex-end; flex-wrap: nowrap; gap: 0.35rem;
+  margin-top: 0.35rem; padding: 0.35rem; border: 1px solid var(--line); border-radius: 16px; background: #fff;
+}
+.sessions-composer-input { flex: 1 1 0; min-width: 0; margin: 0; border: 0; background: transparent; }
+.sessions-mic.mic-btn, .sessions-send.send-btn {
+  flex: none; display: grid; place-items: center; width: 2.75rem; min-height: 2.75rem; margin: 0; padding: 0.65rem;
+  border: 0; border-radius: 50%; background: transparent; color: var(--ink-soft);
+}
+.sessions-send.send-btn { border-radius: 50%; background: var(--brand); color: #fff; }
+.sessions-send.send-btn:disabled { background: #d8dfda; color: #89958f; }
+.sessions-new-heading { margin-top: 0.6rem; }
+.sessions-new-prompt-row { padding: 0.35rem; border: 1px solid var(--line); border-radius: 1rem; background: #fff; }
+.sessions-new-prompt-row .sessions-new-prompt { border: 0; }
+.sessions-question { flex: none; }
+.sessions-message-window { min-height: 5rem; }
+
+/* 大历史区、按需详情与完整队列交互。 */
+.sessions-message-window { min-height: 12rem; }
+.sessions-info-toggle, .sessions-queue-toggle { min-height: 34px; margin: 0; padding: 0.35rem 0.65rem; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--secondary); font-size: 0.66rem; }
+.sessions-info-toggle[aria-expanded="true"], .sessions-queue-toggle[aria-expanded="true"] { background: var(--brand-ink); color: #fff; }
+.sessions-info-panel, .sessions-queue-panel { margin: 0.45rem 0; padding: 0.65rem; border: 1px solid var(--line); border-radius: 0.85rem; background: #fff; }
+.sessions-queue-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.55rem; }
+.sessions-queue-head strong { font-size: 0.78rem; }
+.sessions-queue-clear { min-height: 34px; margin: 0; padding: 0.3rem 0.55rem; color: var(--danger); font-size: 0.66rem; }
+.sessions-queue-item { padding: 0.55rem 0; border-top: 1px solid var(--line); }
+.sessions-queue-input { width: 100%; min-height: 3.5rem; padding: 0.55rem; border: 1px solid var(--line); border-radius: 0.65rem; font: inherit; font-size: 0.78rem; resize: none; }
+.sessions-queue-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
+.sessions-queue-actions button { flex: 1 1 4.2rem; min-height: 36px; margin: 0; padding: 0.3rem 0.45rem; font-size: 0.66rem; }
+.sessions-queue-actions .sessions-queue-steer { background: var(--brand); color: #fff; border-color: var(--brand); }
+.sessions-composer-wrap { flex: none; }
+.sessions-send-mode { display: block; margin: 0.25rem 0 0.2rem; color: var(--secondary); font-size: 0.64rem; }
+.sessions-steer-btn { flex: none; min-height: 2.75rem; margin: 0; padding: 0.45rem 0.6rem; border-color: var(--brand-ink); color: var(--brand-ink); font-size: 0.7rem; }
+.queue-chip { min-height: 30px; margin: 0; padding: 0.25rem 0.55rem; border: 0; border-radius: 999px; background: var(--mint); color: var(--brand-ink); font-size: 0.64rem; white-space: nowrap; }
+.sessions-composer { flex-wrap: wrap; }
+.sessions-send-mode { flex: 0 0 100%; }
+.sessions-back-bottom { position: absolute; right: 0.35rem; bottom: 5.5rem; z-index: 3; margin: 0; box-shadow: 0 2px 8px rgba(15,61,46,0.14); }
+
+/* 真实附件选择与预览。 */
+.sessions-attach-btn { flex: none; display: grid; place-items: center; width: 2.75rem; min-height: 2.75rem; margin: 0; padding: 0.6rem; border: 0; border-radius: 50%; background: transparent; color: var(--ink-soft); }
+.sessions-attachments { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.sessions-attachment-chip { display: inline-flex; align-items: center; gap: 0.3rem; max-width: 100%; padding: 0.25rem 0.4rem; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--secondary); font-size: 0.64rem; }
+.sessions-attachment-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessions-attachment-chip button { min-height: 28px; margin: 0; padding: 0.1rem 0.25rem; border: 0; background: transparent; color: var(--brand); font-size: 0.62rem; }
+.sessions-attachment-image { width: 1.6rem; height: 1.6rem; border-radius: 0.35rem; object-fit: cover; }

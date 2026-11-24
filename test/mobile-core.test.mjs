@@ -83,6 +83,15 @@ function dagRunsPayload() {
   ];
   return { runs: runs.map(run => ({ ...run, mobileSummary: mobileDagSummaries([run])[0] })) };
 }
+function serialProgressPayload() {
+  return { chains: [
+    { sourceFile: 'health-serial.json', project: '/work/健康核心', percent: 67, current: 'd1', updatedAt: '2026-11-19T11:00:00+08:00', nodes: [
+      { id: 'a1', title: '环境检查', status: 'done', percent: 100 },
+      { id: 'd1', title: '内存采样观测 14 天', status: 'in_progress', percent: 2 },
+      { id: 'd2', title: '双桥验证', status: 'pending', percent: 0 },
+    ] },
+  ] };
+}
 function snapshot(overrides = {}) {
   const responses = { state: statePayload(), projects: projectsPayload(), rules: rulesPayload(), 'dag-runs': dagRunsPayload(), ...overrides };
   return assembleSnapshot(responses);
@@ -180,6 +189,30 @@ test('总览：state 缺失时计数不写成 0，整页明确空态；项目进
   const noDag = buildOverview(snapshot({ 'dag-runs': null, 'dag-runsError': 'DAG 通道不可用' }), { now: NOW });
   assert.equal(noDag.projects.empty, true);
   assert.match(noDag.projects.reason, /DAG 通道不可用/);
+});
+
+
+// ---------------------------------------------------------------------------
+// 串行链并入总览项目进度：Health Core 这类串行编排不是 DAG，但同属项目进度
+// ---------------------------------------------------------------------------
+test('总览项目进度并入串行链：标注串行链与总进度，不编造 DAG 入口', () => {
+  const page = buildOverview(snapshot({ 'serial-progress': serialProgressPayload() }), { now: NOW });
+  assert.equal(page.projects.items.length, 3, 'DAG run 与串行链合并展示');
+  const chain = page.projects.items.find(item => item.runId === 'health-serial.json');
+  assert.ok(chain, '串行链必须出现在项目进度里（真机事故：Health Core 串行链被漏掉）');
+  assert.equal(chain.projectLabel, '健康核心（串行链）');
+  assert.equal(chain.statusLabel, '67%');
+  assert.equal(chain.nodeCount, 3);
+  assert.equal(chain.dagEntry, null, '串行链没有 DAG 页入口，不编造');
+});
+
+test('串行进度缺失时项目进度仍只按 DAG 渲染，缺失原因如实标注', () => {
+  const page = buildOverview(snapshot({ 'serial-progress': null, 'serial-progressError': '串行通道超时' }), { now: NOW });
+  assert.equal(page.projects.items.length, 2, '没有串行数据就不编造链');
+  const missing = buildOverview(snapshot({ 'dag-runs': null, 'dag-runsError': 'DAG 通道不可用', 'serial-progress': null, 'serial-progressError': '串行通道超时' }), { now: NOW });
+  assert.equal(missing.projects.empty, true);
+  assert.match(missing.projects.reason, /DAG 通道不可用/);
+  assert.match(missing.projects.reason, /串行通道超时/);
 });
 
 // ---------------------------------------------------------------------------

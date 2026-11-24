@@ -1,7 +1,8 @@
 import http from 'node:http';
 import { createReadStream } from 'node:fs';
 import { classifySessionRequest } from './session-classify.mjs';
-import { mkdirSync, readFileSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HubError, hubRequest } from './hub.mjs';
@@ -10,6 +11,7 @@ import { readPlatformModels, applyPlatformModels, sessionLaunch, PlatformModelsE
 import { loadPolicy } from './detour-policy.mjs';
 import { modelLabels } from './models.mjs';
 import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-session.mjs';
+import { DEFAULT_MAX_SESSIONS, MAX_SESSIONS_UPPER_BOUND } from './config.mjs';
 import { HubSchedulingSessionAdapter } from './hub-scheduling-session.mjs';
 import { discoverGitProjects } from './projects.mjs';
 import { readDetours, publicDetour } from './detour.mjs';
@@ -38,6 +40,7 @@ const FILES = new Map([
   ['/device.mjs', ['device.mjs', 'text/javascript; charset=utf-8']], ['/qr.mjs', ['qr.mjs', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/archive-view.mjs', ['archive-view.mjs', 'text/javascript; charset=utf-8']], ['/archive.css', ['archive.css', 'text/css; charset=utf-8']],
+  ['/session-limit.mjs', ['session-limit.mjs', 'text/javascript; charset=utf-8']],
 ]);
 // 移动端壳资源（独立前端，不与 public/ 网页控制台混用）：固定白名单，不读取任意路径。
 const MOBILE = path.join(MODULE_DIR, '..', 'mobile', 'app', 'www');
@@ -47,6 +50,8 @@ const MOBILE_FILES = new Map([
   ['/mobile/app.mjs', ['app.mjs', 'text/javascript; charset=utf-8']],
   ['/mobile/shell.mjs', ['shell.mjs', 'text/javascript; charset=utf-8']],
   ['/mobile/scan.mjs', ['scan.mjs', 'text/javascript; charset=utf-8']],
+  ['/mobile/icons.mjs', ['icons.mjs', 'text/javascript; charset=utf-8']],
+  ['/mobile/collapsible-cards.mjs', ['collapsible-cards.mjs', 'text/javascript; charset=utf-8']],
   ['/mobile/vendor/qr-decoder.mjs', ['vendor/qr-decoder.mjs', 'text/javascript; charset=utf-8']],
   ['/mobile/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/mobile/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json; charset=utf-8']],
@@ -101,6 +106,45 @@ const MOBILE_API_ALLOWLIST = new Map([
   ['sessions', '/api/scheduling-sessions'], ['session-archives', '/api/session-archives'],
   ['detours', '/api/detours'], ['serial-progress', '/api/serial-progress'], ['project-usage', '/api/project-usage'],
 ]);
+// 移动端静态资源内容 hash 长缓存：版本 = 全部移动端文件内容的 sha256 前 16 位。
+// 入口文档仍 no-store，并把本地 css/mjs 引用与模块 import 改写成带 ?v=<版本>；URL 版本与当前内容一致才发 immutable，
+// 内容变化 → 版本变化 → 全部 URL 变化，旧缓存自然失效。不带或带错版本一律保持 no-store。符号链接不进入版本计算。
+const MOBILE_CACHE_IMMUTABLE = 'public, max-age=31536000, immutable';
+let mobileVersionMemo = null;
+function walkMobileFiles(root, rel = '') {
+  const out = [];
+  for (const entry of readdirSync(path.join(root, rel), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    const next = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...walkMobileFiles(root, next));
+    else if (entry.isFile()) out.push(next);
+  }
+  return out;
+}
+export function mobileAssetVersion({ roots = [MOBILE, MOBILE_SRC], now = Date.now() } = {}) {
+  const key = roots.join('\0');
+  if (mobileVersionMemo && mobileVersionMemo.key === key && now - mobileVersionMemo.at < 1000) return mobileVersionMemo.value;
+  const hash = createHash('sha256');
+  try {
+    for (const root of roots) for (const rel of walkMobileFiles(root)) hash.update(`${path.basename(root)}/${rel}\0`).update(readFileSync(path.join(root, rel)));
+  } catch { return null; }
+  const value = hash.digest('hex').slice(0, 16);
+  mobileVersionMemo = { key, at: now, value };
+  return value;
+}
+export function versionMobileText(text, type, version) {
+  if (!version) return text;
+  if (type.startsWith('text/javascript')) return text.replace(/(\bfrom\s*|\bimport\s*\(\s*)(['"])(\.{1,2}\/[^'"?#]+\.mjs)\2/g, `$1$2$3?v=${version}$2`);
+  if (type.startsWith('text/html')) return text.replace(/\b(href|src)="(\.\/[^"?#]+\.(?:css|mjs))"/g, `$1="$2?v=${version}"`);
+  return text;
+}
+function sendMobileAsset(res, url, body, type) {
+  const version = mobileAssetVersion();
+  const requested = url.searchParams.get('v');
+  const immutable = Boolean(version) && requested === version && !type.startsWith('text/html');
+  const payload = /^(text\/(javascript|html))/.test(type) ? versionMobileText(body.toString('utf8'), type, version) : body;
+  res.writeHead(200, { ...securityHeaders(), ...(immutable ? { 'cache-control': MOBILE_CACHE_IMMUTABLE } : {}), 'content-type': type });
+  res.end(payload);
+}
 export function securityHeaders() {
   return { 'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'", 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'cache-control': 'no-store' };
 }
@@ -178,6 +222,13 @@ async function handleApi(config, req, res, url) {
     return jsonResponse(res, 200, readPlatformModels(config, { ...(config.platformCatalog ? { catalog: config.platformCatalog } : {}), policy }));
   }
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
+  if (req.method === 'GET' && url.pathname === '/api/session-limit') return jsonResponse(res, 200, {
+    maxSessions: config.schedulingSessions?.maxSessions ?? config.maxSessions ?? DEFAULT_MAX_SESSIONS,
+    default: DEFAULT_MAX_SESSIONS,
+    min: 1,
+    max: MAX_SESSIONS_UPPER_BOUND,
+    warning: config.maxSessionsWarning || null,
+  });
   if (req.method === 'GET' && url.pathname === '/api/session-archives') return jsonResponse(res, 200, { sessions: await config.schedulingSessions.listArchived() });
   if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
   if (req.method === 'GET' && url.pathname === '/api/card-router') {
@@ -482,7 +533,7 @@ export function createConsoleServer(config, schedulingSessions) {
       try { mkdirSync(allowedDir, { recursive: true }); }
       catch (error) { console.error(`[console] 脚本目录 ${allowedDir} 创建失败，会话按只读处理：${error.message}`); allowedDir = null; }
     }
-    schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }), sessionLaunch: kind => sessionLaunch(config, kind) });
+    schedulingSessions = new SchedulingSessionManager({ maxSessions: config.maxSessions, writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }), sessionLaunch: kind => sessionLaunch(config, kind) });
   }
   const dagService = config.dagService || (config.root ? createDagService({ root: config.root, storeDirectory: path.join(config.root, 'dag-runs') }) : null);
   // 退回记录落盘：重启后「待代理决策」列表不丢；无运行目录退回内存 store（退回行为不变）。
@@ -506,14 +557,13 @@ export function createConsoleServer(config, schedulingSessions) {
     }
     const mobileAsset = MOBILE_FILES.get(url.pathname);
     if (mobileAsset && req.method === 'GET') {
-      try { const body = readFileSync(path.join(MOBILE, mobileAsset[0])); res.writeHead(200, { ...securityHeaders(), 'content-type': mobileAsset[1] }); return res.end(body); }
+      try { return sendMobileAsset(res, url, readFileSync(path.join(MOBILE, mobileAsset[0])), mobileAsset[1]); }
       catch { return jsonResponse(res, 404, { error: '移动端资源尚未安装' }); }
     }
     if (req.method === 'GET') {
       const resolved = resolveMobileAsset(url.pathname);
       if (resolved) {
-        res.writeHead(200, { ...securityHeaders(), 'content-type': resolved.type });
-        return res.end(resolved.body);
+        return sendMobileAsset(res, url, resolved.body, resolved.type);
       }
     }
     return jsonResponse(res, 404, { error: '没有这个控制台地址' });

@@ -2,6 +2,23 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_WHISPER_PATH, DEFAULT_WHISPER_MODEL } from './whisper-transcribe.mjs';
 
+// 调度会话全局上限：默认 6、允许 1–12。缺失/非法/越界都回退 6 并告警，绝不因配置错误阻止启动。
+export const DEFAULT_MAX_SESSIONS = 6;
+export const MAX_SESSIONS_UPPER_BOUND = 12;
+
+export function maxSessionsIssue(value) {
+  if (value === undefined || value === null || value === '') return '未配置，使用默认值';
+  if (typeof value !== 'number' || !Number.isInteger(value)) return '不是整数';
+  if (value < 1 || value > MAX_SESSIONS_UPPER_BOUND) return `值 ${value} 越界（允许 1–${MAX_SESSIONS_UPPER_BOUND}）`;
+  return null;
+}
+
+export function resolveMaxSessions(value, issue = maxSessionsIssue(value)) {
+  if (!issue) return value;
+  console.warn(`[config] maxSessions ${issue}，回退为 ${DEFAULT_MAX_SESSIONS}（允许 1–${MAX_SESSIONS_UPPER_BOUND}）`);
+  return DEFAULT_MAX_SESSIONS;
+}
+
 export function loadConsoleConfig(root = process.env.AGENT_AUTOLOOP_HOME) {
   if (!root) throw new Error('请设置 AGENT_AUTOLOOP_HOME 为试点数据目录');
   const file = path.join(root, 'config.json');
@@ -11,10 +28,14 @@ export function loadConsoleConfig(root = process.env.AGENT_AUTOLOOP_HOME) {
   if (!config.url || !config.owner) throw new Error(`${file} 缺少中台地址或本人密钥`);
   const hubUrl = new URL(config.url);
   if (!['http:', 'https:'].includes(hubUrl.protocol)) throw new Error('中台地址只支持 HTTP 或 HTTPS');
+  const maxSessionsIssueText = maxSessionsIssue(config.maxSessions);
   return {
     root,
     hubUrl: hubUrl.toString().replace(/\/$/, ''),
     ownerKey: config.owner,
+    // 调度会话全局上限（1–12）：越界回退 6 + 告警；告警原因透出给控制台如实展示。
+    maxSessions: resolveMaxSessions(config.maxSessions, maxSessionsIssueText),
+    maxSessionsWarning: maxSessionsIssueText,
     // 事件 API 用 source 密钥认证；缺失时保持 null，由调用处 fail closed，绝不回退 owner 密钥。
     sourceKey: typeof config.source?.key === 'string' && config.source.key ? config.source.key : null,
     rulesFile: path.join(root, 'rules.json'),
