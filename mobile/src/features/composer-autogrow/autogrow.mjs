@@ -43,7 +43,7 @@ export function canSend(text) {
 const px = value => Number.parseFloat(value) || 0;
 
 /** DOM 适配：按当前内容重算高度并写回样式。返回计算结果；无 DOM 能力时返回 null。 */
-export function applyAutogrow(el, { mainHeight = null } = {}) {
+export function applyAutogrow(el, { mainHeight = null, maxRows = AUTOGROW_MAX_ROWS } = {}) {
   if (!el || !el.style || typeof globalThis.getComputedStyle !== 'function') return null;
   const style = globalThis.getComputedStyle(el);
   const fontSize = px(style.fontSize) || 16;
@@ -52,7 +52,7 @@ export function applyAutogrow(el, { mainHeight = null } = {}) {
   el.style.height = '0px'; // 先收到最小才能量到真实内容高度（内容变短时才能回弹，不受 rows 属性影响）
   const result = computeAutogrow({
     contentHeight: el.scrollHeight + px(style.borderTopWidth) + px(style.borderBottomWidth),
-    lineHeight, extraY, mainHeight,
+    lineHeight, extraY, mainHeight, maxRows,
   });
   el.style.height = `${Math.ceil(result.height)}px`;
   el.style.overflowY = result.overflow ? 'auto' : 'hidden';
@@ -60,9 +60,9 @@ export function applyAutogrow(el, { mainHeight = null } = {}) {
 }
 
 /** 挂载：输入事件（含语音落草稿派发的 input）与专用预览事件都触发同一次重算。返回 { refresh, detach }。 */
-export function attachAutogrow(el, { getMainHeight = () => null } = {}) {
+export function attachAutogrow(el, { getMainHeight = () => null, maxRows = AUTOGROW_MAX_ROWS } = {}) {
   if (!el || typeof el.addEventListener !== 'function') return { refresh() {}, detach() {} };
-  const refresh = () => applyAutogrow(el, { mainHeight: getMainHeight() });
+  const refresh = () => applyAutogrow(el, { mainHeight: getMainHeight(), maxRows });
   el.addEventListener('input', refresh);
   el.addEventListener(AUTOGROW_EVENT, refresh);
   refresh();
@@ -73,4 +73,37 @@ export function attachAutogrow(el, { getMainHeight = () => null } = {}) {
       el.removeEventListener(AUTOGROW_EVENT, refresh);
     },
   };
+}
+
+// ---- 输入区体验（DAG 节点 composer-ux）：输入框上限、自适应轮询、乐观上屏 ----
+
+/** 会话输入框自动增高上限约 4 行（通用上限 AUTOGROW_MAX_ROWS 保持不变，供新建表单等沿用）。 */
+export const COMPOSER_MAX_ROWS = 4;
+export const POLL_BUSY_MS = 1000;
+export const POLL_IDLE_MS = 5000;
+/** 本地「Agent 正在响应」态最长保留时长：服务端迟迟不报 busy 时也不会永远转圈。 */
+export const RESPONDING_TTL_MS = 30000;
+
+/**
+ * 详情轮询间隔：页面隐藏返回 null（不轮询）；本轮进行中（busy / turnStartedAt / 本地响应态）1 秒；空闲 5 秒。
+ */
+export function pollIntervalMs({ hidden = false, busy = false, turnStartedAt = null, responding = false } = {}) {
+  if (hidden) return null;
+  return busy === true || responding === true || Boolean(turnStartedAt) ? POLL_BUSY_MS : POLL_IDLE_MS;
+}
+
+/** 本地响应态是否仍有效：发送时间在 TTL 内。 */
+export function isResponding(since, now = Date.now(), ttl = RESPONDING_TTL_MS) {
+  return Number.isFinite(since) && since > 0 && now - since < ttl;
+}
+
+/** 乐观上屏：发送中的主人消息，带本地 id 以便失败重发时复用同一条（不重复入账）。 */
+export function optimisticMessage(text, localId) {
+  return { role: '主人', text: String(text ?? ''), at: '', localId, sendState: 'sending' };
+}
+
+/** 按本地 id 更新发送状态（sending → sent / failed），返回新数组；未命中则原样返回。 */
+export function settleMessage(messages, localId, sendState) {
+  if (!Array.isArray(messages) || !messages.some(m => m?.localId === localId)) return messages;
+  return messages.map(m => (m?.localId === localId ? { ...m, sendState } : m));
 }
