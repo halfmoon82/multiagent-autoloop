@@ -716,14 +716,11 @@ export function mount(ctx) {
 
   // 详情打开期间轻轮询：会话有新输出时即时刷新，离开详情页即停。
   // 自适应：本轮进行中（busy/turnStartedAt/刚发送）1 秒，空闲 5 秒，页面隐藏不轮询；每次触发后按最新状态重排。
+  function composerView() {
+    return smodel?.buildComposerView({ session: state.session, respondingSince: state.respondingSince, hidden: document.hidden === true });
+  }
   function pollDelay() {
-    const s = state.session;
-    return autogrow?.pollIntervalMs({
-      hidden: document.hidden === true,
-      busy: s?.busy === true,
-      turnStartedAt: s?.turnStartedAt || null,
-      responding: isRespondingNow(),
-    }) ?? 5000;
+    return composerView()?.pollMs ?? 5000;
   }
   function isRespondingNow() {
     return Boolean(autogrow && autogrow.isResponding(state.respondingSince));
@@ -754,6 +751,8 @@ export function mount(ctx) {
       let messages = mapMessages(session);
       const echo = [...state.messages].reverse().find(message => message.role === '主人' && !message.at);
       if (echo && !messages.some(message => message.text === echo.text)) messages = [...messages, echo];
+      const liveBubble = smodel?.buildComposerView({ session }).stream;
+      if (liveBubble) messages = [...messages, liveBubble];
       if (JSON.stringify(messages) !== JSON.stringify(state.messages)) {
         // 跟随状态以更新瞬间的实测位置为准，不信任可能滞后的 state.follow：
         // 追新只滚底（用户在底部附近），用户上翻阅读时原样保持滚动位置。
