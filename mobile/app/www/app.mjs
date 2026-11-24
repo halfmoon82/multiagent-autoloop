@@ -353,12 +353,16 @@ function boot() {
   const contentEl = document.querySelector('.content');
   if (contentEl) { contentEl.before(reconnectBanner); contentEl.before(reconnectPanel); }
 
+  // 首屏列表复用设置页同一渲染：页面模块不静态 import（#293），经清单加载器取设置页模块（ES 模块缓存，只加载一次）。
   function renderPicker() {
     pickerError.textContent = '';
-    settingsPage.renderConsoleList(pickerList, {
-      consoles: hub.enabled ? hub.registry.list() : [],
-      onSelect: origin => { void selectConsole(origin).catch(error => { pickerError.textContent = error?.message || '切换失败，请重试'; }); },
-    });
+    void PAGE_LOADERS.settings().then(settingsPage => {
+      if (picker.hidden) return;
+      settingsPage.renderConsoleList(pickerList, {
+        consoles: hub.enabled ? hub.registry.list() : [],
+        onSelect: origin => { void selectConsole(origin).catch(error => { pickerError.textContent = error?.message || '切换失败，请重试'; }); },
+      });
+    }).catch(() => { pickerError.textContent = '控制台列表加载失败，请重试'; });
   }
 
   function render() {
