@@ -264,6 +264,8 @@ export function mount(ctx) {
   const showView = name => {
     state.view = name;
     if (name !== 'detail' && detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+    // 详情轮询只更新快照不重绘隐藏的列表；回到列表时按当前类型/搜索/项目筛选重建一次，不显示旧状态。
+    if (name === 'list' && state.listStale) { state.listStale = false; applyFilters(); }
     if (name !== 'detail') syncActiveSession();
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
     host.classList.toggle('sessions-detail-open', name === 'detail'); // 详情页自己按视口定高，去掉页面底部留白
@@ -556,7 +558,7 @@ export function mount(ctx) {
   // ---- 会话详情与待回答组 ----
   async function openSession(session) {
     state.session = session;
-    state.messages = mapMessages(session);
+    state.messages = smodel ? smodel.buildDetailMessages(session) : mapMessages(session);
     renderPrompt(session);
     state.follow = true;
     const cards = Array.isArray(state.cards) ? state.cards.filter(card => !card?.project || card.project === session.project) : [];
@@ -715,19 +717,39 @@ export function mount(ctx) {
   // 详情打开期间轻轮询：会话有新输出时即时刷新，离开详情页即停。
   function startDetailPolling() {
     if (detailTimer) clearInterval(detailTimer);
+    // 自适应：会话在跑（等回复）时 1.5s 一拍，空闲时 5s 一拍；每拍只读一个轻接口。
+    let lastTickAt = 0;
     detailTimer = setInterval(() => {
-      if (state.view === 'detail' && state.detailSessionId) void refreshDetail();
-    }, 5000);
+      if (state.view !== 'detail' || !state.detailSessionId || refreshing) return;
+      const current = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
+      const waiting = state.awaitingUntil > Date.now() || (smodel ? smodel.isAwaitingReply(current) : false);
+      const nowMs = Date.now();
+      if (!waiting && nowMs - lastTickAt < 5000) return;
+      lastTickAt = nowMs;
+      void refreshDetail();
+    }, 1500);
   }
 
+  // 在途闸：上一拍没回来就不发下一拍，避免慢隧道下请求叠加、旧结果覆盖新结果。
+  let refreshing = false;
   async function refreshDetail() {
+    if (refreshing) return;
+    refreshing = true;
     try {
-      await load({ quiet: true });
+      // 轻量刷新：只重读活跃会话（回复就在这里）。整页 load 要串行打 projects/state/sessions/archives
+      // 四次隧道往返并重绘列表；列表在详情页被隐藏，回到列表时再按当前筛选重绘（见 showView）。
+      if (reader && state.lastResult) {
+        const result = await reader.refreshActive(state.lastResult, { kind: state.kind, query: state.query });
+        state.lastResult = result;
+        state.snapshot = result.snapshot;
+        state.rawArchives = result.rawArchives;
+        // 不直接采用 result.list：它没有全局项目筛选。返回列表时由 applyFilters 重建（见 showView）。
+        state.listStale = true;
+      } else await load({ quiet: true });
       const session = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
       if (!session) return;
-      let messages = mapMessages(session);
-      const echo = [...state.messages].reverse().find(message => message.role === '主人' && !message.at);
-      if (echo && !messages.some(message => message.text === echo.text)) messages = [...messages, echo];
+      if (smodel?.isAwaitingReply(session)) state.awaitingUntil = 0; // 服务端已确认在跑，交给状态判断
+      const messages = smodel ? smodel.buildDetailMessages(session, state.messages) : mapMessages(session);
       if (JSON.stringify(messages) !== JSON.stringify(state.messages)) {
         // 跟随状态以更新瞬间的实测位置为准，不信任可能滞后的 state.follow：
         // 追新只滚底（用户在底部附近），用户上翻阅读时原样保持滚动位置。
@@ -742,7 +764,7 @@ export function mount(ctx) {
       state.session = session;
       detailTitle.textContent = session.title || '会话';
       renderDetailMeta(session);
-    } catch { /* 轮询静默失败，等下一轮 */ }
+    } catch { /* 轮询静默失败，等下一轮 */ } finally { refreshing = false; }
   }
 
   function renderQuestion() {
@@ -962,7 +984,10 @@ export function mount(ctx) {
       saveContext();
       pendingAttachments = [];
       renderAttachments();
-      await refreshSessionState();
+      // 发完不整页 load（串行 4 次隧道往返）：按「等回复」快拍 15s，首拍 800ms 只读活跃会话，
+      // 本轮 liveText 与忙碌/排队状态都由 refreshDetail 带回。
+      state.awaitingUntil = Date.now() + 15000;
+      setTimeout(() => { if (state.view === 'detail') void refreshDetail(); }, 800);
     } catch (error) {
       showBanner(`发送失败：${error?.message || '请重试'}（内容已保留在输入框）`);
     } finally {
@@ -1145,6 +1170,7 @@ export function mount(ctx) {
       state.cards = Array.isArray(hubState?.cards) ? hubState.cards : [];
 
       const result = await reader.load({ kind: state.kind, query: state.query });
+      state.lastResult = result;
       state.snapshot = result.snapshot;
       state.list = result.list;
       state.rawArchives = result.rawArchives;
