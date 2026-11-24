@@ -25,6 +25,12 @@ final class NotifyChannels {
   static final String CHANNEL_ONLINE = "autoloop_online";
   static final String CHANNEL_TODO = "autoloop_todo";
   static final String CHANNEL_NODE_DONE = "autoloop_node_done";
+  static final String CHANNEL_SESSION = "autoloop_session";
+  static final String EXTRA_ROUTE_PAGE = "autoloop_route_page";
+  static final String EXTRA_ROUTE_SESSION = "autoloop_route_session";
+  static final String EXTRA_ROUTE_CARD = "autoloop_route_card";
+  private static final String PREF_CLAIMED = "claimed_keys";
+  private static final int CLAIMED_MAX = 500;
   static final String PREFS = "autoloop_notify";
   static final int ONLINE_ID = 1001;
   static final int REBIND_ID = 1002;
@@ -44,6 +50,7 @@ final class NotifyChannels {
     create(nm, CHANNEL_ONLINE, "NoMoTo 在线", NotificationManager.IMPORTANCE_LOW);
     create(nm, CHANNEL_TODO, "待我决策", NotificationManager.IMPORTANCE_HIGH);
     create(nm, CHANNEL_NODE_DONE, "节点完成", NotificationManager.IMPORTANCE_DEFAULT);
+    create(nm, CHANNEL_SESSION, "会话新回复", NotificationManager.IMPORTANCE_HIGH);
   }
 
   private static void create(NotificationManager nm, String id, String name, int importance) {
@@ -59,6 +66,7 @@ final class NotifyChannels {
         .setContentTitle("NoMoTo 在线")
         .setContentText("常驻保活中，待办与节点完成会通知您")
         .setOngoing(true)
+        .setContentIntent(openApp(ctx, "", "", ""))
         .setNumber(Math.max(0, badge))
         .setCategory(NotificationCompat.CATEGORY_SERVICE);
     if (Build.VERSION.SDK_INT >= 26) b.setChannelId(CHANNEL_ONLINE);
@@ -81,6 +89,37 @@ final class NotifyChannels {
     return NOTIFIED.add(key);
   }
 
+  /**
+   * 持久化去重：同一事项只通知一次，服务被系统回收重拉或进程重启后也不重复刷屏。
+   * 返回 true 表示首次声明；集合有上限，超出时丢弃最旧的一半以外的记录。
+   */
+  static synchronized boolean claimPersistent(Context ctx, String key) {
+    if (key == null || key.isEmpty()) return false;
+    SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    Set<String> claimed = new HashSet<>(sp.getStringSet(PREF_CLAIMED, new HashSet<>()));
+    if (claimed.contains(key)) return false;
+    if (claimed.size() >= CLAIMED_MAX) {
+      java.util.Iterator<String> it = claimed.iterator();
+      for (int i = 0; i < CLAIMED_MAX / 2 && it.hasNext(); i++) { it.next(); it.remove(); }
+    }
+    claimed.add(key);
+    sp.edit().putStringSet(PREF_CLAIMED, claimed).apply();
+    return true;
+  }
+
+  /** 点击通知：拉起 App 并带上路由（页面/会话/卡片），由插件回拨给 H5 定位。 */
+  static android.app.PendingIntent openApp(Context ctx, String page, String sessionId, String cardId) {
+    Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
+    if (launch == null) launch = new Intent();
+    launch.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+    launch.putExtra(EXTRA_ROUTE_PAGE, page);
+    launch.putExtra(EXTRA_ROUTE_SESSION, sessionId);
+    launch.putExtra(EXTRA_ROUTE_CARD, cardId);
+    int code = (page + ":" + sessionId + ":" + cardId).hashCode();
+    return android.app.PendingIntent.getActivity(ctx, code, launch,
+        android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+  }
+
   static void setBadge(Context ctx, int count) {
     int safe = Math.max(0, count);
     SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -97,11 +136,17 @@ final class NotifyChannels {
   /** 由 JS descriptor 构建并发布一条系统通知；待办带选项按钮 + 文字输入的 RemoteInput 直复。 */
   static void postDescriptor(Context ctx, JSONObject descriptor, String kind) {
     boolean todo = CHANNEL_TODO.equals(kind);
-    String channel = todo ? CHANNEL_TODO : CHANNEL_NODE_DONE;
+    boolean session = CHANNEL_SESSION.equals(kind);
+    String channel = todo ? CHANNEL_TODO : session ? CHANNEL_SESSION : CHANNEL_NODE_DONE;
     String id = descriptor.optString("id", "notify");
+    JSONObject click = descriptor.optJSONObject("click");
+    String page = click != null ? click.optString("page", "") : "";
+    String sessionId = click != null ? click.optString("sessionId", "") : "";
+    String cardId = click != null && click.has("cardId") ? String.valueOf(click.opt("cardId")) : "";
 
     NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, channel)
-        .setSmallIcon(todo ? android.R.drawable.stat_notify_chat : android.R.drawable.stat_sys_download_done)
+        .setSmallIcon(todo || session ? android.R.drawable.stat_notify_chat : android.R.drawable.stat_sys_download_done)
+        .setContentIntent(openApp(ctx, page, sessionId, cardId))
         .setContentTitle(descriptor.optString("title", "Autoloop 通知"))
         .setContentText(descriptor.optString("body", ""))
         .setAutoCancel(!todo); // 节点完成点开即撤销；待办保留到直复处理

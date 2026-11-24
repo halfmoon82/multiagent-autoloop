@@ -572,6 +572,8 @@ export function createConsoleServer(config, schedulingSessions) {
   server.restoreSchedulingSessions = () => schedulingSessions.restoreFromHub().catch(error => {
     console.error(`[console] 恢复 Hub 调度会话失败：${error.message}`);
   });
+  // 会话新回复通知的事件源：启动脚本手里只有原始 config，会话管理器只在这里装配，故由 server 暴露只读列表。
+  server.listSessions = () => schedulingSessions.list();
   server.on('close', () => schedulingSessions.dispose?.());
   return server;
 }

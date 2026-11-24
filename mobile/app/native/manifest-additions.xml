@@ -10,6 +10,10 @@
   <!-- 键盘弹起时调整 WebView 尺寸，供 app.mjs 的 keyboard-height CSS 变量 固定底部输入栏。 -->
   <activity-config android:windowSoftInputMode="adjustResize" />
   <application>
+    <!-- 直复接收器用显式 Intent 投递，必须在清单声明；动态注册在 Android 14 起缺 flag 会使前台服务启动即崩溃。 -->
+    <receiver
+      android:name="cool.autoloop.console.notify.NotifyReplyReceiver"
+      android:exported="false" />
     <service
       android:name="cool.autoloop.console.notify.ForegroundService"
       android:exported="false"
