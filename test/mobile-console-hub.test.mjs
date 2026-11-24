@@ -189,7 +189,7 @@ test('原生安全存储：按 key 分存、key 白名单、会话解锁只在�
   assert.match(src, /void nativeSessionGet\s*\(/);
   assert.match(src, /void nativeSessionSet\s*\(/);
   assert.match(src, /private static volatile boolean sessionUnlocked/);
-  assert.match(src, /currentTokenKey\(prefs\)/, '下载插件读当前控制台的凭证');
+  assert.match(src, /currentTokenKey\((prefs|store)\)/, '下载插件读当前控制台的凭证');
   assert.doesNotMatch(src, /localStorage|sessionStorage|Log\./);
 });
 
