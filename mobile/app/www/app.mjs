@@ -1,28 +1,34 @@
 // 移动端 App 壳：只做路由与装配。业务逻辑在 mobile/src（视图模型）与 pages/（页面模块）。
-// 页面模块按固定列表静态 import；各页导出 mount(ctx)，ctx 含 client / state / hooks。
+// 页面模块由下方清单登记：首屏页立即加载，其余延迟到首屏渲染后；各页导出 mount(ctx)，ctx 含 client / state / hooks。
 // 跨页互调一律走 ctx.hooks，不直接 import 其他页面模块。
 import { ShellState, createTokenStore, createMobileClient, createBiometricGate, shouldAutoRetry } from './shell.mjs';
 import { createScanSession, createUserMediaCamera } from './scan.mjs';
-import * as corePage from './pages/core.mjs';
-import * as sessionsPage from './pages/sessions.mjs';
-import * as artifactsPage from './pages/artifacts.mjs';
-import * as dagPage from './pages/dag.mjs';
-import * as projectFilterPage from './pages/project-filter.mjs';
-import * as notifyPage from './pages/notify.mjs';
-import * as voicePage from './pages/voice.mjs';
-import * as fontTouchPage from './pages/font-touch.mjs';
-import * as devicesPage from './pages/devices.mjs';
-import * as adminPage from './pages/admin.mjs';
-import * as settingsPage from './pages/settings.mjs';
 
 export const MOBILE_PAGES = Object.freeze([
   'core', 'sessions', 'artifacts', 'dag', 'project-filter', 'notify', 'voice', 'font-touch', 'devices', 'admin', 'settings',
 ]);
-const PAGE_MODULES = {
-  core: corePage, sessions: sessionsPage, artifacts: artifactsPage, dag: dagPage,
-  'project-filter': projectFilterPage, notify: notifyPage, voice: voicePage,
-  'font-touch': fontTouchPage, devices: devicesPage, admin: adminPage, settings: settingsPage,
+// 统一的 import / 懒加载清单（本文件是唯一维护点，其他节点只在这里登记）。
+// 首屏页：解锁后立刻 mount（总览、全局筛选、通知角标、字体层、设置入口）。
+// 延迟页：首屏渲染后按清单顺序逐个动态 import 并 mount；单页失败只跳过，不影响首屏与其他页。
+export const EAGER_PAGES = Object.freeze(['core', 'project-filter', 'notify', 'font-touch', 'settings']);
+export const DEFERRED_PAGES = Object.freeze(MOBILE_PAGES.filter(name => !EAGER_PAGES.includes(name)));
+const PAGE_LOADERS = {
+  core: () => import('./pages/core.mjs'),
+  sessions: () => import('./pages/sessions.mjs'),
+  artifacts: () => import('./pages/artifacts.mjs'),
+  dag: () => import('./pages/dag.mjs'),
+  'project-filter': () => import('./pages/project-filter.mjs'),
+  notify: () => import('./pages/notify.mjs'),
+  voice: () => import('./pages/voice.mjs'),
+  'font-touch': () => import('./pages/font-touch.mjs'),
+  devices: () => import('./pages/devices.mjs'),
+  admin: () => import('./pages/admin.mjs'),
+  settings: () => import('./pages/settings.mjs'),
 };
+// 按需功能模块登记（不预加载）：页面经 hooks.loadFeature(name) 在用到时才 import；失败返回 null，由调用方降级。
+export const FEATURE_LOADERS = Object.freeze({
+  'design-authorize': () => import('./src/features/design-authorize/index.mjs'),
+});
 
 // 默认钩子全部是空操作：未就绪时调用不抛错，后续节点只覆盖自己的钩子。
 export function createDefaultHooks() {
@@ -37,6 +43,7 @@ export function createDefaultHooks() {
     download() {},
     openSettings() {},
     admin: { onShow() {} },
+    loadFeature(name) { const load = FEATURE_LOADERS[name]; return load ? load().catch(() => null) : Promise.resolve(null); },
   };
 }
 
@@ -156,7 +163,8 @@ function boot() {
     stack.clear();
     guard.reset();
     for (const tab of tabs) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
-    if (name === 'admin') hooks.admin?.onShow?.();
+    if (name === 'admin') { hooks.admin?.onShow?.(); if (!mounted.has('admin')) void ensurePage('admin').then(() => { if (activeTab === 'admin') hooks.admin?.onShow?.(); }); }
+    else if (!mounted.has(name)) void ensurePage(name);
     renderViewState();
   }
   function openSettings() {
@@ -214,8 +222,26 @@ function boot() {
     depth: () => stack.depth,
   };
 
-  for (const name of MOBILE_PAGES) PAGE_MODULES[name].mount(ctx);
+  // 页面挂载：按名去重；动态 import 失败只记录，页面保持空白，事后再次进入会重试。
+  const mounted = new Map();
+  function ensurePage(name) {
+    if (!PAGE_LOADERS[name]) return Promise.resolve(false);
+    if (!mounted.has(name)) {
+      const task = PAGE_LOADERS[name]().then(mod => { mod.mount(ctx); return true; }).catch(() => { mounted.delete(name); return false; });
+      mounted.set(name, task);
+    }
+    return mounted.get(name);
+  }
+  // 首屏页同步顺序 mount，保持原有钩子覆盖顺序；其余页在首屏渲染后的空闲时段逐个加载。
   selectTab('core');
+  void (async () => {
+    for (const name of EAGER_PAGES) await ensurePage(name);
+    const idle = window.requestIdleCallback ? cb => window.requestIdleCallback(cb, { timeout: 500 }) : cb => setTimeout(cb, 0);
+    await new Promise(resolve => requestAnimationFrame ? requestAnimationFrame(() => idle(resolve)) : idle(resolve));
+    for (const name of DEFERRED_PAGES) await ensurePage(name);
+    window.__autoloopPagesReady = true;
+    window.dispatchEvent(new CustomEvent('autoloop:pages-ready'));
+  })();
 
   // 主内容区左右滑动切相邻 Tab：与点击共用 selectTab；不支持 PointerEvent 时 feature 自行退化为纯点击。
   // 浏览器里 ./src 指 /mobile/src（与页面模块同一受限目录规则），失败不影响点击切页。
