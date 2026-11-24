@@ -36,6 +36,19 @@ export const MOBILE_API_KEYS = Object.freeze([
 
 export function mobileSessionUrl(base) { return new URL('/api/mobile/session', base).toString(); }
 export function mobileBindUrl(base) { return new URL('/api/mobile/bind', base).toString(); }
+export function mobileArtifactsUrl(base) { return new URL('/api/mobile/artifacts', base).toString(); }
+export function mobileSessionArtifactsUrl(base, id) {
+  const raw = String(id ?? '').trim();
+  if (!raw) throw new MobileShellError('SESSION_NOT_FOUND', '会话不存在或已归档');
+  return new URL('/api/mobile/sessions/' + encodeURIComponent(raw) + '/artifacts', base).toString();
+}
+export function mobileSessionArtifactFileUrl(base, id, path) {
+  const raw = String(id ?? '').trim();
+  if (!raw) throw new MobileShellError('SESSION_NOT_FOUND', '会话不存在或已归档');
+  const url = new URL('/api/mobile/sessions/' + encodeURIComponent(raw) + '/file', base);
+  url.searchParams.set('path', String(path ?? ''));
+  return url.toString();
+}
 export function mobileApiUrl(base, key) {
   if (typeof key !== 'string' || !MOBILE_API_KEYS.includes(key)) {
     throw new MobileShellError('API_NOT_ALLOWED', `该 API 不在移动端允许列表中：${String(key)}`);
@@ -213,6 +226,23 @@ export function createMobileClient({ base, state = new ShellState(), tokenStore 
       const token = await tokenStore.get();
       if (!token) throw new MobileShellError('DEVICE_NOT_BOUND', '尚未绑定设备，请先扫码绑定');
       return request(url, { token });
+    },
+    async artifacts() {
+      const token = await tokenStore.get();
+      if (!token) throw new MobileShellError('DEVICE_NOT_BOUND', '尚未绑定设备，请先扫码绑定');
+      const result = await request(mobileArtifactsUrl(origin), { token });
+      return Array.isArray(result?.files) ? result.files : [];
+    },
+    async sessionArtifacts(id) {
+      const token = await tokenStore.get();
+      if (!token) throw new MobileShellError('DEVICE_NOT_BOUND', '尚未绑定设备，请先扫码绑定');
+      const result = await request(mobileSessionArtifactsUrl(origin, id), { token });
+      return Array.isArray(result?.files) ? result.files : [];
+    },
+    async sessionArtifactFile(id, path) {
+      const token = await tokenStore.get();
+      if (!token) throw new MobileShellError('DEVICE_NOT_BOUND', '尚未绑定设备，请先扫码绑定');
+      return request(mobileSessionArtifactFileUrl(origin, id, path), { token });
     },
   };
 }

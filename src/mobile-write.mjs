@@ -13,6 +13,7 @@ import { loadPolicy } from './detour-policy.mjs';
 import { reconcile, syncPrompt, createSyncState } from '../mobile/src/features/device-sync/index.mjs';
 import { classifySessionRequest } from './session-classify.mjs';
 import { SchedulingSessionError } from './scheduling-session.mjs';
+import { listSessionArtifacts } from './artifacts.mjs';
 
 function securityHeaders() {
   return {
@@ -47,6 +48,10 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'session-queue-remove', method: 'DELETE', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)$/ },
   { key: 'session-queue-steer', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)\/steer$/ },
   { key: 'session-message', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/messages$/ },
+  // 会话产物（artifacts-sync）：全局聚合 / 会话列表 / 文件内容，全部只读、设备鉴权。
+  { key: 'artifacts', method: 'GET', pattern: /^\/api\/mobile\/artifacts$/ },
+  { key: 'session-artifacts', method: 'GET', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/artifacts$/ },
+  { key: 'session-artifact-file', method: 'GET', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/file$/ },
   { key: 'session-create', method: 'POST', pattern: /^\/api\/mobile\/sessions$/ },
 ]);
 
@@ -189,6 +194,28 @@ async function sessionContinue(res, url, route, ctx) {
   if (!known) fail(400);
   const result = await sessions.continueSession(id);
   jsonResponse(res, 201, { ...result, sourceDeviceId: ctx.device.id });
+}
+
+// 全局产物聚合：跨会话汇总，与网页同一份扫描逻辑（src/artifacts.mjs），按时间倒序并封顶。
+async function artifactsRoute(res, ctx) {
+  const sessions = await ctx.config.schedulingSessions.list();
+  const files = listSessionArtifacts(Array.isArray(sessions) ? sessions : []);
+  jsonResponse(res, 200, { device: ctx.device, files });
+}
+
+// 会话产物列表：与网页 /api/scheduling-sessions/:id/artifacts 同一 listSessionArtifacts。
+async function sessionArtifactsRoute(res, url, route, ctx) {
+  const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
+  const files = await ctx.config.schedulingSessions.listSessionArtifacts(id);
+  jsonResponse(res, 200, { device: ctx.device, files });
+}
+
+// 产物文件内容：与网页 /file 同一 readSessionArtifact（服务端已做路径白名单与大小封顶）。
+async function sessionArtifactFileRoute(res, url, route, ctx) {
+  const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
+  const requested = String(url.searchParams.get('path') || '');
+  const file = await ctx.config.schedulingSessions.readSessionArtifact(id, requested);
+  jsonResponse(res, 200, { device: ctx.device, ...file });
 }
 
 async function sessionDownload(res, url, route, ctx) {
@@ -358,6 +385,9 @@ async function executeWrite(route, req, res, url, ctx) {
     if (route.key === 'admin-platform-models') return await adminPlatformModelsRoute(res, ctx, body, req);
     if (route.key === 'session-create') return await sessionCreateRoute(res, body, ctx, req);
     if (route.key === 'session-message') return await sessionMessageRoute(res, url, route, ctx, body, req);
+    if (route.key === 'artifacts') return await artifactsRoute(res, ctx);
+    if (route.key === 'session-artifacts') return await sessionArtifactsRoute(res, url, route, ctx);
+    if (route.key === 'session-artifact-file') return await sessionArtifactFileRoute(res, url, route, ctx);
     if (route.key.startsWith('session-queue-')) return await sessionQueueRoute(res, url, route, ctx, body, req);
     jsonResponse(res, 501, { error: '该写操作尚未实现', route: route.key, declared: true });
   } catch (error) {

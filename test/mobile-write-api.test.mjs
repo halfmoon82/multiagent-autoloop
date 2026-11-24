@@ -47,6 +47,16 @@ function makeSessions(artifact) {
     async continueSession(id) { this.calls.push(['continue', id]); return { id, continued: true }; },
     async start(payload) { this.calls.push(['start', payload]); return { id: 'sess-new', ...payload }; },
     async list() { this.calls.push(['list']); return [{ id: 'sess-live', kind: 'scheduling', project: WORKTREE, status: 'running' }]; },
+    async listSessionArtifacts(id) {
+      this.calls.push(['listSessionArtifacts', id]);
+      if (id !== 'sess-live') { const e = new Error('调度会话不存在'); e.status = 404; throw e; }
+      return [{ path: 'docs/看板.html', name: '看板.html', size: 120, at: '2026-11-24T00:00:00Z', kind: 'doc', sessionId: 'sess-live', taskLabel: '核心任务' }];
+    },
+    async readSessionArtifact(id, p) {
+      this.calls.push(['readSessionArtifact', id, p]);
+      if (id !== 'sess-live') { const e = new Error('调度会话不存在'); e.status = 404; throw e; }
+      return { path: p, name: String(p).split('/').pop(), content: '<h1>数据看板</h1><script>document.body.dataset.ran=1</script>' };
+    },
     async updateQueued(id, itemId, text) { this.calls.push(['updateQueued', id, itemId, text]); return { id }; },
     async moveQueued(id, itemId, direction) { this.calls.push(['moveQueued', id, itemId, direction]); return { id }; },
     async steerQueued(id, itemId) { this.calls.push(['steerQueued', id, itemId]); return { id }; },
@@ -456,4 +466,35 @@ test('会话附件请求不再被旧 64KB 上限误拦截', async t => {
   const response = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/messages', { method: 'POST', token: ctx.deviceToken, body: { text: '大附件', attachments: [{ name: '大文件.bin', type: 'application/octet-stream', dataBase64 }] } });
   assert.equal(response.status, 200);
   assert.equal(ctx.sessions.calls.find(call => call[0] === 'send')[3].attachments[0].dataBase64.length, dataBase64.length);
+});
+
+// ---------- 会话产物（artifacts-sync）：全局汇总 / 会话列表 / 文件内容，全部设备鉴权 ----------
+test('产物读取走设备鉴权移动网关：未绑定 401，绑定可读全局汇总、会话列表与文件内容', async t => {
+  const ctx = await setup(t);
+  const auth = { token: ctx.deviceToken };
+
+  for (const p of ['/api/mobile/artifacts', '/api/mobile/sessions/sess-live/artifacts', '/api/mobile/sessions/sess-live/file?path=docs%2F看板.html']) {
+    const unbound = await mobileFetch(ctx.url, p);
+    assert.equal(unbound.status, 401, p);
+  }
+
+  const global = await mobileFetch(ctx.url, '/api/mobile/artifacts', auth);
+  assert.equal(global.status, 200);
+  const globalBody = await global.json();
+  assert.ok(Array.isArray(globalBody.files), '全局产物返回 files 数组（聚合查询对假会话为空也不失稳）');
+
+  const list = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/artifacts', auth);
+  assert.equal(list.status, 200);
+  const listBody = await list.json();
+  assert.equal(listBody.files.length, 1);
+  assert.equal(listBody.files[0].name, '看板.html');
+  assert.equal(listBody.files[0].sessionId, 'sess-live');
+
+  const file = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/file?path=docs%2F看板.html', auth);
+  assert.equal(file.status, 200);
+  const fileBody = await file.json();
+  assert.match(fileBody.content, /数据看板/);
+
+  const missing = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-gone/artifacts', auth);
+  assert.equal(missing.status, 404);
 });

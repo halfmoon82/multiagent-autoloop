@@ -206,6 +206,28 @@ test('总览项目进度并入串行链：标注串行链与总进度，不编�
   assert.equal(chain.dagEntry, null, '串行链没有 DAG 页入口，不编造');
 });
 
+// 活跃项排前：已完成/已取消的历史 run 会把活跃 DAG 与进行中的串行链挤出首屏（2026-11-24 真机：
+// 一屏只见 4 条已完成/已取消，用户误判"活跃项目无展示"，而网页版活跃项目在首屏）。
+test('项目进度活跃项排前：done/cancelled 沉底，活跃 DAG 与进行中串行链置顶且组内稳定', () => {
+  const runs = [
+    { runId: 'dagrun-done', project: '/work/移动控制台', status: 'done', nodes: [] },
+    { runId: 'dagrun-queued', project: '/work/移动控制台', status: 'queued', nodes: [] },
+    { runId: 'dagrun-cancelled', project: '/work/移动控制台', status: 'cancelled', nodes: [] },
+    { runId: 'dagrun-running', project: '/work/健康核心', status: 'running', nodes: [] },
+  ];
+  const chains = [
+    { sourceFile: 'done-serial.json', project: '/work/旧项目', percent: 100, nodes: [{ id: 'a', status: 'done', percent: 100 }] },
+    { sourceFile: 'live-serial.json', project: '/work/健康核心', percent: 40, nodes: [{ id: 'b', status: 'in_progress', percent: 40 }] },
+  ];
+  const page = buildOverview(snapshot({
+    'dag-runs': { runs: runs.map(run => ({ ...run, mobileSummary: mobileDagSummaries([run])[0] })) },
+    'serial-progress': { chains },
+  }), { now: NOW });
+  const order = page.projects.items.map(item => item.runId);
+  assert.deepEqual(order, ['dagrun-queued', 'dagrun-running', 'live-serial.json', 'done-serial.json', 'dagrun-done', 'dagrun-cancelled'],
+    '活跃 DAG（保持原序）→ 进行中串行链 → 已完结串行链 → 已完成/已取消（保持原序）');
+});
+
 test('串行进度缺失时项目进度仍只按 DAG 渲染，缺失原因如实标注', () => {
   const page = buildOverview(snapshot({ 'serial-progress': null, 'serial-progressError': '串行通道超时' }), { now: NOW });
   assert.equal(page.projects.items.length, 2, '没有串行数据就不编造链');
