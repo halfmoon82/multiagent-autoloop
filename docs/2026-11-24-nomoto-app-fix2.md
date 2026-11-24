@@ -23,7 +23,7 @@
 ## 范围
 按 docs/dag-plans/2026-11-24-nomoto-app-fix2.json 共 13 节点：wave-0 十节点并行（console-hub / session-actions / tab-swipe-fix / collapsible-expand / notify-events / session-latency / session-limit-config / app-startup-perf / session-steer / artifacts-sync），composer-ux 紧随 session-actions 串行（二者同写 mobile/src/features/sessions/views.mjs 等文件，DAG 校验器要求同写范围的节点必须 depends_on 串行；两侧仍按「行渲染/手势 vs 输入区」划界减少返工），wave-1 integration-verify → smoke-emulator。真机验收另行授权派发，不进本 DAG。
 
-写范围红线（碰撞预防）：app.mjs 只许 console-hub 改 boot 首屏路由、app-startup-perf 改懒加载 import 清单（含 design-authorize 页登记），其余节点禁改；src/mobile-write.mjs 本批两个节点（session-actions / artifacts-sync）只增路由表项与新处理器，不动既有行；src/scheduling-session.mjs 本批三个节点（session-steer / session-limit-config / 注释）追加式共存，不动彼此代码区；src/server.mjs 缓存头归 app-startup-perf、maxSessions 装配归 session-limit-config，session-latency 若需改动由调度串行裁定；mobile/src/features/sessions/views.mjs 由 session-actions（行渲染/手势/授权按钮）与 composer-ux（输入区）划界。
+写范围红线（碰撞预防）：app.mjs 只许 console-hub 改 boot 首屏路由、app-startup-perf 改懒加载 import 清单（含 design-authorize 页登记），其余节点禁改；src/mobile-write.mjs 本批两个节点（session-actions / artifacts-sync）只增路由表项与新处理器，不动既有行；src/scheduling-session.mjs 本批两个节点（session-steer / session-limit-config）追加式共存，不动彼此代码区；src/server.mjs 缓存头归 app-startup-perf、maxSessions 装配归 session-limit-config，session-latency 若需改动由调度串行裁定；mobile/src/features/sessions/views.mjs 由 session-actions（行渲染/手势/授权按钮）与 composer-ux（输入区）划界。
 
 ## 非目标
 不改设备授权协议与 Hub 语义；服务端安全规则（同源、设备凭证、路由允许列表）不放宽；不接 FCM/华为推送；不做离线浏览；附件上传列后续；不新增网页控制台业务能力；APK 打包与真机安装不在本 DAG。
@@ -34,7 +34,7 @@ npm test 与 npm run test:browser 全绿；每节点独立审阅 P0–P2 清零�
 ## 子 Issue 清单（Epic + 每节点 1 子 Issue）
 1. console-hub：多控制台（首屏列表+设置页切换）+ 断联重连修复。依赖：无。
 2. session-actions：左滑关闭 + 设计授权双按钮（放行落盘/确认执行范围）。依赖：无。
-3. composer-ux：输入区工具行 + 乐观上屏 + 即时响应态 + 自适应轮询流式对齐网页。依赖：无。
+3. composer-ux：输入区工具行 + 乐观上屏 + 即时响应态 + 自适应轮询流式对齐网页。依赖：session-actions（同写 sessions 视图文件，串行）。
 4. tab-swipe-fix：6 tab 真机滑动切换。依赖：无。
 5. collapsible-expand：折叠卡片可再展开。依赖：无。
 6. notify-events：session-reply 通知事件源 + 原生通知真机修复（三类生效）。依赖：无。
