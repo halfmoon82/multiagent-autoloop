@@ -46,8 +46,11 @@ function makeSessions(artifact) {
   // mtime 明确早于时间界，避免与同毫秒写入的时间界判定 flaky。
   utimesSync(path.join(workspace, '旧文档.md'), new Date(Date.now() - 3600 * 1000), new Date(Date.now() - 3600 * 1000));
   const since = new Date().toISOString();
-  // 新产物的 mtime 必须晚于 since；旧文档保持更早的 mtime。
-  writeFileSync(path.join(workspace, '新产物.md'), '本会话产出');
+  // 新产物 mtime 显式拨到 since 之后 5 秒：CI 上同毫秒写入会让 mtime<=since 被时间界排除（秒/毫秒精度差异 flaky）。
+  const fresh = path.join(workspace, '新产物.md');
+  writeFileSync(fresh, '本会话产出');
+  const future = new Date(Date.parse(since) + 5000);
+  utimesSync(fresh, future, future);
   return {
     workspace,
     workspaceSince: since,
