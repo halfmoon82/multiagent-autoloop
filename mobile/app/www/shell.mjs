@@ -317,6 +317,9 @@ export function createConsoleRegistry({ storage }) {
     async addConsole({ base, name } = {}, bind) {
       const origin = normalizeBaseUrl(base); // INVALID_BASE / INSECURE_BASE 就地报错
       const tokenStore = registry.tokenStoreFor(origin);
+      const existingBefore = consoles.find(entry => entry.origin === origin);
+      // 重绑已有控制台：先记下原凭证，清单写失败时恢复它，而不是把已在用的控制台变成无凭证。
+      const previousToken = existingBefore ? await tokenStore.get() : null;
       try {
         await bind(origin, tokenStore);
       } catch (error) {
@@ -326,15 +329,18 @@ export function createConsoleRegistry({ storage }) {
         throw error;
       }
       const label = typeof name === 'string' && name.trim() ? name.trim().slice(0, 80) : new URL(origin).host;
+      const snapshot = { consoles: consoles.map(entry => ({ ...entry })), current };
       const existing = consoles.find(entry => entry.origin === origin);
       if (existing) existing.name = label;
       else consoles.push({ origin, name: label });
       current = origin;
       try { await persist(); }
       catch (error) {
-        // 清单写不进去时不留下孤儿凭证：回滚该控制台凭证，fail-closed。
-        await tokenStore.clear().catch(() => {});
-        consoles = consoles.filter(entry => entry.origin !== origin || existing);
+        // 清单写不进去时整体回滚（清单、名称、当前指针），新控制台不留孤儿凭证、重绑的控制台恢复原凭证，fail-closed。
+        consoles = snapshot.consoles;
+        current = snapshot.current;
+        if (previousToken) await tokenStore.set(previousToken).catch(() => {});
+        else await tokenStore.clear().catch(() => {});
         throw error instanceof MobileShellError ? error : new MobileShellError('STORAGE_FAILED', '安全存储读写失败，请重新添加控制台');
       }
       return registry.list();
@@ -349,10 +355,18 @@ export function createConsoleRegistry({ storage }) {
     /** 移除控制台：同时删除它的设备凭证；移除的是当前控制台时改指向剩余第一台（没有则清空）。 */
     async removeConsole(origin) {
       if (!registry.has(origin)) return current;
-      await storage.remove(consoleTokenKey(origin));
+      const snapshot = { consoles, current };
       consoles = consoles.filter(entry => entry.origin !== origin);
       if (current === origin) current = consoles[0]?.origin ?? null;
-      await persist();
+      // 先改清单、再删凭证：清单写失败时整体回滚，列表与凭证保持一致（不会出现「在列表里却没有凭证」）。
+      try { await persist(); }
+      catch (error) {
+        consoles = snapshot.consoles;
+        current = snapshot.current;
+        throw error instanceof MobileShellError ? error : new MobileShellError('STORAGE_FAILED', '安全存储读写失败，请稍后重试');
+      }
+      // 清单已不含它：凭证删失败只会留下一份无人引用的凭证，不影响列表一致性，重新添加时会被覆盖。
+      await storage.remove(consoleTokenKey(origin)).catch(() => {});
       return current;
     },
   };

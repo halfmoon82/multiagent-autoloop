@@ -116,6 +116,25 @@ test('凭证读写失败 fail-closed：清单损坏/写失败抛 STORAGE_FAILED�
   assert.deepEqual(registry.list(), []);
 });
 
+test('存储故障不留半截状态：添加写清单失败回滚当前指针与名称；移除写清单失败保留列表与凭证', async () => {
+  const storage = memoryStorage();
+  const registry = createConsoleRegistry({ storage });
+  await registry.load();
+  await registry.addConsole({ base: 'https://a.example.com', name: 'A' }, bindWith('ta'));
+  const original = storage.set;
+  storage.set = async (key, value) => { if (key === CONSOLES_KEY) throw new Error('disk'); return original(key, value); };
+  await assert.rejects(registry.addConsole({ base: 'https://b.example.com' }, bindWith('tb')), e => e.code === 'STORAGE_FAILED');
+  assert.equal(registry.current(), 'https://a.example.com', '添加失败不改当前控制台');
+  assert.equal(storage.data.has('b.example.com:device-token'), false, '不留孤儿凭证');
+  await assert.rejects(registry.addConsole({ base: 'https://a.example.com', name: '改名' }, bindWith('ta2')), e => e.code === 'STORAGE_FAILED');
+  assert.deepEqual(registry.list().map(entry => entry.name), ['A'], '添加失败不改已有控制台的名称');
+  assert.equal(storage.data.get('a.example.com:device-token'), 'ta', '重绑已有控制台失败时恢复它原来的凭证，不把它删掉');
+  await assert.rejects(registry.removeConsole('https://a.example.com'), e => e.code === 'STORAGE_FAILED');
+  assert.deepEqual(registry.list().map(entry => entry.origin), ['https://a.example.com'], '移除失败保留在列表里');
+  assert.equal(registry.current(), 'https://a.example.com');
+  assert.equal(storage.data.has('a.example.com:device-token'), true, '移除失败不先删凭证，列表与凭证保持一致');
+});
+
 test('原生按键存储适配器：带 key 调 nativeGet/Set/Remove；插件报错或拒绝一律 STORAGE_FAILED；会话解锁标记', async () => {
   const calls = [];
   let unlocked = false;
@@ -305,6 +324,9 @@ test('浏览器：两台控制台绑定、切换免重复解锁且数据隔离�
   assert.equal(await page.evaluate(() => document.querySelector('.sessions-composer-input')?.value), '', '切换控制台不带原控制台的输入草稿');
   assert.doesNotMatch(await page.evaluate(() => sessionStorage.getItem('nomoto-sessions-context') || ''), /A 的草稿/, '切换控制台清掉原控制台的页面上下文');
 
+  // 本地壳下页面 origin 不是控制台：通知后台轮询/通知内回复与产物下载读 window.AutoloopConsoleBase，必须指向当前控制台。
+  assert.equal(await page.evaluate(() => window.AutoloopConsoleBase), b.url, '切到 B 后通知/产物下载地址指向 B，而不是页面 origin');
+
   // 数据隔离：两台控制台凭证分 key，且各自只在对应控制台有效。
   const stored = await page.evaluate(() => Object.fromEntries(Object.keys(sessionStorage).filter(k => k.endsWith(':device-token')).map(k => [k, sessionStorage.getItem(k)])));
   const hostA = new URL(a.url).host; const hostB = new URL(b.url).host;
@@ -324,6 +346,7 @@ test('浏览器：两台控制台绑定、切换免重复解锁且数据隔离�
   await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接') && !document.getElementById('app-main').hidden);
   assert.equal(await page.evaluate(() => window.__verifyCount), 0);
   assert.ok(requests.length && requests.every(origin => origin === a.url), `切回 A 后只请求 A：${requests.join(',')}`);
+  assert.equal(await page.evaluate(() => window.AutoloopConsoleBase), a.url, '切回 A 后通知/产物下载地址跟着换成 A');
 
   // 移除 B（二次确认）：第一次点只变「确认移除？」，第二次才移除，B 的凭证一并删除。
   await page.locator('#open-settings').click();
