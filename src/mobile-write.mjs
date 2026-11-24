@@ -5,6 +5,7 @@
 // 自包含响应助手与同步 handleMobileWrite 签名，避免改动 server.mjs 或与它形成循环依赖。
 
 import { createReadStream } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { hubRequest, HubError } from './hub.mjs';
 import { discoverGitProjects } from './projects.mjs';
 import { readRuleOptions, defaultCheck } from './rules.mjs';
@@ -52,6 +53,7 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'artifacts', method: 'GET', pattern: /^\/api\/mobile\/artifacts$/ },
   { key: 'session-artifacts', method: 'GET', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/artifacts$/ },
   { key: 'session-artifact-file', method: 'GET', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/file$/ },
+  { key: 'preview-ticket', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/preview-ticket$/ },
   { key: 'session-create', method: 'POST', pattern: /^\/api\/mobile\/sessions$/ },
 ]);
 
@@ -194,6 +196,52 @@ async function sessionContinue(res, url, route, ctx) {
   if (!known) fail(400);
   const result = await sessions.continueSession(id);
   jsonResponse(res, 201, { ...result, sourceDeviceId: ctx.device.id });
+}
+
+// A+ 预览票据：iframe 请求带不了 x-device-token 头，设备鉴权换取一次性短时效票据（60 秒、用一次即焚），
+// 由 /mobile/preview 在静态资源层兑换成 HTML 流。票据不可猜测，泄露窗口 ≤60 秒且只能看一个已鉴权文件。
+const PREVIEW_TICKETS = new Map();
+const PREVIEW_TTL_MS = 60 * 1000;
+const PREVIEW_TICKET_MAX = 1000;
+
+function issuePreviewTicket(id, requested) {
+  const now = Date.now();
+  for (const [key, entry] of PREVIEW_TICKETS) if (entry.exp <= now) PREVIEW_TICKETS.delete(key);
+  if (PREVIEW_TICKETS.size >= PREVIEW_TICKET_MAX) PREVIEW_TICKETS.clear();
+  const ticket = randomBytes(24).toString('hex');
+  PREVIEW_TICKETS.set(ticket, { id, path: requested, exp: now + PREVIEW_TTL_MS });
+  return ticket;
+}
+
+// 兑换：一次性，过期即废；返回 { id, path } 或 null。
+export function redeemPreviewTicket(ticket) {
+  const key = String(ticket || '').trim();
+  if (!key) return null;
+  const entry = PREVIEW_TICKETS.get(key) || null;
+  PREVIEW_TICKETS.delete(key);
+  if (!entry || entry.exp <= Date.now()) return null;
+  return entry;
+}
+
+// 预览文档的响应头：放行内联脚本与样式（设计稿交互需要），其余默认全禁；仍可被沙箱 iframe 安全嵌。
+export function sendPreviewHtml(res, html) {
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+    'cache-control': 'no-store',
+    'x-frame-options': 'SAMEORIGIN',
+  });
+  res.end(String(html ?? ''));
+}
+
+async function previewTicketRoute(res, url, route, ctx) {
+  const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
+  const requested = String(url.searchParams.get('path') || '');
+  if (!requested) return jsonResponse(res, 400, { error: '缺少产物路径' });
+  // 先做一次受路径白名单保护的读取：文件不存在/越界在此失败，不给无效票据。
+  await ctx.config.schedulingSessions.readSessionArtifact(id, requested);
+  const ticket = issuePreviewTicket(id, requested);
+  jsonResponse(res, 200, { device: ctx.device, ticket, url: '/mobile/preview?ticket=' + ticket });
 }
 
 // 全局产物聚合：跨会话汇总，与网页同一份扫描逻辑（src/artifacts.mjs），按时间倒序并封顶。
@@ -388,6 +436,7 @@ async function executeWrite(route, req, res, url, ctx) {
     if (route.key === 'artifacts') return await artifactsRoute(res, ctx);
     if (route.key === 'session-artifacts') return await sessionArtifactsRoute(res, url, route, ctx);
     if (route.key === 'session-artifact-file') return await sessionArtifactFileRoute(res, url, route, ctx);
+    if (route.key === 'preview-ticket') return await previewTicketRoute(res, url, route, ctx);
     if (route.key.startsWith('session-queue-')) return await sessionQueueRoute(res, url, route, ctx, body, req);
     jsonResponse(res, 501, { error: '该写操作尚未实现', route: route.key, declared: true });
   } catch (error) {

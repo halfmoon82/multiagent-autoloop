@@ -42,6 +42,12 @@ export function mobileSessionArtifactsUrl(base, id) {
   if (!raw) throw new MobileShellError('SESSION_NOT_FOUND', '会话不存在或已归档');
   return new URL('/api/mobile/sessions/' + encodeURIComponent(raw) + '/artifacts', base).toString();
 }
+export function mobilePreviewTicketUrl(base, id) {
+  const raw = String(id ?? '').trim();
+  if (!raw) throw new MobileShellError('SESSION_NOT_FOUND', '会话不存在或已归档');
+  return new URL('/api/mobile/sessions/' + encodeURIComponent(raw) + '/preview-ticket', base).toString();
+}
+
 export function mobileSessionArtifactFileUrl(base, id, path) {
   const raw = String(id ?? '').trim();
   if (!raw) throw new MobileShellError('SESSION_NOT_FOUND', '会话不存在或已归档');
@@ -161,6 +167,33 @@ export function shouldAutoRetry(error, state) {
   return state.connection === 'error';
 }
 
+// 复制到剪贴板：旧鸿蒙 WebView 上 navigator.clipboard 常静默失败（2026-11-24 真机：
+// 点复制毫无反应）。降级链：clipboard API → 隐藏 textarea + execCommand('copy')；全程返回是否成功。
+export async function copyText(text, doc = globalThis.document) {
+  const value = String(text ?? '');
+  try {
+    if (globalThis.navigator?.clipboard?.writeText) {
+      await globalThis.navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch { /* 落下降级链 */ }
+  try {
+    if (!doc || typeof doc.createElement !== 'function') return false;
+    const area = doc.createElement('textarea');
+    area.value = value;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    (doc.body || doc.documentElement).appendChild(area);
+    area.select();
+    const ok = typeof doc.execCommand === 'function' && doc.execCommand('copy') === true;
+    area.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 // 移动端客户端：所有请求都钉在固定路径上，设备凭证只放在 x-device-token 头里。
 // onTransportError：任何请求连不上控制台（网络层失败）时回调，供断联重连控制器立即探测；
 // 只上报「连不上」这一事实，不带 URL、凭证或响应内容。
@@ -243,6 +276,14 @@ export function createMobileClient({ base, state = new ShellState(), tokenStore 
       const token = await tokenStore.get();
       if (!token) throw new MobileShellError('DEVICE_NOT_BOUND', '尚未绑定设备，请先扫码绑定');
       return request(mobileSessionArtifactFileUrl(origin, id, path), { token });
+    },
+    // A+ 预览：换一次性票据（服务端已校验文件存在），返回 { ticket, url }；iframe src=url。
+    async sessionPreviewTicket(id, path) {
+      const token = await tokenStore.get();
+      if (!token) throw new MobileShellError('DEVICE_NOT_BOUND', '尚未绑定设备，请先扫码绑定');
+      const url = new URL(mobilePreviewTicketUrl(origin, id));
+      url.searchParams.set('path', String(path ?? ''));
+      return request(url.toString(), { method: 'POST', body: {}, token });
     },
   };
 }

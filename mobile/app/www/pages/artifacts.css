@@ -101,3 +101,7 @@
     overflow-y: auto;
   }
 }
+
+/* A+ 预览：沙箱 iframe 占满阅读区宽度，禁脚本时内容仍是可读纯排版。 */
+.artifacts-preview { margin-top: 0.6rem; }
+.artifacts-preview-frame { width: 100%; height: 62vh; border: 1px solid var(--line); border-radius: 0.6rem; background: #fff; }

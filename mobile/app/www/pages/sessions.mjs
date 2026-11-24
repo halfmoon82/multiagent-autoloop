@@ -2,6 +2,7 @@
 // 页面只改 #page-sessions 容器，跨页互调走 ctx.hooks；所有上游文本用 textContent 渲染，不拼接 HTML。
 // 视图模型经相对路径 ../src/... 加载（受限静态服务 /mobile/src/）；Node 下不装配 DOM。
 import { renderIcons } from '../icons.mjs';
+import { copyText } from '../shell.mjs';
 
 const loadViewModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
@@ -721,8 +722,15 @@ export function mount(ctx) {
     menu.hidden = false;
   }
   menuCopy.addEventListener('click', () => {
-    if (state.menuText && navigator.clipboard?.writeText) void navigator.clipboard.writeText(state.menuText).catch(() => {});
+    const text = state.menuText;
     menu.hidden = true;
+    if (!text) return;
+    void copyText(text, document).then(ok => {
+      if (ok) return;
+      // 失败要给可见反馈：真机上 clipboard 静默失败曾让用户以为"复制了其实没有"。
+      menuCopy.textContent = '复制失败，请长按选择复制';
+      setTimeout(() => { menuCopy.textContent = '复制'; }, 2000);
+    });
   });
   document.addEventListener('click', event => {
     if (!menu.hidden && !menu.contains(event.target)) menu.hidden = true;

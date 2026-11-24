@@ -25,7 +25,7 @@ import { createDagService, DagServiceError, withHubUsage, collectHubRuns } from 
 import { CardDelegateError, createCardDelegateStore, delegateOpenCard, settleDelegations } from './card-delegate.mjs';
 import { getCardRouting, CardFilterError } from './card-routing.mjs';
 import { createDeviceStore, DeviceAuthError } from './device-auth.mjs';
-import { handleMobileWrite } from './mobile-write.mjs';
+import { handleMobileWrite, redeemPreviewTicket, sendPreviewHtml } from './mobile-write.mjs';
 import { createWhisperTranscriber, audioExtension, parseMultipartAudio, WhisperError, MAX_AUDIO_BYTES } from './whisper-transcribe.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -258,6 +258,11 @@ async function handleApi(config, req, res, url) {
   let sessionMatch;
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/artifacts$/))) return jsonResponse(res, 200, { files: await config.schedulingSessions.listSessionArtifacts(decodeURIComponent(sessionMatch[1])) });
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/file$/))) return jsonResponse(res, 200, await config.schedulingSessions.readSessionArtifact(decodeURIComponent(sessionMatch[1]), String(url.searchParams.get('path') || '')));
+  if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/preview$/))) {
+    // A+ 产物预览：同源 GET（与 download 同姿态），HTML 流带独立宽松 CSP，配合 sandbox="allow-scripts" iframe。
+    const file = await config.schedulingSessions.readSessionArtifact(decodeURIComponent(sessionMatch[1]), String(url.searchParams.get('path') || ''));
+    return sendPreviewHtml(res, file.content);
+  }
   if (req.method === 'GET' && (sessionMatch = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/download$/))) {
     // 二进制交付物下载：只做 attachment 流式输出（nosniff，不内联渲染），路径校验同产物读取。
     const file = await config.schedulingSessions.resolveSessionDownload(decodeURIComponent(sessionMatch[1]), String(url.searchParams.get('path') || ''));
@@ -554,6 +559,13 @@ export function createConsoleServer(config, schedulingSessions) {
     if (asset && req.method === 'GET') {
       try { const body = readFileSync(path.join(PUBLIC, asset[0])); res.writeHead(200, { ...securityHeaders(), 'content-type': asset[1] }); return res.end(body); }
       catch { return jsonResponse(res, 404, { error: '控制台资源尚未安装' }); }
+    }
+    // A+ 产物预览兑换：一次性票据 → HTML 流（iframe src 带不了设备头，票据在写路由里设备鉴权换发）。
+    if (url.pathname === '/mobile/preview' && req.method === 'GET') {
+      const entry = redeemPreviewTicket(url.searchParams.get('ticket'));
+      if (!entry) return jsonResponse(res, 404, { error: '预览凭证无效或已过期，请重试' });
+      const file = await config.schedulingSessions.readSessionArtifact(entry.id, entry.path);
+      return sendPreviewHtml(res, file.content);
     }
     const mobileAsset = MOBILE_FILES.get(url.pathname);
     if (mobileAsset && req.method === 'GET') {

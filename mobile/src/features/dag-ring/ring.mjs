@@ -28,6 +28,8 @@ function ringCard(run, summary) {
     waves: array(data.waves),
     nodes: array(data.nodes),
     summary: object(data.summary),
+    usageText: text(summary.usageText),
+    prs: array(summary.prs).map(p => ({ nodeId: text(object(p).nodeId), prUrl: text(object(p).prUrl) })).filter(p => p.prUrl),
     empty: Boolean(data.empty),
     emptyReason: data.emptyReason || null,
     selected: false,

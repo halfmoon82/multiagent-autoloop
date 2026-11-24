@@ -11,6 +11,7 @@ import { createPlanDigest, loadVibePlan } from './vibe-plan.mjs';
 import { defaultGit } from './git-safe.mjs';
 import { ensureMirror } from './dag-mirror.mjs';
 import { buildDagRing } from './dag-model.mjs';
+import { formatUsage, sumUsage } from '../public/dag-model.mjs';
 import { freezeDesignBaseline } from './design-baseline.mjs';
 import { smokeApprovedDesign as defaultSmokeApprovedDesign, verifyDesign as defaultVerifyDesign } from './design-verify.mjs';
 
@@ -131,6 +132,10 @@ export function mobileDagSummaries(runs = [], nodeRuns = []) {
       createdAt: String(raw.createdAt ?? '').trim() || null,
       remoteUrl: String(raw.remoteUrl ?? grant?.remoteUrl ?? '').trim() || null,
       nodeCount: nodes.length,
+      usageText: formatUsage(sumUsage(mine)),
+      prs: (Array.isArray(raw.prs) ? raw.prs : [])
+        .map(entry => ({ nodeId: String(entry?.nodeId ?? '').trim(), prUrl: String(entry?.prUrl ?? '').trim() }))
+        .filter(entry => entry.prUrl),
       files: [...new Set(nodes.flatMap(node => (Array.isArray(node?.contract?.files) ? node.contract.files.map(String) : [])))],
       planDigest: String(grant?.planDigest ?? raw.planDigest ?? '').trim() || null,
       allowedActions: Array.isArray(grant?.allowedActions) ? [...grant.allowedActions].map(String).sort() : [],
