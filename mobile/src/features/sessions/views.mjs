@@ -5,6 +5,7 @@
 // 本节点只读展示 + 生成恢复请求，不启动会话、不写存档、不发请求，调用方负责执行并回传结果。
 
 import { collection } from '../../core/contract.mjs';
+import { pollIntervalMs, isResponding } from '../composer-autogrow/autogrow.mjs';
 import {
   SESSION_KINDS, SESSION_KIND_FILTERS, sessionKindLabel, RESTORE_INJECTED_TURNS,
 } from './contract.mjs';
@@ -244,5 +245,29 @@ export function createCloseConfirm() {
       return 'ignore';
     },
     reset() { state = 'idle'; },
+  };
+}
+
+// ---- 输入区视图模型（composer-ux）：发送后即时响应态、自适应轮询、页面隐藏暂停、liveText 流式气泡 ----
+// 乐观上屏（sendMessage 发送中→成功/可重试）由 composer-autogrow 的 optimisticMessage/settleMessage 承载；
+// 这里只把「现在该是什么状态」算成纯对象，页面按它渲染，不发请求。
+export function mergeLiveText(frames) {
+  return (Array.isArray(frames) ? frames : []).map(frame => String(frame ?? '')).join('');
+}
+export function buildComposerView({ session = null, respondingSince = 0, hidden = false, now = Date.now() } = {}) {
+  const responding = isResponding(respondingSince, now);
+  const pollMs = pollIntervalMs({
+    hidden: hidden === true, // 页面隐藏（document.hidden / visibilitychange）暂停轮询
+    busy: session?.busy === true,
+    turnStartedAt: session?.turnStartedAt || null,
+    responding,
+  });
+  const live = typeof session?.liveText === 'string' ? session.liveText : '';
+  return {
+    responding: responding || session?.busy === true,
+    paused: pollMs === null,
+    pollMs,
+    // 流式气泡：与网页「正在输出…」等效；无 liveText 则不出气泡
+    stream: live ? { role: '会话', text: live, at: '', streaming: true } : null,
   };
 }
