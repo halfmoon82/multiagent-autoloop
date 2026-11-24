@@ -30,6 +30,9 @@ import java.util.regex.Pattern;
 @CapacitorPlugin(name = "AutoloopSecureStorage")
 public class AutoLoopSecureStorage extends Plugin {
   private static final String PREFS_NAME = "autoloop_secure_prefs";
+  // Keystore 失效（部分 ROM 覆盖安装后废密钥）时的落盘兜底：普通私有 SharedPreferences。
+  // 安全性降级但仍在应用沙箱内；换来的是绑定凭证跨冷启动存活——否则每次杀 App 都回绑定页（2026-11-24 真机）。
+  private static final String PREFS_FALLBACK_NAME = "autoloop_secure_prefs_plain";
   private static final String KEY_DEVICE_TOKEN = "device_token";
   private static final String KEY_CONSOLES = "consoles";
   private static final String KEY_CURRENT_CONSOLE = "current-console";
@@ -67,7 +70,8 @@ public class AutoLoopSecureStorage extends Plugin {
     }
     JSObject result = new JSObject();
     if (keystoreFailed) {
-      result.put("value", memoryTokens.get(key));
+      String plain = readPlain(getContext(), key);
+      result.put("value", plain != null ? plain : memoryTokens.get(key));
       result.put("error", ERR_STORAGE);
       call.resolve(result);
       return;
@@ -77,7 +81,8 @@ public class AutoLoopSecureStorage extends Plugin {
       call.resolve(result);
     } catch (Exception e) {
       keystoreFailed = true;
-      result.put("value", memoryTokens.get(key));
+      String plain = readPlain(getContext(), key);
+      result.put("value", plain != null ? plain : memoryTokens.get(key));
       result.put("error", ERR_STORAGE);
       call.resolve(result);
     }
@@ -98,16 +103,20 @@ public class AutoLoopSecureStorage extends Plugin {
     }
     if (keystoreFailed) {
       memoryTokens.put(key, token);
+      writePlain(getContext(), key, token);
       result.put("error", ERR_STORAGE);
       call.resolve(result);
       return;
     }
     try {
       prefs(getContext()).edit().putString(key, token).apply();
+      // 同步镜像到兜底存储：Keystore 日后失效时旧凭证仍可读，不再丢绑定。
+      writePlain(getContext(), key, token);
       call.resolve(result);
     } catch (Exception e) {
       keystoreFailed = true;
       memoryTokens.put(key, token);
+      writePlain(getContext(), key, token);
       result.put("error", ERR_STORAGE);
       call.resolve(result);
     }
@@ -121,6 +130,7 @@ public class AutoLoopSecureStorage extends Plugin {
       return;
     }
     memoryTokens.remove(key);
+    removePlain(getContext(), key);
     JSObject result = new JSObject().put("ok", true);
     if (keystoreFailed) {
       result.put("error", ERR_STORAGE);
@@ -168,10 +178,35 @@ public class AutoLoopSecureStorage extends Plugin {
    */
   static String readToken(Context context) throws Exception {
     if (context == null) return null;
-    SharedPreferences prefs = prefs(context);
-    String key = currentTokenKey(prefs);
-    if (key != null) return prefs.getString(key, null);
-    return prefs.getString(KEY_DEVICE_TOKEN, null);
+    // Keystore 已废的设备读不了加密文件：改从兜底存储按同一键规则取，绝不带错令牌发请求。
+    SharedPreferences store;
+    try {
+      store = prefs(context);
+    } catch (Exception keystoreBroken) {
+      store = plain(context);
+    }
+    String key = currentTokenKey(store);
+    if (key != null) return store.getString(key, null);
+    return store.getString(KEY_DEVICE_TOKEN, null);
+  }
+
+  private static SharedPreferences plain(Context context) {
+    return context.getSharedPreferences(PREFS_FALLBACK_NAME, Context.MODE_PRIVATE);
+  }
+
+  private static String readPlain(Context context, String key) {
+    if (context == null || key == null) return null;
+    try { return plain(context).getString(key, null); } catch (Exception ignored) { return null; }
+  }
+
+  private static void writePlain(Context context, String key, String value) {
+    if (context == null || key == null) return;
+    try { plain(context).edit().putString(key, value).apply(); } catch (Exception ignored) { /* 兜底也失败只丢持久化 */ }
+  }
+
+  private static void removePlain(Context context, String key) {
+    if (context == null || key == null) return;
+    try { plain(context).edit().remove(key).apply(); } catch (Exception ignored) { }
   }
 
   private static SharedPreferences prefs(Context context) throws Exception {

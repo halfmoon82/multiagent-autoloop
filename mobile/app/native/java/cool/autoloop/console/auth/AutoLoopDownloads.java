@@ -47,6 +47,8 @@ public class AutoLoopDownloads extends Plugin {
 
     DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
     request.addRequestHeader("x-device-token", token);
+    // 服务端移动网关写/读路由校验一律要求控制台请求标记（x-device-token 只管设备鉴权）。
+    request.addRequestHeader("x-console-request", "1");
     request.setTitle(name);
     request.setDescription("正在下载 " + name);
     request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);

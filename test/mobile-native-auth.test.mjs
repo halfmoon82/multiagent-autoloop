@@ -159,6 +159,21 @@ test('安全存储桥把 Capacitor 的 JSObject 解包成 H5 期望的原始 tok
 
 // ---------- RED 4：系统下载管理器 + x-device-token ----------
 
+// ---------- Keystore 失效兜底：普通私有 SharedPreferences，凭证跨冷启动存活 ----------
+test('AutoLoopSecureStorage：Keystore 失效时读写降级普通私有 prefs，绑定凭证不再随杀 App 丢失', () => {
+  const src = readAuth('AutoLoopSecureStorage.java');
+  assert.match(src, /PREFS_FALLBACK_NAME\s*=\s*"autoloop_secure_prefs_plain"/);
+  assert.match(src, /SharedPreferences plain\(Context context\)/);
+  assert.match(src, /readPlain\(getContext\(\), key\)/, 'keystoreFailed 读路径必须查兜底存储');
+  assert.match(src, /writePlain\(getContext\(\), key, token\)/, '写路径必须镜像兜底存储');
+  assert.match(src, /removePlain\(getContext\(\), key\)/, '删除必须同步清兜底');
+  assert.match(src, /prefs\(context\);\s*\}\s*catch \(Exception keystoreBroken\) \{\s*store = plain\(context\);/, 'readToken 必须在 Keystore 抛错时改读兜底');
+  // 加密存储仍为主：成功路径先写 EncryptedSharedPreferences 再镜像。
+  const setOk = src.indexOf('prefs(getContext()).edit().putString(key, token).apply();');
+  const mirror = src.indexOf('writePlain(getContext(), key, token);', setOk);
+  assert.ok(setOk > 0 && mirror > setOk, '成功写入必须先加密存储后镜像兜底');
+});
+
 test('AutoloopDownload.start 从安全存储取令牌，经 DownloadManager 下载到「下载」并发完成通知', () => {
   const src = readAuth('AutoLoopDownloads.java');
   assert.match(src, /@CapacitorPlugin\(name\s*=\s*"AutoloopDownload"\)/);
@@ -166,6 +181,7 @@ test('AutoloopDownload.start 从安全存储取令牌，经 DownloadManager 下�
   assert.match(src, /nativeStart/);
   assert.match(src, /DownloadManager\.Request/);
   assert.match(src, /addRequestHeader\s*\(\s*"x-device-token"/);
+  assert.match(src, /addRequestHeader\s*\(\s*"x-console-request"/, '下载请求必须带控制台请求标记，否则服务端写路由 403');
   assert.match(src, /VISIBILITY_VISIBLE_NOTIFY_COMPLETED/);
   assert.match(src, /DIRECTORY_DOWNLOADS/);
   assert.match(src, /AutoLoopSecureStorage\.readToken/);
