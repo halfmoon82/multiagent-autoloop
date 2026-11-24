@@ -389,7 +389,7 @@ test('页面钩子连发的 refresh 在节流窗内只发一次请求；时间�
   const state = fakeState({ phase: 'unlocked', connection: 'online', needsBind: false });
   const hooks = { notify: {} };
   let calls = 0;
-  const ctx = { state, hooks, client: { tokenStore: { get: async () => 't' }, api: async () => { calls += 1; return { cards: [], nodeEvents: [] }; } } };
+  const ctx = { state, hooks, client: { tokenStore: { get: async () => 't' }, api: async name => { if (name === 'state') calls += 1; return name === 'sessions' ? [] : { cards: [], nodeEvents: [] }; } } };
   let clock = 1000;
   mountNotifyPage(ctx, { doc, win, feature: notifyFeature, setTimer: () => 1, clearTimer() {}, now: () => clock });
   await hooks.notify.refresh();

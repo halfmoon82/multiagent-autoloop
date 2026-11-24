@@ -71,7 +71,10 @@ export function buildOverview(snapshot, { now } = {}) {
 
   const dagAvailable = Boolean(snapshot?.available?.['dag-runs']);
   const dagError = snapshot?.errors?.['dag-runs'] || null;
-  const projects = collection(dagAvailable ? array(snapshot.dagRuns).map(run => {
+  // 串行链（如 Health Core）不是 DAG，但同属项目进度，必须与 DAG run 并列展示（真机漏报事故 2026-11-23）。
+  const serialAvailable = Boolean(snapshot?.available?.['serial-progress']);
+  const serialError = snapshot?.errors?.['serial-progress'] || null;
+  const dagItems = dagAvailable ? array(snapshot.dagRuns).map(run => {
     const summary = object(run?.mobileSummary);
     const project = String(summary.project ?? run?.project ?? '').trim();
     const status = String(summary.status ?? run?.status ?? '').trim();
@@ -84,7 +87,24 @@ export function buildOverview(snapshot, { now } = {}) {
       progressAvailable: false,
       dagEntry: { label: '项目 DAG', page: 'dag', runId: String(summary.runId ?? run?.runId ?? '').trim() },
     };
-  }).filter(item => item.runId) : [], dagAvailable ? '暂无项目 DAG 进度' : `DAG 数据缺失：${dagError || '未读取到项目 DAG 进度'}`);
+  }).filter(item => item.runId) : [];
+  const chainItems = serialAvailable ? array(object(snapshot.serial).chains).map(chain => {
+    const project = String(chain?.project ?? '').trim();
+    const nodes = array(chain?.nodes);
+    return {
+      runId: String(chain?.sourceFile ?? '').trim() || null,
+      project, projectLabel: `${projectName(project)}（串行链）`,
+      planId: null,
+      status: 'serial', statusLabel: `${Math.round(Number(chain?.percent) || 0)}%`,
+      nodeCount: nodes.length,
+      progressAvailable: false,
+      dagEntry: null,
+    };
+  }).filter(item => item.runId && item.project) : [];
+  const projectItems = [...dagItems, ...chainItems];
+  const projects = collection(projectItems, dagAvailable || serialAvailable
+    ? '暂无项目进度'
+    : `DAG 数据缺失：${dagError || '未读取到项目 DAG 进度'}；${serialError || '串行进度数据缺失，未读取到串行链进度'}`);
 
   const sorted = [...runs].sort((a, b) => String(b?.finishedAt || b?.createdAt || '').localeCompare(String(a?.finishedAt || a?.createdAt || '')));
   const activity = collection(sorted.slice(0, 5).map(run => ({

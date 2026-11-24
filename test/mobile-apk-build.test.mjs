@@ -1,5 +1,5 @@
 // apk-release-script 节点边界测试：授权后生成平台并注入 CAMERA/相机硬件声明、minSdk=23、
-// 让内置 App 同源加载远程 /mobile/，再用仓库外密钥库 zipalign + apksigner 签名并产出 sha256。
+// 内置壳加载本地 www（不烧死控制台地址，API 走原生 HTTP），再用仓库外密钥库 zipalign + apksigner 签名并产出 sha256。
 // 全程用临时目录 + PATH 上的假命令，不调用真 SDK/密钥库、不改真实仓库文件。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,8 +19,7 @@ const VARS_REL = path.join('android', 'variables.gradle');
 const ASSET_CFG_REL = path.join('android', 'app', 'src', 'main', 'assets', 'capacitor.config.json');
 const UNSIGNED_REL = path.join('android', 'app', 'build', 'outputs', 'apk', 'release', 'app-release-unsigned.apk');
 const SIGNED_REL = path.join('work', 'apk', 'nomoto-release.apk');
-const CONSOLE_URL = 'https://auto.socialmore.net/mobile/';
-const CONSOLE_HOST = 'auto.socialmore.net';
+const LOCAL_SHELL_URL = 'https://localhost/';
 
 function shLog(file, prefix) {
   return `#!/bin/sh\nprintf '%s\\n' "${prefix} $*" >> ${JSON.stringify(file)}\n`;
@@ -134,6 +133,11 @@ function makeSandbox() {
     writeFileSync(classFile, 'fake-class-bytes');
   }
 
+  // 页面视图模型（mobile/src 的最小替身）：构建期拷进 assets/public/src。
+  const mobileSrc = path.join(dir, 'mobile-src');
+  mkdirSync(path.join(mobileSrc, 'core'), { recursive: true });
+  writeFileSync(path.join(mobileSrc, 'core', 'index.mjs'), 'export const ok = true;\n');
+
   // 仓库外密钥库（仅存在于临时目录，绝不入库）。
   writeFileSync(path.join(dir, 'release.jks'), 'fake-keystore-bytes');
   copyFileSync(BUILD_SCRIPT, path.join(dir, 'build-apk.mjs'));
@@ -154,6 +158,7 @@ function runBuild(box, overrides = {}, { authorized = true } = {}) {
     AUTOLOOP_APK_ZIPALIGN: 'zipalign',
     AUTOLOOP_APK_APKSIGNER: 'apksigner',
     PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
+    AUTOLOOP_MOBILE_SRC_DIR: path.join(dir, 'mobile-src'),
     ...overrides,
   };
   if (authorized) env.AUTOLOOP_APK_BUILD_AUTHORIZED = '1';
@@ -196,15 +201,20 @@ test('授权构建把 minSdk 从默认 22 提升到 23', () => {
   }
 });
 
-// --- RED 3：App 同源加载远程 /mobile/，allowNavigation 仅含该主机 ---
-test('授权构建让 capacitor server.url 指向 /mobile/ 且 allowNavigation 仅含控制台主机', () => {
+// --- RED 3（console-hub 改）：不烧死控制台地址——加载本地壳、不放行远程导航、API 走原生 HTTP ---
+test('授权构建不把控制台地址烧进 APK：无 server.url/allowNavigation，启用 CapacitorHttp 并拷入 mobile/src', () => {
   const box = makeSandbox();
   try {
     ok(runBuild(box));
     const cfg = JSON.parse(readFileSync(path.join(box.dir, ASSET_CFG_REL), 'utf8'));
-    assert.equal(cfg.server.url, CONSOLE_URL);
+    assert.equal(cfg.server.url, undefined, '不得把单个控制台地址烧进 server.url');
+    assert.equal(cfg.server.allowNavigation, undefined, '本地壳不放行任何远程导航');
     assert.equal(cfg.server.androidScheme, 'https');
-    assert.deepEqual(cfg.server.allowNavigation, [CONSOLE_HOST]);
+    assert.equal(cfg.server.errorPath, 'offline.html');
+    assert.equal(cfg.plugins?.CapacitorHttp?.enabled, true, '连接控制台的请求走原生 HTTP');
+    assert.doesNotMatch(readFileSync(BUILD_SCRIPT, 'utf8'), /socialmore/, '构建脚本不得含固定控制台地址');
+    const copied = path.join(box.dir, 'android', 'app', 'src', 'main', 'assets', 'public', 'src', 'core', 'index.mjs');
+    assert.ok(existsSync(copied), 'mobile/src 视图模型应拷入本地壳 assets/public/src');
     // 构建期只改生成产物的配置，不写回被跟踪的源 capacitor.config.json。
     const source = JSON.parse(readFileSync(path.join(box.dir, 'capacitor.config.json'), 'utf8'));
     assert.equal(source.server.url, undefined);
@@ -323,13 +333,14 @@ test('授权构建把 native/java 源码拷入生成的 android 工程', () => {
   }
 });
 
-// --- RED 12：offline.html 的 meta 被注入远程 /mobile/ 地址 ---
-test('授权构建把远程 /mobile/ 地址写入内置 offline.html 的 meta', () => {
+// --- RED 12（console-hub 改）：offline.html 的重试回到本地壳入口，不指向固定控制台 ---
+test('授权构建把本地壳入口写入内置 offline.html 的 meta', () => {
   const box = makeSandbox();
   try {
     ok(runBuild(box));
     const html = readFileSync(path.join(box.dir, 'android', 'app', 'src', 'main', 'assets', 'public', 'offline.html'), 'utf8');
-    assert.match(html, /name="autoloop-console-mobile-url" content="https:\/\/auto\.socialmore\.net\/mobile\/"/);
+    assert.ok(html.includes(`name="autoloop-console-mobile-url" content="${LOCAL_SHELL_URL}"`));
+    assert.doesNotMatch(html, /socialmore/);
   } finally {
     rmSync(box.dir, { recursive: true, force: true });
   }

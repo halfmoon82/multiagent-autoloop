@@ -131,7 +131,7 @@ test('浏览器：详情页实时显示本轮 liveText；返回列表时列表�
   await page.locator('#app-main').waitFor({ state: 'visible' });
   await page.locator('[data-tab="sessions"]').click();
   await page.locator('.sessions-item').first().waitFor({ state: 'visible' });
-  const statusBefore = await page.locator('.sessions-item .sessions-meta').first().textContent();
+  const statusBefore = await page.locator('.sessions-item .status-chip').first().textContent();
   await page.locator('.sessions-item').first().click();
   await page.locator('.sessions-composer-input').waitFor({ state: 'visible' });
 
@@ -146,7 +146,64 @@ test('浏览器：详情页实时显示本轮 liveText；返回列表时列表�
   assert.deepEqual(bubbles, ['你好', '第一个分片，完整回复'], '落定后流式气泡被替换，不重复');
 
   await page.locator('.sessions-back').first().click();
-  const statusAfter = await page.locator('.sessions-item .sessions-meta').first().textContent();
+  const statusAfter = await page.locator('.sessions-item .status-chip').first().textContent();
   assert.notEqual(statusAfter, statusBefore, `返回列表应显示轮询后的新状态：${statusBefore} → ${statusAfter}`);
+  assert.deepEqual(pageErrors, []);
+});
+
+// 审阅 P1：main 的发送入口 sendComposer 发完后 await refreshSessionState()，即整页 load
+// （projects/state/sessions/archives 四次往返）。合并后提速逻辑必须接进 sendComposer：
+// 发完不再整页刷新，改为快拍只读活跃会话，首个分片尽快出现。
+test('浏览器：发送后不整页刷新（不读存档），首个分片很快出现在详情页', { skip: browserSkip }, async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'mobile-latency-send-'));
+  const hub = await fakeHub((req, res) => json(res, req.url === '/v1/state' ? { runs: [], cards: [], lines: [], spending: {} } : { ok: true }));
+  const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'server-secret', host: '127.0.0.1', root, deviceAuth, projectRoots: [root] });
+  const url = await listen(server);
+  const browser = await chromium.launch({ headless: true });
+  t.after(async () => { await browser.close(); await close(server); await close(hub.server); rmSync(root, { recursive: true, force: true }); });
+  const page = await (await browser.newContext({ viewport: { width: 390, height: 800 } })).newPage();
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    let stored = null;
+    window.AutoloopSecureStorage = { async get() { return stored; }, async set(value) { stored = value; }, async remove() { stored = null; } };
+    window.AutoloopBiometric = { async verify() { return true; } };
+  });
+  const session = { id: 's1', prompt: '发送路径会话', project: root, kind: 'normal', status: 'idle', liveText: '', messages: [], updatedAt: '2026-11-24T00:00:00Z' };
+  let sentAt = 0;
+  let archivesAfterSend = 0;
+  let sentBody = null;
+  await page.route('**/api/mobile/api/sessions', route => {
+    // 模拟服务端：发送后即转为运行中，首个分片在 600ms 后到达。
+    if (sentAt) { session.status = 'running'; if (Date.now() - sentAt >= 600) session.liveText = '首个分片'; }
+    return route.fulfill({ json: { sessions: [structuredClone(session)] } });
+  });
+  await page.route('**/api/mobile/api/session-archives', route => { if (sentAt) archivesAfterSend += 1; return route.fulfill({ json: { sessions: [] } }); });
+  await page.route('**/api/mobile/sessions/s1/messages', route => {
+    sentBody = JSON.parse(route.request().postData() || '{}');
+    session.messages = [{ role: 'user', text: sentBody.text, at: '2026-11-24T00:00:01Z' }];
+    sentAt = Date.now();
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.goto(`${url}/mobile/`);
+  await page.waitForFunction(() => Boolean(window.AutoloopHooks));
+  await page.locator('#bind-payload').fill(deviceAuth.createBinding().qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  await page.locator('[data-tab="sessions"]').click();
+  await page.locator('.sessions-item').first().waitFor({ state: 'visible' });
+  await page.locator('.sessions-item').first().click();
+  await page.locator('.sessions-composer-input').waitFor({ state: 'visible' });
+
+  await page.locator('.sessions-composer-input').fill('你好');
+  await page.locator('.sessions-send').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.sessions-bubble')].some(el => el.textContent === '首个分片'), null, { timeout: 4000 });
+  const firstChunkMs = Date.now() - sentAt;
+  assert.equal(sentBody?.text, '你好');
+  assert.ok(firstChunkMs < 3000, `首个分片应在 3s 内出现，实际 ${firstChunkMs}ms`);
+  assert.equal(archivesAfterSend, 0, '发送后不应整页刷新去读存档');
   assert.deepEqual(pageErrors, []);
 });

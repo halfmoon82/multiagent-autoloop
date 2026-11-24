@@ -57,6 +57,16 @@ test('无依据、低置信、规则冲突一律 unknown', () => {
   assert.equal(conflict.autoRoute, false);
 });
 
+test('产品决策卡只含“修复”一词不自动路由（2026-11-24 事故回归）', () => {
+  const c = card('NoMoTo 修复批：先补界面验收材料，还是暂停这批修复？', '这批修复共 13 个任务，计划已备好，不决定的话影响整体交付进度', { id: 153 });
+  const d = routeCard(c, ctx());
+  assert.notEqual(d.route, 'scheduler');
+  assert.equal(d.autoRoute, false);
+  const stillEng = routeCard(card('是否修复保存报错', '堆栈见日志'), ctx());
+  assert.equal(stillEng.route, 'scheduler');
+  assert.equal(stillEng.autoRoute, true);
+});
+
 test('模型故障或与规则冲突进入 unknown，不改卡', async () => {
   const c = card('修复失败的测试');
   const original = JSON.stringify(c);

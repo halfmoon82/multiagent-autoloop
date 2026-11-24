@@ -1,6 +1,8 @@
 // 会话页：把 sessions / question-group 的只读视图模型接到 App 壳。
 // 页面只改 #page-sessions 容器，跨页互调走 ctx.hooks；所有上游文本用 textContent 渲染，不拼接 HTML。
 // 视图模型经相对路径 ../src/... 加载（受限静态服务 /mobile/src/）；Node 下不装配 DOM。
+import { renderIcons } from '../icons.mjs';
+
 const loadViewModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/sessions/index.mjs');
@@ -11,6 +13,12 @@ const loadQuestionModel = typeof window === 'undefined'
 const loadAutogrow = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/composer-autogrow/index.mjs');
+
+// 通知接线：点击通知打开具体会话（takePendingSession / open-session），进出详情登记正在看的会话（setActiveSession）。
+const loadNotifyModel = typeof window === 'undefined'
+  ? () => Promise.resolve(null)
+  : () => import('../src/features/notifications/index.mjs');
+const OPEN_SESSION_EVENT_NAME = 'autoloop:open-session';
 
 export { loadViewModel };
 
@@ -32,6 +40,12 @@ export function mount(ctx) {
   if (!host) return;
 
   const modelPromise = Promise.all([loadViewModel(), loadQuestionModel()]);
+  const notifyPromise = loadNotifyModel().catch(() => null);
+  // 正在看的会话：只有会话页可见且停在详情时才算，其余一律清空（切 Tab、返回列表、进设置页）。
+  const syncActiveSession = () => {
+    const id = !host.hidden && state.view === 'detail' ? state.detailSessionId : null;
+    void notifyPromise.then(nmodel => { nmodel?.setActiveSession?.(window, id); });
+  };
   // 自动长高模块与视图模型并行加载；到位前输入框保持 CSS 最小高度，到位后统一接管。
   let autogrow = null;
   const growers = [];
@@ -48,6 +62,7 @@ export function mount(ctx) {
   let reader = null;
   let write = null;
   let reload = () => {};
+  let pendingOpener = null;
 
   const state = {
     kind: 'all', query: '', archivedExpanded: false, error: '',
@@ -93,44 +108,83 @@ export function mount(ctx) {
   bannerRetry.addEventListener('click', () => { void reload(); });
   banner.appendChild(bannerRetry);
 
-  const filterRow = node('div', { className: 'sessions-filter-row' }, [
-    node('input', {
-      className: 'sessions-search',
-      attrs: { type: 'search', placeholder: '搜索会话（标题、项目）', 'aria-label': '搜索会话' },
-    }),
-    node('button', { type: 'button', className: 'sessions-new-btn', text: '新建会话' }),
+  const heading = node('div', { className: 'page-heading sessions-heading' }, [
+    node('p', { className: 'eyebrow', text: 'SESSIONS' }),
+    node('h1', { className: 'page-title', text: '会话管理' }),
+    node('p', { className: 'page-subtitle', text: '对话、调度与 PRD 设计，各就其位。' }),
   ]);
-  const filters = node('div', { className: 'sessions-filters' });
+  const newButton = node('button', { type: 'button', className: 'sessions-new-btn primary-btn full-btn', text: '＋ 新建会话' });
+  const searchInput = node('input', {
+    className: 'sessions-search',
+    attrs: { type: 'search', placeholder: '搜索会话', 'aria-label': '搜索会话' },
+  });
+  const searchRow = node('div', { className: 'sessions-search-box search-box' }, [
+    node('span', { className: 'search-icon', attrs: { 'data-icon': 'search', 'aria-hidden': 'true' } }),
+    searchInput,
+  ]);
+  const filters = node('div', { className: 'sessions-filters filter-rail' });
   const currentBox = node('div', { className: 'sessions-current' });
   const listBox = node('div', { className: 'sessions-items' });
   const archivedToggle = node('button', { type: 'button', className: 'sessions-archived-toggle' });
   const archivedBox = node('div', { className: 'sessions-archived-list', attrs: { hidden: '' } });
   const listView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'list' } }, [
-    filterRow, filters, currentBox, listBox, archivedToggle, archivedBox,
+    heading, newButton, searchRow, filters, currentBox, listBox, archivedToggle, archivedBox,
   ]);
 
   const detailTitle = node('strong', { className: 'sessions-detail-title' });
+  const detailMeta = node('span', { className: 'sessions-detail-meta' });
   const detailPrompt = node('button', { type: 'button', className: 'sessions-detail-prompt', attrs: { hidden: '' } });
-  const artifactsBtn = node('button', { type: 'button', className: 'sessions-artifacts-btn', text: '本会话产物' });
-  const detailBack = node('button', { type: 'button', className: 'sessions-back', text: '‹ 会话列表' });
+  const artifactsBtn = node('button', { type: 'button', className: 'sessions-artifacts-btn' }, [
+    node('span', { attrs: { 'data-icon': 'file', 'aria-hidden': 'true' } }),
+    node('span', { text: '产物' }),
+  ]);
+  const detailBack = node('button', { type: 'button', className: 'sessions-back icon-btn', attrs: { 'aria-label': '返回会话列表' } }, [
+    node('span', { attrs: { 'data-icon': 'back', 'aria-hidden': 'true' } }),
+  ]);
+  const detailHero = node('div', { className: 'sessions-detail-hero' }, [
+    detailBack,
+    node('div', { className: 'sessions-detail-title-block' }, [detailTitle, detailMeta]),
+    artifactsBtn,
+  ]);
+  const detailContext = node('div', { className: 'sessions-context-bar' });
+  const infoToggle = node('button', { type: 'button', className: 'sessions-info-toggle', text: '会话详情', attrs: { 'aria-expanded': 'false' } });
+  const queueToggle = node('button', { type: 'button', className: 'sessions-queue-toggle', attrs: { 'aria-expanded': 'false' } });
+  const sessionTools = node('div', { className: 'sessions-tools' }, [infoToggle, queueToggle]);
+  const infoPanel = node('div', { className: 'sessions-info-panel', attrs: { hidden: '' } }, [detailPrompt]);
+  const queuePanel = node('div', { className: 'sessions-queue-panel', attrs: { hidden: '' } });
+  const pendingStrip = node('button', { type: 'button', className: 'sessions-pending-strip', attrs: { hidden: '' } });
+  pendingStrip.addEventListener('click', () => { questionBox.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
   const questionBox = node('div', { className: 'sessions-question' });
   // 消息区：详情页 flex 列中唯一的滚动区（flex:1; min-height:0; overflow:auto），顶部与输入栏不随消息流滚走。
   const messageWindow = node('div', { className: 'sessions-message-window' });
   const backBottom = node('button', { type: 'button', className: 'sessions-back-bottom', text: '回到底部 ↓', attrs: { hidden: '' } });
   const composerInput = node('textarea', {
     className: 'sessions-composer-input',
-    attrs: { rows: '2', placeholder: '输入回答或消息…', 'aria-label': '输入回答或消息', enterkeyhint: 'send' },
+    attrs: { rows: '2', placeholder: '继续补充，或使用语音…', 'aria-label': '输入回答或消息', enterkeyhint: 'send' },
   });
-  const micBtn = node('button', { type: 'button', className: 'sessions-mic', text: '🎤', attrs: { 'aria-label': '语音输入', hidden: '' } });
-  const composerSend = node('button', { type: 'button', className: 'sessions-send', text: '发送', attrs: { disabled: '' } });
-  const composerRow = node('div', { className: 'sessions-composer' }, [composerInput, micBtn, composerSend]);
-  // 详情页是 flex 列：顶部（标题/提示词/待回答）与输入栏固定，只有消息窗在中间滚动；输入栏常驻底部。
+  const micBtn = node('button', { type: 'button', className: 'sessions-mic mic-btn', attrs: { 'aria-label': '语音输入', hidden: '' } }, [
+    node('span', { attrs: { 'data-icon': 'mic', 'aria-hidden': 'true' } }),
+  ]);
+  const composerSend = node('button', { type: 'button', className: 'sessions-send send-btn', attrs: { disabled: '', 'aria-label': '发送' } }, [
+    node('span', { attrs: { 'data-icon': 'send', 'aria-hidden': 'true' } }),
+  ]);
+  const steerBtn = node('button', { type: 'button', className: 'sessions-steer-btn', text: '打断', attrs: { hidden: '', title: '打断当前轮并立即发送（steer）', 'aria-label': '打断当前轮并立即发送' } });
+  const sendMode = node('span', { className: 'sessions-send-mode', attrs: { hidden: '' } });
+  const attachmentInput = node('input', { className: 'sessions-attachment-input', attrs: { type: 'file', hidden: '', multiple: '', accept: 'image/*,text/*,.md,.json,.mjs,.js,.ts,.css,.html,.csv,.yaml,.yml,.xml,.log,.pdf' } });
+  const attachBtn = node('button', { type: 'button', className: 'sessions-attach-btn', attrs: { 'aria-label': '添加附件', title: '添加文件或图片附件' } }, [
+    node('span', { attrs: { 'data-icon': 'plus', 'aria-hidden': 'true' } }),
+  ]);
+  const attachmentList = node('div', { className: 'sessions-attachments' });
+  // + 附件按钮与发送键同组放在输入框之后：窄屏下输入框优先占宽，+ 不再被挤到独占一行。
+  const composerRow = node('div', { className: 'sessions-composer' }, [
+    sendMode, composerInput, micBtn, steerBtn, attachBtn, composerSend,
+  ]);
+  const queuePreview = node('div', { className: 'sessions-queue-preview', attrs: { hidden: '' } });
   const detailTop = node('div', { className: 'sessions-detail-top' }, [
-    node('div', { className: 'sessions-detail-head' }, [detailBack, detailTitle, artifactsBtn]),
-    detailPrompt, questionBox,
+    detailHero, detailContext, sessionTools, infoPanel, queuePanel, pendingStrip,
   ]);
   const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
-    detailTop, messageWindow, backBottom, composerRow,
+    detailTop, messageWindow, backBottom, queuePreview, attachmentInput, attachmentList, composerRow,
   ]);
 
   const archiveBody = node('div', { className: 'sessions-archive-body' });
@@ -145,19 +199,25 @@ export function mount(ctx) {
     className: 'sessions-new-prompt',
     attrs: { rows: '2', placeholder: '例如：设计移动端控制台并拆解产品需求…', 'aria-label': '首轮提示词' },
   });
-  const newMic = node('button', { type: 'button', className: 'sessions-mic sessions-new-mic', text: '🎤', attrs: { 'aria-label': '语音输入', hidden: '' } });
+  const newMic = node('button', { type: 'button', className: 'sessions-mic sessions-new-mic mic-btn', attrs: { 'aria-label': '语音输入', hidden: '' } }, [node('span', { attrs: { 'data-icon': 'mic', 'aria-hidden': 'true' } })]);
   const newPromptRow = node('div', { className: 'sessions-new-prompt-row' }, [newPrompt, newMic]);
   const newKinds = node('div', { className: 'sessions-new-kinds' });
   const newRecommend = node('p', { className: 'hint sessions-recommend' });
   const newSubmit = node('button', { type: 'button', className: 'primary sessions-new-submit', text: '创建并发送首轮' });
   const newView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'new', hidden: '' } }, [
     node('button', { type: 'button', className: 'sessions-back', text: '‹ 会话列表' }),
+    node('div', { className: 'page-heading sessions-new-heading' }, [
+      node('p', { className: 'eyebrow', text: 'NEW SESSION' }),
+      node('h1', { className: 'page-title', text: '您想做什么？' }),
+      node('p', { className: 'page-subtitle', text: '输入第一句话，系统会推荐会话类型，您也可以手动更改。' }),
+    ]),
     newProjects, newPromptRow, newRecommend, newKinds, newSubmit,
   ]);
 
   const menuCopy = node('button', { type: 'button', text: '复制' });
   const menu = node('div', { className: 'sessions-menu', attrs: { hidden: '' } }, [menuCopy]);
   host.replaceChildren(banner, listView, detailView, archiveView, newView, menu);
+  renderIcons(host);
 
   const views = { list: listView, detail: detailView, archive: archiveView, new: newView };
   let detailTimer = null;
@@ -177,7 +237,8 @@ export function mount(ctx) {
     if (!vv) { detailView.style.height = ''; return; }
     const top = Math.max(0, detailView.getBoundingClientRect().top);
     const bottomGap = Number.parseFloat(getComputedStyle(document.getElementById('app-main') || document.body).paddingBottom) || 0;
-    detailView.style.height = `${Math.max(240, Math.floor(vv.height - top - bottomGap))}px`;
+    const navHeight = document.getElementById('tab-bar')?.getBoundingClientRect().height || 0;
+    detailView.style.height = `${Math.max(240, Math.floor(vv.height - top - bottomGap - navHeight))}px`;
   };
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', () => { fitDetail(); regrow(); });
@@ -189,6 +250,7 @@ export function mount(ctx) {
     if (name !== 'detail' && detailTimer) { clearInterval(detailTimer); detailTimer = null; }
     // 详情轮询只更新数据不重绘隐藏的列表；回到列表时按当前筛选补一次重绘，不显示旧状态。
     if (name === 'list' && state.listStale && state.list) { state.listStale = false; renderList(state.list); }
+    if (name !== 'detail') syncActiveSession();
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
     host.classList.toggle('sessions-detail-open', name === 'detail'); // 详情页自己按视口定高，去掉页面底部留白
     if (name === 'detail') { window.scrollTo(0, 0); fitDetail(); }
@@ -201,6 +263,16 @@ export function mount(ctx) {
     banner.hidden = !text;
   };
 
+  infoToggle.addEventListener('click', () => {
+    infoPanel.hidden = !infoPanel.hidden;
+    infoToggle.setAttribute('aria-expanded', String(!infoPanel.hidden));
+    if (!infoPanel.hidden) renderPrompt(state.session);
+  });
+  queueToggle.addEventListener('click', () => {
+    queuePanel.hidden = !queuePanel.hidden;
+    queueToggle.setAttribute('aria-expanded', String(!queuePanel.hidden));
+  });
+
   const goList = () => {
     if (typeof ctx.hooks?.popView === 'function' && state.view !== 'list') ctx.hooks.popView();
     showView('list');
@@ -209,9 +281,14 @@ export function mount(ctx) {
 
   // ---- 列表 ----
   function sessionItem(item) {
-    const box = node('button', { type: 'button', className: 'sessions-item', attrs: { 'data-session-id': item.id } }, [
-      node('strong', { text: item.title || '会话' }),
-      node('span', { className: 'sessions-meta', text: [item.projectLabel, item.statusLabel, item.kindLabel, item.updatedLabel].filter(Boolean).join(' · ') }),
+    const status = item.status === 'running' ? 'active' : (item.status === 'idle' ? 'done' : 'neutral');
+    const box = node('button', { type: 'button', className: 'sessions-item session-item', attrs: { 'data-session-id': item.id } }, [
+      node('div', { className: 'item-top' }, [
+        node('strong', { className: 'item-title', text: item.title || '会话' }),
+        node('span', { className: 'status-chip', attrs: { 'data-status': status }, text: item.statusLabel || '状态未知' }),
+      ]),
+      node('span', { className: 'item-subtitle', text: [item.projectLabel, item.kindLabel].filter(Boolean).join(' · ') }),
+      node('span', { className: 'item-description', text: [item.updatedLabel, item.queuedCount ? `${item.queuedCount} 条排队消息` : ''].filter(Boolean).join(' · ') }),
     ]);
     box.addEventListener('click', () => { void openSession(item); });
     return box;
@@ -224,14 +301,14 @@ export function mount(ctx) {
         type: 'button',
         className: `sessions-chip${option.id === list.kindFilter.selected ? ' active' : ''}`,
         attrs: { 'data-kind': option.id, 'aria-pressed': String(option.id === list.kindFilter.selected) },
-        text: option.label,
+        text: `${option.label.replace('会话', '')} ${(Array.isArray(state.snapshot?.sessions) ? state.snapshot.sessions : []).filter(item => option.id === 'all' || item.kind === option.id).length}`,
       });
       chip.addEventListener('click', () => { state.kind = option.id; saveContext(); applyFilters(); });
       return chip;
     }));
 
     currentBox.replaceChildren();
-    if (list.current) {
+    if (list.current && !list.sessions.items.some(item => item.id === list.current.id)) {
       const open = node('button', { type: 'button', className: 'sessions-current-open', text: '进入会话 ›' });
       open.addEventListener('click', () => { void openSession(list.current); });
       currentBox.append(
@@ -291,6 +368,7 @@ export function mount(ctx) {
       state.group = qmodel.restoreGroup(state.savedGroup);
     }
     detailTitle.textContent = session.title || '会话';
+    renderDetailMeta(session);
     showView('detail');
     renderQuestion();
     renderMessages();
@@ -298,8 +376,121 @@ export function mount(ctx) {
     if (state.follow) scrollToBottom();
     if (typeof ctx.hooks?.pushView === 'function') ctx.hooks.pushView({ type: 'sessions', view: 'detail', id: session.id });
     state.detailSessionId = session.id;
+    syncActiveSession();
     startDetailPolling();
     saveContext();
+  }
+
+  function renderDetailMeta(session) {
+    detailMeta.textContent = [session?.kindLabel, session?.agent, session?.statusLabel].filter(Boolean).join(' · ');
+    detailContext.textContent = `项目 ${session?.projectLabel || '未识别'} · 会话上下文`;
+    const queue = Array.isArray(session?.queue) ? session.queue : [];
+    queueToggle.textContent = `排队消息 ${queue.length}`;
+    queueToggle.setAttribute('aria-expanded', String(!queuePanel.hidden));
+    steerBtn.hidden = session?.busy !== true;
+    sendMode.hidden = session?.busy !== true;
+    sendMode.textContent = '当前正在执行：默认排队，点「打断」立即 steer';
+    composerSend.setAttribute('aria-label', session?.busy === true ? '排队发送' : '发送');
+    queuePreview.hidden = queue.length === 0;
+    queuePreview.replaceChildren(...queue.map(item => {
+      const chip = node('button', { type: 'button', className: 'queue-chip', text: `${item.id} · ${item.text}`, attrs: { title: '打开队列管理' } });
+      chip.addEventListener('click', () => { queuePanel.hidden = false; queueToggle.setAttribute('aria-expanded', 'true'); });
+      return chip;
+    }));
+    renderQueuePanel(session);
+  }
+
+  function renderQueuePanel(session) {
+    const items = Array.isArray(session?.queue) ? session.queue : [];
+    queuePanel.replaceChildren();
+    const clear = node('button', { type: 'button', className: 'sessions-queue-clear', text: '清空队列', attrs: { disabled: items.length ? '' : 'disabled' } });
+    clear.disabled = items.length === 0;
+    clear.addEventListener('click', () => { void runQueueAction('clearQueued', null); });
+    queuePanel.appendChild(node('div', { className: 'sessions-queue-head' }, [
+      node('strong', { text: `排队消息 · ${items.length}` }), clear,
+    ]));
+    if (!items.length) {
+      queuePanel.appendChild(node('p', { className: 'hint', text: '没有排队消息。忙碌时发送会默认加入队列。' }));
+      return;
+    }
+    items.forEach((item, index) => {
+      const input = node('textarea', { className: 'sessions-queue-input', attrs: { rows: '2', 'aria-label': `编辑排队消息 ${index + 1}` } });
+      input.value = item.text;
+      input.addEventListener('change', () => { void runQueueAction('updateQueued', item, { text: input.value }); });
+      const up = node('button', { type: 'button', text: '上移', attrs: { 'aria-label': `上移第 ${index + 1} 条` } });
+      up.disabled = index === 0;
+      up.addEventListener('click', () => { void runQueueAction('moveQueued', item, { direction: 'up' }); });
+      const down = node('button', { type: 'button', text: '下移', attrs: { 'aria-label': `下移第 ${index + 1} 条` } });
+      down.disabled = index === items.length - 1;
+      down.addEventListener('click', () => { void runQueueAction('moveQueued', item, { direction: 'down' }); });
+      const steer = node('button', { type: 'button', className: 'sessions-queue-steer', text: '立即引导' });
+      steer.addEventListener('click', () => { void runQueueAction('steerQueued', item); });
+      const remove = node('button', { type: 'button', text: '删除' });
+      remove.addEventListener('click', () => { void runQueueAction('removeQueued', item); });
+      queuePanel.appendChild(node('div', { className: 'sessions-queue-item', attrs: { 'data-queue-id': item.id } }, [
+        input,
+        node('div', { className: 'sessions-queue-actions' }, [up, down, steer, remove]),
+      ]));
+    });
+  }
+
+  let pendingAttachments = [];
+  function renderAttachments() {
+    attachmentList.replaceChildren(...pendingAttachments.map((item, index) => {
+      const chip = node('span', { className: 'sessions-attachment-chip' });
+      if (item.type.startsWith('image/')) chip.appendChild(node('img', { className: 'sessions-attachment-image', attrs: { alt: `预览 ${item.name}`, src: `data:${item.type};base64,${item.dataBase64}` } }));
+      chip.appendChild(node('span', { text: `${item.name} · ${Math.ceil(item.size / 1024)}KB` }));
+      const remove = node('button', { type: 'button', text: '移除', attrs: { 'aria-label': `移除附件 ${item.name}` } });
+      remove.addEventListener('click', () => { pendingAttachments.splice(index, 1); renderAttachments(); });
+      chip.appendChild(remove);
+      return chip;
+    }));
+  }
+  function readAttachment(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error(`无法读取附件 ${file.name}`));
+      reader.onload = () => resolve({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, dataBase64: String(reader.result).split(',')[1] || '' });
+      reader.readAsDataURL(file);
+    });
+  }
+  attachmentInput.addEventListener('change', async () => {
+    try {
+      showBanner('');
+      const files = [...(attachmentInput.files || [])];
+      if (pendingAttachments.length + files.length > 4) throw new Error('最多添加 4 个附件');
+      for (const file of files) {
+        if (file.size > 5 * 1024 * 1024) throw new Error(`${file.name} 超过 5MB`);
+        pendingAttachments.push(await readAttachment(file));
+      }
+      attachmentInput.value = '';
+      renderAttachments();
+    } catch (error) {
+      attachmentInput.value = '';
+      showBanner(`添加附件失败：${error?.message || '请重试'}`);
+    }
+  });
+  attachBtn.addEventListener('click', () => { attachmentInput.click(); });
+
+  async function refreshSessionState() {
+    await load({ quiet: true });
+    const current = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
+    if (!current) return;
+    state.session = current;
+    renderDetailMeta(current);
+  }
+
+  async function runQueueAction(action, item, payload = {}) {
+    if (!write || !state.detailSessionId) return;
+    try {
+      showBanner('');
+      const id = state.detailSessionId;
+      if (action === 'clearQueued') await write.clearQueued(id);
+      else await write[action](id, item.id, payload);
+      await refreshSessionState();
+    } catch (error) {
+      showBanner(`队列操作失败：${error?.message || '请重试'}`);
+    }
   }
 
   // 提示词默认折叠成一行（不再钉在顶部挤压转录区），点按展开/收起全文。
@@ -370,17 +561,25 @@ export function mount(ctx) {
         if (followNow) scrollToBottom();
         else messageWindow.scrollTop = keepScroll;
       }
+      state.session = session;
       detailTitle.textContent = session.title || '会话';
+      renderDetailMeta(session);
     } catch { /* 轮询静默失败，等下一轮 */ } finally { refreshing = false; }
   }
 
   function renderQuestion() {
     questionBox.replaceChildren();
+    pendingStrip.hidden = true;
     if (!qmodel || !state.group || !state.group.questions.length) {
-      questionBox.appendChild(node('p', { className: 'hint', text: '当前会话没有需要回答的事项' }));
+      // 普通会话不使用 Hub 问题卡片；没有真实问题时保持干净，不显示误导性的空问题提示。
+      questionBox.hidden = true;
       return;
     }
+    questionBox.hidden = false;
     const binding = qmodel.buildQuestionGroupBinding(state.group);
+    const remaining = Math.max(0, binding.total - binding.answeredCount);
+    pendingStrip.hidden = remaining === 0;
+    if (remaining > 0) pendingStrip.textContent = `还有 ${remaining} 个问题待回答 · 立即定位`;
     const track = node('div', { className: 'sessions-progress-track', attrs: { role: 'progressbar', 'aria-valuenow': binding.percent } });
     for (let i = 0; i < binding.total; i += 1) {
       track.appendChild(node('span', { className: i < binding.answeredCount ? 'done' : '' }));
@@ -500,6 +699,7 @@ export function mount(ctx) {
     messageWindow.replaceChildren();
     if (!total) messageWindow.appendChild(node('p', { className: 'hint', text: '暂无在线转录；可查看归档会话或等待新消息' }));
     else for (const message of state.messages) messageWindow.appendChild(messageNode(message));
+    messageWindow.appendChild(questionBox);
     backBottom.hidden = state.follow;
   }
 
@@ -551,42 +751,51 @@ export function mount(ctx) {
   });
 
   composerInput.value = state.drafts.composer;
-  const updateSend = () => { composerSend.disabled = !(autogrow ? autogrow.canSend(composerInput.value) : composerInput.value.trim().length > 0); };
+  const updateSend = () => { const disabled = !(autogrow ? autogrow.canSend(composerInput.value) : composerInput.value.trim().length > 0); composerSend.disabled = disabled; steerBtn.disabled = disabled; };
   updateSend();
   composerInput.addEventListener('input', () => { state.drafts.composer = composerInput.value; updateSend(); saveContext(); });
+  composerInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      void sendComposer(false);
+    }
+  });
   growLater(composerInput);
   micBtn.addEventListener('click', () => { ctx.hooks?.attachVoice?.(composerInput); });
   newMic.addEventListener('click', () => { ctx.hooks?.attachVoice?.(newPrompt); });
   growLater(newPrompt);
   // 双不可用（无录音能力且无原生识别器）：隐藏所有麦克风，键盘输入不受影响。
   window.addEventListener('autoloop:voice-unavailable', () => { micBtn.hidden = true; newMic.hidden = true; });
-  composerSend.addEventListener('click', () => {
-    void (async () => {
-      const text = composerInput.value.trim();
-      if (!text || !write || !state.session) return;
-      composerSend.disabled = true; // 发送中禁用，结束后按内容重算
-      try {
-        // 真正发送到控制台：此前这里只是本地回显，重开即丢（会话消息从未到达服务器）。
-        await write.sendMessage(state.session.id, { text });
-        state.messages.push({ role: '主人', text, at: '' });
-        composerInput.value = '';
-        composerInput.dispatchEvent(new Event('autoloop-autogrow')); // 发送后回弹到最少行数
-        state.drafts.composer = '';
-        state.follow = true;
-        ctx.hooks?.haptic?.tap?.();
-        renderMessages();
-        scrollToBottom();
-        saveContext();
-        // 刚发出：快照里状态可能还是空闲，先按「等回复」快拍 15s，避免第一拍被空闲间隔推迟到 5s。
-        state.awaitingUntil = Date.now() + 15000;
-        setTimeout(() => { if (state.view === 'detail') void refreshDetail(); }, 800);
-      } catch (error) {
-        showBanner(`发送失败：${error?.message || '请重试'}（内容已保留在输入框）`);
-      } finally {
-        updateSend();
-      }
-    })();
-  });
+  async function sendComposer(interrupt) {
+    const text = composerInput.value.trim();
+    if (!text || !write || !state.session) return;
+    composerSend.disabled = true;
+    steerBtn.disabled = true;
+    try {
+      await write.sendMessage(state.session.id, { text, interrupt, attachments: pendingAttachments });
+      state.messages.push({ role: '主人', text, at: '' });
+      composerInput.value = '';
+      composerInput.dispatchEvent(new Event('autoloop-autogrow'));
+      state.drafts.composer = '';
+      state.follow = true;
+      ctx.hooks?.haptic?.tap?.();
+      renderMessages();
+      scrollToBottom();
+      saveContext();
+      pendingAttachments = [];
+      renderAttachments();
+      // 发完不整页 load（串行 4 次隧道往返）：按「等回复」快拍 15s，首拍 800ms 只读活跃会话，
+      // 本轮 liveText 与忙碌/排队状态都由 refreshDetail 带回。
+      state.awaitingUntil = Date.now() + 15000;
+      setTimeout(() => { if (state.view === 'detail') void refreshDetail(); }, 800);
+    } catch (error) {
+      showBanner(`发送失败：${error?.message || '请重试'}（内容已保留在输入框）`);
+    } finally {
+      updateSend();
+    }
+  }
+  composerSend.addEventListener('click', () => { void sendComposer(false); });
+  steerBtn.addEventListener('click', () => { void sendComposer(true); });
 
   detailPrompt.addEventListener('click', () => {
     state.promptExpanded = state.promptExpanded !== true;
@@ -718,12 +927,12 @@ export function mount(ctx) {
     })();
   });
   newView.querySelector('.sessions-back').addEventListener('click', goList);
-  filterRow.querySelector('.sessions-new-btn').addEventListener('click', () => {
+  newButton.addEventListener('click', () => {
     showView('new');
     renderNewForm();
     if (typeof ctx.hooks?.pushView === 'function') ctx.hooks.pushView({ type: 'sessions', view: 'new' });
   });
-  filterRow.querySelector('.sessions-search').addEventListener('input', event => {
+  searchInput.addEventListener('input', event => {
     state.query = event.target.value;
     saveContext();
     applyFilters();
@@ -765,8 +974,9 @@ export function mount(ctx) {
       state.snapshot = result.snapshot;
       state.list = result.list;
       state.rawArchives = result.rawArchives;
-      renderList(result.list);
+      applyFilters();
       if (!quiet) showBanner('');
+      if (!quiet && typeof pendingOpener === 'function') void pendingOpener();
       ctx.hooks?.notify?.refresh?.();
     } catch (error) {
       if (!quiet) showBanner(`读取失败：${error?.message || error}（点「重试」再试）`);
@@ -777,7 +987,20 @@ export function mount(ctx) {
   // 类型筛选与搜索在已缓存快照上本地即时过滤，不再每次点击都走网络（手机隧道往返数秒，反馈像没点上）。
   function applyFilters() {
     if (!state.snapshot || !smodel) return;
-    state.list = smodel.buildSessionList(state.snapshot, { kind: state.kind, query: state.query });
+    const filter = ctx.hooks?.projectFilter?.current?.();
+    let snapshot = state.snapshot;
+    if (filter && !filter.isAll) {
+      const matches = item => {
+        const raw = String(item?.project || '').trim();
+        return raw === filter.selectedId || raw === filter.selectedLabel || item?.projectLabel === filter.selectedId || item?.projectLabel === filter.selectedLabel;
+      };
+      snapshot = {
+        ...snapshot,
+        sessions: Array.isArray(snapshot.sessions) ? snapshot.sessions.filter(matches) : snapshot.sessions,
+        archives: Array.isArray(snapshot.archives) ? snapshot.archives.filter(matches) : snapshot.archives,
+      };
+    }
+    state.list = smodel.buildSessionList(snapshot, { kind: state.kind, query: state.query });
     renderList(state.list);
   }
 
@@ -789,6 +1012,7 @@ export function mount(ctx) {
     });
     observer.observe(main, { attributes: true, attributeFilter: ['hidden'] });
   }
+  ctx.hooks?.projectFilter?.onChange?.(() => { applyFilters(); });
   window.addEventListener('online', () => { void load(); });
   window.addEventListener('pagehide', () => {
     if (detailTimer) { clearInterval(detailTimer); detailTimer = null; }
@@ -797,6 +1021,22 @@ export function mount(ctx) {
   window.addEventListener('autoloop:view-popped', event => {
     if (event.detail?.type === 'sessions') showView('list');
   });
+  // 点击通知打开对应会话：事件可能早于首轮加载到达，所以加载完成后再取一次待开会话。
+  async function openPendingSession() {
+    const nmodel = await notifyPromise;
+    const id = nmodel?.takePendingSession?.(window);
+    if (!id) return;
+    const find = () => (state.snapshot?.sessions || []).find(item => item.id === id);
+    if (!find()) await load({ quiet: true });
+    const target = find();
+    if (target) await openSession(target);
+    else if (state.view !== 'list') showView('list'); // 会话已不在：停在列表
+  }
+  pendingOpener = openPendingSession;
+  window.addEventListener(OPEN_SESSION_EVENT_NAME, () => { void openPendingSession(); });
+  if (typeof MutationObserver !== 'undefined') {
+    new MutationObserver(syncActiveSession).observe(host, { attributes: true, attributeFilter: ['hidden'] });
+  }
   window.addEventListener('autoloop:sessions-stream', event => { appendStream(event.detail?.text); });
   window.addEventListener('autoloop:sessions-voice', event => {
     if (!qmodel || !state.group || !event.detail?.text || !bindingActiveId()) return;

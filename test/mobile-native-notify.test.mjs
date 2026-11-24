@@ -116,6 +116,6 @@ test('Android 13+ 运行时请求 POST_NOTIFICATIONS', () => {
 });
 
 test('电池优化被杀后下次打开 App 自动重启服务', () => {
-  assert.match(code(plugin), /startService\s*\(/, 'App 打开时按持久化配置重启前台服务');
+  assert.match(code(plugin), /startForegroundService\s*\(/, 'App 打开时按持久化配置重启前台服务');
   assert.match(code(all), /PowerManager|isIgnoringBatteryOptimizations|onStartCommand/);
 });

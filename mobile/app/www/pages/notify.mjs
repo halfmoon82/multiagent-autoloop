@@ -86,7 +86,12 @@ function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs, now }) {
     lastRefresh = now();
     try {
       const state = await ctx.client.api('state');
-      controller.syncCards(state?.cards, state?.nodeEvents);
+      // 会话新回复：来源失败不影响待办/节点完成通知；仅后台或不在该会话详情页时推送。
+      // null = 本轮没拿到会话列表：不推送、也不消耗首轮种子（否则恢复后会把历史回复当新回复）。
+      let sessions = null;
+      try { const list = await ctx.client.api('sessions'); sessions = Array.isArray(list) ? list : (Array.isArray(list?.sessions) ? list.sessions : null); } catch (error) { if (error?.status === 401) throw error; }
+      const visible = doc?.visibilityState !== 'hidden';
+      controller.syncCards(state?.cards, state?.nodeEvents, sessions, { appVisible: visible, activeSessionId: win?.AutoloopActiveSession || null });
     } catch (error) {
       if (error?.status === 401) controller.handleUnauthorized();
     }
@@ -121,10 +126,18 @@ function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs, now }) {
   render();
 
   controller.registerReply(win, REPLY_CALLBACK_NAME);
+  // 点击系统通知拉起 App：热启动由原生回拨 autoloop:notify-open；冷启动时回拨早于页面就绪会丢，
+  // 挂载时再向原生取一次暂存路由。两条路径都清掉暂存，避免之后重载再次误跳。
+  const openRoute = route => { try { F.openSessionFromNotification?.(win, route); } catch { /* 定位失败不影响 App */ } };
+  const onNotifyOpen = event => { F.takeLaunchRoute?.(win); openRoute(event?.detail); };
+  win?.addEventListener?.('autoloop:notify-open', onNotifyOpen);
+  const launch = F.takeLaunchRoute?.(win);
+  if (launch) openRoute(launch);
   const handle = setTimer(() => syncService(), checkMs);
   return () => {
     clearTimer(handle);
     controller.unregisterReply(win, REPLY_CALLBACK_NAME);
+    win?.removeEventListener?.('autoloop:notify-open', onNotifyOpen);
     controller.stop();
   };
 }

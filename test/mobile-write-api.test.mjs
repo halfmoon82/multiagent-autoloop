@@ -4,7 +4,7 @@
 // 全部走本机假 Hub 与注入会话管理器，不调用真实模型或真实规则。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +47,11 @@ function makeSessions(artifact) {
     async continueSession(id) { this.calls.push(['continue', id]); return { id, continued: true }; },
     async start(payload) { this.calls.push(['start', payload]); return { id: 'sess-new', ...payload }; },
     async list() { this.calls.push(['list']); return [{ id: 'sess-live', kind: 'scheduling', project: WORKTREE, status: 'running' }]; },
+    async updateQueued(id, itemId, text) { this.calls.push(['updateQueued', id, itemId, text]); return { id }; },
+    async moveQueued(id, itemId, direction) { this.calls.push(['moveQueued', id, itemId, direction]); return { id }; },
+    async steerQueued(id, itemId) { this.calls.push(['steerQueued', id, itemId]); return { id }; },
+    async removeQueued(id, itemId) { this.calls.push(['removeQueued', id, itemId]); return { id }; },
+    async clearQueued(id) { this.calls.push(['clearQueued', id]); return { id }; },
     async send(id, text, opts) {
       this.calls.push(['send', id, text, opts]);
       if (id === 'sess-closed') throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
@@ -87,10 +92,12 @@ async function setup(t, { cards = [], conflictCards = new Set(), boomCards = new
     rulesFile,
     projectRoots: [WORKTREE],
     deviceAuth: store,
+    // 平台模型保存的 CLI 校验换成桩：本测试只验网关与审计链路，不跑真实 cli check。
+    platformCheck: async () => {},
   }, sessions);
   const url = await listen(server);
   t.after(async () => { await close(server); await close(hub.server); });
-  return { url, hub, store, sessions, deviceToken: bound.deviceToken, deviceId: bound.device.id, artifactBytes };
+  return { url, hub, store, sessions, deviceToken: bound.deviceToken, deviceId: bound.device.id, artifactBytes, root };
 }
 
 function mobileFetch(base, pathname, { method = 'GET', token, body, headers = {} } = {}) {
@@ -196,7 +203,8 @@ test('规则 run/pause/resume 复用网页同一规则操作并记录来源设�
   assert.equal(response.status, 200);
   const ruleCall = ctx.hub.requests.find(request => request.url === '/v1/rules/%E5%B7%A1%E6%A3%80/run');
   assert.ok(ruleCall);
-  assert.equal(JSON.parse(ruleCall.body).sourceDeviceId, ctx.deviceId);
+  assert.deepEqual(JSON.parse(ruleCall.body), { subject: '#1' });
+  assert.doesNotMatch(ruleCall.body, /sourceDeviceId/, '规则 Hub 白名单字段外不得额外注入 sourceDeviceId');
   assert.equal((await mobileFetch(ctx.url, '/api/mobile/rules/x/delete', { method: 'POST', token: ctx.deviceToken, body: {} })).status, 404);
 });
 
@@ -362,4 +370,90 @@ test('绑定设备可经移动端网关向会话发消息，复用同一 session
   });
   assert.equal(closed.status, 409);
   assert.equal((await closed.json()).error, '会话已关闭，请开启新会话', '本地会话态错误透传用户可读文案，与网页端同口径');
+});
+
+test('绑定设备可编辑、排序、删除、清空并 steer 排队消息，复用同一会话管理器', async t => {
+  const ctx = await setup(t);
+  const base = '/api/mobile/sessions/sess-live/queue';
+  const cases = [
+    ['PUT', `${base}/q1`, { text: '改后' }, 'updateQueued'],
+    ['POST', `${base}/q1/move`, { direction: 'up' }, 'moveQueued'],
+    ['POST', `${base}/q1/steer`, {}, 'steerQueued'],
+    ['DELETE', `${base}/q1`, {}, 'removeQueued'],
+    ['POST', `${base}/clear`, {}, 'clearQueued'],
+  ];
+  for (const [method, route, body, name] of cases) {
+    const response = await mobileFetch(ctx.url, route, { method, token: ctx.deviceToken, body });
+    assert.equal(response.status, 200, `${method} ${route}`);
+    assert.ok(ctx.sessions.calls.some(call => call[0] === name && call[1] === 'sess-live'), `缺少 ${name} 调用`);
+  }
+  const unbound = await mobileFetch(ctx.url, `${base}/clear`, { method: 'POST', body: {} });
+  assert.equal(unbound.status, 401);
+});
+
+test('平台与模型走设备鉴权移动网关：未绑定 401，绑定可读且保存仍校验', async t => {
+  const ctx = await setup(t);
+  const route = '/api/mobile/admin/platform-models';
+  assert.equal((await mobileFetch(ctx.url, route)).status, 401);
+  const response = await mobileFetch(ctx.url, route, { token: ctx.deviceToken });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(typeof body.enabled, 'boolean');
+  assert.ok(Array.isArray(body.platforms));
+  const save = await mobileFetch(ctx.url, route, { method: 'PUT', token: ctx.deviceToken, body: { enabled: true, platforms: [] } });
+  assert.notEqual(save.status, 404, '保存必须到达既有平台模型处理逻辑');
+});
+
+// 回归：保存成功路径的审计动作名必须过 device-auth 的 /^[a-z][a-z.]{1,40}$/ 校验。
+// 曾用带连字符的 'admin.platform-models'，保存实际写盘成功后审计抛 400，
+// 手机端收到「请求无效」误以为保存失败（2026-11-23 真机事故）。
+test('平台与模型经移动网关保存成功：200、落盘且审计留痕', async t => {
+  const ctx = await setup(t);
+  writeFileSync(path.join(ctx.root, 'rules.json'), JSON.stringify({
+    sources: { local: { name: 'local' } },
+    agents: {
+      workbuddy: { name: 'WorkBuddy AI', worker: 'w', use: 'acp', command: ['/bin/wb.sh', '--acp'], access: 'full' },
+      claude: { name: 'Claude Code', worker: 'w', use: 'claude', access: 'full', model: 'claude-sonnet-5-5' },
+      'codex-full': { name: 'Codex 可写调度', worker: 'w', use: 'codex', access: 'full' },
+    },
+    rules: [
+      { name: 'DAG自动开发', when: { source: 'local', types: ['dag.auto.dev'] }, to: 'workbuddy', cwd: WORKTREE, prompt: 'dev', parallel: 5, resume: false },
+      { name: '调度会话执行', when: { source: 'local', types: ['scheduling.message'] }, to: 'codex-full', cwd: WORKTREE, prompt: 's', resume: true },
+    ],
+  }));
+  const payload = {
+    enabled: true,
+    platforms: {
+      workbuddy: { light: 'hy4flash-free', standard: 'hy4std', heavy: 'deepseek-v4-pro' },
+      claude: { light: 'haiku', standard: 'claude-sonnet-5-5', heavy: 'opus' },
+      'codex-full': { light: 'deepseek-v4.1-flash', standard: 'kimi-for-coding', heavy: 'k3.1-pro' },
+    },
+    roles: { dev: { primary: 'workbuddy', fallback: 'claude' }, review: { primary: 'claude', fallback: 'codex-full' }, coord: { primary: 'codex-full', fallback: 'claude' } },
+    sessions: { coord: { tier: 'light' }, design: { platform: 'codex-full', tier: 'standard' }, normal: { platform: 'codex-full', tier: 'light' } },
+  };
+  const save = await mobileFetch(ctx.url, '/api/mobile/admin/platform-models', { method: 'PUT', token: ctx.deviceToken, body: payload });
+  if (save.status !== 200) assert.fail(`保存应成功：${await save.text()}`);
+  const body = await save.json();
+  assert.equal(body.saved, true);
+  assert.ok(body.backup, '应返回备份名');
+  const audit = JSON.parse(readFileSync(path.join(ctx.root, 'device-auth.json'), 'utf8')).audit || [];
+  const hits = audit.filter(entry => String(entry.action || '').includes('platform'));
+  assert.equal(hits.length, 1, '成功保存必须留一条审计');
+  assert.equal(hits[0].result, 'ok');
+});
+
+test('会话消息附件经移动网关原样传给会话管理器', async t => {
+  const ctx = await setup(t);
+  const attachment = { name: '说明.md', type: 'text/markdown', size: 4, dataBase64: Buffer.from('正文').toString('base64') };
+  const response = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/messages', { method: 'POST', token: ctx.deviceToken, body: { text: '看附件', attachments: [attachment] } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(ctx.sessions.calls.find(call => call[0] === 'send'), ['send', 'sess-live', '看附件', { interrupt: false, attachments: [attachment] }]);
+});
+
+test('会话附件请求不再被旧 64KB 上限误拦截', async t => {
+  const ctx = await setup(t);
+  const dataBase64 = Buffer.alloc(100 * 1024, 7).toString('base64');
+  const response = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/messages', { method: 'POST', token: ctx.deviceToken, body: { text: '大附件', attachments: [{ name: '大文件.bin', type: 'application/octet-stream', dataBase64 }] } });
+  assert.equal(response.status, 200);
+  assert.equal(ctx.sessions.calls.find(call => call[0] === 'send')[3].attachments[0].dataBase64.length, dataBase64.length);
 });

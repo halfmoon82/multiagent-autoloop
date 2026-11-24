@@ -2,7 +2,8 @@
 // 并负责去重、角标、直复回写与授权失效停服。无 DOM、无 Node 内置模块，浏览器与 Node 都可导入。
 // 内容/去重/冷却的权威口径在 contract.mjs，这里不新建第二套通知状态。
 import {
-  buildTodoNotification, buildNodeDoneNotification, isNotifiableNodeEvent, badgeCount,
+  buildTodoNotification, buildNodeDoneNotification, buildSessionReplyNotification, shouldPushSessionReply,
+  isNotifiableNodeEvent, badgeCount,
 } from './contract.mjs';
 
 export const NOTIFY_PREFERENCE_KEY = 'autoloop.notify.enabled';
@@ -57,6 +58,7 @@ export function createNotifyBridge({
   const descriptors = new Map();
   let started = false;
   let enabled = null;
+  let sessionsSeeded = false;
 
   const api = bridge && typeof bridge === 'object' ? bridge : null;
   const has = method => Boolean(api && typeof api[method] === 'function');
@@ -108,6 +110,7 @@ export function createNotifyBridge({
       started = false;
       notified.clear();
       descriptors.clear();
+      sessionsSeeded = false; // 重绑后会话回复重新种子，不对历史会话补发
       return true;
     },
 
@@ -130,12 +133,38 @@ export function createNotifyBridge({
       return this.publish(buildNodeDoneNotification(event));
     },
 
-    // 拉取一次状态：开放待办各一条、成功完成节点各一条，角标按开放待办数同步。
-    syncCards(cards, events = []) {
+    // 会话新回复：不在推送条件内（正在看该会话）也记为已读，离开后不补发同一条。
+    publishSessionReply(session, view = {}) {
+      const descriptor = buildSessionReplyNotification(session);
+      if (!descriptor) return false;
+      if (!shouldPushSessionReply({ ...view, sessionId: descriptor.sessionId })) {
+        notified.add(descriptor.key);
+        return false;
+      }
+      return this.publish(descriptor);
+    },
+
+    // 会话首轮种子：App 冷启动/页面重载后第一次拿到会话列表，只把已有回复记为已读，不推送，
+    // 与原生常驻服务、桌面 CardNotifier 的「重启不刷屏」口径一致。来源不可用（非数组）时不算种子。
+    seedSessions(sessions) {
+      for (const session of sessions) {
+        const descriptor = buildSessionReplyNotification(session);
+        if (descriptor) notified.add(descriptor.key);
+      }
+      sessionsSeeded = true;
+    },
+
+    // 拉取一次状态：开放待办各一条、成功完成节点各一条、会话新回复各一条，角标按开放待办数同步。
+    // sessions 传 null 表示本轮没拿到会话列表（接口失败等），既不推送也不消耗首轮种子。
+    syncCards(cards, events = [], sessions = null, view = {}) {
       const open = (Array.isArray(cards) ? cards : []).filter(card => str(card?.state).trim() === 'open');
       let sent = 0;
       for (const card of open) if (this.publishCard(card)) sent += 1;
       for (const event of (Array.isArray(events) ? events : [])) if (this.publishNodeDone(event)) sent += 1;
+      if (Array.isArray(sessions)) {
+        if (!sessionsSeeded) this.seedSessions(sessions);
+        else for (const session of sessions) if (this.publishSessionReply(session, view)) sent += 1;
+      }
       this.setBadge(badgeCount(open));
       return sent;
     },
@@ -170,4 +199,50 @@ export function createNotifyBridge({
       if (win && typeof win === 'object') delete win[callbackName];
     },
   };
+}
+
+export const OPEN_SESSION_EVENT = 'autoloop:open-session';
+
+// 点击通知回到对应会话页：切到会话 Tab，并经事件 + 待开会话标记交付 sessionId（会话页就绪后用 takePendingSession 自取）。
+export function openSessionFromNotification(win, click) {
+  if (!win || typeof win !== 'object' || !click || click.page !== 'session') return false;
+  const sessionId = str(click.sessionId).trim();
+  if (!sessionId) return false;
+  try { win.AutoloopNav?.selectTab?.('sessions'); } catch { /* 导航失败不影响通知 */ }
+  win.AutoloopPendingSession = sessionId;
+  try {
+    const Ctor = win.CustomEvent || globalThis.CustomEvent;
+    if (Ctor && typeof win.dispatchEvent === 'function') win.dispatchEvent(new Ctor(OPEN_SESSION_EVENT, { detail: { sessionId } }));
+  } catch { /* 同上 */ }
+  return true;
+}
+
+// 会话页取走待开会话（只取一次）：事件先于会话页就绪到达时也不丢。
+export function takePendingSession(win) {
+  if (!win || typeof win !== 'object') return null;
+  const sessionId = str(win.AutoloopPendingSession).trim();
+  win.AutoloopPendingSession = null;
+  return sessionId || null;
+}
+
+// 会话页进入/离开详情时登记「正在看的会话」：H5 侧供 syncCards 判断，原生侧供前台服务判断，
+// 两边都只在 App 前台且停在该会话详情时抑制它的新回复通知。原生桥缺失或抛错只降级，不影响页面。
+export function setActiveSession(win, sessionId) {
+  if (!win || typeof win !== 'object') return false;
+  const id = str(sessionId).trim() || null;
+  win.AutoloopActiveSession = id;
+  try { if (typeof win.AutoloopNotify?.setActiveSession === 'function') win.AutoloopNotify.setActiveSession(id || ''); }
+  catch { /* 原生桥失败不影响页面 */ }
+  return true;
+}
+
+// 冷启动点击路由：原生在 WebView 就绪前收到点击 Intent，事件会丢，故暂存一份由 H5 挂载后来取（只取一次）。
+export function takeLaunchRoute(win) {
+  if (!win || typeof win !== 'object' || typeof win.AutoloopNotify?.takeLaunchRoute !== 'function') return null;
+  try {
+    const raw = str(win.AutoloopNotify.takeLaunchRoute()).trim();
+    if (!raw) return null;
+    const route = JSON.parse(raw);
+    return route && typeof route === 'object' && !Array.isArray(route) ? route : null;
+  } catch { return null; }
 }
