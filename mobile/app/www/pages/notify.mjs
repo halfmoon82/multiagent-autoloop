@@ -86,7 +86,11 @@ function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs, now }) {
     lastRefresh = now();
     try {
       const state = await ctx.client.api('state');
-      controller.syncCards(state?.cards, state?.nodeEvents);
+      // 会话新回复：来源失败不影响待办/节点完成通知；仅后台或不在该会话详情页时推送。
+      let sessions = [];
+      try { const list = await ctx.client.api('sessions'); sessions = Array.isArray(list) ? list : (list?.sessions || []); } catch (error) { if (error?.status === 401) throw error; }
+      const visible = doc?.visibilityState !== 'hidden';
+      controller.syncCards(state?.cards, state?.nodeEvents, sessions, { appVisible: visible, activeSessionId: win?.AutoloopActiveSession || null });
     } catch (error) {
       if (error?.status === 401) controller.handleUnauthorized();
     }
@@ -121,10 +125,14 @@ function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs, now }) {
   render();
 
   controller.registerReply(win, REPLY_CALLBACK_NAME);
+  // 点击系统通知拉起 App：原生回拨 autoloop:notify-open，切到对应会话页。
+  const onNotifyOpen = event => { try { F.openSessionFromNotification?.(win, event?.detail); } catch { /* 定位失败不影响 App */ } };
+  win?.addEventListener?.('autoloop:notify-open', onNotifyOpen);
   const handle = setTimer(() => syncService(), checkMs);
   return () => {
     clearTimer(handle);
     controller.unregisterReply(win, REPLY_CALLBACK_NAME);
+    win?.removeEventListener?.('autoloop:notify-open', onNotifyOpen);
     controller.stop();
   };
 }

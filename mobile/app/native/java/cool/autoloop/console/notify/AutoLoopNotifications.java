@@ -42,6 +42,7 @@ public class AutoLoopNotifications extends Plugin {
 
     requestNotificationsPermission();
     restartIfEnabled();
+    dispatchLaunchRoute(getActivity() != null ? getActivity().getIntent() : null);
 
     // 电池优化状态只作诊断；被杀后由下次打开 App 的 restartIfEnabled 重新拉起。
     PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
@@ -70,7 +71,40 @@ public class AutoLoopNotifications extends Plugin {
     intent.putExtra(ForegroundService.EXTRA_DEVICE_TOKEN, sp.getString(ForegroundService.EXTRA_DEVICE_TOKEN, ""));
     intent.putExtra(ForegroundService.EXTRA_INTERVAL_MS, sp.getLong(ForegroundService.EXTRA_INTERVAL_MS, 15_000L));
     intent.putExtra(ForegroundService.EXTRA_BASE_URL, sp.getString(ForegroundService.EXTRA_BASE_URL, ""));
-    getContext().startService(intent);
+    ContextCompat.startForegroundService(getContext(), intent);
+  }
+
+  @Override
+  protected void handleOnStart() { AppVisibility.setForeground(true); }
+
+  @Override
+  protected void handleOnResume() { AppVisibility.setForeground(true); }
+
+  @Override
+  protected void handleOnPause() { AppVisibility.setForeground(false); }
+
+  @Override
+  protected void handleOnStop() { AppVisibility.setForeground(false); }
+
+  @Override
+  protected void handleOnNewIntent(Intent intent) {
+    super.handleOnNewIntent(intent);
+    dispatchLaunchRoute(intent);
+  }
+
+  /** 点击通知拉起 App 时带的路由（页面 + 会话/卡片/节点 id），回拨给 H5 定位。 */
+  private void dispatchLaunchRoute(Intent intent) {
+    if (intent == null) return;
+    String page = intent.getStringExtra(NotifyChannels.EXTRA_ROUTE_PAGE);
+    if (page == null || page.isEmpty()) return;
+    JSONObject route = new JSONObject();
+    try {
+      route.put("page", page);
+      route.put("sessionId", intent.getStringExtra(NotifyChannels.EXTRA_ROUTE_SESSION));
+      route.put("cardId", intent.getStringExtra(NotifyChannels.EXTRA_ROUTE_CARD));
+    } catch (Exception ignored) { return; }
+    String js = "window.dispatchEvent(new CustomEvent('autoloop:notify-open',{detail:" + route + "}));";
+    getBridge().getWebView().post(() -> getBridge().getWebView().evaluateJavascript(js, null));
   }
 
   @PluginMethod
@@ -82,7 +116,7 @@ public class AutoLoopNotifications extends Plugin {
   @PluginMethod
   public void refresh(PluginCall call) {
     // 触发一次即时轮询：服务 onStartCommand 会立刻 post 一次 poll。
-    getContext().startService(new Intent(getContext(), ForegroundService.class));
+    ContextCompat.startForegroundService(getContext(), new Intent(getContext(), ForegroundService.class));
     call.resolve();
   }
 

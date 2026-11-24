@@ -35,7 +35,7 @@ final class AutoloopNotifyBridge {
         intent.putExtra(ForegroundService.EXTRA_BASE_URL,
             optionsJson.optString("baseUrl", ""));
       } catch (Exception ignored) { /* 参数缺失时用服务内已持久化的配置 */ }
-      plugin.getContext().startService(intent);
+      androidx.core.content.ContextCompat.startForegroundService(plugin.getContext(), intent);
     });
   }
 
@@ -76,6 +76,12 @@ final class AutoloopNotifyBridge {
   public void onReply(String callbackName) {
     if (callbackName == null || callbackName.trim().isEmpty()) return;
     main.post(() -> plugin.setReplyCallback(callbackName.trim()));
+  }
+
+  /** setActiveSession(id)：H5 进入/离开会话详情页时同步，空串表示不在任何会话详情。 */
+  @JavascriptInterface
+  public void setActiveSession(String id) {
+    AppVisibility.setActiveSession(id);
   }
 
   /** setBadge(count)：设置应用角标数量（随开放待办数变化）。 */

@@ -2,7 +2,8 @@
 // 并负责去重、角标、直复回写与授权失效停服。无 DOM、无 Node 内置模块，浏览器与 Node 都可导入。
 // 内容/去重/冷却的权威口径在 contract.mjs，这里不新建第二套通知状态。
 import {
-  buildTodoNotification, buildNodeDoneNotification, isNotifiableNodeEvent, badgeCount,
+  buildTodoNotification, buildNodeDoneNotification, buildSessionReplyNotification, shouldPushSessionReply,
+  isNotifiableNodeEvent, badgeCount,
 } from './contract.mjs';
 
 export const NOTIFY_PREFERENCE_KEY = 'autoloop.notify.enabled';
@@ -130,12 +131,24 @@ export function createNotifyBridge({
       return this.publish(buildNodeDoneNotification(event));
     },
 
-    // 拉取一次状态：开放待办各一条、成功完成节点各一条，角标按开放待办数同步。
-    syncCards(cards, events = []) {
+    // 会话新回复：不在推送条件内（正在看该会话）也记为已读，离开后不补发同一条。
+    publishSessionReply(session, view = {}) {
+      const descriptor = buildSessionReplyNotification(session);
+      if (!descriptor) return false;
+      if (!shouldPushSessionReply({ ...view, sessionId: descriptor.sessionId })) {
+        notified.add(descriptor.key);
+        return false;
+      }
+      return this.publish(descriptor);
+    },
+
+    // 拉取一次状态：开放待办各一条、成功完成节点各一条、会话新回复各一条，角标按开放待办数同步。
+    syncCards(cards, events = [], sessions = [], view = {}) {
       const open = (Array.isArray(cards) ? cards : []).filter(card => str(card?.state).trim() === 'open');
       let sent = 0;
       for (const card of open) if (this.publishCard(card)) sent += 1;
       for (const event of (Array.isArray(events) ? events : [])) if (this.publishNodeDone(event)) sent += 1;
+      for (const session of (Array.isArray(sessions) ? sessions : [])) if (this.publishSessionReply(session, view)) sent += 1;
       this.setBadge(badgeCount(open));
       return sent;
     },
@@ -170,4 +183,18 @@ export function createNotifyBridge({
       if (win && typeof win === 'object') delete win[callbackName];
     },
   };
+}
+
+// 点击通知回到对应会话页：切到会话 Tab，并经事件 + 待开会话标记交付 sessionId（页面就绪后自取）。
+export function openSessionFromNotification(win, click) {
+  if (!win || typeof win !== 'object' || !click || click.page !== 'session') return false;
+  const sessionId = str(click.sessionId).trim();
+  if (!sessionId) return false;
+  try { win.AutoloopNav?.selectTab?.('sessions'); } catch { /* 导航失败不影响通知 */ }
+  win.AutoloopPendingSession = sessionId;
+  try {
+    const Ctor = win.CustomEvent || globalThis.CustomEvent;
+    if (Ctor && typeof win.dispatchEvent === 'function') win.dispatchEvent(new Ctor('autoloop:open-session', { detail: { sessionId } }));
+  } catch { /* 同上 */ }
+  return true;
 }

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { hubRequest } from './hub.mjs';
 import { getCardRouting } from './card-routing.mjs';
 import {
-  buildTodoNotification, buildNodeDoneNotification, isNotifiableNodeEvent, badgeCount,
+  buildTodoNotification, buildNodeDoneNotification, buildSessionReplyNotification, isNotifiableNodeEvent, badgeCount,
 } from '../mobile/src/features/notifications/index.mjs';
 import { createSyncState, reconcile, processedCardKeys, syncPrompt } from '../mobile/src/features/device-sync/index.mjs';
 
@@ -20,19 +20,21 @@ export function macosNotify({ title, body }) {
   } catch { /* 同上 */ }
 }
 
-// 单一通知事件分发：轮询「待我处理」开放卡片与「节点成功完成」回执，分别构建独立系统通知并去重。
+// 单一通知事件分发：轮询「待我处理」开放卡片、「节点成功完成」回执与「会话新回复」，分别构建独立系统通知并去重。
 // 去重状态只此一份（this.notified）；角标数量由 badgeCount(open) 同步；通知失败不影响主流程。
 // 首次轮询只做种子（避免重启后对存量刷屏）；重开产生新 revision 才是新决策，已处理事项不重复提交。
 // 普通失败、自动重试、调度自愈不通知：isNotifiableNodeEvent 只放行 done 回执；
 // 失败若形成待办，则只发该待办通知（卡片照常分发）。
 export class CardNotifier {
-  constructor({ config, intervalMs = 15000, notify = macosNotify, fetchState, setTimer = setInterval, clearTimer = clearInterval, routing, fetchNodeEvents, setBadge, syncState = null, onSyncPrompt = null } = {}) {
+  constructor({ config, intervalMs = 15000, notify = macosNotify, fetchState, setTimer = setInterval, clearTimer = clearInterval, routing, fetchNodeEvents, fetchSessions, setBadge, syncState = null, onSyncPrompt = null } = {}) {
     // 路由装配复用本轮询周期；无数据目录（如纯通知测试）则不启用。
     this.routing = routing === undefined ? getCardRouting(config) : routing;
     this.intervalMs = intervalMs;
     this.notify = notify;
     this.fetchState = fetchState || (() => hubRequest(config, '/v1/state', { timeout: 5000 }));
     this.fetchNodeEvents = fetchNodeEvents || null;
+    // 会话新回复事件源（普通/设计/调度全类型）：缺省惰性读控制台会话管理器（server 装配后才存在），没有则不启用。
+    this.fetchSessions = fetchSessions || (() => config?.schedulingSessions?.list?.() ?? []);
     this.setBadge = setBadge || (() => {});
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
@@ -80,6 +82,13 @@ export class CardNotifier {
     return Array.isArray(state?.nodeEvents) ? state.nodeEvents : [];
   }
 
+  // 会话列表来源失败/脏数据一律当作没有新回复，不影响待办与节点完成通知。
+  async sessionList() {
+    if (!this.fetchSessions) return [];
+    try { const list = await this.fetchSessions(); return Array.isArray(list) ? list : []; }
+    catch { return []; }
+  }
+
   syncBadge(open) {
     try { this.setBadge(badgeCount(open)); } catch { /* 角标同步失败不影响主流程 */ }
   }
@@ -100,10 +109,12 @@ export class CardNotifier {
       } catch { /* 路由失败不隐藏卡片、不影响通知 */ }
     }
     const events = await this.nodeCompletionEvents(state);
+    const sessions = await this.sessionList();
 
     const descriptors = [
       ...open.map(card => buildTodoNotification(card)),
       ...events.filter(isNotifiableNodeEvent).map(event => buildNodeDoneNotification(event)),
+      ...sessions.map(session => buildSessionReplyNotification(session)).filter(Boolean),
     ];
 
     if (!this.seeded) {

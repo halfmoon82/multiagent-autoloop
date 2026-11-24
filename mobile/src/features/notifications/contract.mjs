@@ -3,7 +3,7 @@
 // 通知内容只由白名单字段构建（项目名、待办摘要/详情、节点交付摘要），并再做一次疑似凭据清洗，
 // 因此不会把上游事件里的密钥/口令透传进锁屏通知。上游文本全程是纯字符串，由调用方安全渲染。
 
-export const NOTIFICATION_KINDS = Object.freeze({ TODO: 'todo', NODE_DONE: 'node-done' });
+export const NOTIFICATION_KINDS = Object.freeze({ TODO: 'todo', NODE_DONE: 'node-done', SESSION_REPLY: 'session-reply' });
 export const NODE_DONE_OUTCOMES = Object.freeze(['done']);
 
 // 锁屏直复需系统生物识别；进入 App 后的点击定位路径不额外加验证门槛。
@@ -123,4 +123,54 @@ export function buildNodeDoneNotification(event = {}) {
     reply: null,
     badgeKey: null, // 节点完成不占角标
   };
+}
+
+// ---- 会话新回复（session-reply）----
+const SESSION_TYPES = Object.freeze(['normal', 'scheduling', 'design']);
+const SESSION_TYPE_LABELS = Object.freeze({ normal: '普通会话', scheduling: '调度会话', design: '设计会话' });
+
+// 取会话里最近一条 agent 回复；字段缺失/脏数据一律容忍，没有回复返回 null。
+function latestAgentReply(session) {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  let count = 0;
+  let last = null;
+  for (const message of messages) {
+    if (!message || typeof message !== 'object' || message.role !== 'agent') continue;
+    count += 1;
+    last = message;
+  }
+  return count ? { count, at: String(last?.at ?? '').trim() } : null;
+}
+
+// 每次会话出现新的 agent 回复对应一条独立系统通知：去重键 = 会话 id + 回复序号 + 回复时间。
+// 只取白名单字段（id/类型/标题），不透传回复正文；点击回到该会话。普通/设计/调度全类型通用。
+export function buildSessionReplyNotification(session) {
+  if (!session || typeof session !== 'object' || Array.isArray(session)) return null;
+  const sessionId = String(session.id ?? '').trim();
+  if (!sessionId) return null;
+  const reply = latestAgentReply(session);
+  if (!reply) return null;
+  const sessionType = SESSION_TYPES.includes(session.kind) ? session.kind : 'scheduling';
+  const title = clean(session.title ?? session.prompt ?? '') || '会话';
+  const project = projectLabel(session.project ?? session.cwd);
+  const label = SESSION_TYPE_LABELS[sessionType];
+  return {
+    kind: NOTIFICATION_KINDS.SESSION_REPLY,
+    id: `session-reply:${sessionId}`,
+    key: notificationKey(NOTIFICATION_KINDS.SESSION_REPLY, sessionId, `${reply.count}@${reply.at}`),
+    title: `Autoloop ${label}有新回复`,
+    body: `${title.slice(0, 80)} · 项目 ${project}`,
+    project, sessionId, sessionType, sessionTitle: title,
+    summary: title,
+    lockScreen: { project, summary: title, detail: '' },
+    click: { page: 'session', sessionId, requiresBiometric: OPEN_APP_REQUIRES_BIOMETRIC },
+    reply: null,
+    badgeKey: null, // 会话回复不占角标
+  };
+}
+
+// 仅 App 在后台、或前台但不在该会话详情页时推送。
+export function shouldPushSessionReply({ appVisible = false, activeSessionId = null, sessionId = null } = {}) {
+  if (!appVisible) return true;
+  return !(activeSessionId && String(activeSessionId) === String(sessionId));
 }
