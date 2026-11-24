@@ -3,7 +3,7 @@
 // 平台与模型：只读字段 + 可编辑表单，保存前确认、保存即自动备份（服务端既有语义）；失败回显错误并保留表单内容。
 // 运行环境：只读在线状态与待复查。所有文本用 textContent 渲染，不拼接 HTML，也不直接访问 Hub。
 // 视图模型经相对路径 ../src/... 动态加载（同 core.mjs），Node 边界测试不装配 DOM。
-export const ADMIN_PANES = Object.freeze(['admin-pane-platform', 'admin-pane-runtime']);
+export const ADMIN_PANES = Object.freeze(['admin-pane-platform', 'admin-pane-runtime', 'admin-pane-mobile']);
 
 const el = (tag, className, text) => {
   const element = document.createElement(tag);
@@ -44,6 +44,7 @@ export function mount(ctx) {
     if (loading.has(pane)) return;
     const host = document.getElementById(pane);
     if (!host) return;
+    if (pane === 'admin-pane-mobile') { loaded.add(pane); return; }
     const loader = typeof hooks.admin?.loader === 'function' ? hooks.admin.loader : (id, node) => defaultLoader(ctx, id, node);
     loading.add(pane);
     renderState(pane, 'loading', '加载中…');

@@ -5,34 +5,13 @@
 const loadViewModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/core/index.mjs');
+const loadFilterModel = typeof window === 'undefined'
+  ? () => Promise.resolve(null)
+  : () => import('../src/features/project-filter/index.mjs');
 
 export { loadViewModel };
 
-// 执行授权的容器与 Tab 在脚手架 index.html 里还没有；模块顶层先补一个空壳，
-// 这样 app.mjs 的 boot() 读取 tab-bar / .content 时已经能看到它。不改动其他页面节点。
-function ensureAuthorizePage() {
-  const content = document.querySelector('.content');
-  const tabs = document.getElementById('tab-bar');
-  if (!content || !tabs) return;
-  if (!content.querySelector('[data-page="authorize"]')) {
-    const page = document.createElement('div');
-    page.id = 'page-authorize';
-    page.className = 'page';
-    page.dataset.page = 'authorize';
-    page.hidden = true;
-    content.appendChild(page);
-  }
-  if (!tabs.querySelector('[data-tab="authorize"]')) {
-    const tab = document.createElement('button');
-    tab.type = 'button';
-    tab.className = 'tab';
-    tab.dataset.tab = 'authorize';
-    tab.setAttribute('aria-selected', 'false');
-    tab.textContent = '授权';
-    tabs.appendChild(tab);
-  }
-}
-if (typeof document !== 'undefined') ensureAuthorizePage();
+// 执行授权并入「待办」页；主导航固定由 index.html 的六个 Tab 拥有，运行时不再追加第七个。
 
 const node = (tag, { className, text, attrs = {} } = {}, children = []) => {
   const element = document.createElement(tag);
@@ -81,7 +60,8 @@ const LABELS = { run: '运行', pause: '暂停', resume: '恢复' };
 export function mount(ctx) {
   if (typeof document === 'undefined') return;
   const modelPromise = loadViewModel();
-  if (!modelPromise) return;
+  const filterPromise = loadFilterModel();
+  if (!modelPromise || !filterPromise) return;
 
   const drafts = new Map();
   const refs = {};
@@ -91,15 +71,13 @@ export function mount(ctx) {
   const rulesEl = document.getElementById('page-rules');
   const runsEl = document.getElementById('page-rounds');
   const todosEl = document.getElementById('page-todos');
-  const authorizeEl = document.getElementById('page-authorize');
-  if (!overviewEl || !rulesEl || !runsEl || !todosEl || !authorizeEl) return;
+  if (!overviewEl || !rulesEl || !runsEl || !todosEl) return;
 
   let reload = () => {};
   banners.push(makeBanner(overviewEl, () => reload()));
   banners.push(makeBanner(rulesEl, () => reload()));
   banners.push(makeBanner(runsEl, () => reload()));
   banners.push(makeBanner(todosEl, () => reload()));
-  banners.push(makeBanner(authorizeEl, () => reload()));
 
   refs.usage = makeSection(overviewEl, 'usage', '今日用量');
   refs.metrics = makeSection(overviewEl, 'metrics', '任务概览');
@@ -108,7 +86,7 @@ export function mount(ctx) {
   refs.rules = makeSection(rulesEl, 'rules', '调度规则');
   refs.runs = makeSection(runsEl, 'runs', '执行轮次');
   refs.todos = makeSection(todosEl, 'todos', '待我处理');
-  refs.authorize = makeSection(authorizeEl, 'authorize', '执行授权');
+  refs.authorize = makeSection(todosEl, 'authorize', '执行授权');
 
   let write = null;
 
@@ -296,20 +274,62 @@ export function mount(ctx) {
     });
   }
 
+  let fullSnapshot = null;
+  let activeFilter = ctx.hooks?.projectFilter?.current?.() || null;
+  let coreModel = null;
+  let filterModel = null;
+
+  function filteredSnapshot() {
+    if (!fullSnapshot || !activeFilter || activeFilter.isAll || !filterModel) return fullSnapshot;
+    const filter = activeFilter;
+    const byProject = filterModel.filterByProject;
+    const rules = fullSnapshot.rules ? {
+      ...fullSnapshot.rules,
+      rules: byProject(fullSnapshot.rules.rules || [], filter, item => item?.cwd),
+      mobileRules: byProject(fullSnapshot.rules.mobileRules || [], filter),
+    } : null;
+    const projectByRule = new Map();
+    for (const rule of fullSnapshot.rules?.mobileRules || []) projectByRule.set(rule.name, rule.project);
+    for (const rule of fullSnapshot.rules?.rules || []) projectByRule.set(rule.name, rule.cwd);
+    const state = fullSnapshot.state ? {
+      ...fullSnapshot.state,
+      runs: byProject(fullSnapshot.state.runs || [], filter, item => item?.project || item?.cwd),
+      cards: byProject(fullSnapshot.state.cards || [], filter, item => item?.project || item?.cwd),
+      lines: byProject(fullSnapshot.state.lines || [], filter, item => projectByRule.get(item?.name) || ''),
+    } : null;
+    return {
+      ...fullSnapshot,
+      rules, state,
+      projects: byProject(fullSnapshot.projects || [], filter, item => item?.path || item?.id),
+      dagRuns: byProject(fullSnapshot.dagRuns || [], filter),
+      serial: fullSnapshot.serial ? { ...fullSnapshot.serial, chains: byProject(fullSnapshot.serial.chains || [], filter) } : fullSnapshot.serial,
+    };
+  }
+
+  function renderCurrent() {
+    if (!fullSnapshot || !coreModel) return;
+    const pages = coreModel.buildPages(filteredSnapshot());
+    renderOverview(pages.overview);
+    renderRules(pages.rules);
+    renderRuns(pages.runs);
+    renderTodos(pages.todos);
+    renderAuthorize(pages.authorize);
+    const open = (pages.todos?.items?.items || []).filter(item => item.state === 'open').length;
+    ctx.hooks?.notify?.setBadge?.(open);
+  }
+  ctx.hooks?.projectFilter?.onChange?.(filter => { activeFilter = filter; renderCurrent(); });
+  filterPromise.then(model => { filterModel = model; renderCurrent(); });
+
   async function load() {
     try {
       const model = await modelPromise;
       if (!model) return;
+      coreModel = model;
       if (!write) write = model.createCoreWrite(ctx.client);
       const core = model.createMobileCore({ api: key => ctx.client.api(key) });
-      const { pages } = await core.load();
-      renderOverview(pages.overview);
-      renderRules(pages.rules);
-      renderRuns(pages.runs);
-      renderTodos(pages.todos);
-      renderAuthorize(pages.authorize);
-      const open = (pages.todos?.items?.items || []).filter(item => item.state === 'open').length;
-      ctx.hooks?.notify?.setBadge?.(open);
+      const { snapshot } = await core.load();
+      fullSnapshot = snapshot;
+      renderCurrent();
       for (const banner of banners) banner.clear();
     } catch (error) {
       const message = `读取失败：${error?.message || error}（点「重试」再试）`;

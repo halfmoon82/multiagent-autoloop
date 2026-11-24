@@ -85,7 +85,7 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
     throw new TypeError('createSessionsWrite 需要带 origin/tokenStore 的移动端客户端');
   }
   const doFetch = fetchImpl || ((url, init) => globalThis.fetch(url, init));
-  const call = async (path, body) => {
+  const call = async (path, body, method = 'POST') => {
     const token = await client.tokenStore.get();
     if (typeof token !== 'string' || !token) throw new Error('尚未绑定设备，请重新绑定后再操作');
     const url = new URL(path, client.origin);
@@ -93,7 +93,7 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
     let response;
     try {
       response = await doFetch(url.toString(), {
-        method: 'POST',
+        method,
         headers: {
           'content-type': 'application/json',
           'x-console-request': '1',
@@ -122,10 +122,25 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
       const payload = choice !== undefined ? { choice: Number(choice) } : { text: String(text ?? '') };
       return call(`/api/mobile/cards/${cardId}/answer`, payload);
     },
-    sendMessage(id, { text } = {}) {
+    sendMessage(id, { text, interrupt = false, attachments = [] } = {}) {
       const value = encodeURIComponent(String(id ?? '').trim());
       if (!value) throw new Error('会话不存在或已失效');
-      return call(`/api/mobile/sessions/${value}/messages`, { text: String(text ?? '') });
+      return call(`/api/mobile/sessions/${value}/messages`, { text: String(text ?? ''), ...(interrupt === true ? { interrupt: true } : {}), ...(attachments.length ? { attachments } : {}) });
+    },
+    updateQueued(id, itemId, { text } = {}) {
+      return call(`/api/mobile/sessions/${encodeURIComponent(String(id))}/queue/${encodeURIComponent(String(itemId))}`, { text: String(text ?? '') }, 'PUT');
+    },
+    moveQueued(id, itemId, { direction } = {}) {
+      return call(`/api/mobile/sessions/${encodeURIComponent(String(id))}/queue/${encodeURIComponent(String(itemId))}/move`, { direction: String(direction ?? '') });
+    },
+    steerQueued(id, itemId) {
+      return call(`/api/mobile/sessions/${encodeURIComponent(String(id))}/queue/${encodeURIComponent(String(itemId))}/steer`, {});
+    },
+    removeQueued(id, itemId) {
+      return call(`/api/mobile/sessions/${encodeURIComponent(String(id))}/queue/${encodeURIComponent(String(itemId))}`, {}, 'DELETE');
+    },
+    clearQueued(id) {
+      return call(`/api/mobile/sessions/${encodeURIComponent(String(id))}/queue/clear`, {});
     },
     // 新建与分类只打移动端网关已登记写路由；项目必须来自下拉的真实选项。
     classify(text) {

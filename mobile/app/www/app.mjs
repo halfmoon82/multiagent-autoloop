@@ -32,11 +32,16 @@ export const FEATURE_LOADERS = Object.freeze({
 
 // 默认钩子全部是空操作：未就绪时调用不抛错，后续节点只覆盖自己的钩子。
 export function createDefaultHooks() {
+  const projectFilterListeners = new Set();
   return {
     attachVoice() {},
     notify: { setBadge() {}, refresh() {} },
     openSessionArtifacts() {},
-    projectFilter: { current() { return null; }, onChange() {} },
+    projectFilter: {
+      _listeners: projectFilterListeners,
+      current() { return null; },
+      onChange(listener) { if (typeof listener !== 'function') return () => {}; projectFilterListeners.add(listener); return () => projectFilterListeners.delete(listener); },
+    },
     pushView() {},
     popView() {},
     haptic: { tap() {}, success() {} },
@@ -144,6 +149,11 @@ function boot() {
     hooks,
   };
 
+  // 图标与折叠是全局增强：动态 import 不阻塞首屏（app-startup-perf #293 的诉求），
+  // 加载完成后对整个 document 生效；懒加载页面后渲染的卡片由折叠观察器接管，
+  // 各页面内部图标由页面 mount 时自渲染（renderIcons 幂等）。
+  import('./icons.mjs').then(m => m.renderIcons(document)).catch(() => {});
+  import('./collapsible-cards.mjs').then(m => m.observeCollapsibleCards(document)).catch(() => {});
   const tabBar = $('tab-bar');
   const tabs = tabBar ? [...tabBar.querySelectorAll('.tab')] : [];
   const pageEls = new Map([...document.querySelectorAll('.content .page')].map(el => [el.dataset.page, el]));
@@ -267,7 +277,8 @@ function boot() {
     els.bindStatus.textContent = bindMessage;
     els.lockError.textContent = state.lockError || '';
     els.deviceName.textContent = state.device?.name || '未绑定设备';
-    els.connectionStatus.textContent = connectionLabel();
+    els.connectionStatus.setAttribute('aria-label', connectionLabel());
+    els.connectionStatus.title = connectionLabel();
     els.connectionStatus.dataset.state = state.connection;
     els.connectionError.textContent = ['error', 'offline'].includes(state.connection) ? (state.error || '') : '';
     els.unlock.disabled = state.phase === 'unlocking';
@@ -368,7 +379,23 @@ function boot() {
   });
 
   els.reconnect.addEventListener('click', () => { void reconnect().catch(() => {}); });
+  // 「重新绑定 / 退出」一键清凭证且不可恢复：第一次点击只转为确认提示，3 秒内再点一次才执行。
+  let rebindArmed = false;
+  let rebindArmTimer = null;
+  const rebindLabel = els.rebind.textContent;
+  const disarmRebind = () => {
+    rebindArmed = false;
+    if (rebindArmTimer) { clearTimeout(rebindArmTimer); rebindArmTimer = null; }
+    els.rebind.textContent = rebindLabel;
+  };
   els.rebind.addEventListener('click', () => {
+    if (!rebindArmed) {
+      rebindArmed = true;
+      els.rebind.textContent = '确认退出绑定？';
+      rebindArmTimer = setTimeout(disarmRebind, 3000);
+      return;
+    }
+    disarmRebind();
     void (async () => {
       cancelRetry();
       await tokenStore.clear();
@@ -382,6 +409,13 @@ function boot() {
     })().catch(() => {});
   });
 
+  // 原生安全存储不可用（如 Keystore 在覆盖安装后失效）：原生桥广播此事件，必须变成绑定页上的
+  // 可读指引，而不是停在一个毫无提示的绑定页（2026-11-24 真机事故：用户无从知晓需要重新绑定）。
+  window.addEventListener('autoloop:secure-storage-error', event => {
+    bindMessage = event?.detail?.message || '安全存储不可用，请重新扫码绑定';
+    render();
+  });
+
   window.addEventListener('offline', () => { cancelRetry(); state.networkLost(); render(); });
   window.addEventListener('online', () => {
     if (!state.canShowMain()) return;
@@ -392,10 +426,10 @@ function boot() {
   render();
 
   // 重启 App：安全存储里已有设备凭证时恢复「已绑定」状态，显示解锁卡而不是再次要求绑定。
-  // 在 Capacitor 里原生桥可能稍晚注入，最多等约 3 秒；读不到凭证才保持绑定页。
+  // 在 Capacitor 里原生桥可能稍晚注入，最多等约 10 秒；读不到凭证才保持绑定页。
   void (async () => {
     const inApp = Boolean(window.Capacitor);
-    for (let i = 0; inApp && !window.AutoloopSecureStorage && i < 15; i++) await new Promise(r => setTimeout(r, 200));
+    for (let i = 0; inApp && !window.AutoloopSecureStorage && i < 20; i++) await new Promise(r => setTimeout(r, 500));
     if (state.token) return; // 等待期间用户已手动绑定
     const stored = await tokenStore.get();
     if (typeof stored === 'string' && stored) { state.setToken(stored); render(); }

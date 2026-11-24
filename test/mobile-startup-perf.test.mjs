@@ -167,10 +167,15 @@ test('浏览器：二次打开命中 HTTP 缓存，不重拉 hash 资产', { ski
   page.on('response', r => { if (/\/mobile\/.*\.(mjs|css)/.test(r.url())) served.push({ url: r.url(), cache: r.headers()['cache-control'], fromCache: r.fromServiceWorker() }); });
   await page.goto(`${url}/mobile/`);
   await page.waitForFunction(() => Boolean(window.AutoloopHooks));
+  // 等首屏后的延迟页/按需功能模块全部加载完再进入缓存断言：否则 reload 会打断在途请求，
+  // 二次加载这些资源无缓存可命中，transferSize>0 误红。
+  await page.waitForLoadState('networkidle');
   const first = await page.evaluate(() => performance.getEntriesByType('resource').filter(e => /\/mobile\/.*\.(mjs|css)/.test(e.name)).map(e => e.transferSize));
   assert.ok(first.some(size => size > 0), '首次需要网络');
   await page.reload();
   await page.waitForFunction(() => Boolean(window.AutoloopHooks));
+  // 懒加载页面模块仍在异步 import：等网络静下来再断言，否则在途资源 transferSize>0 误红（并行负载下必现）。
+  await page.waitForLoadState('networkidle');
   const second = await page.evaluate(() => performance.getEntriesByType('resource').filter(e => /\/mobile\/.*\.(mjs|css)\?v=/.test(e.name)).map(e => e.transferSize));
   assert.ok(second.length > 0 && second.every(size => size === 0), '带 hash 的资产二次加载走缓存（transferSize=0）');
 });

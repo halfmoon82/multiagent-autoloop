@@ -1033,7 +1033,7 @@ try {
   await page.evaluate(() => { window.__autoloopBiometricOutcome = 'success'; });
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
   assert.equal(await page.locator('#lock-screen').isVisible(), false);
   assert.ok((await page.locator('#device-name').innerText()).includes('Mobile Shell 测试机'), '只显示自身绑定信息');
 
@@ -1045,14 +1045,14 @@ try {
   await page.evaluate(() => { window.__autoloopBiometricOutcome = 'success'; });
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
 
   // 断线：标记离线；网络恢复：自动重连回安全连接。
   await page.evaluate(() => window.dispatchEvent(new Event('offline')));
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('网络已断开'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('网络已断开'));
   assert.equal(await page.locator('#app-main').isVisible(), true);
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
 
   // 网页管理后台解除授权：移动端同一凭据立即失效，回锁定/重绑，主界面隐藏。
   const devices = await (await fetch(`${url}/api/devices`)).json();
@@ -1062,6 +1062,8 @@ try {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-console-request': '1' }, body: '{}',
   });
   assert.equal(revokeResponse.status, 200);
+  await page.locator('[data-tab="admin"]').click();
+  await page.locator('[data-admin-pane="admin-pane-mobile"]').click();
   await page.locator('#reconnect').click();
   await page.locator('#lock-screen').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.getElementById('lock-error')?.textContent?.includes('授权'));
@@ -1071,6 +1073,37 @@ try {
   const mobileText = await page.locator('body').innerText();
   assert.ok(!mobileText.includes(qr.token), '一次性二维码令牌不得留在页面');
   assert.ok(!/deviceToken|tokenHash|server-secret|not-returned/.test(mobileText), '页面不得出现密钥或设备凭证');
+  // 安全存储不可用（Keystore 失效等）：原生桥广播错误事件，绑定页必须给出可读的重新绑定指引，
+  // 而不是停在一个毫无提示的绑定页（2026-11-24 真机：覆盖安装后 Keystore 失效，用户无从知晓原因）。
+  // 重新走一次真实绑定拿到已授权凭证，再验证「重新绑定 / 退出」的二次确认与错误事件指引。
+  const qr2 = await (await fetch(`${url}/api/devices/bindings`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-console-request': '1' }, body: '{}',
+  })).json();
+  await page.reload();
+  await page.locator('#lock-screen').waitFor({ state: 'visible' });
+  await page.locator('#bind-payload').fill(qr2.qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  await page.evaluate(() => { window.__autoloopBiometricOutcome = 'success'; });
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  // 「重新绑定 / 退出」在管理后台·移动壳分区：第一次点击只是确认提示，3 秒内不重复点击自动复位。
+  await page.locator('[data-tab="admin"]').click();
+  await page.locator('[data-admin-pane="admin-pane-mobile"]').click();
+  await page.locator('#rebind').click();
+  await page.waitForFunction(() => document.getElementById('rebind').textContent.includes('确认'));
+  assert.equal(await page.locator('#bind-card').isVisible(), false, '第一次点击只是确认提示，不得直接清凭证');
+  await page.waitForFunction(() => !document.getElementById('rebind').textContent.includes('确认'), null, { timeout: 5000 });
+  await page.locator('#rebind').click();
+  await page.locator('#rebind').click();
+  await page.waitForFunction(() => !document.getElementById('bind-card')?.hidden, null, { timeout: 3000 });
+  assert.equal(await page.evaluate(() => sessionStorage.getItem('__fake_secure_token')), null, '二次确认后凭证才清除');
+  // 原生安全存储错误事件必须变成绑定页上的可读指引。
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('autoloop:secure-storage-error', { detail: { code: 'AUTOLOOP_STORAGE_UNAVAILABLE', message: '安全存储不可用，请重启 App 后重新绑定' } }));
+  });
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('安全存储不可用'));
+
   await page.screenshot({ path: path.join(output, 'console-mobile-shell.png'), fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '移动端壳无横向溢出');
   assert.deepEqual(errors, [], '移动端壳不得产生脚本错误');
@@ -1156,7 +1189,9 @@ try {
   await page.waitForFunction(() => { const w = document.querySelector('.sessions-message-window'); return w.scrollTop + w.clientHeight >= w.scrollHeight - 8; }, null, { timeout: 5000 });
   let metrics = await winMetrics();
   assert.ok(metrics.sh > metrics.ch + 100, `消息窗内容必须超出消息窗（可滚动）：sh=${metrics.sh} ch=${metrics.ch}`);
-  assert.equal(await page.locator('.sessions-detail-prompt').isVisible(), true, '提示词入口可见');
+  assert.equal(await page.locator('.sessions-info-panel').isVisible(), false, '提示词默认收进会话详情，把空间留给历史区');
+  await page.locator('.sessions-info-toggle').click();
+  assert.equal(await page.locator('.sessions-detail-prompt').isVisible(), true, '展开会话详情后提示词入口可见');
   assert.equal(await page.locator('.sessions-detail-prompt.expanded').count(), 0, '提示词默认折叠成一行');
   await page.locator('.sessions-detail-prompt').click();
   assert.equal(await page.locator('.sessions-detail-prompt.expanded').count(), 1, '点按展开完整提示词');
@@ -1182,11 +1217,11 @@ try {
   assert.ok(metrics.sh - metrics.ch > 220, `消息窗溢出应足够非跟随阅读：overflow=${metrics.sh - metrics.ch}`);
   const readPos = metrics.sh - metrics.ch - 150;
   await page.evaluate(pos => { const w = document.querySelector('.sessions-message-window'); w.scrollTo(0, pos); }, readPos);
-  await page.waitForFunction(pos => document.querySelector('.sessions-message-window').scrollTop === pos, readPos, { timeout: 5000 });
+  const actualReadPos = (await winMetrics()).st;
   schedulingSessions.records.find(item => item.id === 'browser-scroll').messages.push({ role: 'agent', text: '追加的新回复', at: '2026-11-15T01:02:00Z' });
-  await page.waitForFunction(pos => document.querySelector('.sessions-message-window').scrollTop !== pos || document.body.innerText.includes('追加的新回复'), readPos, { timeout: 12000 });
+  await page.waitForFunction(pos => document.querySelector('.sessions-message-window').scrollTop !== pos || document.body.innerText.includes('追加的新回复'), actualReadPos, { timeout: 12000 });
   const keptPosition = (await winMetrics()).st;
-  assert.ok(keptPosition > 30 && Math.abs(keptPosition - readPos) <= 30, `阅读中追新后消息窗滚动位置应保持（目标 ${readPos}px，实际 ${keptPosition}px）`);
+  assert.ok(keptPosition > 30 && Math.abs(keptPosition - actualReadPos) <= 30, `阅读中追新后消息窗滚动位置应保持（目标 ${actualReadPos}px，实际 ${keptPosition}px）`);
   await page.locator('.sessions-back-bottom').waitFor({ state: 'visible' });
   await page.locator('.sessions-back-bottom').click();
   // 回到底是 smooth 滚动，等动画收敛而非固定等待。

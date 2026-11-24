@@ -306,7 +306,7 @@ test('浏览器：双向滑动切页、aria 语义不变、横向滚动容器内
   await page.locator('[data-tab="core"]').click();
   await gesture('#page-core', 160);
   assert.deepEqual((await state()).selected, ['core']);
-  // 末页左滑回弹（core 页会在运行时追加「执行授权」Tab，末页以实际 Tab 栏为准）
+  // 末页左滑回弹（运行时同样固定为六栏，末页以实际 Tab 栏为准）
   const lastTab = await page.evaluate(() => [...document.querySelectorAll('#tab-bar .tab')].at(-1).dataset.tab);
   await page.locator(`[data-tab="${lastTab}"]`).click();
   await gesture(`#page-${lastTab}`, -160);
@@ -324,14 +324,20 @@ test('浏览器：双向滑动切页、aria 语义不变、横向滚动容器内
     const el = document.querySelector('.sessions-composer');
     if (!el) return { ok: false, reason: 'no composer' };
     for (let n = el; n && n !== document.body; n = n.parentElement) n.removeAttribute('hidden');
-    const spacer = document.createElement('div');
-    spacer.style.cssText = 'height:3000px';
-    el.parentNode.insertBefore(spacer, el);
-    // 真机由原生壳把 .screen 约束到视口高；这里显式复现，使它成为真正的滚动容器。
-    // 停在长内容顶部：sticky 输入栏应仍贴在视口底部（审阅 P2 的真实场景）。
+    // 模拟正常进入详情：列表隐藏，详情按 fitDetail 的同一公式占满剩余可视高度。
+    // 不能只摘掉 hidden，否则列表+详情同时显示，得到生产流程中不存在的长页面假场景。
+    document.querySelector('.sessions-view[data-view="list"]')?.setAttribute('hidden', '');
+    const detail = document.querySelector('.sessions-view[data-view="detail"]');
     const screen = document.querySelector('main.screen');
     screen.style.height = '100vh';
     screen.scrollTop = 0;
+    const top = Math.max(0, detail.getBoundingClientRect().top);
+    const bottomGap = Number.parseFloat(getComputedStyle(screen).paddingBottom) || 0;
+    detail.style.height = `${Math.max(240, Math.floor(window.innerHeight - top - bottomGap))}px`;
+    const spacer = document.createElement('div');
+    spacer.style.cssText = 'height:3000px';
+    el.parentNode.insertBefore(spacer, el);
+    // 停在长内容顶部：flex:none 输入栏应仍贴在详情底部（与 sticky 等价的合同实现）。
     const box = el.getBoundingClientRect();
     const screenBox = screen.getBoundingClientRect();
     return {

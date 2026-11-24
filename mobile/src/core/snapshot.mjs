@@ -3,7 +3,7 @@
 import { buildPages } from './pages.mjs';
 
 // 这些 key 必须全部落在壳的 MOBILE_API_KEYS 允许列表里（test/mobile-core.test.mjs 守门）。
-export const CORE_API_KEYS = Object.freeze(['state', 'projects', 'rules', 'dag-runs']);
+export const CORE_API_KEYS = Object.freeze(['state', 'projects', 'rules', 'dag-runs', 'serial-progress']);
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const VALIDATORS = {
@@ -11,12 +11,14 @@ const VALIDATORS = {
   projects: value => isObject(value) && Array.isArray(value.projects),
   rules: value => isObject(value) && Array.isArray(value.rules),
   'dag-runs': value => isObject(value) && Array.isArray(value.runs),
+  'serial-progress': value => isObject(value) && Array.isArray(value.chains),
 };
 const MISSING = Object.freeze({
   state: '状态数据缺失，未读取到控制台状态',
   projects: '项目数据缺失，未读取到项目列表',
   rules: '规则数据缺失，未读取到调度规则',
   'dag-runs': 'DAG 数据缺失，未读取到项目 DAG 进度',
+  'serial-progress': '串行进度数据缺失，未读取到串行链进度',
 });
 
 export function assembleSnapshot(responses = {}) {
@@ -37,6 +39,7 @@ export function assembleSnapshot(responses = {}) {
     projects: normalized.projects ? normalized.projects.projects : null,
     rules: normalized.rules,
     dagRuns: normalized['dag-runs'] ? normalized['dag-runs'].runs : null,
+    serial: normalized['serial-progress'],
   };
 }
 
