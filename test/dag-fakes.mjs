@@ -1,5 +1,5 @@
 // 控制器测试夹具：真实 run 存储 + 内存假 Hub/槽位/发布器，离线。
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRunStore, ALLOWED_ACTIONS, ROOT_NODE } from '../src/dag-run.mjs';
@@ -61,5 +61,20 @@ export function setup(nodes, { chooseApproach, blockedEvidence, designBaseline =
     return store.advance(run.runId, { advanceId: run.expectedAdvanceId, runId: run.runId, nodeId, role, generation: run.generation, attempt: run.attempt, outcome, ...over });
   };
   const claimAll = () => { for (const d of hub.dispatched) if (hub.runs.get(d.id).status === 'queued') hub.set(d.id, { status: 'claimed' }); };
-  return { store, directory, root, hub, rt, wip, publisher, ctl, clock, runOf, receipt, claimAll };
+  // 存量 blocked_unknown 注入（2026-11-22 回执韧性：状态机 advance 不再产生该终态，控制器口径仍需覆盖旧 run）。
+  // 只翻 run 文件、不动节点状态：下一轮 tick 的 advanceNode 走真实 blocked 分支（置 blocked+释放槽位），
+  // 状态迁移与进度唤醒都按生产路径发生。
+  const blockNow = async (nodeId, role = 'dev') => {
+    const run = runOf(nodeId, role);
+    if (!run) throw new Error(`blockNow：${nodeId}:${role} 没有 run 可注入`);
+    // 生产里 blocked_unknown 回执到达时 Hub run 已终态：置终态让槽位释放的 fail-closed 核实通过。
+    if (run.hub?.hubRunId) hub.set(run.hub.hubRunId, { status: 'done' });
+    const file = path.join(directory, `${run.runId}.json`);
+    const data = JSON.parse(readFileSync(file, 'utf8'));
+    data.status = 'blocked_unknown';
+    data.expectedAdvanceId = null;
+    writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+    return run;
+  };
+  return { store, directory, root, hub, rt, wip, publisher, ctl, clock, runOf, receipt, claimAll, blockNow };
 }

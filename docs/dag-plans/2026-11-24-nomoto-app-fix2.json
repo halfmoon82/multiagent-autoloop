@@ -1,0 +1,334 @@
+{
+  "plan_id": "2026-11-24-nomoto-app-fix2",
+  "title": "NoMoTo App 交互修复 + 多控制台 + 通知补全 + 上限 6 + 启动提速 + 设计授权双按钮 + 会话响应体验对齐",
+  "nodes": [
+    {
+      "id": "console-hub",
+      "title": "多控制台（首屏列表+设置页切换）+ 断联重连真机修复",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "heavy",
+      "contract": {
+        "input": "现状：控制台地址打包时烧进 APK 单个地址，设备凭证全局只存一份（SecureStorage 单 key），首屏=生物识别解锁后直连单个中台；shell.mjs 有断线重连状态机与指数退避但真机从未生效，必须杀进程才恢复。",
+        "output": "1) 多控制台：首屏改控制台列表（已存中台卡片 + 「添加新控制台」=填地址或扫码绑定），原生 SecureStorage 按 <host>:device-token 分 key；点选切换=重建 shell 连接上下文，免重复生物识别（解锁一次管全部已存控制台）；设置页新增「当前控制台」区块，与首屏共用同一数据源与切换逻辑，可添加/移除。2) 断联重连：App 存活期间断网/中台不可达按既有指数退避自动重连；切回前台立即探测；网络恢复回到原使用页面（不停留错误页）；持续连不上才进带重试按钮的重连页；真机不再出现必须杀进程才恢复。3) 移除打包时烧死的单地址，首启未绑定时引导添加。",
+        "error_behavior": "地址非法/不可达不写入列表并就地报错；凭证读写失败 fail-closed 回添加页；重连过程保留用户当前页面状态不清空输入。",
+        "acceptance_example": "单测覆盖多控制台存储/切换/移除与重连状态机；模拟器 smoke：两台控制台绑定切换数据隔离、杀中台进程后 App 自动恢复回原页面。",
+        "files": [
+          "mobile/app/www/shell.mjs",
+          "mobile/app/www/app.mjs（仅 boot 首屏路由）",
+          "mobile/app/www/pages/settings.mjs",
+          "mobile/app/www/pages/settings.css",
+          "mobile/app/native/java/cool/autoloop/console/auth/AutoLoopSecureStorage.java",
+          "mobile/app/build-apk.mjs（去烧死地址）",
+          "test/mobile-console-hub.test.mjs",
+          "test/mobile-reconnect.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "console-picker",
+            "settings-console",
+            "reconnect"
+          ]
+        }
+      }
+    },
+    {
+      "id": "session-actions",
+      "title": "会话卡片操作：左滑关闭 + 设计授权双按钮（放行落盘/确认执行范围）",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "会话管理列表无关闭入口（须进会话内关闭）；设计会话卡片缺网页版两颗操作按钮（public/views.mjs:229-230 已有「确认计划·放行落盘」「确认执行范围 →」）；移动端绑定后 GET-only，POST /api/scheduling-sessions/:id/approve-plan 与 POST /api/dag-runs 均不可直达。",
+        "output": "1) 左滑关闭：列表左滑会话行露出「关闭」→ 二次确认 → 新增 POST /api/mobile/sessions/:id/close（设备鉴权 + 复用控制台调度会话关闭同一能力，校验口径与网页对齐）；关闭后即时刷新；滑动中不触发点击进入。2) 设计授权双按钮：设计会话卡片显示「确认计划·放行落盘」（仅 !planApproved 时）与「确认执行范围 →」；后者 App 内打开展示页（拉 /api/dag-plan + /api/dag-preflight，逐条出示执行范围/PRD/DAG），勾选已读后提交 POST /api/mobile/dag-runs（代理 /api/dag-runs，planDigest 由服务端校验，未勾选不可提交）。3) 两条新写路由沿用 checkWrite 同等校验 + x-device-token；无权限 403。",
+        "error_behavior": "关闭失败保留列表原状并提示原因；会话已结束返回明确状态不重复操作；授权提交失败就地报错不清空已勾选项。",
+        "acceptance_example": "写路由鉴权/403/成功路径单测；授权流程单测（planDigest 校验、未勾选不可提交）；浏览器回归左滑→确认→消失、双按钮显隐与授权流程走通。",
+        "files": [
+          "src/mobile-write.mjs",
+          "mobile/src/features/sessions/views.mjs（行渲染/手势，与 composer-ux 划界）",
+          "mobile/src/features/sessions/browser.mjs",
+          "mobile/app/www/pages/sessions.mjs",
+          "mobile/app/www/pages/sessions.css",
+          "mobile/src/features/design-authorize/（新增）"
+        ],
+        "design": {
+          "surfaceIds": [
+            "sessions-list",
+            "design-authorize"
+          ]
+        }
+      }
+    },
+    {
+      "id": "composer-ux",
+      "title": "会话响应体验对齐网页：输入区布局 + 乐观上屏 + 即时响应态 + 自适应轮询流式",
+      "depends_on": [
+        "session-actions"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "输入区加号/语音/发送与输入框同排行高漂移；发送后无即时反馈（首条「没反应」）；详情轮询写死 5 秒（网页版 busy 时 1 秒/空闲 2 秒），liveText 与 rAF 合帧渲染代码已存在但被慢轮询拖累。纯客户端修复，不动服务端。",
+        "output": "1) 输入区：加号/语音/发送固定为输入框下方独立一行、行高恒定不随输入变化；输入框自动增高上限约 4 行；键盘弹起输入区贴键盘上方。2) 发送链路：发送后立即本地进入「Agent 正在响应」态（不等轮询）；乐观上屏（发送中→成功/可重试，不丢已输入内容，失败重发不重复入账）。3) 轮询与流式对齐网页：详情轮询自适应——会话本轮进行中（busy/turnStartedAt）1 秒、空闲 5 秒；页面隐藏时不轮询；liveText 按 rAF 合帧流式渲染，与网页「正在输出…」气泡等效。",
+        "error_behavior": "网络失败可重发同一条不重复入账；原生语音键未就绪禁用置灰不报错；轮询静默失败等下一轮不打扰用户。",
+        "acceptance_example": "自适应轮询单测（busy/空闲档位切换、hidden 跳过）；发送后即时响应态单测；流式合帧回归；浏览器回归多行输入工具行高度不变。",
+        "files": [
+          "mobile/src/features/composer-autogrow/autogrow.mjs",
+          "mobile/src/features/sessions/views.mjs（输入区，与 session-actions 划界）",
+          "mobile/app/www/pages/sessions.mjs（输入区与轮询部分）",
+          "mobile/app/www/pages/sessions.css",
+          "test/mobile-composer-ux.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "session-composer"
+          ]
+        }
+      }
+    },
+    {
+      "id": "tab-swipe-fix",
+      "title": "底部 6 tab 真机滑动切换修复",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "tab-swipe 特性已接线（gesture/dom + app.mjs 装配）但真机只能点不能滑（旧鸿蒙 WebView 手势兼容）。",
+        "output": "底部 6 tab 左右滑动切换与点击等价；纵向滚动不误触发切 tab；旧鸿蒙 WebView 真机生效。",
+        "error_behavior": "手势判定失败自动降级为仅点击，不阻断点击路径。",
+        "acceptance_example": "手势判定单测（角度/距离阈值）；模拟器 smoke 滑动切换截图。",
+        "files": [
+          "mobile/src/features/tab-swipe/gesture.mjs",
+          "mobile/src/features/tab-swipe/dom.mjs",
+          "test/tab-swipe-gesture.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "collapsible-expand",
+      "title": "折叠卡片可再展开",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "静态信息卡片自动折叠后无法再展开（用户要求每张可展开/再收起）。",
+        "output": "所有自动折叠卡片显示展开控件，点击展开、再点收起；展开态在页面常规刷新内保持。",
+        "error_behavior": "展开内容加载失败显示就地重试。",
+        "acceptance_example": "collapsible-cards DOM 单测折叠→展开→再折叠；浏览器回归。",
+        "files": [
+          "mobile/app/www/collapsible-cards.mjs",
+          "test/mobile-collapsible-cards.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "collapsible-cards"
+          ]
+        }
+      }
+    },
+    {
+      "id": "notify-events",
+      "title": "session-reply 通知事件源 + 原生通知真机修复（三类通知生效）",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "控制台通知事件源已有待我处理卡片与开发节点完成、缺「会话新回复」；原生常驻通知服务已入库但真机从未生效；通知从未在真机测通过。",
+        "output": "1) 控制台侧新增 session-reply 通知事件（普通/设计/调度全类型会话有新回复时，复用 CardNotifier 口径：去重、重启不刷屏、已处理不重复、失败不影响主流程；字段含 sessionId/type/title）。2) 移动端 notify 桥接该事件，点击通知回到对应会话页。3) 原生 ForegroundService 真机不生效根因排查与修复（权限/保活/渠道），使三类通知（待我处理卡片、会话新回复、开发节点完成）真机可达，锁屏/后台均可，含角标；仅 App 后台或不在该会话详情页时推送。",
+        "error_behavior": "通知发送失败只记日志不影响主流程；事件字段缺失不崩溃。",
+        "acceptance_example": "事件源单测（三类事件、去重口径）；模拟器 smoke 三类通知到达截图；真机验证列入验收记录。",
+        "files": [
+          "src/（CardNotifier/事件源）",
+          "mobile/src/features/notifications/",
+          "mobile/app/native/java/cool/autoloop/console/notify/",
+          "test/notify-events.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "session-latency",
+      "title": "普通会话真·服务端延迟定位与修复",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "自适应轮询修复（composer-ux）后仍可能存在的真·服务端延迟，根因未知（首 token 延迟 vs 隧道中继开销 vs 轮询间隔）。",
+        "output": "先计时埋点定位根因（附日志/计时证据），再修复使普通会话首条回复体感延迟显著下降；根因结论与修复方案写入 contract 与 PR 描述；验收指标定位后写入本 contract。",
+        "error_behavior": "定位结论必须附证据，不允许无证据改参数；若需改 src/server.mjs 与 app-startup-perf 共享写范围，由调度串行裁定。",
+        "acceptance_example": "修复前后同场景计时对比（模拟器两次取中位）；npm test 全绿。",
+        "files": [
+          "mobile/src/features/sessions/browser.mjs（按根因结论扩）",
+          "src/server.mjs（仅当根因要求，须调度裁定）"
+        ]
+      }
+    },
+    {
+      "id": "session-limit-config",
+      "title": "会话全局上限可配（默认 6、上限 12）",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "maxSessions 硬编码默认 3（src/scheduling-session.mjs:211），生产装配不可配（server.mjs:487 未传参）。",
+        "output": "config.json 新增 maxSessions（整数、默认 6、上限 12）；缺失/非法/越界回退 6 并 warn，不启动失败；server.mjs 装配读入 SchedulingSessionManager；控制台 UI 如实显示当前上限；docs/setup.md 同步。",
+        "error_behavior": "配置缺失/非法/越界一律回退 6 + 告警日志，服务照常启动。",
+        "acceptance_example": "四路单测（缺失/非法/越界/正常）+ 上限 6 并发开启回归 + 超额拒绝文案。",
+        "files": [
+          "src/config.mjs",
+          "src/server.mjs（仅 maxSessions 装配）",
+          "src/scheduling-session.mjs（默认值/注释）",
+          "public/（上限展示）",
+          "docs/setup.md",
+          "test/session-limit-config.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "session-limit-display"
+          ]
+        }
+      }
+    },
+    {
+      "id": "app-startup-perf",
+      "title": "首屏提速：hash 静态缓存 + 懒加载 + 基线对比",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "所有响应含 /mobile/ JS/CSS 全局 cache-control: no-store（server.mjs:107 安全头全局限流），每次打开 App 全量重拉；app.mjs 启动串行装配全部页面模块。",
+        "output": "1) 基线测量（模拟器冷启动到首屏可交互，两次取中位）。2) 静态资源按内容 hash 长缓存（入口文档维持 no-store，hash 变更自然失效，安全头不回退）。3) 非首屏页面模块 defer 到首屏渲染后加载；统一维护 app.mjs import/懒加载清单（含 design-authorize 页登记），其余节点禁改 app.mjs。4) profile 发现的其他阻塞项修复。5) 输出基线 vs 优化对比证据。",
+        "error_behavior": "缓存实现不得放松路径校验（禁 ..、禁符号链接逃逸）；懒加载失败不影响首屏，非首屏页事后可加载。",
+        "acceptance_example": "缓存头单测（入口 no-store / hash 资产长缓存）；同环境启动耗时对比（有改善才算过）；懒加载后全部 6 tab + 授权页可达浏览器回归。",
+        "files": [
+          "src/server.mjs（仅静态缓存头）",
+          "mobile/app/www/app.mjs（仅懒加载清单）",
+          "mobile/app/build-apk.mjs（hash 指纹）",
+          "test/mobile-startup-perf.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "app-startup"
+          ]
+        }
+      }
+    },
+    {
+      "id": "session-steer",
+      "title": "打断分支支持带文本的真 steer（ACP/Hub 两路）",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "App「打断」按钮语义是「打断当前轮并立即发送输入框文字」，但服务端 send() 打断分支有意忽略 text（scheduling-session.mjs:742 注释：网页版打断传空串为纯停止），结果 App 上点了打断本轮虽停、输入文字被丢弃，表现为按钮不起作用。网页版（纯停止，另发消息）行为不得回退。",
+        "output": "服务端 send() 打断分支支持带文本：ACP 会话——cancel 当前轮后（轮次按 interrupted 收尾）以该文本开新轮（复用 #runTurn 路径，受既有队列/settleMs 纪律约束）；Hub 会话——cancelRun 后 postTurn 该文本（turn+1）；打断后移动端不清空输入框、按钮给出已打断反馈；不传文本时保持纯停止语义不变。",
+        "error_behavior": "打断带文本任一步失败：cancel 失败维持运行中并提示；新轮启动失败文本保留在客户端草稿可重试，不丢消息。",
+        "acceptance_example": "RED 先写「打断带文本被丢弃」复现测试再实现；单测覆盖 ACP/Hub 两条打断带文本路径、打断后旧轮 interrupted 收尾、纯停止（空文本）路径行为不变；npm test 全绿。",
+        "files": [
+          "src/scheduling-session.mjs（与 session-limit-config 追加式共存，不动彼此代码区）",
+          "test/session-steer.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "artifacts-sync",
+      "title": "产物页接线：hooks 数据源 + 移动端产物列表路由",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "hooks.artifacts / hooks.artifactsForSession 全仓无任何页面赋值（仅 www/pages/artifacts.mjs 消费），全局产物页初始化恒为空列表；网页版产物来自 GET /api/scheduling-sessions/:id/artifacts（server.mjs:210 → listSessionArtifacts），移动端无对应只读路由。",
+        "output": "1) src/mobile-write.mjs 新增 GET /api/mobile/sessions/:id/artifacts（设备鉴权，代理 listSessionArtifacts，与网页同一份数据，只读列表不含文件内容）。2) 全局产物页 hooks.artifacts 接上会话快照（按会话分组聚合各会话产物列表）。3) 会话入口 hooks.artifactsForSession(sessionId) 接上对应列表。4) 下载沿用既有 GET /api/mobile/sessions/:id/download。写范围：mobile-write.mjs 只增路由表项与新处理器，不动既有行（与 session-actions 共存，冲突由调度串行裁定）。",
+        "error_behavior": "单会话产物读取失败只影响该分组并显示就地重试；全部失败给明确空态不编造。",
+        "acceptance_example": "RED 先写「hooks 未接线→空列表」复现测试；路由鉴权/空会话/正常三路单测；浏览器回归全局页与会话入口均显示与网页一致的产物列表。",
+        "files": [
+          "src/mobile-write.mjs（只增）",
+          "mobile/src/features/artifacts/",
+          "mobile/app/www/pages/artifacts.mjs",
+          "test/mobile-artifacts-sync.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "artifacts-page"
+          ]
+        }
+      }
+    },
+    {
+      "id": "integration-verify",
+      "title": "合并后跨模块集成验证",
+      "depends_on": [
+        "console-hub",
+        "session-actions",
+        "composer-ux",
+        "tab-swipe-fix",
+        "collapsible-expand",
+        "notify-events",
+        "session-latency",
+        "session-limit-config",
+        "app-startup-perf",
+        "session-steer",
+        "artifacts-sync"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "十一个 wave-0 节点各自合并后，跨模块组合行为未经验证。",
+        "output": "全量 npm test + npm run test:browser + 组合场景联调：多控制台切换 × 通知三类 × 关闭写路由 × 乐观上屏 × 上限 6 并发 × App 设计授权全流程（放行落盘 → 出示执行范围 → 确认进事件链）× 打断带文本 steer × 产物列表与网页一致；发现问题回派对应节点返工，不在本节点改代码。",
+        "error_behavior": "组合场景失败给出可读定位（哪个组合、哪一步），不静默判过。",
+        "acceptance_example": "组合场景用例全过并留测试代码；npm test 全绿。",
+        "files": [
+          "test/integration-verify.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "smoke-emulator",
+      "title": "Android 模拟器全链路 smoke",
+      "depends_on": [
+        "integration-verify"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "历史经验：只在桌面浏览器假桥回归、真机一装即废；本批改动含原生与写路由，需 Android 环境验证。",
+        "output": "扩展 emulator-smoke（或新增脚本）逐项验证并截图/计时归档 work/smoke/（不入库）：重连恢复、tab 滑动、卡片展开、乐观上屏、三类通知到达、设置页控制台切换、设计授权双按钮可见且流程走通、打断带文本后新轮启动、产物页有数据且与网页一致、首屏耗时改善、响应体验计时（发送→响应态出现、流式首帧延迟）。",
+        "error_behavior": "任一步失败给可读原因与截图，不静默判过；无模拟器环境明确报「未执行」而非通过。",
+        "acceptance_example": "smoke 报告逐项通过并附截图路径；npm test 不受影响。",
+        "files": [
+          "mobile/app/scripts/emulator-smoke.mjs",
+          "mobile/app/package.json"
+        ]
+      }
+    }
+  ],
+  "design": {
+    "manifestPath": "docs/design/2026-11-24-nomoto-fix2-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-24-nomoto-fix2-baseline/design-approval.json"
+  }
+}

@@ -65,10 +65,10 @@ test('1 个隔离 + 多 ready：隔离槽位仍占名额，不被复用', async 
   assert.ok(!s.hub.last('n9'), '1 个隔离 + 4 个运行 = 5，n9 等待');
 });
 
-test('blocked 隔离：blocked_unknown 的硬依赖后代暂停，无关节点继续', async () => {
+test('blocked 隔离：blocked_unknown 的硬依赖后代暂停，无关节点继续（存量 run 注入）', async () => {
   const s = setup([mkNode('a'), mkNode('b', ['a']), mkNode('c')]);
   await s.ctl.tick(); s.claimAll();
-  s.receipt('a', 'dev', 'weird-outcome');
+  await s.blockNow('a', 'dev'); // 存量 blocked_unknown（回执韧性后状态机不再产生）
   assert.equal(s.runOf('a').status, 'blocked_unknown');
   await s.ctl.tick();
   assert.ok(!s.hub.last('b'), '后代暂停');
@@ -190,7 +190,7 @@ test('UI 证据丢失但 SHA 未变：自动补验并重新 review，不直接 m
   s.publisher.verify = async input => {
     s.publisher.calls.push(['verify', input.nodeId]);
     return {
-      ok: true, tests: { exitCode: 0 },
+      ok: true, tests: { exitCode: 0 }, designStatus: 'pass', designConformance: true,
       designEvidence: { commit: input.commit, designDigest: baseline.designDigest, contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }), checks: [{ ok: true }] },
     };
   };
@@ -207,13 +207,53 @@ test('UI 证据丢失但 SHA 未变：自动补验并重新 review，不直接 m
   assert.equal(s.publisher.calls.filter(c => c[0] === 'merge').length, 1);
 });
 
+test('设计 checks 未通过时 reviewer 误判 accepted 也只能正常返工，不 merge、不 blocked/gated', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => {
+    s.publisher.calls.push(['verify', input.nodeId]);
+    return {
+      ok: true, tests: { exitCode: 0 }, designStatus: 'deviation', designConformance: false,
+      designEvidence: {
+        commit: input.commit, designDigest: baseline.designDigest,
+        contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }),
+        checks: [{ id: 'overview-normal', ok: false }], captures: [], visualDiffs: [], knownDeviations: [],
+      },
+    };
+  };
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  assert.match(s.hub.last('ui', 'review').prompt, /不得宣称设计验收通过/);
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.publisher.calls.some(c => c[0] === 'merge'), false);
+  assert.equal(s.ctl.snapshot().nodes.ui.state, 'dev');
+  assert.equal(s.runOf('ui', 'dev').attempt, 2);
+  assert.ok(!['blocked', 'gated'].includes(s.ctl.snapshot().nodes.ui.state));
+  assert.match(s.hub.last('ui', 'dev').prompt, /design-deviation/);
+});
+
+test('knownDeviations 未清零时 reviewer 误判 accepted 也正常返工，不走设施重试', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => ({
+    ok: true, tests: { exitCode: 0 }, designStatus: 'deviation', designConformance: false,
+    designEvidence: { commit: input.commit, designDigest: baseline.designDigest, contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }), checks: [{ ok: true }], knownDeviations: [{ id: 'spacing', status: 'open' }] },
+  });
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  assert.ok(s.hub.last('ui', 'review'));
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.runOf('ui', 'dev').attempt, 2);
+  assert.equal(s.runOf('ui', 'dev').attemptReason, 'design-deviation');
+  assert.equal(s.publisher.calls.some(c => c[0] === 'merge'), false);
+  assert.ok(!['blocked', 'gated'].includes(s.ctl.snapshot().nodes.ui.state));
+});
+
 test('设计 runner 设施抛错不计 worker 失败，下一 tick 同 attempt 自动重试', async () => {
   const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
   const s = setup([ui], { designBaseline: designBaseline() });
   const originalVerify = s.publisher.verify; let fail = true;
   s.publisher.verify = async input => {
     if (fail) throw new Error('browser unavailable');
-    return { ok: true, tests: { exitCode: 0 }, designEvidence: { commit: input.commit, designDigest: 'a'.repeat(64), contractDigest: designContractDigest({ designDigest: 'a'.repeat(64), contract: ui.contract.design }), checks: [{ ok: true }] } };
+    return { ok: true, tests: { exitCode: 0 }, designStatus: 'pass', designConformance: true, designEvidence: { commit: input.commit, designDigest: 'a'.repeat(64), contractDigest: designContractDigest({ designDigest: 'a'.repeat(64), contract: ui.contract.design }), checks: [{ ok: true }] } };
   };
   await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
   assert.equal(s.runOf('ui', 'dev').attempt, 1);
@@ -222,6 +262,28 @@ test('设计 runner 设施抛错不计 worker 失败，下一 tick 同 attempt �
   fail = false; await s.ctl.tick();
   assert.ok(s.hub.last('ui', 'review'));
   assert.equal(s.runOf('ui', 'dev').attempt, 1);
+});
+
+test('merge 前证据失效：回到补验与重审，不 blocked/gated、不重复硬撞 merge', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => ({
+    ok: true, tests: { exitCode: 0 }, designStatus: 'pass', designConformance: true,
+    designEvidence: { commit: input.commit, designDigest: baseline.designDigest, contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }), checks: [{ ok: true }] },
+  });
+  const realMerge = s.publisher.merge; let failMerge = true;
+  s.publisher.merge = async input => {
+    if (failMerge) { const error = new Error('evidence disappeared'); error.code = 'DESIGN_EVIDENCE_INCOMPLETE'; throw error; }
+    return realMerge(input);
+  };
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.ui.state, 'review');
+  assert.equal(s.ctl.snapshot().nodes.ui.designEvidence, null);
+  await s.ctl.tick();
+  assert.equal(s.runOf('ui', 'review').attempt, 2);
+  failMerge = false; s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.ctl.snapshot().nodes.ui.state, 'accepted');
 });
 
 test('崩溃收养路径把 prepare 返回的实际 base commit 传给 commitPr', async () => {
@@ -420,12 +482,13 @@ test('开发回执 done 但没有任何提交：按失败尝试重派，不原�
 });
 
 test('派发提示的回执模板逐字可被状态机接受（dev 与 review）', async () => {
-  const templateOf = prompt => {
-    const line = prompt.split('\n').find(item => item.trim().startsWith('{"events"'));
-    assert.ok(line, '派发提示必须带逐字回执模板');
-    const [event] = JSON.parse(line).events;
-    return { event, receipt: event.detail };
+  const templatesOf = prompt => {
+    // 通过与不通过两版模板都要逐字可解析（2026-11-22：只给通过模板时 worker 自造 outcome 词）。
+    const lines = prompt.split('\n').filter(item => item.trim().startsWith('{"events"'));
+    assert.ok(lines.length, '派发提示必须带逐字回执模板');
+    return lines.map(line => { const [event] = JSON.parse(line).events; return { event, receipt: event.detail }; });
   };
+  const templateOf = prompt => templatesOf(prompt)[0];
   const s = setup([mkNode('a')]);
   await s.ctl.tick();
   const devRun = s.runOf('a');
@@ -444,12 +507,23 @@ test('派发提示的回执模板逐字可被状态机接受（dev 与 review）
   assert.equal(review.receipt.outcome, 'accepted');
   assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), review.receipt), { verdict: 'apply', failureCounted: false, nextStatus: 'done' });
   // 2026-11-22 事故：模板只给通过写法，审阅不通过时 worker 自造 rejected/changes_requested，被判 malformed-outcome → blocked_unknown。
+  // 回执韧性（本 PR）：别名归一让 rejected/changes_requested 按 rework 生效；仍不识别的词按失败尝试收敛，不再终态阻塞。
   const reviewPrompt = s.hub.last('a', 'review').prompt;
   assert.match(reviewPrompt, /outcome[^\n]*accepted[^\n]*rework/, '审阅提示必须写明通过 accepted / 有 P0–P2 返工 rework');
-  for (const bad of ['rejected', 'changes_requested']) {
-    assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: bad }).reason, 'malformed-outcome');
+  for (const alias of ['rejected', 'changes_requested', 'request-changes']) {
+    assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: alias }).record.outcome, 'rework', `${alias} 归一为 rework`);
   }
+  assert.equal(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: 'weird-outcome' }).reason, 'malformed-outcome', '仍不识别的词按失败收敛');
   assert.deepEqual(evaluateAdvance(s.store.getRun(reviewRun.runId), { ...review.receipt, outcome: 'rework', p2: 1 }), { verdict: 'apply', failureCounted: true, nextStatus: 'done' });
+  // 两版模板齐：review 有 accepted+rework，dev 有 done+failed；各版逐字可被状态机接受。
+  const reviewTemplates = templatesOf(reviewPrompt);
+  assert.deepEqual(reviewTemplates.map(t => t.receipt.outcome).sort(), ['accepted', 'rework']);
+  const devTemplates = templatesOf(s.hub.last('a').prompt);
+  assert.deepEqual(devTemplates.map(t => t.receipt.outcome).sort(), ['done', 'failed']);
+  for (const t of [...reviewTemplates, ...devTemplates]) {
+    const verdict = evaluateAdvance(s.store.getRun(reviewRun.runId), { ...t.receipt, advanceId: reviewRun.expectedAdvanceId, runId: reviewRun.runId, nodeId: 'a', role: 'review' });
+    assert.equal(verdict.verdict, 'apply', `${t.receipt.outcome} 模板逐字可接受`);
+  }
 });
 
 test('验收后残留的非终态 run 会收敛并释放槽位（Hub 已终态但 store 停在 claimed）', async () => {
@@ -490,4 +564,123 @@ test('末节点验收时 Hub 未终态：root 不提前终结，补释放后下�
   await s.ctl.tick();
   assert.equal(s.ctl.snapshot().nodes.a.slot, null);
   assert.equal(s.store.getRun(s.root.runId).status, 'done', '槽位释放后本轮收尾');
+});
+
+// ---- #257：代码审阅与设计符合性是可独立查询、按 SHA 失效的两项结论 ----
+const conformanceEvidence = (input, baseline, contract, over = {}) => ({
+  commit: input.commit,
+  designDigest: baseline.designDigest,
+  contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract }),
+  checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }],
+  ...over,
+});
+
+test('conformance：codeReviewAccepted 与 designConformance 分源记录，并在同 SHA 有效时一起交给 merge', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'], states: ['normal'], interactions: ['open'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.commitPr = async input => ({ prUrl: 'https://x/pr/ui', commit: 'a'.repeat(40) });
+  s.publisher.verify = async input => ({
+    ok: true, tests: { exitCode: 0 }, designStatus: 'pass', designConformance: true,
+    designEvidence: conformanceEvidence(input, baseline, ui.contract.design),
+    designEvidenceIdentity: { source: 'publisher.verify', commit: input.commit, designDigest: baseline.designDigest, contractDigest: designContractDigest({ designDigest: baseline.designDigest, contract: ui.contract.design }) },
+  });
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  let node = s.ctl.snapshot().nodes.ui;
+  assert.equal(node.codeReviewAccepted, false, '尚未独立审阅，设计通过不能冒充代码审阅通过');
+  assert.equal(node.designConformance, true);
+  assert.equal(node.designEvidenceIdentity.source, 'publisher.verify');
+  assert.equal(node.designEvidenceIdentity.commit, 'a'.repeat(40));
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  node = s.ctl.snapshot().nodes.ui;
+  assert.equal(node.codeReviewAccepted, true);
+  assert.equal(node.designConformance, true);
+  assert.equal(node.codeReviewEvidence.source, 'independent-review');
+  assert.equal(node.codeReviewEvidence.commit, 'a'.repeat(40));
+  assert.equal(node.codeReviewEvidence.runId, s.runOf('ui', 'review').runId);
+  const merge = s.publisher.calls.find(call => call[0] === 'merge');
+  assert.ok(merge, '两项同 SHA 结论有效才进入 merge');
+});
+
+test('conformance：reviewer 误判 accepted 时仅代码结论为 true，knownDeviations 映射合同项并留下返工记录', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => ({
+    ok: true, tests: { exitCode: 0 }, designStatus: 'deviation', designConformance: false,
+    designEvidence: conformanceEvidence(input, baseline, ui.contract.design, { knownDeviations: [{ id: 'spacing', status: 'open' }] }),
+  });
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  const node = s.ctl.snapshot().nodes.ui;
+  assert.equal(node.codeReviewAccepted, true, '误判也如实记录代码审阅结论，但不能覆盖设计结论');
+  assert.equal(node.designConformance, false);
+  assert.equal(node.state, 'dev');
+  assert.equal(s.publisher.calls.some(call => call[0] === 'merge'), false);
+  assert.equal(node.reworkRecords.at(-1).reason, 'design-deviation');
+  assert.equal(node.reworkRecords.at(-1).knownDeviations[0].contractItem.surfaceId, 'overview');
+  assert.equal(node.reworkRecords.at(-1).codeReviewAccepted, true);
+  assert.match(s.hub.last('ui', 'dev').prompt, /spacing/);
+  assert.match(s.hub.last('ui', 'dev').prompt, /overview/);
+});
+
+test('conformance：review 回执 head 与当前 SHA 不一致时结论过期，不合并也不进入设计专用门禁', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.commitPr = async () => ({ prUrl: 'https://x/pr/ui', commit: 'a'.repeat(40) });
+  s.publisher.verify = async input => ({
+    ok: true, tests: { exitCode: 0 }, designStatus: 'pass', designConformance: true,
+    designEvidence: conformanceEvidence(input, baseline, ui.contract.design),
+  });
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  s.receipt('ui', 'review', 'accepted', { detail: { head: 'b'.repeat(40) } }); await s.ctl.tick();
+  const node = s.ctl.snapshot().nodes.ui;
+  assert.equal(node.codeReviewAccepted, false);
+  assert.equal(node.codeReviewStatus, 'pending', '过期结论已失效并自动安排同 SHA 重审');
+  assert.equal(node.designConformance, true, '代码审阅 SHA 过期不清空独立的设计结论');
+  assert.equal(s.publisher.calls.some(call => call[0] === 'merge'), false);
+  assert.ok(!['blocked', 'gated'].includes(node.state));
+});
+
+test('conformance：旧 accepted/merged 状态不反推两项结论，缺失与跨 SHA 证据显式为 stale', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const s = setup([ui], { designBaseline: designBaseline() });
+  const root = s.store.getRun(s.root.runId);
+  root.publish = { nodes: {} };
+  root.publish.nodes.ui = {
+    state: 'accepted', slot: null, branch: 'feat/ui', commit: 'a'.repeat(40),
+    codeReviewAccepted: true, codeReviewEvidence: { source: 'independent-review', runId: 'old-review', commit: 'b'.repeat(40) },
+    designConformance: true, designEvidence: conformanceEvidence({ commit: 'b'.repeat(40) }, root.designBaseline, ui.contract.design),
+  };
+  s.store.updateRun(s.root.runId, { publish: { nodes: root.publish.nodes } });
+  const node = s.ctl.snapshot().nodes.ui;
+  assert.equal(node.codeReviewAccepted, false);
+  assert.equal(node.codeReviewStatus, 'stale');
+  assert.equal(node.designConformance, false);
+  assert.equal(node.designEvidenceState, 'stale');
+});
+
+test('conformance：非 UI 节点只产生代码审阅结论，designConformance 明确为 not-required', async () => {
+  const s = setup([mkNode('backend')]);
+  await s.ctl.tick();
+  await accept(s, 'backend');
+  const node = s.ctl.snapshot().nodes.backend;
+  assert.equal(node.codeReviewAccepted, true);
+  assert.equal(node.designConformance, null);
+  assert.equal(node.designEvidenceState, 'not-required');
+});
+
+test('conformance：checks 全绿但缺显式设计结论仍不 merge，回到补验与独立重审', async () => {
+  const ui = mkNode('ui'); ui.contract.design = { surfaceIds: ['overview'] };
+  const baseline = designBaseline(); const s = setup([ui], { designBaseline: baseline });
+  s.publisher.verify = async input => ({
+    ok: true, tests: { exitCode: 0 }, designStatus: 'pass', designConformance: false,
+    designEvidence: conformanceEvidence(input, baseline, ui.contract.design),
+  });
+  await s.ctl.tick(); s.claimAll(); s.receipt('ui', 'dev', 'done'); await s.ctl.tick();
+  s.receipt('ui', 'review', 'accepted'); await s.ctl.tick();
+  assert.equal(s.publisher.calls.some(call => call[0] === 'merge'), false);
+  assert.equal(s.ctl.snapshot().nodes.ui.designConformance, false);
+  assert.equal(s.ctl.snapshot().nodes.ui.codeReviewAccepted, true);
+  await s.ctl.tick();
+  assert.equal(s.runOf('ui', 'review').attempt, 2);
+  assert.ok(!['blocked', 'gated'].includes(s.ctl.snapshot().nodes.ui.state));
 });

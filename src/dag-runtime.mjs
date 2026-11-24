@@ -114,13 +114,29 @@ export const defaultRunTests = cwd => new Promise(resolve => {
   });
 });
 
-// blocked 证据复查（保守）：只有“从未派发”（没有 hubRunId，阻塞源是本地）且 Hub 可达时才认为证据消失；
-// 已派发后回执畸形/失联的 blocked 保持阻塞，等人或明确的 revive，不会被静默放行。
+// blocked 证据复查：从未派发（阻塞源是本地）且 Hub 可达 → 证据消失；已派发 → 以 Hub run 活性为证据，
+// 终态即证据消失自动复活，存活/探测失败保守维持。已派发后回执畸形不再永久卡死（2026-11-22 回执韧性改造）。
 export function createBlockedEvidence({ request, config }) {
   return async ({ run }) => {
-    if (run.hub?.hubRunId) return { blocked: true };
-    await request(config, '/v1/state');
-    return { blocked: false, detail: '从未派发，Hub 可达，自动复活' };
+    if (!run.hub?.hubRunId) {
+      await request(config, '/v1/state');
+      return { blocked: false, detail: '从未派发，Hub 可达，自动复活' };
+    }
+    // 已派发：以 Hub run 活性为阻塞证据。hubRunId 存在性恒真，拿它当证据等于永久阻塞
+    // （2026-11-22 tab-swipe 事故：审阅已交回但回执不合契约，节点卡死三天无人接手）。
+    // worker 已交回终态（done/nothing/cancelled/failed）即证据消失，自动复活走既有重派/换打法阶梯；
+    // 仍存活（claimed/queued/unknown）维持阻塞；探测出错保守维持，不静默放行。
+    let out;
+    try {
+      out = await request(config, `/v1/events/${encodeURIComponent(run.hub.hubRunId)}`, { auth: 'source' });
+    } catch (error) {
+      if (error?.status === 404) return { blocked: false, detail: 'Hub 事件已不存在，阻塞证据消失' };
+      return { blocked: true, detail: `Hub 探测失败，保守维持阻塞：${error.message}` };
+    }
+    const newest = [...(out?.runs || [])].sort((a, b) => b.run - a.run)[0] || null;
+    if (!newest) return { blocked: false, detail: 'Hub 事件无 run 记录（派发未落地），自动复活' };
+    if (HUB_TERMINAL.has(newest.state)) return { blocked: false, detail: `Hub run ${newest.run} 已终态（${newest.state}），worker 已结束，自动复活` };
+    return { blocked: true, detail: `Hub run ${newest.run} 仍 ${newest.state}，worker 未交回，维持阻塞` };
   };
 }
 

@@ -134,9 +134,32 @@ test('hub 适配器按中台授权规则选密钥：事件读写用 source，can
   }
 });
 
-test('blocked 证据：已派发的保持阻塞；从未派发且 Hub 可达才自动复活；Hub 不可达抛错', async () => {
-  const ok = createBlockedEvidence({ request: recorder().request, config: {} });
-  assert.equal((await ok({ run: { hub: { hubRunId: 7 } } })).blocked, true);
+test('blocked 证据（2026-11-22 回执韧性）：已派发以 Hub run 活性为证据，终态即自动复活；从未派发且 Hub 可达自动复活；Hub 不可达抛错', async () => {
+  // 已派发 + Hub run 仍存活（claimed/queued）→ 保持阻塞
+  const alive = createBlockedEvidence({ request: recorder({ 'GET /v1/events/7': { runs: [{ run: 3, state: 'claimed' }] } }).request, config: {} });
+  assert.deepEqual(await alive({ run: { hub: { hubRunId: 7 } } }), { blocked: true, detail: 'Hub run 3 仍 claimed，worker 未交回，维持阻塞' });
+  // 已派发 + Hub run 终态（done/nothing/cancelled/failed）→ 证据消失，自动复活
+  for (const state of ['done', 'nothing', 'cancelled', 'failed']) {
+    const done = createBlockedEvidence({ request: recorder({ 'GET /v1/events/7': { runs: [{ run: 3, state }] } }).request, config: {} });
+    const verdict = await done({ run: { hub: { hubRunId: 7 } } });
+    assert.equal(verdict.blocked, false, `Hub run ${state} 应视为证据消失`);
+    assert.match(verdict.detail, /终态/);
+  }
+  // 已派发 + Hub 事件无 run 记录（派发未落地）→ 自动复活
+  const empty = createBlockedEvidence({ request: recorder({ 'GET /v1/events/7': { runs: [] } }).request, config: {} });
+  assert.equal((await empty({ run: { hub: { hubRunId: 7 } } })).blocked, false);
+  // 已派发 + 事件 404 → 自动复活
+  const gone = createBlockedEvidence({ request: recorder({ 'GET /v1/events/7': Object.assign(new Error('not found'), { status: 404 }) }).request, config: {} });
+  assert.equal((await gone({ run: { hub: { hubRunId: 7 } } })).blocked, false);
+  // 已派发 + Hub 探测出错（非 404）→ 保守维持阻塞
+  const err = createBlockedEvidence({ request: recorder({ 'GET /v1/events/7': new Error('boom') }).request, config: {} });
+  assert.equal((await err({ run: { hub: { hubRunId: 7 } } })).blocked, true);
+  // 事件读取必须带 source 密钥（否则中台 401）
+  const { calls, request } = recorder({ 'GET /v1/events/7': { runs: [{ run: 3, state: 'claimed' }] } });
+  await createBlockedEvidence({ request, config: {} })({ run: { hub: { hubRunId: 7 } } });
+  assert.equal(calls.find(c => c.p === '/v1/events/7').auth, 'source');
+  // 从未派发：保持原口径（Hub 可达即复活；Hub 不可达抛错由控制器记 lastError）
+  const ok = createBlockedEvidence({ request: recorder({ 'GET /v1/state': {} }).request, config: {} });
   assert.equal((await ok({ run: {} })).blocked, false);
   const down = createBlockedEvidence({ request: recorder({ 'GET /v1/state': new Error('down') }).request, config: {} });
   await assert.rejects(() => down({ run: {} }));

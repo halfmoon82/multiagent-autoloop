@@ -1,6 +1,7 @@
 // publish：commit-pr / verify / merge 在真实 git（本地 bare 远端）+ 假 gh 上的行为。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,10 +12,21 @@ import { designContractDigest } from '../src/design-baseline.mjs';
 import { ensureMirror } from '../src/dag-mirror.mjs';
 import { makeRepo, sh } from './helpers-git.mjs';
 import { dagReviewHolder } from '../src/review-claim.mjs';
+import { verifyDesign as verifyDesignModule } from '../src/design-verify.mjs';
 
+const sha256 = value => createHash('sha256').update(value).digest('hex');
 const node = (id, files) => ({ id, depends_on: [], contract: { files } });
-async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, aFiles = null, readToken = async () => 'test-gh-token' } = {}) {
+async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designInScope = false, verifyDesign, ui = false, aFiles = null, readToken = async () => 'test-gh-token', approvedVerifiers = null } = {}) {
   const { project, remote } = makeRepo();
+  if (approvedVerifiers) {
+    const primaryPath = 'docs/design/demo/verify.mjs'; const fallbackPath = 'docs/design/demo/fallback.mjs';
+    for (const [file, source] of [[primaryPath, approvedVerifiers.primary], [fallbackPath, approvedVerifiers.fallback]]) {
+      mkdirSync(path.dirname(path.join(project, file)), { recursive: true }); writeFileSync(path.join(project, file), source);
+      designBaseline.manifest.artifacts.push({ path: file, sha256: sha256(source) }); designBaseline.readOnlyPaths.push(file);
+    }
+    designBaseline.manifest.verifierPath = primaryPath; designBaseline.manifest.fallbackVerifierPath = fallbackPath;
+    sh(project, 'add', primaryPath, fallbackPath); sh(project, 'commit', '-qm', 'approved verifier pair'); sh(project, 'push', '-q', 'origin', 'main');
+  }
   const storeDirectory = mkdtempSync(path.join(tmpdir(), 'dag-pub-'));
   const store = createRunStore({ directory: storeDirectory });
   const mirror = await ensureMirror({ root: storeDirectory, remoteUrl: remote, baseBranch: 'main' });
@@ -35,7 +47,8 @@ async function boot({ actions = ALLOWED_ACTIONS, designBaseline = null, designIn
   const pub = createPublisher({ store, rootRunId: root.runId, rt, gh, runTests, verifyDesign, baseRef: 'refs/heads/main', readToken });
   const ctx = { nodeId: 'a', slot: 1, branch: 'feat/a', worktree: rt.slotPath(1), runId: root.runId, base: prepared.baseCommit };
   const write = (rel, c) => { mkdirSync(path.dirname(path.join(ctx.worktree, rel)), { recursive: true }); writeFileSync(path.join(ctx.worktree, rel), c); };
-  return { project, remote, store, root, rt, gh, pub, ctx, write, tests, mirror };
+  const evidenceDir = path.join(storeDirectory, 'design-evidence', root.runId, 'a');
+  return { project, remote, store, root, rt, gh, pub, ctx, write, tests, mirror, evidenceDir };
 }
 
 test('commitPr：只提交文件范围内改动，推送分支，创建 PR 并回传 SHA；重复调用幂等', async () => {
@@ -71,10 +84,10 @@ test('merge：远端 PR head 与已审 SHA 不一致拒绝；一致则合并，�
   t.write('src/a.mjs', 'x\n');
   const pr = await t.pub.commitPr(t.ctx);
   t.gh.prs.get(pr.prUrl).sha = 'deadbeef';
-  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), /head/);
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, ...mergeConclusions(pr.commit) }), /head/);
   assert.equal(t.gh.merged.length, 0);
   t.gh.prs.get(pr.prUrl).sha = pr.commit;
-  const out = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit });
+  const out = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, ...mergeConclusions(pr.commit) });
   assert.ok(out.mergeCommit); assert.deepEqual(t.gh.merged, [pr.prUrl]);
   const noMerge = await boot({ actions: ['worktree', 'push-branch', 'create-pr'] });
   await assert.rejects(noMerge.pub.merge({ ...noMerge.ctx, prUrl: 'u', commit: 'c' }), /squash-merge|授权/);
@@ -115,7 +128,7 @@ test('merge：fetch 失败即报错，不回退本地 baseRef tip', async () => 
   t.write('src/a.mjs', 'export const a = 1;\n');
   const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
   const realGit = t.rt.git; t.rt.git = async (cwd, args) => { if (args[0] === 'fetch') throw new Error('network down'); return realGit(cwd, args); };
-  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), /network down/);
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, ...mergeConclusions(pr.commit) }), /network down/);
 });
 
 // ---- #67 execution-grants：执行层拒绝未选高风险动作 ----
@@ -147,11 +160,28 @@ const uiDesign = () => ({
   manifest: { schema: 1, designId: 'demo', artifacts: [{ path: 'docs/design/demo/reference.png', sha256: 'b'.repeat(64) }], surfaces: [{ id: 'overview', route: '/', viewports: ['1440x900'], states: ['normal'], interactions: ['open'], referencePaths: ['docs/design/demo/reference.png'] }] },
   readOnlyPaths: ['docs/design/demo/design-manifest.json', 'docs/design/demo/reference.png'],
 });
-const evidenceFor = (root, commit, over = {}) => ({
-  commit, designDigest: root.designBaseline.designDigest,
-  contractDigest: designContractDigest({ designDigest: root.designBaseline.designDigest, contract: root.nodes[0].contract.design }),
-  checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }], ...over,
-});
+const evidenceFor = (root, commit, over = {}, evidenceDir = null) => {
+  const evidence = {
+    commit, designDigest: root.designBaseline.designDigest,
+    contractDigest: designContractDigest({ designDigest: root.designBaseline.designDigest, contract: root.nodes[0].contract.design }),
+    checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }],
+  };
+  if (evidenceDir) {
+    mkdirSync(evidenceDir, { recursive: true });
+    const capture = path.join(evidenceDir, `overview-${commit}.png`);
+    writeFileSync(capture, `capture:${commit}`);
+    evidence.captures = [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: capture }];
+  }
+  return { ...evidence, ...over };
+};
+
+function mergeConclusions(commit, designConformance) {
+  return {
+    codeReviewAccepted: true,
+    codeReviewEvidence: { source: 'independent-review', runId: 'review-fixture', commit },
+    ...(designConformance === undefined ? {} : { designConformance }),
+  };
+}
 
 test('verify：非 UI 节点完全不调用设计 verifier', async () => {
   let calls = 0;
@@ -166,7 +196,7 @@ test('verify：UI 节点只跑定向 checks，visualDiffs 默认不形成硬失�
   const designBaseline = uiDesign(); let received;
   const verifyDesign = async input => {
     received = input;
-    return { ok: true, evidence: { ...evidenceFor(input.designBaseline ? { designBaseline, nodes: [{ contract: { design: input.contract } }] } : null, input.commit), visualDiffs: [{ surfaceId: 'overview', ok: false, note: 'review-only' }] } };
+    return { ok: true, evidence: { ...evidenceFor(input.designBaseline ? { designBaseline, nodes: [{ contract: { design: input.contract } }] } : null, input.commit, {}, input.evidenceDir), visualDiffs: [{ surfaceId: 'overview', ok: false, note: 'review-only' }] } };
   };
   const t = await boot({ designBaseline, ui: true, verifyDesign });
   t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
@@ -180,41 +210,57 @@ test('verify：UI 缺 verifier 属设施错误；定向断言失败才返回实�
   const missing = await boot({ designBaseline: uiDesign(), ui: true });
   missing.write('src/a.mjs', 'x\n'); const missingPr = await missing.pub.commitPr(missing.ctx);
   await assert.rejects(missing.pub.verify({ ...missing.ctx, commit: missingPr.commit }), error => error.code === 'DESIGN_VERIFIER_UNAVAILABLE');
-  const failing = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async input => ({ ok: false, evidence: evidenceFor({ designBaseline: uiDesign(), nodes: [{ contract: { design: input.contract } }] }, input.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] }) }) });
+  const failing = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async input => ({ ok: false, evidence: evidenceFor({ designBaseline: uiDesign(), nodes: [{ contract: { design: input.contract } }] }, input.commit, { checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }, { surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] }, input.evidenceDir) }) });
   failing.write('src/a.mjs', 'x\n'); const failingPr = await failing.pub.commitPr(failing.ctx);
   const result = await failing.pub.verify({ ...failing.ctx, commit: failingPr.commit });
   assert.equal(result.ok, true, '定向 checks 只记录，节点继续由测试结果决定');
-  assert.equal(result.designEvidence.checks[0].ok, false);
+  assert.equal(result.designEvidence.checks.find(check => check.kind === 'layout').ok, false);
+  assert.equal(result.designStatus, 'deviation');
   assert.match(result.designEvidenceWarning || '', /未全部通过/);
   const noEvidence = await boot({ designBaseline: uiDesign(), ui: true, verifyDesign: async () => ({ ok: true }) });
   noEvidence.write('src/a.mjs', 'x\n'); const ne = await noEvidence.pub.commitPr(noEvidence.ctx);
-  const neResult = await noEvidence.pub.verify({ ...noEvidence.ctx, commit: ne.commit });
-  assert.equal(neResult.ok, true, 'verifier 不返回证据时不抛裸错，只记警示');
-  assert.match(neResult.designEvidenceWarning || '', /未返回证据/);
+  await assert.rejects(
+    noEvidence.pub.verify({ ...noEvidence.ctx, commit: ne.commit }),
+    error => error.code === 'DESIGN_EVIDENCE_INCOMPLETE' && /缺少设计验证证据|未返回证据/.test(error.message),
+  );
 });
 
-test('merge：设计证据只作汇报，不阻断合并，merge 本身不重跑验证', async () => {
+test('verify：knownDeviations 是有效设计偏差证据，不误判为设施故障', async () => {
+  const designBaseline = uiDesign();
+  const t = await boot({
+    designBaseline, ui: true,
+    verifyDesign: async input => ({ ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit, { knownDeviations: [{ id: 'spacing', status: 'open' }] }, input.evidenceDir) }),
+  });
+  t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
+  const result = await t.pub.verify({ ...t.ctx, commit: pr.commit });
+  assert.equal(result.ok, true);
+  assert.equal(result.designEvidence.knownDeviations.length, 1);
+  assert.match(result.designEvidenceWarning || '', /knownDeviations/);
+});
+
+test('merge：缺证据或身份错位进入补验，不在 merge 重跑浏览器', async () => {
   let verifyCalls = 0;
   const designBaseline = uiDesign();
-  const t = await boot({ designBaseline, ui: true, verifyDesign: async input => { verifyCalls++; return { ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit) }; } });
+  const t = await boot({ designBaseline, ui: true, verifyDesign: async input => { verifyCalls++; return { ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit, {}, input.evidenceDir) }; } });
   t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
-  const noEvidence = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit });
-  assert.ok(noEvidence.mergeCommit); assert.match(noEvidence.designWarning || '', /证据/);
-  const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit);
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, ...mergeConclusions(pr.commit) }), error => error.code === 'DESIGN_EVIDENCE_INCOMPLETE');
+  const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit, {}, t.evidenceDir);
   t.gh.merged.length = 0;
-  const mismatch = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, designDigest: 'c'.repeat(64) } });
-  assert.ok(mismatch.mergeCommit); assert.match(mismatch.designWarning || '', /不一致/);
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: { ...evidence, designDigest: 'c'.repeat(64) }, ...mergeConclusions(pr.commit, true) }), error => error.code === 'DESIGN_EVIDENCE_INCOMPLETE');
+  assert.equal(t.gh.merged.length, 0);
+  const merged = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence, ...mergeConclusions(pr.commit, true) });
+  assert.ok(merged.mergeCommit);
+  assert.equal(t.gh.merged.length, 1);
   assert.equal(verifyCalls, 0, 'merge 不得重跑浏览器验证');
 });
 
-test('merge：失败 checks 依然合并，但结果里带警示', async () => {
+test('merge：失败 checks 返回正常设计返工信号，不合并', async () => {
   const designBaseline = uiDesign();
   const t = await boot({ designBaseline, ui: true, verifyDesign: async () => { throw new Error('not called'); } });
   t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
-  const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit, { checks: [{ surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] });
-  const out = await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence });
-  assert.ok(out.mergeCommit); assert.match(out.designWarning || '', /未全部通过/);
-  assert.equal(t.gh.merged.length, 1);
+  const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit, { checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }, { surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }] }, t.evidenceDir);
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence, ...mergeConclusions(pr.commit, true) }), error => error.code === 'DESIGN_DEVIATION');
+  assert.equal(t.gh.merged.length, 0);
 });
 
 test('commitPr：越界文件只汇报、不阻断', async () => {
@@ -229,7 +275,7 @@ test('verify：设计 verifier 造成的槽位变化同样被记录', async () =
   const designBaseline = uiDesign();
   const verifyDesign = async input => {
     writeFileSync(path.join(input.worktree, 'src', 'a.mjs'), 'verifier mutation\n');
-    return { ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit) };
+    return { ok: true, evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit, {}, input.evidenceDir) };
   };
   const t = await boot({ designBaseline, ui: true, verifyDesign });
   t.write('src/a.mjs', 'x\n'); const pr = await t.pub.commitPr(t.ctx);
@@ -358,10 +404,10 @@ test('merge：PR 被其他审阅方占位时暂缓合并（可重试错误），
   const pr = await t.pub.commitPr(t.ctx);
   t.gh.prs.get(pr.prUrl).sha = pr.commit;
   t.gh.claimHolder = async () => 'codex-9f94e800';
-  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit }), err => err instanceof PublishError && err.code === 'REVIEW_CLAIMED' && /codex-9f94e800/.test(err.message));
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, ...mergeConclusions(pr.commit) }), err => err instanceof PublishError && err.code === 'REVIEW_CLAIMED' && /codex-9f94e800/.test(err.message));
   assert.deepEqual(t.gh.merged, [], '他人占位时不得合并');
   t.gh.claimHolder = async () => dagReviewHolder('a');
-  await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit });
+  await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, ...mergeConclusions(pr.commit) });
   assert.deepEqual(t.gh.merged, [pr.prUrl], '本节点 DAG 审阅自己的占位不挡合并');
 });
 
@@ -371,7 +417,7 @@ test('merge：占位已释放（无有效占位）时照常合并', async () => 
   const pr = await t.pub.commitPr(t.ctx);
   t.gh.prs.get(pr.prUrl).sha = pr.commit;
   t.gh.claimHolder = async () => null;
-  await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit });
+  await t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, ...mergeConclusions(pr.commit) });
   assert.deepEqual(t.gh.merged, [pr.prUrl]);
 });
 
@@ -438,4 +484,163 @@ test('baseline：把远端 main 推进同步到控制器 mirror（后续节点�
   assert.notEqual(sh(b.mirror.mirrorPath, 'rev-parse', 'refs/heads/main'), tip, '前置：mirror 仍是旧 main');
   await b.pub.baseline({ nodeId: 'a', mergeCommit: tip });
   assert.equal(sh(b.mirror.mirrorPath, 'rev-parse', 'refs/heads/main'), tip, 'baseline 后 mirror main 跟上远端');
+});
+
+
+function completeUiEvidence(root, commit, evidenceDir, over = {}) {
+  mkdirSync(evidenceDir, { recursive: true });
+  const capture = path.join(evidenceDir, `overview-${commit}.png`);
+  writeFileSync(capture, `capture:${commit}`);
+  return {
+    commit, designDigest: root.designBaseline.designDigest,
+    contractDigest: designContractDigest({ designDigest: root.designBaseline.designDigest, contract: root.nodes[0].contract.design }),
+    checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }],
+    captures: [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: capture }],
+    ...over,
+  };
+}
+
+test('verify：同 SHA 完整证据命中缓存；证据目录丢失重建，不同 SHA 绝不复用', async () => {
+  const designBaseline = uiDesign(); let calls = 0; const seenDirectories = [];
+  const t = await boot({ designBaseline, ui: true, verifyDesign: async input => {
+    calls++; seenDirectories.push(input.evidenceDir);
+    return { ok: true, status: 'pass', evidence: completeUiEvidence({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit, input.evidenceDir) };
+  } });
+  t.write('src/a.mjs', 'first\n'); const firstPr = await t.pub.commitPr(t.ctx);
+  const first = await t.pub.verify({ ...t.ctx, commit: firstPr.commit });
+  const cached = await t.pub.verify({ ...t.ctx, commit: firstPr.commit });
+  assert.equal(calls, 1, '同 SHA 完整缓存不得再次启动 verifier');
+  assert.equal(first.designStatus, 'pass');
+  assert.equal(cached.designEvidenceCache, 'hit');
+  assert.equal(cached.designEvidence.commit, firstPr.commit);
+  writeFileSync(cached.designEvidence.captures[0].path, 'tampered-cache');
+  const afterTamper = await t.pub.verify({ ...t.ctx, commit: firstPr.commit });
+  assert.equal(calls, 2, 'capture hash 变化的缓存不得复用');
+  assert.match(readFileSync(afterTamper.designEvidence.captures[0].path, 'utf8'), new RegExp(firstPr.commit));
+  rmSync(t.evidenceDir, { recursive: true, force: true });
+  const recovered = await t.pub.verify({ ...t.ctx, commit: firstPr.commit });
+  assert.equal(calls, 3, '缓存与 captures 丢失后必须重建');
+  assert.equal(recovered.designEvidenceCache, 'rebuilt');
+  t.write('src/a.mjs', 'second\n'); const secondPr = await t.pub.commitPr(t.ctx);
+  assert.notEqual(secondPr.commit, firstPr.commit);
+  const second = await t.pub.verify({ ...t.ctx, commit: secondPr.commit });
+  assert.equal(calls, 4, '不同 SHA 不得复用缓存');
+  assert.equal(second.designEvidence.commit, secondPr.commit);
+  assert.notEqual(seenDirectories[3], seenDirectories[0], '不同 SHA 的 captures 必须隔离');
+});
+
+test('verify/merge：部分 captures 或缺文件属于 incomplete，不得验收或合并', async () => {
+  const designBaseline = uiDesign();
+  const t = await boot({ designBaseline, ui: true, verifyDesign: async input => ({
+    ok: true, evidence: completeUiEvidence({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit, input.evidenceDir, { captures: [] }),
+  }) });
+  t.write('src/a.mjs', 'partial\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  await assert.rejects(t.pub.verify({ ...t.ctx, commit: pr.commit }), error => {
+    assert.equal(error.code, 'DESIGN_EVIDENCE_INCOMPLETE');
+    assert.equal(error.status, 'incomplete');
+    return true;
+  });
+  const partial = completeUiEvidence(t.store.getRun(t.root.runId), pr.commit, t.evidenceDir, { captures: [] });
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: partial, ...mergeConclusions(pr.commit, true) }), error => error.code === 'DESIGN_EVIDENCE_INCOMPLETE');
+  assert.deepEqual(t.gh.merged, []);
+});
+
+test('verify：设施异常显式为 infrastructure-error，不转成 worker 实现失败', async () => {
+  const designBaseline = uiDesign();
+  const t = await boot({ designBaseline, ui: true, verifyDesign: async () => {
+    const error = new Error('browser missing'); error.code = 'DESIGN_EVIDENCE_INFRASTRUCTURE'; error.status = 'infrastructure-error'; throw error;
+  } });
+  t.write('src/a.mjs', 'infra\n'); const pr = await t.pub.commitPr(t.ctx);
+  await assert.rejects(t.pub.verify({ ...t.ctx, commit: pr.commit }), error => {
+    assert.ok(error instanceof PublishError, 'publisher 必须统一设施错误分类');
+    assert.equal(error.code, 'DESIGN_EVIDENCE_INFRASTRUCTURE');
+    assert.equal(error.status, 'infrastructure-error');
+    assert.equal(error.ok, undefined, '设施异常不得伪装成 tests/deviation 的 ok=false');
+    return true;
+  });
+});
+
+
+const partialDeviationVerifier = `export async function verify() {
+  return { ok: false,
+    checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }, { surfaceId: 'overview', kind: 'layout', id: 'normal', ok: false }],
+    knownDeviations: [{ id: 'spacing', status: 'open' }], captures: [] };
+}
+`;
+const greenFallbackVerifier = `import { mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+export async function capture({ evidenceDir }) {
+  mkdirSync(evidenceDir, { recursive: true }); const file = path.join(evidenceDir, 'complete.png'); writeFileSync(file, 'complete');
+  return { ok: true,
+    checks: [{ surfaceId: 'overview', kind: 'interaction', id: 'open', ok: true }, { surfaceId: 'overview', kind: 'layout', id: 'normal', ok: true }],
+    knownDeviations: [], captures: [{ surfaceId: 'overview', viewport: '1440x900', state: 'normal', path: file }] };
+}
+`;
+async function deviationFallbackBoot() {
+  const designBaseline = uiDesign();
+  const t = await boot({ designBaseline, ui: true, verifyDesign: verifyDesignModule, approvedVerifiers: { primary: partialDeviationVerifier, fallback: greenFallbackVerifier } });
+  t.write('src/a.mjs', 'deviation-with-partial-captures\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  return { t, pr };
+}
+
+test('rework1 verify/cache：主 ok:false/失败 checks/knownDeviations + 部分 captures 不得被全绿 fallback 覆盖', async () => {
+  const { t } = await deviationFallbackBoot();
+  const first = await t.pub.verify({ ...t.ctx, commit: t.ctx.commit || sh(t.ctx.worktree, 'rev-parse', 'HEAD') });
+  assert.equal(first.designStatus, 'deviation');
+  assert.equal(first.designEvidence.verifierOk, false);
+  assert.equal(first.designEvidence.checks.some(check => check.ok === false), true, '必须保留主侧失败 checks');
+  assert.equal(first.designEvidence.knownDeviations.length, 1, '必须保留主侧 knownDeviations');
+  assert.equal(first.designEvidence.coverage.complete, true, 'fallback 可以补全 captures');
+  const cached = await t.pub.verify({ ...t.ctx, commit: first.designEvidence.commit });
+  assert.equal(cached.designEvidenceCache, 'hit');
+  assert.equal(cached.designStatus, 'deviation', 'deviation 缓存也不得变成 pass');
+  assert.equal(cached.designEvidence.checks.some(check => check.ok === false), true);
+});
+
+test('rework1 merge：fallback 补全 captures 后仍按主偏差拒绝合并', async () => {
+  const { t, pr } = await deviationFallbackBoot();
+  const verified = await t.pub.verify({ ...t.ctx, commit: pr.commit });
+  await assert.rejects(t.pub.merge({ ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence: verified.designEvidence, ...mergeConclusions(pr.commit, true) }), error => {
+    assert.equal(error.code, 'DESIGN_DEVIATION'); assert.equal(error.status, 'deviation'); return true;
+  });
+  assert.deepEqual(t.gh.merged, []);
+});
+
+// ---- #257：publisher 输出显式结论，merge 只接受同 SHA 的独立有效结论 ----
+test('conformance verify：返回独立 designConformance 与证据身份，knownDeviations 映射批准合同项', async () => {
+  const designBaseline = uiDesign();
+  const t = await boot({ designBaseline, ui: true, verifyDesign: async input => ({
+    ok: true, status: 'pass', evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit, {}, input.evidenceDir),
+  }) });
+  t.write('src/a.mjs', 'pass\n'); const pr = await t.pub.commitPr(t.ctx);
+  const passed = await t.pub.verify({ ...t.ctx, commit: pr.commit });
+  assert.equal(passed.designConformance, true);
+  assert.deepEqual(passed.designEvidenceIdentity, {
+    source: 'publisher.verify', commit: pr.commit, designDigest: designBaseline.designDigest,
+    contractDigest: designContractDigest({ designDigest: designBaseline.designDigest, contract: t.root.nodes[0].contract.design }), status: 'pass',
+  });
+
+  const deviation = await boot({ designBaseline, ui: true, verifyDesign: async input => ({
+    ok: true, status: 'deviation', evidence: evidenceFor({ designBaseline, nodes: [{ contract: { design: input.contract } }] }, input.commit, { knownDeviations: [{ id: 'spacing', status: 'open' }] }, input.evidenceDir),
+  }) });
+  deviation.write('src/a.mjs', 'deviation\n'); const deviationPr = await deviation.pub.commitPr(deviation.ctx);
+  const failed = await deviation.pub.verify({ ...deviation.ctx, commit: deviationPr.commit });
+  assert.equal(failed.designConformance, false);
+  assert.equal(failed.designEvidence.knownDeviations[0].contractItem.surfaceId, 'overview');
+});
+
+test('conformance merge：缺失/跨 SHA 代码审阅、缺设计结论都拒绝；同 SHA 两项有效结论才合并', async () => {
+  const designBaseline = uiDesign();
+  const t = await boot({ designBaseline, ui: true, verifyDesign: async () => { throw new Error('merge 不得重跑设计语义验证'); } });
+  t.write('src/a.mjs', 'merge\n'); const pr = await t.pub.commitPr(t.ctx); t.gh.prs.get(pr.prUrl).sha = pr.commit;
+  const evidence = evidenceFor(t.store.getRun(t.root.runId), pr.commit, {}, t.evidenceDir);
+  const review = { source: 'independent-review', runId: 'review-1', commit: pr.commit };
+  const input = { ...t.ctx, prUrl: pr.prUrl, commit: pr.commit, evidence };
+  await assert.rejects(t.pub.merge({ ...input, designConformance: true }), error => error.code === 'CODE_REVIEW_REQUIRED');
+  await assert.rejects(t.pub.merge({ ...input, codeReviewAccepted: true, codeReviewEvidence: { ...review, commit: 'b'.repeat(40) }, designConformance: true }), error => error.code === 'CODE_REVIEW_REQUIRED');
+  await assert.rejects(t.pub.merge({ ...input, codeReviewAccepted: true, codeReviewEvidence: review }), error => error.code === 'DESIGN_CONFORMANCE_REQUIRED');
+  assert.deepEqual(t.gh.merged, []);
+  const merged = await t.pub.merge({ ...input, codeReviewAccepted: true, codeReviewEvidence: review, designConformance: true });
+  assert.ok(merged.mergeCommit);
+  assert.deepEqual(t.gh.merged, [pr.prUrl]);
 });
