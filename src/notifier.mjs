@@ -34,7 +34,7 @@ export function createConsoleNotifier({ config, server, ...options } = {}) {
 // 普通失败、自动重试、调度自愈不通知：isNotifiableNodeEvent 只放行 done 回执；
 // 失败若形成待办，则只发该待办通知（卡片照常分发）。
 export class CardNotifier {
-  constructor({ config, intervalMs = 15000, notify = macosNotify, fetchState, setTimer = setInterval, clearTimer = clearInterval, routing, fetchNodeEvents, fetchSessions, setBadge, syncState = null, onSyncPrompt = null } = {}) {
+  constructor({ config, intervalMs = 15000, notify = macosNotify, fetchState, setTimer = setInterval, clearTimer = clearInterval, routing, fetchNodeEvents, fetchSessions, setBadge, syncState = null, onSyncPrompt = null, now = Date.now } = {}) {
     // 路由装配复用本轮询周期；无数据目录（如纯通知测试）则不启用。
     this.routing = routing === undefined ? getCardRouting(config) : routing;
     this.intervalMs = intervalMs;
@@ -48,6 +48,10 @@ export class CardNotifier {
     this.clearTimer = clearTimer;
     this.seeded = false;
     this.notified = new Map();
+    // 会话按自身首次出现种子：重启时调度会话是在首轮轮询之后逐个恢复的，
+    // 首次出现的会话只有最新回复晚于本进程启动才算新回复，否则只记为已读（重启不刷屏）。
+    this.startedAt = Number(now()) || 0;
+    this.seenSessions = new Set();
     this.handle = null;
     // 跨设备同步（Spec §7 / issue 12）：注入共享状态来源后，任意设备提交即在本设备生效；
     // 未注入时维持原有桌面通知行为，不改变现有调用方（含 scripts/start.mjs）。
@@ -97,6 +101,20 @@ export class CardNotifier {
     catch { return []; }
   }
 
+  markSessionSeen(session) {
+    const id = session && typeof session === 'object' ? String(session.id ?? '').trim() : '';
+    if (id) this.seenSessions.add(id);
+  }
+
+  // 首次出现的会话：最新回复早于启动（或时间缺失/无法解析）视为历史，只种子不推送。
+  isRestoredHistory(descriptor) {
+    const id = String(descriptor.sessionId);
+    if (this.seenSessions.has(id)) return false;
+    this.seenSessions.add(id);
+    const at = Date.parse(descriptor.replyAt || '');
+    return !(Number.isFinite(at) && at > this.startedAt);
+  }
+
   syncBadge(open) {
     try { this.setBadge(badgeCount(open)); } catch { /* 角标同步失败不影响主流程 */ }
   }
@@ -128,6 +146,7 @@ export class CardNotifier {
     if (!this.seeded) {
       this.seeded = true;
       this.notified = new Map(descriptors.map(d => [d.key, true]));
+      for (const session of sessions) this.markSessionSeen(session);
       this.syncBadge(open);
       return;
     }
@@ -135,6 +154,7 @@ export class CardNotifier {
     for (const descriptor of descriptors) {
       if (this.notified.has(descriptor.key)) continue;
       this.notified.set(descriptor.key, true);
+      if (descriptor.sessionId && this.isRestoredHistory(descriptor)) continue;
       try { this.notify(descriptor); } catch { /* 通知失败不影响主流程与后续轮询 */ }
     }
     this.syncBadge(open);

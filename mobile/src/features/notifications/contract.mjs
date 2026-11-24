@@ -161,6 +161,7 @@ export function buildSessionReplyNotification(session) {
     title: `Autoloop ${label}有新回复`,
     body: `${title.slice(0, 80)} · 项目 ${project}`,
     project, sessionId, sessionType, sessionTitle: title,
+    replyAt: reply.at, // 最新回复时间：事件源据此区分重启后恢复出来的历史回复与启动后的新回复
     summary: title,
     lockScreen: { project, summary: title, detail: '' },
     click: { page: 'session', sessionId, requiresBiometric: OPEN_APP_REQUIRES_BIOMETRIC },
