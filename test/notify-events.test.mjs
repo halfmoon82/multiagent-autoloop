@@ -108,6 +108,7 @@ test('事件源：普通/设计/调度三类会话都发，且与待办、节点
   const { notes, notifier } = driver(
     [{ cards: [] }, { cards: [{ id: 1, state: 'open', title: 't', createdAt: 'c1' }] }],
     [[], [session('a', 'normal', 1), session('b', 'design', 1), session('c', 'scheduling', 1)]],
+    { now: () => Date.parse('2026-11-24T00:00:00Z') }, // 会话在控制台启动后新建并回复
   );
   await notifier.poll();
   await notifier.poll();
@@ -228,7 +229,7 @@ test('通知渠道三类齐全，权限声明含通知与前台服务', () => {
 test('事件源默认惰性读控制台会话管理器；未装配时不通知也不报错', async () => {
   const config = {};
   const notes = [];
-  const notifier = new CardNotifier({ config, routing: null, fetchState: async () => ({ cards: [] }), notify: d => notes.push(d) });
+  const notifier = new CardNotifier({ config, routing: null, fetchState: async () => ({ cards: [] }), notify: d => notes.push(d), now: () => Date.parse('2026-11-24T00:00:00Z') });
   await notifier.poll(); // seed，会话管理器尚未装配
   config.schedulingSessions = { list: async () => [session('late', 'design', 1)] };
   await notifier.poll();
@@ -451,4 +452,37 @@ test('原生：JS 转发的通知走持久化去重，与常驻服务共用同�
   assert.match(bridge, /claimPersistent\(plugin\.getContext\(\), key\)/);
   assert.ok(!/"notified:"\s*\+/.test(bridge), '键不加前缀，和 ForegroundService 的 kind:id:revision 一致');
   assert.ok(!/NotifyChannels\.claim\(key\)/.test(bridge));
+});
+
+// ---- 审阅返工（g2a1 P2）：控制台重启时，首轮轮询之后才恢复的调度会话不补推历史回复 ----
+test('事件源：首轮之后才逐个恢复的会话带着历史回复出现，不补推；启动后的新回复照常推送', async () => {
+  const startedAt = Date.parse('2026-11-24T05:00:00Z');
+  const fresh = (id, kind) => ({ ...session(id, kind, 0), messages: [
+    { role: 'user', text: '开始', at: '2026-11-24T05:00:30Z' },
+    { role: 'agent', text: '新回复', at: '2026-11-24T05:01:00Z' },
+  ] });
+  const { notes, notifier } = driver([{ cards: [] }], [
+    [], // 首轮：恢复还没把会话放进列表
+    [session('r1', 'scheduling', 2)], // 恢复出第一个会话（回复都在启动前）
+    [session('r1', 'scheduling', 2), session('r2', 'scheduling', 3)], // 和中台对完状态后再进一个
+    [session('r1', 'scheduling', 2), session('r2', 'scheduling', 3), fresh('n1', 'normal')], // 启动后新建并回复
+  ], { now: () => startedAt });
+  await notifier.poll();
+  await notifier.poll();
+  await notifier.poll();
+  assert.equal(notes.length, 0, '恢复出来的历史回复不补推');
+  await notifier.poll();
+  assert.deepEqual(notes.map(n => [n.kind, n.sessionId]), [['session-reply', 'n1']]);
+});
+
+test('事件源：已见过的会话在启动后有新回复照常推送；回复时间缺失的新会话按历史处理', async () => {
+  const startedAt = Date.parse('2026-11-24T05:00:00Z');
+  const withReplies = (id, ats) => ({ ...session(id, 'design', 0), messages: ats.map((at, i) => ({ role: 'agent', text: `r${i}`, at })) });
+  const { notes, notifier } = driver([{ cards: [] }], [
+    [withReplies('k', ['2026-11-24T04:00:00Z'])],
+    [withReplies('k', ['2026-11-24T04:00:00Z', '2026-11-24T05:02:00Z']), withReplies('x', [undefined])],
+  ], { now: () => startedAt });
+  await notifier.poll();
+  await notifier.poll();
+  assert.deepEqual(notes.map(n => n.sessionId), ['k']);
 });
