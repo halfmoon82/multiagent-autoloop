@@ -562,10 +562,17 @@ export function createConsoleServer(config, schedulingSessions) {
     }
     // A+ 产物预览兑换：一次性票据 → HTML 流（iframe src 带不了设备头，票据在写路由里设备鉴权换发）。
     if (url.pathname === '/mobile/preview' && req.method === 'GET') {
-      const entry = redeemPreviewTicket(url.searchParams.get('ticket'));
-      if (!entry) return jsonResponse(res, 404, { error: '预览凭证无效或已过期，请重试' });
-      const file = await config.schedulingSessions.readSessionArtifact(entry.id, entry.path);
-      return sendPreviewHtml(res, file.content);
+      // 本分支在 handleApi 的 try/catch 之外：签发后文件被 worker 改名/删除等任何异常都必须就地 404，
+      // 绝不能让 unhandledRejection 击落整个控制台进程（Node 24 默认直接退出，P2 修复）。
+      try {
+        const entry = redeemPreviewTicket(url.searchParams.get('ticket'));
+        if (!entry) return jsonResponse(res, 404, { error: '预览凭证无效或已过期，请重试' });
+        const file = await config.schedulingSessions.readSessionArtifact(entry.id, entry.path);
+        return sendPreviewHtml(res, file.content);
+      } catch (error) {
+        const status = Number.isInteger(error?.status) && error.status >= 400 && error.status < 500 ? error.status : 404;
+        return jsonResponse(res, status, { error: '预览内容不可用，请重试' });
+      }
     }
     const mobileAsset = MOBILE_FILES.get(url.pathname);
     if (mobileAsset && req.method === 'GET') {

@@ -4,7 +4,7 @@
 // 全部走本机假 Hub 与注入会话管理器，不调用真实模型或真实规则。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,12 +41,25 @@ function makeHub(state) {
 }
 
 function makeSessions(artifact) {
+  const workspace = mkdtempSync(path.join(tmpdir(), 'artifact-ws-'));
+  writeFileSync(path.join(workspace, '旧文档.md'), '会话之前就存在的仓库文档');
+  // mtime 明确早于时间界，避免与同毫秒写入的时间界判定 flaky。
+  utimesSync(path.join(workspace, '旧文档.md'), new Date(Date.now() - 3600 * 1000), new Date(Date.now() - 3600 * 1000));
+  const since = new Date().toISOString();
+  // 新产物的 mtime 必须晚于 since；旧文档保持更早的 mtime。
+  writeFileSync(path.join(workspace, '新产物.md'), '本会话产出');
   return {
+    workspace,
+    workspaceSince: since,
     calls: [],
     async listArchived() { return [{ id: 'sess-1', project: WORKTREE }, { id: 'sess-2', project: WORKTREE }]; },
     async continueSession(id) { this.calls.push(['continue', id]); return { id, continued: true }; },
     async start(payload) { this.calls.push(['start', payload]); return { id: 'sess-new', ...payload }; },
-    async list() { this.calls.push(['list']); return [{ id: 'sess-live', kind: 'scheduling', project: WORKTREE, status: 'running' }]; },
+    async list() {
+      this.calls.push(['list']);
+      return [{ id: 'sess-live', kind: 'scheduling', project: WORKTREE, status: 'running',
+        cwd: this.workspace, createdAt: this.workspaceSince, prompt: '首行任务摘要\n更多细节' }];
+    },
     async listSessionArtifacts(id) {
       this.calls.push(['listSessionArtifacts', id]);
       if (id !== 'sess-live') { const e = new Error('调度会话不存在'); e.status = 404; throw e; }
@@ -55,6 +68,12 @@ function makeSessions(artifact) {
     async readSessionArtifact(id, p) {
       this.calls.push(['readSessionArtifact', id, p]);
       if (id !== 'sess-live') { const e = new Error('调度会话不存在'); e.status = 404; throw e; }
+      // volatile：第二次读取抛 404，模拟签发后被 worker 删除（P2：兑换分支不得击落进程）。
+      if (p === 'docs/volatile.html') {
+        this.volatileReads = (this.volatileReads || 0) + 1;
+        if (this.volatileReads > 1) { const e = new Error('调度会话不存在'); e.status = 404; throw e; }
+        return { path: p, name: 'volatile.html', content: '<p>即将删除</p>' };
+      }
       return { path: p, name: String(p).split('/').pop(), content: '<h1>数据看板</h1><script>document.body.dataset.ran=1</script>' };
     },
     async updateQueued(id, itemId, text) { this.calls.push(['updateQueued', id, itemId, text]); return { id }; },
@@ -106,7 +125,7 @@ async function setup(t, { cards = [], conflictCards = new Set(), boomCards = new
     platformCheck: async () => {},
   }, sessions);
   const url = await listen(server);
-  t.after(async () => { await close(server); await close(hub.server); });
+  t.after(async () => { await close(server); await close(hub.server); rmSync(sessions.workspace, { recursive: true, force: true }); });
   return { url, hub, store, sessions, deviceToken: bound.deviceToken, deviceId: bound.device.id, artifactBytes, root };
 }
 
@@ -481,7 +500,11 @@ test('产物读取走设备鉴权移动网关：未绑定 401，绑定可读全�
   const global = await mobileFetch(ctx.url, '/api/mobile/artifacts', auth);
   assert.equal(global.status, 200);
   const globalBody = await global.json();
-  assert.ok(Array.isArray(globalBody.files), '全局产物返回 files 数组（聚合查询对假会话为空也不失稳）');
+  // P1 回归：list() 是对外视图（cwd/createdAt/prompt），聚合必须映射为内部形态并以 createdAt 作
+  // startedAt 时间界——只收会话后的新产物，任务标签取 prompt 首行；历史旧文档不得混入。
+  assert.deepEqual(globalBody.files.map(f => f.name), ['新产物.md']);
+  assert.equal(globalBody.files[0].sessionId, 'sess-live');
+  assert.equal(globalBody.files[0].task, '首行任务摘要');
 
   const list = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/artifacts', auth);
   assert.equal(list.status, 200);
@@ -497,4 +520,38 @@ test('产物读取走设备鉴权移动网关：未绑定 401，绑定可读全�
 
   const missing = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-gone/artifacts', auth);
   assert.equal(missing.status, 404);
+});
+
+// ---------- A+ 预览票据：签发/兑换/一次性/兑换期文件消失不坠毁 ----------
+test('预览票据：设备鉴权签发，兑换一次性，HTML 流仅预览放宽 CSP，文件消失返回 404 不击落进程', async t => {
+  const ctx = await setup(t);
+  const auth = { token: ctx.deviceToken };
+
+  const unbound = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/preview-ticket?path=docs%2F看板.html', { method: 'POST', body: {} });
+  assert.equal(unbound.status, 401);
+
+  const issued = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/preview-ticket?path=docs%2F看板.html', { method: 'POST', body: {}, ...auth });
+  assert.equal(issued.status, 200);
+  const { url } = await issued.json();
+  assert.match(url, /^\/mobile\/preview\?ticket=[0-9a-f]{48}$/);
+
+  // 兑换：无需任何头（iframe 场景），HTML 流 + 宽松 CSP；第二次兑换必须 404（一次性）。
+  const first = await fetch(ctx.url + url);
+  assert.equal(first.status, 200);
+  assert.match(first.headers.get('content-type'), /text\/html/);
+  assert.match(first.headers.get('content-security-policy'), /script-src 'unsafe-inline'/);
+  assert.match(await first.text(), /数据看板/);
+  const replay = await fetch(ctx.url + url);
+  assert.equal(replay.status, 404, '票据一次性，重放必须失效');
+  const bad = await fetch(ctx.url + '/mobile/preview?ticket=' + '0'.repeat(48));
+  assert.equal(bad.status, 404);
+
+  // P2 回归：签发后文件被删除（第二次读取抛 404）→ 兑换返回 404 JSON，进程继续服务。
+  const volatile = await mobileFetch(ctx.url, '/api/mobile/sessions/sess-live/preview-ticket?path=docs%2Fvolatile.html', { method: 'POST', body: {}, ...auth });
+  const volatileBody = await volatile.json();
+  const gone = await fetch(ctx.url + volatileBody.url);
+  assert.equal(gone.status, 404);
+  assert.match((await gone.json()).error, /不可用/);
+  const after = await mobileFetch(ctx.url, '/api/mobile/api/sessions', auth);
+  assert.equal(after.status, 200, '兑换异常不得击落控制台进程');
 });

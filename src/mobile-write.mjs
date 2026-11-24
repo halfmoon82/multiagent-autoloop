@@ -254,7 +254,14 @@ async function previewTicketRoute(res, url, route, ctx) {
 // 全局产物聚合：跨会话汇总，与网页同一份扫描逻辑（src/artifacts.mjs），按时间倒序并封顶。
 async function artifactsRoute(res, ctx) {
   const sessions = await ctx.config.schedulingSessions.list();
-  const files = listSessionArtifacts(Array.isArray(sessions) ? sessions : []);
+  // list() 返回对外视图（cwd/createdAt/prompt），聚合函数契约是内部形态 { id, task, cwd, startedAt }：
+  // 必须映射并用 createdAt 作 startedAt，否则 since=null 会把仓库历史文档全部当本会话产物（P1 修复）。
+  const files = listSessionArtifacts((Array.isArray(sessions) ? sessions : []).map(view => ({
+    id: view?.id,
+    cwd: view?.cwd,
+    startedAt: view?.createdAt || null,
+    task: String(view?.prompt || '').split('\n')[0].trim().slice(0, 40),
+  })));
   jsonResponse(res, 200, { device: ctx.device, files });
 }
 
