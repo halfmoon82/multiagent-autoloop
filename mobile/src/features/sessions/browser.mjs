@@ -17,12 +17,19 @@ function resolveUrl(origin, path) {
 }
 
 // 只读数据：两个接口独立成功/失败；任一路失败只影响对应集合，不编造会话。
-export function createSessionsReader({ origin = '', fetchImpl, getToken, isActive } = {}) {
+export function createSessionsReader({ origin = '', fetchImpl, getToken, isActive, now = () => globalThis.performance?.now?.() ?? Date.now() } = {}) {
   const doFetch = fetchImpl || ((url, init) => globalThis.fetch(url, init));
   // 活性闸：解除授权/锁屏会翻转为 false，在途加载在两次读取之间被取消，
   // 避免拿着刚失效的令牌去打中继（401 资源噪音 + 无意义请求）。调用方注入壳状态。
   const stillActive = () => typeof isActive !== 'function' || isActive();
+  // 每个接口最近一次往返耗时（毫秒）：定位「服务端 vs 隧道 vs 轮询间隔」延迟来源用，不进入界面数据。
+  let lastTimings = [];
   const read = async path => {
+    const startedAt = now();
+    try { return await readOnce(path); }
+    finally { lastTimings = [...lastTimings.filter(item => item.path !== path), { path, ms: Math.round(now() - startedAt) }]; }
+  };
+  const readOnce = async path => {
     if (!stillActive()) throw new Error('连接已失效，跳过读取');
     const url = resolveUrl(origin, path);
     const headers = { accept: 'application/json' };
@@ -39,39 +46,49 @@ export function createSessionsReader({ origin = '', fetchImpl, getToken, isActiv
     return payload;
   };
 
-  return {
-    async load(options = {}) {
-      const errors = {};
-      // null 代表读取失败：视图模型会给出明确空态，绝不把失败伪装成「暂无数据」。
-      let active = null;
-      let archived = null;
-      try {
-        if (!stillActive()) throw new Error('连接已失效，跳过读取');
-        const payload = await read(SESSION_READ_PATHS[0]);
-        active = Array.isArray(payload) ? payload : (Array.isArray(payload?.sessions) ? payload.sessions : []);
-      } catch (error) { errors.sessionsError = String(error?.message || error || '读取失败'); }
-      try {
-        if (!stillActive()) throw new Error('连接已失效，跳过读取');
-        const payload = await read(SESSION_READ_PATHS[1]);
-        archived = Array.isArray(payload?.sessions) ? payload.sessions : (Array.isArray(payload) ? payload : []);
-      } catch (error) { errors.archivesError = String(error?.message || error || '读取失败'); }
+  const readActive = async () => {
+    try {
+      const payload = await read(SESSION_READ_PATHS[0]);
+      return { active: Array.isArray(payload) ? payload : (Array.isArray(payload?.sessions) ? payload.sessions : []) };
+    } catch (error) { return { active: null, sessionsError: String(error?.message || error || '读取失败') }; }
+  };
+  const readArchives = async () => {
+    try {
+      const payload = await read(SESSION_READ_PATHS[1]);
+      return { archived: Array.isArray(payload?.sessions) ? payload.sessions : (Array.isArray(payload) ? payload : []) };
+    } catch (error) { return { archived: null, archivesError: String(error?.message || error || '读取失败') }; }
+  };
+  // 新会话置顶：接口返回顺序是插入序，按更新时间倒序后取第一条作为当前会话。
+  const stamp = value => { const parsed = Date.parse(value); return Number.isNaN(parsed) ? 0 : parsed; };
+  // updatedAt 不可解析时回退 createdAt，坏时间戳沉底。
+  const recency = item => stamp(item.updatedAt) || stamp(item.createdAt);
+  // null 代表读取失败：视图模型会给出明确空态，绝不把失败伪装成「暂无数据」。
+  const assemble = ({ active, archived, sessionsError, archivesError, summarizedArchives }, options) => {
+    const summaries = mobileSessionSummaries(active).sort((a, b) => recency(b) - recency(a));
+    const snapshot = {
+      sessions: active === null ? null : summaries,
+      archives: archived === null ? null : (summarizedArchives ?? mobileArchiveSummaries(archived)),
+      currentId: summaries[0]?.id || null,
+      ...(sessionsError ? { sessionsError } : {}),
+      ...(archivesError ? { archivesError } : {}),
+    };
+    return { snapshot, rawArchives: archived, list: buildSessionList(snapshot, options) };
+  };
 
-      // 新会话置顶：接口返回顺序是插入序，按更新时间倒序后取第一条作为当前会话。
-      const stamp = value => { const parsed = Date.parse(value); return Number.isNaN(parsed) ? 0 : parsed; };
-      // updatedAt 不可解析时回退 createdAt，坏时间戳沉底。
-      const recency = item => stamp(item.updatedAt) || stamp(item.createdAt);
-      const summaries = mobileSessionSummaries(active).sort((a, b) => recency(b) - recency(a));
-      const snapshot = {
-        sessions: active === null ? null : summaries,
-        archives: archived === null ? null : mobileArchiveSummaries(archived),
-        currentId: summaries[0]?.id || null,
-        ...errors,
-      };
-      return {
-        snapshot,
-        rawArchives: archived,
-        list: buildSessionList(snapshot, options),
-      };
+  return {
+    timings: () => lastTimings.map(item => ({ ...item })),
+    // 两路并行：此前串行，手机隧道每多一次往返就多一份延迟。
+    async load(options = {}) {
+      const [a, b] = await Promise.all([readActive(), readArchives()]);
+      return assemble({ ...a, ...b }, options);
+    },
+    // 详情页轮询用：只重读活跃会话（回复就在这里），存档沿用上次结果——
+    // 存档接口要把全部历史会话读盘并整表回传，随历史增长越来越慢，且与新回复无关。
+    async refreshActive(previous, options = {}) {
+      const a = await readActive();
+      const archived = previous?.rawArchives ?? null;
+      const archivesError = previous?.snapshot?.archivesError;
+      return assemble({ ...a, archived, ...(archivesError ? { archivesError } : {}), summarizedArchives: previous?.snapshot?.archives }, options);
     },
     archiveDetail(record) {
       return buildArchiveDetail(mobileArchiveTranscript(record));

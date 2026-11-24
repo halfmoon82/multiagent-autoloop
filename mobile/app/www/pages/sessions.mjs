@@ -324,14 +324,30 @@ export function mount(ctx) {
   // 详情打开期间轻轮询：会话有新输出时即时刷新，离开详情页即停。
   function startDetailPolling() {
     if (detailTimer) clearInterval(detailTimer);
+    // 自适应：会话在跑（等回复）时 1.5s 一拍，空闲时 5s 一拍；每拍只读一个轻接口。
+    let lastTickAt = 0;
     detailTimer = setInterval(() => {
-      if (state.view === 'detail' && state.detailSessionId) void refreshDetail();
-    }, 5000);
+      if (state.view !== 'detail' || !state.detailSessionId) return;
+      const current = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
+      const waiting = current ? ['running', 'initializing', 'unknown'].includes(current.status) : false;
+      const nowMs = Date.now();
+      if (!waiting && nowMs - lastTickAt < 5000) return;
+      lastTickAt = nowMs;
+      void refreshDetail();
+    }, 1500);
   }
 
   async function refreshDetail() {
     try {
-      await load({ quiet: true });
+      // 轻量刷新：只重读活跃会话（回复就在这里）。整页 load 要串行打 projects/state/sessions/archives
+      // 四次隧道往返并重绘列表，是详情页「回复迟迟不出现」的主因之一。
+      if (reader && state.lastResult) {
+        const result = await reader.refreshActive(state.lastResult);
+        state.lastResult = result;
+        state.snapshot = result.snapshot;
+        state.rawArchives = result.rawArchives;
+        state.list = result.list;
+      } else await load({ quiet: true });
       const session = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
       if (!session) return;
       let messages = mapMessages(session);
@@ -737,6 +753,7 @@ export function mount(ctx) {
       state.cards = Array.isArray(hubState?.cards) ? hubState.cards : [];
 
       const result = await reader.load({ kind: state.kind, query: state.query });
+      state.lastResult = result;
       state.snapshot = result.snapshot;
       state.list = result.list;
       state.rawArchives = result.rawArchives;
