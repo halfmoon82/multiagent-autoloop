@@ -59,3 +59,8 @@
 .dag-contract-row:last-child, .dag-evidence-row:last-child { border-bottom: 0; }
 .dag-contract-row strong { flex: 0 0 5rem; }
 .dag-contract-row span, .dag-evidence-row span { flex: 1 1 10rem; overflow-wrap: anywhere; }
+
+/* 运行详情头卡：与网页版"项目任务进度"详卡对齐的徽标与费用行。 */
+.dag-detail-badge { display: inline-block; margin: 0.15rem 0 0.3rem; padding: 0.1rem 0.5rem; border-radius: 999px; background: #e7f5ee; color: #0f3d2e; font-size: 0.78rem; }
+.dag-detail-usage { margin: 0.25rem 0; font-weight: 600; }
+.dag-pr-link { display: inline-block; margin: 0.15rem 0.5rem 0.3rem 0; }

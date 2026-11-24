@@ -384,18 +384,22 @@ document.addEventListener('click', async event => {
     }
     if (action === 'artifact-view') {
       const filePath = button.dataset.path || '';
-      const file = await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(filePath)}`);
       const dialog = $('artifact-dialog');
-      $('artifact-title').textContent = file.name;
       const body = $('artifact-body');
       body.replaceChildren();
-      if (/\.html?$/i.test(file.name)) {
-        // HTML 产物：sandbox 内联展示（无脚本、不透明源，不能触碰控制台同源）
+      if (/\.html?$/i.test(filePath)) {
+        // HTML 产物：A+ 沙箱展示——专用预览路由放宽 CSP 放行内联脚本（设计稿交互需要），
+        // iframe sandbox="allow-scripts" 保持不透明源：脚本可运行、预览内跳转可用，
+        // 产物脚本读不到控制台 cookie/存储/父页面（2026-11-24 用户定）。
+        const file = await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(filePath)}`);
+        $('artifact-title').textContent = file.name;
         const frame = el('iframe', 'artifact-frame');
-        frame.setAttribute('sandbox', '');
-        frame.srcdoc = file.content;
+        frame.setAttribute('sandbox', 'allow-scripts');
+        frame.src = `/api/scheduling-sessions/${encodeURIComponent(id)}/preview?path=${encodeURIComponent(filePath)}`;
         body.append(frame);
       } else {
+        const file = await api(`/api/scheduling-sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(filePath)}`);
+        $('artifact-title').textContent = file.name;
         body.append(renderMarkdown(file.content));
       }
       dialog.showModal();

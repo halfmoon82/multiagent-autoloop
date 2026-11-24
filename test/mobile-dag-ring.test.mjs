@@ -82,6 +82,13 @@ test('buildDagRing：汇总节点数/完成数/占用槽位与用量文案，全
   assert.match(ring.summary.usageText, /费用 \$1\.50/);
 });
 
+// run 级汇总：App 运行详情头卡（对齐网页版详卡）需要本次运行费用与 PR 列表。
+test('mobileDagSummaries：带出 run 级 usageText 汇总与 prs 清单，供 App 运行详情头卡使用', () => {
+  assert.match(withSummary.mobileSummary.usageText, /费用 \$1\.50/, 'run 级费用为全部节点 run 之和');
+  assert.match(withSummary.mobileSummary.usageText, /Token 85/, '50+20+10+5=85');
+  assert.deepEqual(withSummary.mobileSummary.prs, [{ nodeId: 'a', prUrl: 'https://example.com/pr/9' }]);
+});
+
 test('buildDagRing：无节点给明确空环，不用串行链条替代、不编造进度', () => {
   const ring = buildDagRing({}, []);
   assert.deepEqual(ring.ring, { segments: 0, percent: 0, gradient: '' });

@@ -209,6 +209,11 @@ function boot() {
   if (window.AutoloopDownload && typeof window.AutoloopDownload.start === 'function') {
     hooks.download = (url, name) => window.AutoloopDownload.start(url, name);
   }
+  // 产物数据源（artifacts-sync）：全局聚合 / 会话级列表都走设备鉴权移动网关，返回 Promise；
+  // 产物页负责异步接管与失败降级，此处不阻塞启动。未绑定时直接空列表——不发起必然 401 的请求，
+  // 避免绑定前页面装载产生资源错误噪音（2026-11-24 移动端壳回归实测）。
+  hooks.artifacts = () => (state.token ? getClient().artifacts() : Promise.resolve([]));
+  hooks.artifactsForSession = sessionId => (state.token ? getClient().sessionArtifacts(sessionId) : Promise.resolve([]));
   const stack = createViewStack();
   const guard = createBackGuard();
   const ctx = {

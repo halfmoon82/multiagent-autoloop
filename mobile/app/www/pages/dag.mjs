@@ -124,9 +124,19 @@ export function mount(ctx) {
         button.addEventListener('click', () => { selectedNodeId = item.id; renderDetail(); });
         return button;
       }));
+      // 运行详情头卡：与网页版"项目任务进度"详卡对齐（2026-11-24 用户定）——项目/并行 DAG 徽标、
+      // plan·节点·创建时间、本次运行费用 Token（服务端 run 级汇总）、查看 PR 列表；缺失如实标注。
+      const prLinks = (chosen.prs || []).map(pr => {
+        const link = node('a', { className: 'dag-pr-link', text: `查看 PR（${pr.nodeId}）`, attrs: { href: pr.prUrl, target: '_blank', rel: 'noopener noreferrer' } });
+        return link;
+      });
       detailEl.appendChild(node('section', { className: 'card dag-detail-card' }, [
-        node('h3', { text: `${chosen.projectLabel} · ${chosen.planId}` }),
-        node('p', { className: 'hint', text: `运行 ${chosen.runId || '未知'} · 状态 ${chosen.statusLabel || '未知'}` }),
+        node('h3', { text: chosen.projectLabel }),
+        node('p', { className: 'dag-detail-badge', text: '并行 DAG' }),
+        node('p', { className: 'hint', text: `${chosen.planId || '未命名计划'} · ${chosen.summary?.nodeCount ?? chosen.nodes.length} 个节点 · ${chosen.createdAt ? `创建于 ${chosen.createdAt}` : '创建时间未上报'}` }),
+        node('p', { className: 'dag-detail-usage', text: `本次运行 · ${chosen.usageText || '费用未上报'}` }),
+        node('p', { className: 'hint', text: `状态 ${chosen.statusLabel || '未知'} · 运行 ${chosen.runId || '未知'}` }),
+        ...(prLinks.length ? prLinks : []),
         nodeList,
       ]));
 

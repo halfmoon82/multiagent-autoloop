@@ -13,7 +13,7 @@ import { createDeviceStore } from '../src/device-auth.mjs';
 import { listen, close, fakeHub, json } from './helpers.mjs';
 import {
   MobileShellError, normalizeBaseUrl, MOBILE_API_KEYS, mobileSessionUrl, mobileBindUrl, mobileApiUrl,
-  parseBindPayload, ShellState, createTokenStore, createBiometricGate, createMobileClient, shouldAutoRetry,
+  parseBindPayload, ShellState, createTokenStore, createBiometricGate, copyText, createMobileClient, shouldAutoRetry,
 } from '../mobile/app/www/shell.mjs';
 
 const MOBILE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'mobile', 'app');
@@ -563,4 +563,41 @@ test('P3-4 build-apk 全新环境先 cap add android 再 cap sync，不因缺少
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// copyText：旧鸿蒙 WebView clipboard 静默失败的降级链（2026-11-24 真机）
+// ---------------------------------------------------------------------------
+function withNavigator(value, fn) {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { value, configurable: true, writable: true });
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (original) Object.defineProperty(globalThis, 'navigator', original);
+      else delete globalThis.navigator;
+    });
+}
+
+test('copyText：clipboard 成功直接返回 true；抛错降级 execCommand；全失败返回 false', async () => {
+  await withNavigator({ clipboard: { async writeText(v) { globalThis.__copied = v; } } }, async () => {
+    assert.equal(await copyText('甲'), true);
+    assert.equal(globalThis.__copied, '甲');
+  });
+
+  const calls = [];
+  const fakeDoc = {
+    createElement: () => ({ value: '', setAttribute() {}, style: {}, select() { calls.push('select'); }, remove() {} }),
+    body: { appendChild() {} },
+    execCommand: cmd => { calls.push(cmd); return true; },
+  };
+  await withNavigator({ clipboard: { async writeText() { throw new Error('denied'); } } }, async () => {
+    assert.equal(await copyText('乙', fakeDoc), true, 'clipboard 抛错必须落下降级链');
+    assert.ok(calls.includes('copy'), '降级必须走 execCommand(copy)');
+  });
+
+  const failDoc = { createElement: fakeDoc.createElement, body: { appendChild() {} }, execCommand: () => false };
+  await withNavigator({}, async () => {
+    assert.equal(await copyText('丙', failDoc), false, '全失败返回 false，由调用方给可见反馈');
+  });
 });

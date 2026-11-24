@@ -63,7 +63,7 @@ const schedulingSessions = {
     const session = this.records.find(item => item.id === id);
     if (!session) { const error = new Error('调度会话不存在'); error.status = 404; throw error; }
     if (relPath === 'docs/调度报告.md') return { path: relPath, name: '调度报告.md', content: '# 调度报告\n\n- **事项一**：已修复\n- 事项二：跟进中\n\n> 引用：队列已暂停\n\n[恶意链](javascript:fetch(\'/api/rules\'))与[正常链](https://example.com)' };
-    if (relPath === 'docs/看板.html') return { path: relPath, name: '看板.html', content: "<h1>数据看板</h1><p>实时</p><script>parent.document.documentElement.dataset.pwned='1'</script>" };
+    if (relPath === 'docs/看板.html') return { path: relPath, name: '看板.html', content: "<h1>数据看板</h1><p>实时</p><a href='#jump-target'>页内跳转</a><div id='jump-target'></div><script>document.body.dataset.scriptRan='1';try{parent.document.documentElement.dataset.pwned='1'}catch(e){}</script>" };
     const error = new Error('产物文件不存在：' + relPath); error.status = 404; throw error;
   },
   async removeQueued(id, itemId) {
@@ -884,13 +884,26 @@ try {
   await apkButton.waitFor({ timeout: 5000 });
   const [download] = await Promise.all([page.waitForEvent('download', { timeout: 5000 }).catch(() => null), apkButton.click()]);
   assert.equal(await page.evaluate(() => document.getElementById('artifact-dialog').open), false, 'binary artifacts must download, not open the viewer');
-  await page.getByRole('button', { name: /看板\.html/ }).click(); // html → sandbox iframe
+  await page.getByRole('button', { name: /看板\.html/ }).click(); // html → A+ sandbox iframe（专用预览路由）
   await page.locator('#artifact-dialog').waitFor({ state: 'visible', timeout: 5000 });
   const frame = page.locator('.artifact-frame');
-  assert.equal(await frame.getAttribute('sandbox'), '', 'HTML artifacts must render in a sandboxed iframe');
-  await page.waitForTimeout(300); // 若 sandbox 失效，srcdoc 内脚本会标记父文档
-  assert.equal(await page.evaluate(() => document.documentElement.dataset.pwned), undefined, 'scripts inside artifact HTML must never run in the console origin');
-  errors.length = 0; // Chrome 为被 sandbox 拦截的脚本记录 console error，属于本负向测试的预期噪音
+  assert.match((await frame.getAttribute('src')) || '', /\/preview\?path=/, 'HTML artifacts stream via the preview route (CSP loosened only there)');
+  assert.equal(await frame.getAttribute('sandbox'), 'allow-scripts', 'HTML artifacts render in an A+ sandbox: scripts on, same-origin off');
+  // 沙箱 iframe 是跨源文档：父页 contentDocument 为 null，断言走 CDP 级 frame 对象；
+  // frame 导航是异步的，轮询等它出现。
+  let inner = null;
+  for (let i = 0; i < 20 && !inner; i += 1) {
+    inner = page.frames().find(fr => (fr.url() || '').includes('/preview'));
+    if (!inner) await page.waitForTimeout(250);
+  }
+  assert.ok(inner, 'preview iframe document must load');
+  await inner.waitForFunction(() => document.body?.dataset.scriptRan === '1', null, { timeout: 5000 });
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.pwned), undefined, 'artifact scripts must stay isolated from the console origin (no allow-same-origin)');
+  assert.equal(await inner.evaluate(() => document.body?.dataset.scriptRan), '1', 'A+ sandbox must let in-preview scripts run (interactive mockups work)'); // atomic-ok: frame 级 evaluate 等同 page.evaluate，在沙箱文档内单次完成读写
+  await inner.locator('a[href="#jump-target"]').click();
+  await inner.waitForFunction(() => location.hash === '#jump-target', null, { timeout: 5000 }).catch(() => {});
+  assert.ok(await inner.evaluate(() => location.hash === '#jump-target' || Boolean(document.getElementById('jump-target'))), 'in-preview anchor navigation must work'); // atomic-ok: frame 级 evaluate 等同 page.evaluate，在沙箱文档内单次完成读写
+  errors.length = 0; // 清空本段之前失败注入（serial-progress 500 / scheduling-sessions 502）产生的资源错误噪音
   await page.getByRole('button', { name: '关闭', exact: true }).click();
 
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();

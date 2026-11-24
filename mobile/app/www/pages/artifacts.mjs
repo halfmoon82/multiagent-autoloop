@@ -61,9 +61,56 @@ function setup(ctx, doc, win, root, F) {
   const baseUrl = () => str(win?.AutoloopConsoleBase || win?.location?.origin || '');
   let browser = createArtifactBrowser({ id: 'artifacts', entry: 'global', layout: detectLayout(win) });
 
-  // 全局页首次装载：由可选钩子提供产物集合，缺省为空列表，不编造内容。
-  const initial = typeof hooks.artifacts === 'function' ? hooks.artifacts() : [];
-  browser = createArtifactBrowser({ ...browser, artifacts: Array.isArray(initial) ? initial : [] });
+  // 全局页首次装载（懒加载：等本页第一次可见再取数）——由可选钩子提供产物集合（同步数组或 Promise），
+  // 缺省为空列表，不编造内容；异步失败就地给重试入口，不静默空屏。
+  // 可见性驱动的原因：App 启动即挂载全部页面模块，绑定/解锁前取数必然 401/403，
+  // 资源错误会污染壳级「无脚本错误」断言与真机控制台（2026-11-24 回归实测）。
+  const normalize = value => (Array.isArray(value) ? value : []);
+  let initialStarted = false;
+  function startInitialLoad() {
+    if (initialStarted) return;
+    initialStarted = true;
+    const initial = typeof hooks.artifacts === 'function' ? hooks.artifacts() : [];
+    browser = createArtifactBrowser({ ...browser, artifacts: normalize(initial) });
+    if (initial && typeof initial.then === 'function') {
+      initial
+        .then(list => { browser = createArtifactBrowser({ ...browser, artifacts: normalize(list) }); render(); })
+        .catch(() => { browser = setError(browser, '产物列表加载失败，可重试'); render(); });
+    }
+  }
+  if (!root.hidden) startInitialLoad();
+  else {
+    const visibilityObserver = new MutationObserver(() => { if (!root.hidden) { visibilityObserver.disconnect(); startInitialLoad(); } });
+    visibilityObserver.observe(root, { attributes: true, attributeFilter: ['hidden'] });
+  }
+
+  // A+ 预览：iframe 请求带不了 x-device-token 头，先换一次性票据再 frame.src=预览地址；
+  // 沙箱 allow-scripts（不同源）：设计稿里的跳转与脚本可运行，产物脚本碰不到控制台。
+  let previewBox = null;
+  let previewLoading = false;
+  async function togglePreview(selected) {
+    if (!previewBox) return;
+    if (!previewBox.hidden) { previewBox.hidden = true; return; }
+    const frame = previewBox.querySelector('iframe');
+    if (frame && frame.dataset.loadedFor === selected.id) { previewBox.hidden = false; return; }
+    if (previewLoading) return;
+    previewLoading = true;
+    try {
+      const client = typeof ctx.client === 'object' && ctx.client ? ctx.client : null;
+      if (!client || typeof client.sessionPreviewTicket !== 'function') throw new Error('no client');
+      const issued = await client.sessionPreviewTicket(selected.sessionId, selected.path);
+      const origin = baseUrl() || String(win?.location?.origin || '');
+      frame.src = origin + String(issued?.url || '');
+      frame.dataset.loadedFor = selected.id;
+      previewBox.hidden = false;
+    } catch {
+      previewBox.hidden = true;
+      browser = setError(browser, '预览加载失败，可重试');
+      render();
+    } finally {
+      previewLoading = false;
+    }
+  }
 
   function render() {
     const plan = artifactPagePlan(browser);
@@ -105,6 +152,18 @@ function setup(ctx, doc, win, root, F) {
       reader.appendChild(button(doc, 'artifacts-download', `下载 ${plan.selected.name}`, () => {
         apply(downloadArtifact(browser, plan.selected.id, baseUrl()));
       }));
+      if (/\.html?$/i.test(plan.selected.name)) {
+        reader.appendChild(button(doc, 'artifacts-preview-toggle', '预览', () => {
+          void togglePreview(plan.selected);
+        }));
+        previewBox = el(doc, 'div', 'artifacts-preview');
+        previewBox.hidden = true;
+        const frame = el(doc, 'iframe', 'artifacts-preview-frame');
+        // A+ 沙箱：脚本可运行、预览内跳转可用；不放开同源，产物脚本读不到控制台 cookie/存储/父页面。
+        frame.setAttribute('sandbox', 'allow-scripts');
+        previewBox.appendChild(frame);
+        reader.appendChild(previewBox);
+      }
     }
     nodes.push(reader);
 
@@ -154,12 +213,18 @@ function setup(ctx, doc, win, root, F) {
   // 覆盖会话页入口：会话流调 ctx.hooks.openSessionArtifacts(sessionId, opts) 打开同一产物浏览器。
   hooks.openSessionArtifacts = (sessionId, opts = {}) => {
     const supplied = opts && typeof opts === 'object' ? opts : {};
-    const artifacts = supplied.artifacts
-      || (typeof hooks.artifactsForSession === 'function' ? hooks.artifactsForSession(sessionId) : []);
-    apply(wireOpenSessionArtifacts(browser, {
+    const value = supplied.artifacts !== undefined
+      ? supplied.artifacts
+      : (typeof hooks.artifactsForSession === 'function' ? hooks.artifactsForSession(sessionId) : []);
+    const open = artifacts => apply(wireOpenSessionArtifacts(browser, {
       artifacts: Array.isArray(artifacts) ? artifacts : [],
       sessionId, returnState: supplied.returnState, layout: detectLayout(win),
     }));
+    if (value && typeof value.then === 'function') {
+      value.then(open).catch(() => { browser = setError(browser, '产物列表加载失败，可重试'); render(); });
+      return;
+    }
+    open(value);
   };
 
   // 返回键弹出阅读视图时只收起阅读侧；应用已 popView，这里不再重复弹栈。
