@@ -278,7 +278,8 @@ export function mount(ctx) {
     const row = node('div', { className: 'sessions-swipe-row', attrs: { 'data-swipe-row': item.id } }, [closeBtn, track]);
     const errorLine = node('p', { className: 'status error', attrs: { hidden: '' } });
     const setOffset = (px, animate) => { track.style.transition = animate ? 'transform 160ms ease-out' : 'none'; track.style.transform = px ? `translateX(${px}px)` : ''; };
-    const resetConfirm = () => { closeBtn.textContent = '关闭'; closeBtn.dataset.confirm = '0'; };
+    const closeConfirm = smodel.createCloseConfirm();
+    const resetConfirm = () => { closeConfirm.reset(); closeBtn.textContent = closeConfirm.label; closeBtn.dataset.confirm = '0'; };
     resetConfirm();
     const collapse = () => { swipe.close(); setOffset(0, true); resetConfirm(); row.classList.remove('open'); if (openSwipeRow === collapse) openSwipeRow = null; };
     if (item.closeError) { errorLine.textContent = item.closeError; errorLine.hidden = false; }
@@ -328,12 +329,13 @@ export function mount(ctx) {
     });
     closeBtn.addEventListener('click', event => {
       event.stopPropagation();
-      if (closeBtn.dataset.confirm !== '1') {
-        closeBtn.dataset.confirm = '1'; closeBtn.textContent = '确认关闭';
-        setTimeout(() => { if (closeBtn.isConnected && closeBtn.dataset.confirm === '1' && !closeBtn.disabled) resetConfirm(); }, 5000);
+      const step = closeConfirm.press();
+      if (step === 'arm') {
+        closeBtn.dataset.confirm = '1'; closeBtn.textContent = closeConfirm.label;
+        setTimeout(() => { if (closeBtn.isConnected && closeConfirm.state === 'confirm' && !closeBtn.disabled) resetConfirm(); }, 5000);
         return;
       }
-      void closeSessionRow(item, closeBtn, errorLine, collapse);
+      if (step === 'submit') void closeSessionRow(item, closeBtn, errorLine, collapse);
     });
 
     const wrap = node('div', { className: 'sessions-card-wrap' }, [row, errorLine]);
@@ -403,46 +405,11 @@ export function mount(ctx) {
     const view = amodel.buildAuthorizeView(auth.plan, auth.preflight, { acknowledged: auth.ack, submitting: auth.submitting, created: auth.created });
     authLoad.disabled = auth.loading;
     authLoad.textContent = auth.loading ? '读取中…' : '读取计划';
-    const parts = [];
-    if (auth.error) parts.push(node('p', { className: 'status error', text: auth.error, attrs: { 'data-auth-error': '1' } }));
-    if (!view.ready) {
-      parts.push(node('p', { className: 'hint', text: auth.loading ? '正在读取计划…' : '填写计划编号并点「读取计划」，逐条核对后才能提交。' }));
-      authBody.replaceChildren(...parts);
-      return;
-    }
-    parts.push(node('p', { className: 'sessions-meta', text: `${view.title} · planId ${view.planId}` }));
-    parts.push(node('p', { className: 'sessions-meta', text: `项目 ${view.project}`, attrs: { 'data-auth-repo': '1' } }));
-    parts.push(node('p', { className: 'sessions-meta', text: `远端 ${view.remoteLabel}`, attrs: { 'data-auth-remote': '1' } }));
-    parts.push(node('p', { className: 'sessions-meta', text: `${view.summary.businessNodes} 个业务节点${view.summary.reviewNodes ? ` + ${view.summary.reviewNodes} 个整合审查` : ''}${view.summary.maxParallel ? ` · 最大并行 ${view.summary.maxParallel} 路` : ''}` }));
-    const checkBox = node('div', { className: 'sessions-auth-section' }, [node('h3', { text: '环境与权限检查' })]);
-    if (auth.preflightError) checkBox.appendChild(node('p', { className: 'hint', text: `预检读取失败：${auth.preflightError}（未知不当成通过）` }));
-    for (const check of view.checks) checkBox.appendChild(node('p', { className: `sessions-auth-check ${check.ok ? 'good' : 'warn'}`, text: `${check.ok ? '✓' : '!'} ${check.label}：${check.message}` }));
-    parts.push(checkBox);
-    const nodesBox = node('div', { className: 'sessions-auth-section' }, [node('h3', { text: '节点及文件范围' })]);
-    for (const item of view.nodes) {
-      nodesBox.appendChild(node('div', { className: 'sessions-auth-node', attrs: { 'data-auth-node': item.id } }, [
-        node('strong', { text: `${item.wave ? `第 ${item.wave} 波 · ` : ''}${item.title}` }),
-        node('code', { text: item.files.length ? item.files.join('、') : '只读审查，无写入' }),
-        node('small', { text: item.dependsOn.length ? `依赖：${item.dependsOn.join('、')}` : '无依赖，可首批启动' }),
-      ]));
-    }
-    parts.push(nodesBox);
-    const allowedBox = node('div', { className: 'sessions-auth-section' }, [node('h3', { text: '本次允许' })]);
-    for (const item of view.allowed) allowedBox.appendChild(node('p', { className: 'sessions-auth-allowed', text: `✓ ${item.label}${item.note ? `——${item.note}` : ''}`, attrs: { 'data-action-id': item.id } }));
-    parts.push(allowedBox);
-    const deniedBox = node('div', { className: 'sessions-auth-section' }, [node('h3', { text: '始终不包含' }), node('p', { className: 'hint', text: [...view.denied.map(item => item.label), '修改存量串行链'].join('、') })]);
-    parts.push(deniedBox);
-    parts.push(node('p', { className: 'sessions-auth-digest', text: `计划摘要 ${view.planDigest}`, attrs: { 'data-plan-digest': '1' } }));
-    const ack = node('input', { className: 'sessions-auth-ack', attrs: { type: 'checkbox', id: 'sessions-auth-ack', 'aria-label': '我已阅读 PRD、Spec、DAG 和上述执行范围' } });
-    ack.checked = auth.ack;
-    ack.disabled = auth.submitting || Boolean(auth.created);
-    ack.addEventListener('change', () => { auth.ack = ack.checked; renderAuthorize(); });
-    parts.push(node('label', { className: 'sessions-auth-ack-row', attrs: { for: 'sessions-auth-ack' } }, [ack, node('span', { text: '我已阅读 PRD、Spec、DAG 和上述执行范围。' })]));
-    const submit = node('button', { type: 'button', className: 'primary sessions-auth-submit', text: auth.submitting ? '正在创建…' : '确认并进入事件链' });
-    submit.disabled = !view.canSubmit;
-    submit.addEventListener('click', () => { void submitAuthorize(); });
-    parts.push(submit);
-    if (auth.created) parts.push(node('p', { className: 'status good', text: `已创建 DAG ${auth.created.runId}，授权快照已由服务端写入。`, attrs: { 'data-auth-created': '1' } }));
+    const parts = amodel.renderAuthorizeParts(view, auth, {
+      node,
+      onAck: checked => { auth.ack = checked; renderAuthorize(); },
+      onSubmit: () => { void submitAuthorize(); },
+    });
     authBody.replaceChildren(...parts);
   }
   authBack.addEventListener('click', goList);

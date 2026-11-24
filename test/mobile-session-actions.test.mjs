@@ -152,3 +152,42 @@ test('会话写通道：closeSession / approvePlan 走固定路由；planApprove
   const { snapshot } = await reader.load();
   assert.deepEqual(snapshot.sessions.map(item => [item.id, item.planApproved]), [['sess-1', true], ['sess-2', false]]);
 });
+
+test('关闭二次确认状态机：首点进入确认，再点才提交，失败/重置回初始', async () => {
+  const { createCloseConfirm } = await import('../mobile/src/features/sessions/index.mjs');
+  const c = createCloseConfirm();
+  assert.equal(c.label, '关闭');
+  assert.equal(c.press(), 'arm');
+  assert.equal(c.label, '确认关闭');
+  assert.equal(c.press(), 'submit');
+  assert.equal(c.press(), 'ignore', '提交中重复点击忽略');
+  c.reset();
+  assert.equal(c.state, 'idle');
+});
+
+test('授权页渲染：未勾选时提交按钮禁用，勾选后可用，已勾选内容在失败后保留', async () => {
+  const { renderAuthorizeParts } = await import('../mobile/src/features/design-authorize/index.mjs');
+  const mk = () => {
+    const el = { children: [], listeners: {}, dataset: {}, disabled: false, checked: false };
+    return el;
+  };
+  const node = (tag, { className, text, attrs = {} } = {}, children = []) => {
+    const el = mk(); Object.assign(el, { tag, className, text, attrs, children });
+    el.appendChild = c => { el.children.push(c); return c; };
+    el.addEventListener = (n, f) => { el.listeners[n] = f; };
+    return el;
+  };
+  const flat = els => els.flatMap(e => [e, ...flat(e.children || [])]);
+  const view = buildAuthorizeView(PLAN, null, { acknowledged: false });
+  let acked = null;
+  let parts = renderAuthorizeParts(view, { ack: false }, { node, onAck: v => { acked = v; }, onSubmit() {} });
+  const find = (list, cls) => flat(list).find(e => String(e.className || '').includes(cls));
+  assert.equal(find(parts, 'sessions-auth-submit').disabled, true);
+  flat(parts).find(e => e.tag === 'input').listeners.change();
+  assert.equal(acked, false);
+  const view2 = buildAuthorizeView(PLAN, null, { acknowledged: true });
+  parts = renderAuthorizeParts(view2, { ack: true, error: '提交失败：x' }, { node, onAck() {}, onSubmit() {} });
+  assert.equal(find(parts, 'sessions-auth-submit').disabled, false);
+  assert.equal(flat(parts).find(e => e.tag === 'input').checked, true);
+  assert.ok(find(parts, 'status error'));
+});

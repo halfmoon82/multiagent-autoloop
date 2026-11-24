@@ -97,6 +97,7 @@ test('浏览器：左滑露出关闭→二次确认→行消失；滑动不进�
   assert.equal(await page.evaluate(() => document.querySelector('[data-view="detail"]').hidden), true, '滑动不进入会话');
 
   // 第一次点「关闭」只进入确认态，不发请求；第二次才提交。
+  await page.waitForTimeout(250);
   await page.locator('[data-swipe-row="sess-a"] .sessions-close-action').click();
   assert.equal(await page.locator('[data-swipe-row="sess-a"] .sessions-close-action').textContent(), '确认关闭');
   assert.equal(posts.filter(item => item.pathname.endsWith('/close')).length, 0);
@@ -106,6 +107,8 @@ test('浏览器：左滑露出关闭→二次确认→行消失；滑动不进�
 
   // 失败：行保留，提示原因。
   await swipeRow(page, 'sess-d', -120);
+  await page.waitForFunction(() => document.querySelector('[data-swipe-row="sess-d"]').classList.contains('open'));
+  await page.waitForTimeout(250); // 等 160ms 滑动动画落定，避免点击被 track 遮挡
   await page.locator('[data-swipe-row="sess-d"] .sessions-close-action').click();
   await page.locator('[data-swipe-row="sess-d"] .sessions-close-action').click();
   await page.waitForFunction(() => /会话已关闭，请开启新会话/.test(document.querySelector('[data-session-id="sess-d"]').closest('.sessions-card-wrap').textContent));
