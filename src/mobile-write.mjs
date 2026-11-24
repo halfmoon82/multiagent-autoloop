@@ -5,12 +5,14 @@
 // 自包含响应助手与同步 handleMobileWrite 签名，避免改动 server.mjs 或与它形成循环依赖。
 
 import { createReadStream } from 'node:fs';
+import path from 'node:path';
 import { hubRequest, HubError } from './hub.mjs';
 import { discoverGitProjects } from './projects.mjs';
 import { readRuleOptions } from './rules.mjs';
 import { reconcile, syncPrompt, createSyncState } from '../mobile/src/features/device-sync/index.mjs';
 import { classifySessionRequest } from './session-classify.mjs';
 import { SchedulingSessionError } from './scheduling-session.mjs';
+import { DagServiceError } from './dag-service.mjs';
 
 function securityHeaders() {
   return {
@@ -39,6 +41,11 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'session-classify', method: 'POST', pattern: /^\/api\/mobile\/session-classify$/ },
   { key: 'session-message', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/messages$/ },
   { key: 'session-create', method: 'POST', pattern: /^\/api\/mobile\/sessions$/ },
+  { key: 'session-close', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/close$/ },
+  { key: 'session-approve-plan', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/approve-plan$/ },
+  { key: 'dag-run-create', method: 'POST', pattern: /^\/api\/mobile\/dag-runs$/ },
+  { key: 'dag-plan', method: 'GET', pattern: /^\/api\/mobile\/dag-plan$/ },
+  { key: 'dag-preflight', method: 'GET', pattern: /^\/api\/mobile\/dag-preflight$/ },
 ]);
 
 const NOT_IMPLEMENTED = Object.freeze({
@@ -112,7 +119,7 @@ function writeError(res, error) {
         : 502;
   // 本地会话态错误（已关闭/异常等）的 message 本就是给用户看的中文文案，与网页端同口径透传；
   // 其余非 WriteError 一律回落固定文案，不回显 Hub 错误体或内部细节。
-  const passthrough = error instanceof SchedulingSessionError && status >= 400 && status < 500 && error.message;
+  const passthrough = (error instanceof SchedulingSessionError || error instanceof DagServiceError) && status >= 400 && status < 500 && error.message;
   jsonResponse(res, status, { error: error instanceof WriteError ? error.message : passthrough || (SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试') });
 }
 
@@ -245,6 +252,83 @@ async function sessionCreateRoute(res, body, ctx, req) {
   jsonResponse(res, 201, { ...result, sourceDeviceId: ctx.device.id });
 }
 
+// 关闭会话：与网页 /api/scheduling-sessions/:id/close 同一 sessions.close。
+// 已结束（活跃表里状态已 closed，或只剩归档）的会话不重复操作，返回明确的 alreadyClosed 状态；
+// 活跃表与归档都找不到才是 404。
+async function sessionCloseRoute(res, url, route, ctx, req) {
+  const sessions = ctx.config.schedulingSessions;
+  if (!sessions || typeof sessions.close !== 'function') fail(503, '会话通道不可用');
+  const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
+  if (!id) fail(404);
+  const fields = { sessionId: id, sourceDeviceId: ctx.device.id };
+  const live = typeof sessions.list === 'function' ? await sessions.list() : [];
+  const record = (Array.isArray(live) ? live : (live?.sessions || [])).find(item => item?.id === id);
+  if (record?.status === 'closed') { jsonResponse(res, 200, { id, status: 'closed', alreadyClosed: true }); return; }
+  if (!record) {
+    const archived = typeof sessions.listArchived === 'function' ? await sessions.listArchived() : [];
+    if ((Array.isArray(archived) ? archived : (archived?.sessions || [])).some(item => item?.id === id)) {
+      jsonResponse(res, 200, { id, status: 'closed', alreadyClosed: true });
+      return;
+    }
+    fail(404, '会话不存在或已失效');
+  }
+  let result;
+  try { result = await sessions.close(id); } catch (error) { auditFailure(ctx, req, 'session.close', fields); throw error; }
+  audit(ctx, req, 'session.close', fields);
+  jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
+}
+
+// 设计会话放行落盘：与网页 /api/scheduling-sessions/:id/approve-plan 同一 sessions.approvePlan。
+async function sessionApprovePlanRoute(res, url, route, ctx, req) {
+  const sessions = ctx.config.schedulingSessions;
+  if (!sessions || typeof sessions.approvePlan !== 'function') fail(503, '会话通道不可用');
+  const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
+  if (!id) fail(404);
+  const fields = { sessionId: id, sourceDeviceId: ctx.device.id };
+  let result;
+  try { result = await sessions.approvePlan(id); } catch (error) { auditFailure(ctx, req, 'session.approve', fields); throw error; }
+  audit(ctx, req, 'session.approve', fields);
+  jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
+}
+
+// 项目必须来自已发现的 Git 仓库列表，与网页 /api/dag-* 一致。
+function knownProject(ctx, project) {
+  const wanted = path.resolve(String(project || ''));
+  const known = discoverGitProjects({ roots: ctx.config.projectRoots || [], rules: readRuleOptions(ctx.config).rules || [] }).find(item => item.path === wanted);
+  if (!known || !String(project || '').trim()) fail(400, '项目不在已发现的 Git 仓库列表中，请从下拉选择');
+  return known;
+}
+
+// 授权确认页数据源（只读）：与网页 /api/dag-plan、/api/dag-preflight 同一 dagService。
+async function dagReadRoute(route, res, url, ctx) {
+  const dag = ctx.config.dagService;
+  if (!dag) fail(503, 'DAG 通道不可用');
+  const known = knownProject(ctx, url.searchParams.get('project'));
+  const planId = url.searchParams.get('planId');
+  jsonResponse(res, 200, route.key === 'dag-plan' ? await dag.preview(known.path, planId) : dag.preflight(known.path, planId));
+}
+
+// 授权创建 DAG：与网页 /api/dag-runs 同一 dagService.create；planDigest 由服务端与计划比对。
+// 只转发白名单字段，必须显式 confirm=true 且带勾选的动作清单（未勾选 = 不可提交）。
+async function dagRunCreateRoute(res, ctx, body, req) {
+  const dag = ctx.config.dagService;
+  if (!dag || typeof dag.create !== 'function') fail(503, 'DAG 通道不可用');
+  const known = knownProject(ctx, body.project);
+  if (body.confirm !== true) fail(400, '请先逐条阅读并勾选确认后再提交');
+  if (!Array.isArray(body.confirmedActionIds) || !body.confirmedActionIds.length) fail(400, '请先勾选需授权的动作');
+  const payload = {
+    project: known.path, planId: String(body.planId ?? ''), planDigest: String(body.planDigest ?? ''),
+    remoteUrl: body.remoteUrl, confirm: true,
+    confirmedActionIds: body.confirmedActionIds.map(String),
+    selectedOptionalActions: Array.isArray(body.selectedOptionalActions) ? body.selectedOptionalActions.map(String) : [],
+  };
+  const fields = { project: known.path, planId: payload.planId, sourceDeviceId: ctx.device.id };
+  let result;
+  try { result = await dag.create(payload, known.path); } catch (error) { auditFailure(ctx, req, 'dag.create', fields); throw error; }
+  audit(ctx, req, 'dag.create', fields);
+  jsonResponse(res, 201, result);
+}
+
 async function ruleAction(req, res, url, route, ctx, body) {
   const match = url.pathname.match(route.pattern);
   const name = decodeURIComponent(match[1]);
@@ -309,6 +393,10 @@ async function executeWrite(route, req, res, url, ctx) {
     if (route.key === 'rule-action') return await ruleAction(req, res, url, route, ctx, body);
     if (route.key === 'session-classify') return sessionClassifyRoute(res, body);
     if (route.key === 'session-create') return await sessionCreateRoute(res, body, ctx, req);
+    if (route.key === 'session-close') return await sessionCloseRoute(res, url, route, ctx, req);
+    if (route.key === 'session-approve-plan') return await sessionApprovePlanRoute(res, url, route, ctx, req);
+    if (route.key === 'dag-run-create') return await dagRunCreateRoute(res, ctx, body, req);
+    if (route.key === 'dag-plan' || route.key === 'dag-preflight') return await dagReadRoute(route, res, url, ctx);
     if (route.key === 'session-message') return await sessionMessageRoute(res, url, route, ctx, body, req);
     jsonResponse(res, 501, { error: '该写操作尚未实现', route: route.key, declared: true });
   } catch (error) {
