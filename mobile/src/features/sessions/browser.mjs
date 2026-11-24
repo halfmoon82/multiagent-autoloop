@@ -173,6 +173,29 @@ export function visibleRange({ scrollTop = 0, viewportHeight = 0, itemHeight = 1
   return { start, end };
 }
 
+// 会话在等回复：详情轮询据此切到快拍。busy 是服务端 running 的同义投影。
+const AWAITING_STATUSES = new Set(['running', 'initializing', 'unknown']);
+export function isAwaitingReply(session) {
+  if (!session || typeof session !== 'object') return false;
+  return session.busy === true || AWAITING_STATUSES.has(session.status);
+}
+
+// 详情页消息 = 已落定转录 + 本轮正在输出的 liveText（流式气泡）+ 服务端尚未记下的本地发送回显。
+// 根因：服务端边收模型分片边累积 liveText，但移动端此前只渲染落定 messages，
+// 整轮结束前一个字都不显示，体感延迟等于整轮耗时而不是首个分片耗时。
+export function buildDetailMessages(session, previous = []) {
+  const messages = (Array.isArray(session?.messages) ? session.messages : []).map(message => ({
+    role: message?.role === 'user' ? '主人' : '会话',
+    text: String(message?.text ?? ''),
+    at: String(message?.at ?? ''),
+  }));
+  const echo = [...(Array.isArray(previous) ? previous : [])].reverse().find(message => message?.role === '主人' && !message.at);
+  if (echo && !messages.some(message => message.role === '主人' && message.text === echo.text)) messages.push({ role: '主人', text: String(echo.text ?? ''), at: '' });
+  const live = typeof session?.liveText === 'string' ? session.liveText : '';
+  if (live.trim()) messages.push({ role: '会话', text: live, at: '', streaming: true });
+  return messages;
+}
+
 // 流式分片合成为一帧文本，避免逐字触发整列表重渲染。
 export function mergeStreamFrames(frames) {
   return (Array.isArray(frames) ? frames : []).map(frame => String(frame ?? '')).join('');

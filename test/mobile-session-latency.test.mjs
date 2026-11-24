@@ -44,3 +44,109 @@ test('refreshActive 失败时保留错误且不编造会话', async () => {
   assert.equal(result.snapshot.sessions, null);
   assert.match(result.snapshot.sessionsError, /502/);
 });
+
+// ---------- 根因：详情页从不显示本轮正在输出的 liveText ----------
+// 服务端边收 agent_message_chunk 边累积 liveText（src/scheduling-session.mjs），桌面端会渲染它
+// （public/views.mjs），移动端详情只渲染已落定的 messages——整轮结束前用户什么都看不到，
+// 体感延迟 = 整轮耗时而不是首 token 耗时。
+import { buildDetailMessages, isAwaitingReply } from '../mobile/src/features/sessions/browser.mjs';
+
+test('buildDetailMessages：运行中把 liveText 作为流式气泡接在已落定转录之后', () => {
+  const session = { status: 'running', liveText: '正在想', messages: [{ role: 'user', text: '你好', at: 't1' }] };
+  assert.deepEqual(buildDetailMessages(session), [
+    { role: '主人', text: '你好', at: 't1' },
+    { role: '会话', text: '正在想', at: '', streaming: true },
+  ]);
+});
+
+test('buildDetailMessages：轮次结束 liveText 清空后只剩落定回复，不重复', () => {
+  const session = { status: 'idle', liveText: '', messages: [{ role: 'user', text: '你好', at: 't1' }, { role: 'agent', text: '正在想完了', at: 't2' }] };
+  assert.deepEqual(buildDetailMessages(session, [{ role: '会话', text: '正在想', at: '', streaming: true }]).map(m => m.text), ['你好', '正在想完了']);
+});
+
+test('buildDetailMessages：服务端尚未记下的本地发送保留回显，已记下则去重', () => {
+  const previous = [{ role: '主人', text: '刚发的', at: '' }];
+  assert.deepEqual(buildDetailMessages({ messages: [] }, previous).map(m => m.text), ['刚发的']);
+  assert.deepEqual(buildDetailMessages({ messages: [{ role: 'user', text: '刚发的', at: 't' }] }, previous).map(m => m.at), ['t']);
+  assert.deepEqual(buildDetailMessages({ messages: [], liveText: '  ' }), [], '空白 liveText 不出气泡');
+});
+
+test('isAwaitingReply：运行中/初始化/待复核/busy 视为等回复（详情轮询提速），空闲与异常不算', () => {
+  for (const status of ['running', 'initializing', 'unknown']) assert.equal(isAwaitingReply({ status }), true, status);
+  assert.equal(isAwaitingReply({ status: 'idle', busy: true }), true);
+  for (const status of ['idle', 'error', 'closed']) assert.equal(isAwaitingReply({ status }), false, status);
+  assert.equal(isAwaitingReply(null), false);
+});
+
+test('refreshActive 按传入筛选重建列表（详情轮询后返回列表不丢筛选）', async () => {
+  const body = url => url.endsWith('/sessions')
+    ? [{ id: 'n1', kind: 'normal', status: 'idle', updatedAt: '2026-11-24T00:00:01Z' }, { id: 'd1', kind: 'design', status: 'running', updatedAt: '2026-11-24T00:00:00Z' }]
+    : { sessions: [] };
+  const reader = createSessionsReader({ origin: 'https://x.test', fetchImpl: async url => ({ ok: true, status: 200, json: async () => body(url) }) });
+  const first = await reader.load({ kind: 'design' });
+  const next = await reader.refreshActive(first, { kind: 'design' });
+  assert.deepEqual(next.list.sessions.items.map(item => item.id), ['d1']);
+  assert.equal(next.list.kindFilter.selected, 'design');
+});
+
+// ---------- 浏览器回归：真页面 + 假会话接口（无 Chromium 时显式跳过） ----------
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { chromium } from '@playwright/test';
+import { createConsoleServer } from '../src/server.mjs';
+import { createDeviceStore } from '../src/device-auth.mjs';
+import { fakeHub, json, listen, close } from './helpers.mjs';
+
+const browserSkip = (() => {
+  try { return existsSync(chromium.executablePath()) ? false : 'npm test 阶段未安装 Playwright Chromium，跳过浏览器回归'; }
+  catch { return '无法探测 Playwright Chromium，跳过浏览器回归'; }
+})();
+
+test('浏览器：详情页实时显示本轮 liveText；返回列表时列表已按轮询结果重绘', { skip: browserSkip }, async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'mobile-latency-'));
+  const hub = await fakeHub((req, res) => json(res, req.url === '/v1/state' ? { runs: [], cards: [], lines: [], spending: {} } : { ok: true }));
+  const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'server-secret', host: '127.0.0.1', root, deviceAuth, projectRoots: [root] });
+  const url = await listen(server);
+  const browser = await chromium.launch({ headless: true });
+  t.after(async () => { await browser.close(); await close(server); await close(hub.server); rmSync(root, { recursive: true, force: true }); });
+  const page = await (await browser.newContext({ viewport: { width: 390, height: 800 } })).newPage();
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    let stored = null;
+    window.AutoloopSecureStorage = { async get() { return stored; }, async set(value) { stored = value; }, async remove() { stored = null; } };
+    window.AutoloopBiometric = { async verify() { return true; } };
+  });
+  const session = { id: 's1', prompt: '延迟测试会话', project: root, kind: 'normal', status: 'running', liveText: '', messages: [{ role: 'user', text: '你好', at: '2026-11-24T00:00:00Z' }], updatedAt: '2026-11-24T00:00:00Z' };
+  await page.route('**/api/mobile/api/sessions', route => route.fulfill({ json: { sessions: [structuredClone(session)] } }));
+  await page.route('**/api/mobile/api/session-archives', route => route.fulfill({ json: { sessions: [] } }));
+  await page.goto(`${url}/mobile/`);
+  await page.waitForFunction(() => Boolean(window.AutoloopHooks));
+  await page.locator('#bind-payload').fill(deviceAuth.createBinding().qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  await page.locator('[data-tab="sessions"]').click();
+  await page.locator('.sessions-item').first().waitFor({ state: 'visible' });
+  const statusBefore = await page.locator('.sessions-item .sessions-meta').first().textContent();
+  await page.locator('.sessions-item').first().click();
+  await page.locator('.sessions-composer-input').waitFor({ state: 'visible' });
+
+  session.liveText = '第一个分片';
+  await page.waitForFunction(() => [...document.querySelectorAll('.sessions-bubble')].some(el => el.textContent === '第一个分片'), null, { timeout: 4000 });
+
+  session.liveText = '';
+  session.status = 'idle';
+  session.messages = [...session.messages, { role: 'agent', text: '第一个分片，完整回复', at: '2026-11-24T00:00:05Z' }];
+  await page.waitForFunction(() => [...document.querySelectorAll('.sessions-bubble')].some(el => el.textContent === '第一个分片，完整回复'), null, { timeout: 4000 });
+  const bubbles = await page.locator('.sessions-bubble').allTextContents();
+  assert.deepEqual(bubbles, ['你好', '第一个分片，完整回复'], '落定后流式气泡被替换，不重复');
+
+  await page.locator('.sessions-back').first().click();
+  const statusAfter = await page.locator('.sessions-item .sessions-meta').first().textContent();
+  assert.notEqual(statusAfter, statusBefore, `返回列表应显示轮询后的新状态：${statusBefore} → ${statusAfter}`);
+  assert.deepEqual(pageErrors, []);
+});
