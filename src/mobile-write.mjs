@@ -55,6 +55,7 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'dag-run-create', method: 'POST', pattern: /^\/api\/mobile\/dag-runs$/ },
   { key: 'dag-plan', method: 'GET', pattern: /^\/api\/mobile\/dag-plan$/ },
   { key: 'dag-preflight', method: 'GET', pattern: /^\/api\/mobile\/dag-preflight$/ },
+  { key: 'session-artifacts', method: 'GET', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/artifacts$/ },
 ]);
 
 const NOT_IMPLEMENTED = Object.freeze({
@@ -215,6 +216,17 @@ async function sessionDownload(res, url, route, ctx) {
     res.on('close', () => { stream.destroy(); resolve(); });
     stream.pipe(res);
   });
+}
+
+// 只读会话产物列表：与网页 /api/scheduling-sessions/:id/artifacts 同一 sessions.listSessionArtifacts，
+// 只回元数据（path/name/size/at/kind），不读文件内容、不新增状态。设备鉴权由 handleMobileWrite 统一把关。
+async function sessionArtifactsRoute(res, url, route, ctx) {
+  const sessions = ctx.config.schedulingSessions;
+  if (!sessions || typeof sessions.listSessionArtifacts !== 'function') fail(503, '会话产物通道不可用');
+  const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
+  if (!id) fail(404);
+  const files = await sessions.listSessionArtifacts(id);
+  jsonResponse(res, 200, { files: Array.isArray(files) ? files : [] });
 }
 
 // 首轮语义分类：与网页 /api/session-classify 同一纯函数，无额外状态。
@@ -437,6 +449,7 @@ async function executeWrite(route, req, res, url, ctx) {
     if (route.key === 'card-answer' || route.key === 'card-authorize') return await cardWrite(route, req, res, url, ctx, body);
     if (route.key === 'session-continue') return await sessionContinue(res, url, route, ctx);
     if (route.key === 'session-download') return await sessionDownload(res, url, route, ctx);
+    if (route.key === 'session-artifacts') return await sessionArtifactsRoute(res, url, route, ctx);
     if (route.key === 'rule-action') return await ruleAction(req, res, url, route, ctx, body);
     if (route.key === 'session-classify') return sessionClassifyRoute(res, body);
     if (route.key === 'admin-platform-models') return await adminPlatformModelsRoute(res, ctx, body, req);

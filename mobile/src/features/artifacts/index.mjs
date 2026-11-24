@@ -4,3 +4,4 @@ export * from './contract.mjs';
 export * from './browser.mjs';
 export * from './views.mjs';
 export * from './page.mjs';
+export * from './sync.mjs';
