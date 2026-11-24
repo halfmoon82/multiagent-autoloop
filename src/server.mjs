@@ -10,6 +10,7 @@ import { readPlatformModels, applyPlatformModels, sessionLaunch, PlatformModelsE
 import { loadPolicy } from './detour-policy.mjs';
 import { modelLabels } from './models.mjs';
 import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-session.mjs';
+import { DEFAULT_MAX_SESSIONS, MAX_SESSIONS_UPPER_BOUND } from './config.mjs';
 import { HubSchedulingSessionAdapter } from './hub-scheduling-session.mjs';
 import { discoverGitProjects } from './projects.mjs';
 import { readDetours, publicDetour } from './detour.mjs';
@@ -38,6 +39,7 @@ const FILES = new Map([
   ['/device.mjs', ['device.mjs', 'text/javascript; charset=utf-8']], ['/qr.mjs', ['qr.mjs', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/archive-view.mjs', ['archive-view.mjs', 'text/javascript; charset=utf-8']], ['/archive.css', ['archive.css', 'text/css; charset=utf-8']],
+  ['/session-limit.mjs', ['session-limit.mjs', 'text/javascript; charset=utf-8']],
 ]);
 // 移动端壳资源（独立前端，不与 public/ 网页控制台混用）：固定白名单，不读取任意路径。
 const MOBILE = path.join(MODULE_DIR, '..', 'mobile', 'app', 'www');
@@ -178,6 +180,13 @@ async function handleApi(config, req, res, url) {
     return jsonResponse(res, 200, readPlatformModels(config, { ...(config.platformCatalog ? { catalog: config.platformCatalog } : {}), policy }));
   }
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
+  if (req.method === 'GET' && url.pathname === '/api/session-limit') return jsonResponse(res, 200, {
+    maxSessions: config.schedulingSessions?.maxSessions ?? config.maxSessions ?? DEFAULT_MAX_SESSIONS,
+    default: DEFAULT_MAX_SESSIONS,
+    min: 1,
+    max: MAX_SESSIONS_UPPER_BOUND,
+    warning: config.maxSessionsWarning || null,
+  });
   if (req.method === 'GET' && url.pathname === '/api/session-archives') return jsonResponse(res, 200, { sessions: await config.schedulingSessions.listArchived() });
   if (req.method === 'GET' && url.pathname === '/api/projects') return jsonResponse(res, 200, { projects: discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }) });
   if (req.method === 'GET' && url.pathname === '/api/card-router') {
@@ -482,7 +491,7 @@ export function createConsoleServer(config, schedulingSessions) {
       try { mkdirSync(allowedDir, { recursive: true }); }
       catch (error) { console.error(`[console] 脚本目录 ${allowedDir} 创建失败，会话按只读处理：${error.message}`); allowedDir = null; }
     }
-    schedulingSessions = new SchedulingSessionManager({ writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }), sessionLaunch: kind => sessionLaunch(config, kind) });
+    schedulingSessions = new SchedulingSessionManager({ maxSessions: config.maxSessions, writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }), sessionLaunch: kind => sessionLaunch(config, kind) });
   }
   const dagService = config.dagService || (config.root ? createDagService({ root: config.root, storeDirectory: path.join(config.root, 'dag-runs') }) : null);
   // 退回记录落盘：重启后「待代理决策」列表不丢；无运行目录退回内存 store（退回行为不变）。
