@@ -16,6 +16,7 @@ import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_L
 import { buildSchedulingContext, contextTrailer, composeTurnText, prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation, exchangesFrom, HANDOVER_ROUNDS } from './scheduling-context.mjs';
 import { readFinalMessage } from './run-output.mjs';
 import { ROOT_NODE } from './dag-run.mjs';
+import { saveSessionAttachments, attachmentPrompt } from './session-attachments.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
@@ -61,6 +62,9 @@ export function mobileSessionSummaries(sessions = []) {
         continuedFrom: session.continuedFrom ?? null,
         createdAt: String(session.createdAt ?? '').trim() || null,
         updatedAt: String(session.updatedAt ?? '').trim() || null,
+        queue: (Array.isArray(session.queue) ? session.queue : (Array.isArray(session.queued) ? session.queued : []))
+          .filter(item => item && typeof item.id === 'string' && item.id)
+          .map(item => ({ id: item.id, text: String(item.text ?? ''), at: String(item.at ?? '') })),
         queuedCount: Number.isInteger(session.queuedCount) ? session.queuedCount : 0,
         busy: session.busy === true,
       };
@@ -204,7 +208,7 @@ function summarizeUpdate(update) {
 }
 
 export class SchedulingSessionManager {
-  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 3, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null, sessionLaunch = null, hubScheduling, hubReconcileMs = HUB_RECONCILE_INTERVAL_MS } = {}) {
+  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 6, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null, sessionLaunch = null, hubScheduling, hubReconcileMs = HUB_RECONCILE_INTERVAL_MS } = {}) {
     this.cwd = path.resolve(cwd);
     this.writableDir = writableDir ? path.resolve(writableDir) : null;
     // §6：kind=scheduling 走 Hub 事项/run/resume，绝不派生私有 ACP；normal/design 始终走 ACP。
@@ -219,6 +223,7 @@ export class SchedulingSessionManager {
     this.hubReconcileMs = hubReconcileMs;
     this.adapterPath = adapterPath;
     this.spawnFn = spawnFn;
+    // 调度会话全局上限：生产由 config.json maxSessions 装配（默认 6、允许 1–12）。
     this.maxSessions = maxSessions;
     this.now = now;
     this.sessions = new Map();
@@ -630,8 +635,11 @@ export class SchedulingSessionManager {
   }
 
   // §6.3 send：向同一 subject 发新事件；重复 id 幂等；失败保留输入，不回退 ACP。
-  async #sendToHub(record, raw, { interrupt }) {
+  async #sendToHub(record, raw, { interrupt, maxPrompt = 4000 }) {
     if (interrupt) {
+      // session-steer：带文本打断在 cancelRun 成功后以 turn+1 把文本 postTurn 出去；
+      // 空文本保持网页版纯停止语义（只取消 run，不 post 新事件）。
+      const steerText = raw ? this.#validatePrompt(raw) : null;
       record.interruptRequested = true;
       try {
         let runId = record.hub.runId;
@@ -652,9 +660,27 @@ export class SchedulingSessionManager {
       record.stopReason = 'interrupted';
       record.updatedAt = this.now().toISOString();
       this.#persist(record);
+      if (!steerText) return toPublicSession(record);
+      // 新轮失败不记入转录、不推进轮次：文本留在客户端草稿可重试，不丢消息。
+      const turn = record.hub.turn + 1;
+      const hubState = await this.#readHubSnapshot();
+      const messageText = await this.#hubTurnText(record, turn, steerText, { hubState });
+      let result;
+      try {
+        result = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn, project: record.project, text: messageText });
+      } catch (error) {
+        throw new SchedulingSessionError(`发送失败：${safeMessage(error)}（内容已保留，请重试）`, { status: error.status || 502 });
+      }
+      record.hub.turn = turn;
+      record.hub.lastEventId = numericEventId(result);
+      record.status = 'unknown';
+      record.turnStartedAt = this.now().toISOString();
+      record.stopReason = null;
+      this.#pushMessage(record, 'user', steerText);
+      await this.#reconcileHubRun(record, record.hub.lastEventId);
       return toPublicSession(record);
     }
-    const message = this.#validatePrompt(raw);
+    const message = this.#validatePrompt(raw, maxPrompt);
     const turn = record.hub.turn + 1;
     const hubState = await this.#readHubSnapshot();
     const messageText = await this.#hubTurnText(record, turn, message, { hubState });
@@ -691,16 +717,23 @@ export class SchedulingSessionManager {
     return toPublicSession(record);
   }
 
-  async send(id, text, { interrupt = false } = {}) {
+  async send(id, text, { interrupt = false, attachments = [] } = {}) {
     const record = this.sessions.get(String(id || ''));
     if (!record) throw new SchedulingSessionError('调度会话不存在', { status: 404 });
     if (['closing', 'closed'].includes(record.status)) throw new SchedulingSessionError('会话已关闭，请开启新会话', { status: 409 });
     if (record.status === 'error') throw new SchedulingSessionError('会话处于异常状态，请关闭后重新开启', { status: 409 });
     const raw = String(text ?? '').trim();
+    let enriched = raw;
+    if (!interrupt && attachments.length) {
+      if (!this.runtimeRoot) throw new SchedulingSessionError('会话附件存储不可用', { status: 500 });
+      enriched = `${raw}
+
+${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
+    }
     // B4 空上下文守卫：只拦「继续/已解决」这类续接话术，且仅当确实没有可续接的东西——
     // 转录里没有 worker 结论、首轮 run 不在进行中、Hub 同事项也没有未收尾卡片。
     // 先比正则再读 Hub（不是续接话术不花一次请求）；读 Hub 失败按「有上下文」放行，宁可放过不误拦。
-    if (record.hub && !['closing', 'closed'].includes(record.status) && isBareContinuation(raw)) {
+    if (record.hub && !['closing', 'closed'].includes(record.status) && isBareContinuation(enriched)) {
       const hasAgentTurn = (record.messages || []).some(m => m.role === 'agent');
       const runActive = ['running', 'unknown'].includes(record.status);
       if (!hasAgentTurn && !runActive) {
@@ -718,9 +751,9 @@ export class SchedulingSessionManager {
     if ((record.kind || 'scheduling') === 'design' && raw.startsWith('/')) {
       throw new SchedulingSessionError('设计会话不接受斜杠命令（防止切换模式），请用自然语言描述需求', { status: 400 });
     }
-    if (record.hub) return this.#sendToHub(record, raw, { interrupt });
+    if (record.hub) return this.#sendToHub(record, enriched, { interrupt, maxPrompt: attachments.length ? 12000 : 4000 });
     if (record.status === 'idle') {
-      const message = this.#validatePrompt(raw);
+      const message = this.#validatePrompt(enriched, attachments.length ? 12000 : 4000);
       this.#pushMessage(record, 'user', message);
       this.#runTurn(record, message);
       return toPublicSession(record);
@@ -728,15 +761,19 @@ export class SchedulingSessionManager {
     // 运行中/初始化中：与 Codex 输入体验一致——默认排队跟进，interrupt 取消当前轮。
     if (interrupt) {
       if (record.status === 'initializing') throw new SchedulingSessionError('会话初始化中，请稍候再试（打断只在运行中可用）', { status: 409 });
-      // 与 Codex 原生 Stop 一致：纯停止本轮；不读取文本（调用方草稿留在客户端），不动队列。
-      // 注意：text 在此分支被有意忽略——控制台前端传空串；带文本调用属于旧 API 约定，不再送达。
-      // 轮次收尾后队列自动续跑（finish 里按 settleMs 延迟 drain），不需要任何手动恢复
+      // session-steer：App「打断」= 打断当前轮并把输入框文字作为新一轮立即发出。
+      // 带文本时插到队首：cancel 引发的旧轮按 interrupted 收尾后，finish 按 settleMs
+      // 延迟 drain 队列，复用 #runTurn 开新轮（与既有队列/settleMs 纪律一致，不另起路径）。
+      // 空文本保持网页版纯停止语义：不读取文本（草稿留在客户端），不动队列。
+      const steerText = raw ? this.#validatePrompt(raw) : null;
+      if (steerText && record.queue.length >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
+      if (steerText) record.queue.unshift({ id: randomUUID(), text: steerText, at: this.now().toISOString() });
       record.interruptRequested = true; // cancel 引发的 prompt 拒绝按中断收尾，不算错误
       record.updatedAt = this.now().toISOString();
       try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
       return toPublicSession(record);
     }
-    const message = this.#validatePrompt(raw);
+    const message = this.#validatePrompt(enriched, attachments.length ? 12000 : 4000);
     const pendingMessages = record.queue.length;
     if (pendingMessages >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
     record.queue.push({ id: randomUUID(), text: message, at: this.now().toISOString() });

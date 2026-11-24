@@ -35,7 +35,7 @@ final class AutoloopNotifyBridge {
         intent.putExtra(ForegroundService.EXTRA_BASE_URL,
             optionsJson.optString("baseUrl", ""));
       } catch (Exception ignored) { /* 参数缺失时用服务内已持久化的配置 */ }
-      plugin.getContext().startService(intent);
+      androidx.core.content.ContextCompat.startForegroundService(plugin.getContext(), intent);
     });
   }
 
@@ -52,11 +52,15 @@ final class AutoloopNotifyBridge {
     main.post(() -> {
       try {
         JSONObject data = new JSONObject(descriptor);
-        String kind = data.optString("kind", NotifyChannels.CHANNEL_TODO);
-        String channel = NotifyChannels.CHANNEL_TODO.equals(kind)
-            ? NotifyChannels.CHANNEL_TODO : NotifyChannels.CHANNEL_NODE_DONE;
-        String key = "notified:" + data.optString("key", data.optString("id", ""));
-        if (!NotifyChannels.claim(key)) return; // 同一事项不重复通知
+        // descriptor.kind 是 JS 契约值（todo / node-done / session-reply），映射到对应通知渠道。
+        String kind = data.optString("kind", "todo");
+        String channel = "todo".equals(kind) ? NotifyChannels.CHANNEL_TODO
+            : "session-reply".equals(kind) ? NotifyChannels.CHANNEL_SESSION
+            : NotifyChannels.CHANNEL_NODE_DONE;
+        // 与 ForegroundService 共用 kind:id:revision 键和持久化集合：进程重启后不重复，
+        // 两条路径（H5 转发、常驻服务轮询）对同一事项也只发一次。
+        String key = data.optString("key", data.optString("id", ""));
+        if (!NotifyChannels.claimPersistent(plugin.getContext(), key)) return; // 同一事项不重复通知
         NotifyChannels.postDescriptor(plugin.getContext(), data, channel);
       } catch (Exception ignored) { /* descriptor 非法则不发通知 */ }
     });
@@ -76,6 +80,18 @@ final class AutoloopNotifyBridge {
   public void onReply(String callbackName) {
     if (callbackName == null || callbackName.trim().isEmpty()) return;
     main.post(() -> plugin.setReplyCallback(callbackName.trim()));
+  }
+
+  /** setActiveSession(id)：H5 进入/离开会话详情页时同步，空串表示不在任何会话详情。 */
+  @JavascriptInterface
+  public void setActiveSession(String id) {
+    AppVisibility.setActiveSession(id);
+  }
+
+  /** takeLaunchRoute()：取走冷启动时暂存的通知点击路由 JSON（只取一次），无则返回空串。 */
+  @JavascriptInterface
+  public String takeLaunchRoute() {
+    return AutoLoopNotifications.takeLaunchRoute();
   }
 
   /** setBadge(count)：设置应用角标数量（随开放待办数变化）。 */

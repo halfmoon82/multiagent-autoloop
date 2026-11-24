@@ -42,12 +42,13 @@ export function createCoreWrite(client, { fetchImpl } = {}) {
   // 管理后台复用网页版既有 /api/admin/platform-models（不新增服务端路由）：同源 + 控制台请求头 + JSON，
   // 与 server.mjs checkWrite 同口径；这是非移动端路由，不携带设备凭证。保存前确认由页面负责。
   const admin = async (method, body) => {
-    const url = new URL('/api/admin/platform-models', client.origin);
+    const url = new URL('/api/mobile/admin/platform-models', client.origin);
+    const token = await client.tokenStore.get();
     let response;
     try {
       response = await doFetch(url.toString(), {
         method,
-        headers: { 'content-type': 'application/json', 'x-console-request': '1' },
+        headers: { 'content-type': 'application/json', 'x-console-request': '1', 'x-device-token': token },
         ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
       });
     } catch {

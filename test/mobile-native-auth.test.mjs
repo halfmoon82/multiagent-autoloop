@@ -107,6 +107,14 @@ test('AutoloopBiometric.verify 用 androidx.biometric，BIOMETRIC_WEAK | DEVICE_
   assert.match(src, /call\.reject\s*\(/);
 });
 
+test('BiometricPrompt 必须在主线程创建与展示（Capacitor 插件方法默认跑在后台线程）', () => {
+  const src = readAuth('AutoLoopBiometric.java');
+  const ui = src.indexOf('runOnUiThread');
+  assert.ok(ui > 0, 'nativeVerify 必须用 activity.runOnUiThread 包住弹窗');
+  assert.ok(src.indexOf('new BiometricPrompt(') > ui, 'new BiometricPrompt 必须在 runOnUiThread 回调内');
+  assert.ok(src.indexOf('prompt.authenticate(') > ui, 'prompt.authenticate 必须在 runOnUiThread 回调内');
+});
+
 test('生物识别桥把成功映射为 true、取消/失败映射为 false，不放行', () => {
   const src = readAuth('AutoLoopBridge.java');
   assert.match(src, /BIOMETRIC_SHIM/);

@@ -8,7 +8,9 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { hubRequest, HubError } from './hub.mjs';
 import { discoverGitProjects } from './projects.mjs';
-import { readRuleOptions } from './rules.mjs';
+import { readRuleOptions, defaultCheck } from './rules.mjs';
+import { readPlatformModels, applyPlatformModels, PlatformModelsError } from './platform-models.mjs';
+import { loadPolicy } from './detour-policy.mjs';
 import { reconcile, syncPrompt, createSyncState } from '../mobile/src/features/device-sync/index.mjs';
 import { classifySessionRequest } from './session-classify.mjs';
 import { SchedulingSessionError } from './scheduling-session.mjs';
@@ -39,6 +41,13 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'sync', method: 'POST', pattern: /^\/api\/mobile\/sync$/ },
   { key: 'rule-action', method: 'POST', pattern: /^\/api\/mobile\/rules\/([^/]+)\/(run|pause|resume)$/ },
   { key: 'session-classify', method: 'POST', pattern: /^\/api\/mobile\/session-classify$/ },
+  { key: 'admin-platform-models', method: 'GET', pattern: /^\/api\/mobile\/admin\/platform-models$/ },
+  { key: 'admin-platform-models', method: 'PUT', pattern: /^\/api\/mobile\/admin\/platform-models$/ },
+  { key: 'session-queue-clear', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/clear$/ },
+  { key: 'session-queue-update', method: 'PUT', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)$/ },
+  { key: 'session-queue-move', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)\/move$/ },
+  { key: 'session-queue-remove', method: 'DELETE', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)$/ },
+  { key: 'session-queue-steer', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/queue\/([^/]+)\/steer$/ },
   { key: 'session-message', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/messages$/ },
   { key: 'session-create', method: 'POST', pattern: /^\/api\/mobile\/sessions$/ },
   { key: 'session-close', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/close$/ },
@@ -100,9 +109,9 @@ function parseId(text) {
   return id;
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = 65536) {
   let size = 0; const chunks = [];
-  for await (const chunk of req) { size += chunk.length; if (size > 65536) fail(413); chunks.push(chunk); }
+  for await (const chunk of req) { size += chunk.length; if (size > maxBytes) fail(413); chunks.push(chunk); }
   if (!size) return {};
   try {
     const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -119,7 +128,8 @@ function writeError(res, error) {
         : 502;
   // 本地会话态错误（已关闭/异常等）的 message 本就是给用户看的中文文案，与网页端同口径透传；
   // 其余非 WriteError 一律回落固定文案，不回显 Hub 错误体或内部细节。
-  const passthrough = (error instanceof SchedulingSessionError || error instanceof DagServiceError) && status >= 400 && status < 500 && error.message;
+  // PlatformModelsError 与网页端同口径：校验文案（如「三档要么都填，要么都不填」）直接给人看，不吞成「请求无效」。
+  const passthrough = (error instanceof SchedulingSessionError || error instanceof PlatformModelsError || error instanceof DagServiceError) && status >= 400 && status < 500 && error.message;
   jsonResponse(res, status, { error: error instanceof WriteError ? error.message : passthrough || (SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试') });
 }
 
@@ -225,10 +235,47 @@ async function sessionMessageRoute(res, url, route, ctx, body, req) {
   const fields = { sessionId: id, sourceDeviceId: ctx.device.id };
   let result;
   try {
-    result = await sessions.send(id, text, { interrupt: body.interrupt === true });
+    result = await sessions.send(id, text, { interrupt: body.interrupt === true, ...(Array.isArray(body.attachments) && body.attachments.length ? { attachments: body.attachments } : {}) });
   } catch (error) { auditFailure(ctx, req, 'session.message', fields); throw error; }
   audit(ctx, req, 'session.message', fields);
   jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
+}
+
+async function sessionQueueRoute(res, url, route, ctx, body, req) {
+  const sessions = ctx.config.schedulingSessions;
+  const match = url.pathname.match(route.pattern);
+  const id = decodeURIComponent(match[1]);
+  const itemId = match[2] ? decodeURIComponent(match[2]) : null;
+  const methods = {
+    'session-queue-clear': ['clearQueued', [id]],
+    'session-queue-update': ['updateQueued', [id, itemId, String(body.text ?? '')]],
+    'session-queue-move': ['moveQueued', [id, itemId, String(body.direction ?? '')]],
+    'session-queue-remove': ['removeQueued', [id, itemId]],
+    'session-queue-steer': ['steerQueued', [id, itemId]],
+  };
+  const [method, args] = methods[route.key] || [];
+  if (!method || typeof sessions?.[method] !== 'function') fail(503, '会话队列通道不可用');
+  const fields = { sessionId: id, queueItemId: itemId, sourceDeviceId: ctx.device.id };
+  let result;
+  try { result = await sessions[method](...args); }
+  catch (error) { auditFailure(ctx, req, 'session.queue', fields); throw error; }
+  audit(ctx, req, 'session.queue', fields);
+  jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
+}
+
+async function adminPlatformModelsRoute(res, ctx, body, req) {
+  const { config, device } = ctx;
+  if (req.method === 'GET') {
+    let policy = null; try { policy = loadPolicy(config); } catch { policy = null; }
+    jsonResponse(res, 200, readPlatformModels(config, { policy }));
+    return;
+  }
+  const dagProjects = discoverGitProjects({ roots: config.projectRoots || [], rules: readRuleOptions(config).rules || [] }).map(item => item.path);
+  let result;
+  try { result = await applyPlatformModels(config, body, { check: config.platformCheck || defaultCheck, dagProjects }); }
+  catch (error) { auditFailure(ctx, req, 'admin.platform.models', { sourceDeviceId: device.id }); throw error; }
+  audit(ctx, req, 'admin.platform.models', { sourceDeviceId: device.id });
+  jsonResponse(res, 200, { ...result, sourceDeviceId: device.id });
 }
 
 async function sessionCreateRoute(res, body, ctx, req) {
@@ -341,7 +388,7 @@ async function ruleAction(req, res, url, route, ctx, body) {
   let result;
   try {
     result = await hubRequest(ctx.config, `/v1/rules/${encodeURIComponent(name)}/${action}`, {
-      method: 'POST', body: { ...payload, sourceDeviceId: ctx.device.id },
+      method: 'POST', body: payload,
     });
   } catch (error) { auditFailure(ctx, req, 'rule.action', fields); throw error; }
   audit(ctx, req, 'rule.action', fields);
@@ -385,19 +432,21 @@ async function syncRoute(req, res, url, ctx, body) {
 // 实际业务处理；由同步 handleMobileWrite 以 fire-and-forget 方式调用，自行捕获全部错误。
 async function executeWrite(route, req, res, url, ctx) {
   try {
-    const body = req.method === 'GET' ? {} : await readJson(req);
+    const body = req.method === 'GET' ? {} : await readJson(req, route.key === 'session-message' ? 20 * 1024 * 1024 : 65536);
     if (route.key === 'sync') return await syncRoute(req, res, url, ctx, body);
     if (route.key === 'card-answer' || route.key === 'card-authorize') return await cardWrite(route, req, res, url, ctx, body);
     if (route.key === 'session-continue') return await sessionContinue(res, url, route, ctx);
     if (route.key === 'session-download') return await sessionDownload(res, url, route, ctx);
     if (route.key === 'rule-action') return await ruleAction(req, res, url, route, ctx, body);
     if (route.key === 'session-classify') return sessionClassifyRoute(res, body);
+    if (route.key === 'admin-platform-models') return await adminPlatformModelsRoute(res, ctx, body, req);
     if (route.key === 'session-create') return await sessionCreateRoute(res, body, ctx, req);
     if (route.key === 'session-close') return await sessionCloseRoute(res, url, route, ctx, req);
     if (route.key === 'session-approve-plan') return await sessionApprovePlanRoute(res, url, route, ctx, req);
     if (route.key === 'dag-run-create') return await dagRunCreateRoute(res, ctx, body, req);
     if (route.key === 'dag-plan' || route.key === 'dag-preflight') return await dagReadRoute(route, res, url, ctx);
     if (route.key === 'session-message') return await sessionMessageRoute(res, url, route, ctx, body, req);
+    if (route.key.startsWith('session-queue-')) return await sessionQueueRoute(res, url, route, ctx, body, req);
     jsonResponse(res, 501, { error: '该写操作尚未实现', route: route.key, declared: true });
   } catch (error) {
     writeError(res, error);
