@@ -30,6 +30,8 @@ public class AutoLoopNotifications extends Plugin {
 
   private static volatile AutoLoopNotifications instance;
   private volatile String replyCallback;
+  // 冷启动点击路由：load() 时 WebView 页面还没加载完，直接派发事件会丢，暂存给 H5 挂载后经 takeLaunchRoute 取走。
+  private static volatile String pendingLaunchRoute = "";
 
   @Override
   public void load() {
@@ -92,7 +94,10 @@ public class AutoLoopNotifications extends Plugin {
     dispatchLaunchRoute(intent);
   }
 
-  /** 点击通知拉起 App 时带的路由（页面 + 会话/卡片/节点 id），回拨给 H5 定位。 */
+  /**
+   * 点击通知拉起 App 时带的路由（页面 + 会话/卡片 id）：暂存一份供冷启动的 H5 来取，同时回拨事件给已就绪的 H5。
+   * 读过即从 Intent 移除，Activity 重建或 load() 再次读取同一 Intent 时不重复跳转。
+   */
   private void dispatchLaunchRoute(Intent intent) {
     if (intent == null) return;
     String page = intent.getStringExtra(NotifyChannels.EXTRA_ROUTE_PAGE);
@@ -103,8 +108,19 @@ public class AutoLoopNotifications extends Plugin {
       route.put("sessionId", intent.getStringExtra(NotifyChannels.EXTRA_ROUTE_SESSION));
       route.put("cardId", intent.getStringExtra(NotifyChannels.EXTRA_ROUTE_CARD));
     } catch (Exception ignored) { return; }
+    intent.removeExtra(NotifyChannels.EXTRA_ROUTE_PAGE);
+    intent.removeExtra(NotifyChannels.EXTRA_ROUTE_SESSION);
+    intent.removeExtra(NotifyChannels.EXTRA_ROUTE_CARD);
+    pendingLaunchRoute = route.toString();
     String js = "window.dispatchEvent(new CustomEvent('autoloop:notify-open',{detail:" + route + "}));";
     getBridge().getWebView().post(() -> getBridge().getWebView().evaluateJavascript(js, null));
+  }
+
+  /** H5 取走暂存的点击路由（只取一次），无则返回空串。 */
+  static String takeLaunchRoute() {
+    String route = pendingLaunchRoute;
+    pendingLaunchRoute = "";
+    return route == null ? "" : route;
   }
 
   @PluginMethod

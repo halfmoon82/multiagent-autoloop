@@ -52,9 +52,11 @@ final class AutoloopNotifyBridge {
     main.post(() -> {
       try {
         JSONObject data = new JSONObject(descriptor);
-        String kind = data.optString("kind", NotifyChannels.CHANNEL_TODO);
-        String channel = NotifyChannels.CHANNEL_TODO.equals(kind)
-            ? NotifyChannels.CHANNEL_TODO : NotifyChannels.CHANNEL_NODE_DONE;
+        // descriptor.kind 是 JS 契约值（todo / node-done / session-reply），映射到对应通知渠道。
+        String kind = data.optString("kind", "todo");
+        String channel = "todo".equals(kind) ? NotifyChannels.CHANNEL_TODO
+            : "session-reply".equals(kind) ? NotifyChannels.CHANNEL_SESSION
+            : NotifyChannels.CHANNEL_NODE_DONE;
         String key = "notified:" + data.optString("key", data.optString("id", ""));
         if (!NotifyChannels.claim(key)) return; // 同一事项不重复通知
         NotifyChannels.postDescriptor(plugin.getContext(), data, channel);
@@ -82,6 +84,12 @@ final class AutoloopNotifyBridge {
   @JavascriptInterface
   public void setActiveSession(String id) {
     AppVisibility.setActiveSession(id);
+  }
+
+  /** takeLaunchRoute()：取走冷启动时暂存的通知点击路由 JSON（只取一次），无则返回空串。 */
+  @JavascriptInterface
+  public String takeLaunchRoute() {
+    return AutoLoopNotifications.takeLaunchRoute();
   }
 
   /** setBadge(count)：设置应用角标数量（随开放待办数变化）。 */
