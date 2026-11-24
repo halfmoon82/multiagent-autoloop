@@ -58,6 +58,7 @@ export function createNotifyBridge({
   const descriptors = new Map();
   let started = false;
   let enabled = null;
+  let sessionsSeeded = false;
 
   const api = bridge && typeof bridge === 'object' ? bridge : null;
   const has = method => Boolean(api && typeof api[method] === 'function');
@@ -109,6 +110,7 @@ export function createNotifyBridge({
       started = false;
       notified.clear();
       descriptors.clear();
+      sessionsSeeded = false; // 重绑后会话回复重新种子，不对历史会话补发
       return true;
     },
 
@@ -142,13 +144,27 @@ export function createNotifyBridge({
       return this.publish(descriptor);
     },
 
+    // 会话首轮种子：App 冷启动/页面重载后第一次拿到会话列表，只把已有回复记为已读，不推送，
+    // 与原生常驻服务、桌面 CardNotifier 的「重启不刷屏」口径一致。来源不可用（非数组）时不算种子。
+    seedSessions(sessions) {
+      for (const session of sessions) {
+        const descriptor = buildSessionReplyNotification(session);
+        if (descriptor) notified.add(descriptor.key);
+      }
+      sessionsSeeded = true;
+    },
+
     // 拉取一次状态：开放待办各一条、成功完成节点各一条、会话新回复各一条，角标按开放待办数同步。
-    syncCards(cards, events = [], sessions = [], view = {}) {
+    // sessions 传 null 表示本轮没拿到会话列表（接口失败等），既不推送也不消耗首轮种子。
+    syncCards(cards, events = [], sessions = null, view = {}) {
       const open = (Array.isArray(cards) ? cards : []).filter(card => str(card?.state).trim() === 'open');
       let sent = 0;
       for (const card of open) if (this.publishCard(card)) sent += 1;
       for (const event of (Array.isArray(events) ? events : [])) if (this.publishNodeDone(event)) sent += 1;
-      for (const session of (Array.isArray(sessions) ? sessions : [])) if (this.publishSessionReply(session, view)) sent += 1;
+      if (Array.isArray(sessions)) {
+        if (!sessionsSeeded) this.seedSessions(sessions);
+        else for (const session of sessions) if (this.publishSessionReply(session, view)) sent += 1;
+      }
       this.setBadge(badgeCount(open));
       return sent;
     },

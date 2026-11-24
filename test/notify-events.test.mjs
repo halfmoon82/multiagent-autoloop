@@ -162,6 +162,7 @@ test('桥接：后台或不在该会话时推送，在该会话详情页不推�
 test('桥接：syncCards 带会话时一并推送，角标仍只算待办', () => {
   const api = fakeBridge();
   const bridge = createNotifyBridge({ bridge: api });
+  bridge.syncCards([], [], [], { appVisible: false }); // 会话首轮种子（此时还没有会话）
   const sent = bridge.syncCards([{ id: 1, state: 'open', title: 'x', createdAt: 'c' }], [], [session('s9', 'normal', 1)], { appVisible: false });
   assert.equal(sent, 2);
   assert.deepEqual(api.log.filter(([k]) => k === 'badge').at(-1), ['badge', 1]);

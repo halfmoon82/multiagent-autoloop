@@ -57,8 +57,10 @@ final class AutoloopNotifyBridge {
         String channel = "todo".equals(kind) ? NotifyChannels.CHANNEL_TODO
             : "session-reply".equals(kind) ? NotifyChannels.CHANNEL_SESSION
             : NotifyChannels.CHANNEL_NODE_DONE;
-        String key = "notified:" + data.optString("key", data.optString("id", ""));
-        if (!NotifyChannels.claim(key)) return; // 同一事项不重复通知
+        // 与 ForegroundService 共用 kind:id:revision 键和持久化集合：进程重启后不重复，
+        // 两条路径（H5 转发、常驻服务轮询）对同一事项也只发一次。
+        String key = data.optString("key", data.optString("id", ""));
+        if (!NotifyChannels.claimPersistent(plugin.getContext(), key)) return; // 同一事项不重复通知
         NotifyChannels.postDescriptor(plugin.getContext(), data, channel);
       } catch (Exception ignored) { /* descriptor 非法则不发通知 */ }
     });

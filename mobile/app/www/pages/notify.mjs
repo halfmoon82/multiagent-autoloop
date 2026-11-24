@@ -87,8 +87,9 @@ function setup(ctx, doc, win, root, F, { setTimer, clearTimer, checkMs, now }) {
     try {
       const state = await ctx.client.api('state');
       // 会话新回复：来源失败不影响待办/节点完成通知；仅后台或不在该会话详情页时推送。
-      let sessions = [];
-      try { const list = await ctx.client.api('sessions'); sessions = Array.isArray(list) ? list : (list?.sessions || []); } catch (error) { if (error?.status === 401) throw error; }
+      // null = 本轮没拿到会话列表：不推送、也不消耗首轮种子（否则恢复后会把历史回复当新回复）。
+      let sessions = null;
+      try { const list = await ctx.client.api('sessions'); sessions = Array.isArray(list) ? list : (Array.isArray(list?.sessions) ? list.sessions : null); } catch (error) { if (error?.status === 401) throw error; }
       const visible = doc?.visibilityState !== 'hidden';
       controller.syncCards(state?.cards, state?.nodeEvents, sessions, { appVisible: visible, activeSessionId: win?.AutoloopActiveSession || null });
     } catch (error) {
