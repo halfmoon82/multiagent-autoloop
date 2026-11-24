@@ -15,6 +15,9 @@ const loadAutogrow = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/composer-autogrow/index.mjs');
 
+const loadAuthorizeModel = typeof window === 'undefined'
+  ? () => Promise.resolve(null)
+  : () => import('../src/features/design-authorize/index.mjs');
 // 通知接线：点击通知打开具体会话（takePendingSession / open-session），进出详情登记正在看的会话（setActiveSession）。
 const loadNotifyModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
@@ -41,6 +44,8 @@ export function mount(ctx) {
   if (!host) return;
 
   const modelPromise = Promise.all([loadViewModel(), loadQuestionModel()]);
+  let amodel = null;
+  void loadAuthorizeModel().then(module => { amodel = module; });
   const notifyPromise = loadNotifyModel().catch(() => null);
   // 正在看的会话：只有会话页可见且停在详情时才算，其余一律清空（切 Tab、返回列表、进设置页）。
   const syncActiveSession = () => {
@@ -181,8 +186,9 @@ export function mount(ctx) {
     sendMode, composerInput, micBtn, steerBtn, attachBtn, composerSend,
   ]);
   const queuePreview = node('div', { className: 'sessions-queue-preview', attrs: { hidden: '' } });
+  const detailActions = node('div', { className: 'sessions-detail-actions' });
   const detailTop = node('div', { className: 'sessions-detail-top' }, [
-    detailHero, detailContext, sessionTools, infoPanel, queuePanel, pendingStrip,
+    detailHero, detailActions, detailContext, sessionTools, infoPanel, queuePanel, pendingStrip,
   ]);
   const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
     detailTop, messageWindow, backBottom, queuePreview, attachmentInput, attachmentList, composerRow,
@@ -215,12 +221,22 @@ export function mount(ctx) {
     newProjects, newPromptRow, newRecommend, newKinds, newSubmit,
   ]);
 
+  // 确认执行范围：读取计划 → 逐条出示 → 勾选已阅读 → 提交（服务端校验 planDigest）。
+  const authBack = node('button', { type: 'button', className: 'sessions-auth-back', text: '‹ 会话列表' });
+  const authPlanId = node('input', { className: 'sessions-auth-plan', attrs: { type: 'text', placeholder: '计划编号（docs/dag-plans 下的 planId）', 'aria-label': '计划编号', autocomplete: 'off', autocapitalize: 'off' } });
+  const authLoad = node('button', { type: 'button', className: 'sessions-auth-load', text: '读取计划' });
+  const authBody = node('div', { className: 'sessions-auth-body' });
+  const authView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'authorize', hidden: '' } }, [
+    authBack, node('h2', { text: '确认执行范围' }),
+    node('div', { className: 'sessions-auth-plan-row' }, [authPlanId, authLoad]), authBody,
+  ]);
+
   const menuCopy = node('button', { type: 'button', text: '复制' });
   const menu = node('div', { className: 'sessions-menu', attrs: { hidden: '' } }, [menuCopy]);
-  host.replaceChildren(banner, listView, detailView, archiveView, newView, menu);
+  host.replaceChildren(banner, listView, detailView, archiveView, newView, authView, menu);
   renderIcons(host);
 
-  const views = { list: listView, detail: detailView, archive: archiveView, new: newView };
+  const views = { list: listView, detail: detailView, archive: archiveView, new: newView, authorize: authView };
   let detailTimer = null;
   // 详情跟随/滚底基于消息窗自身滚动。
   const pageMetrics = () => ({
@@ -249,6 +265,8 @@ export function mount(ctx) {
   const showView = name => {
     state.view = name;
     if (name !== 'detail' && detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+    // 详情轮询只更新快照不重绘隐藏的列表；回到列表时按当前类型/搜索/项目筛选重建一次，不显示旧状态。
+    if (name === 'list' && state.listStale) { state.listStale = false; applyFilters(); }
     if (name !== 'detail') syncActiveSession();
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
     host.classList.toggle('sessions-detail-open', name === 'detail'); // 详情页自己按视口定高，去掉页面底部留白
@@ -279,7 +297,52 @@ export function mount(ctx) {
   };
 
   // ---- 列表 ----
+  function renderDetailActions() {
+    const row = state.session ? designActionsRow(state.session) : null;
+    detailActions.replaceChildren(...(row ? [row] : []));
+  }
+
+  // 设计会话的两颗操作按钮（与网页卡片同口径）：放行落盘仅未放行时出现；确认执行范围恒有。
+  function designActionsRow(session) {
+    const items = smodel ? smodel.designSessionActions(session) : [];
+    if (!items.length) return null;
+    const row = node('div', { className: 'sessions-design-actions', attrs: { 'data-design-actions': session.id } });
+    for (const action of items) {
+      const button = node('button', {
+        type: 'button', className: `sessions-design-btn${action.primary ? ' primary' : ''}`,
+        attrs: { 'data-action': action.id, 'data-session-id': session.id }, text: action.label,
+      });
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        if (action.id === 'approve-plan') void approvePlan(session, button);
+        else openAuthorize(session);
+      });
+      row.appendChild(button);
+    }
+    return row;
+  }
+
+  async function approvePlan(session, button) {
+    if (!write) return;
+    button.disabled = true;
+    try {
+      await write.approvePlan(session.id);
+      for (const item of state.snapshot?.sessions || []) if (item.id === session.id) item.planApproved = true;
+      session.planApproved = true;
+      showBanner('');
+      ctx.hooks?.haptic?.success?.();
+      applyFilters();
+      if (state.view === 'detail' && state.session?.id === session.id) renderDetailActions();
+    } catch (error) {
+      showBanner(`放行落盘失败：${error?.message || '请重试'}`);
+      button.disabled = false;
+    }
+  }
+
+  // 会话行：左滑露出「关闭」→ 再点一次「确认关闭」才真正关闭。滑动中不触发点击进入。
+  let openSwipeRow = null;
   function sessionItem(item) {
+    const swipe = smodel.createRowSwipe();
     const status = item.status === 'running' ? 'active' : (item.status === 'idle' ? 'done' : 'neutral');
     const box = node('button', { type: 'button', className: 'sessions-item session-item', attrs: { 'data-session-id': item.id } }, [
       node('div', { className: 'item-top' }, [
@@ -289,9 +352,147 @@ export function mount(ctx) {
       node('span', { className: 'item-subtitle', text: [item.projectLabel, item.kindLabel].filter(Boolean).join(' · ') }),
       node('span', { className: 'item-description', text: [item.updatedLabel, item.queuedCount ? `${item.queuedCount} 条排队消息` : ''].filter(Boolean).join(' · ') }),
     ]);
-    box.addEventListener('click', () => { void openSession(item); });
-    return box;
+    const closeBtn = node('button', { type: 'button', className: 'sessions-close-action', text: '关闭', attrs: { 'data-action': 'close-session', 'data-session-id': item.id, 'aria-label': '关闭会话' } });
+    const track = node('div', { className: 'sessions-swipe-track' }, [box]);
+    const row = node('div', { className: 'sessions-swipe-row', attrs: { 'data-swipe-row': item.id } }, [closeBtn, track]);
+    const errorLine = node('p', { className: 'status error', attrs: { hidden: '' } });
+    const setOffset = (px, animate) => { track.style.transition = animate ? 'transform 160ms ease-out' : 'none'; track.style.transform = px ? `translateX(${px}px)` : ''; };
+    const closeConfirm = smodel.createCloseConfirm();
+    const resetConfirm = () => { closeConfirm.reset(); closeBtn.textContent = closeConfirm.label; closeBtn.dataset.confirm = '0'; };
+    resetConfirm();
+    const collapse = () => { swipe.close(); setOffset(0, true); resetConfirm(); row.classList.remove('open'); if (openSwipeRow === collapse) openSwipeRow = null; };
+    if (item.closeError) { errorLine.textContent = item.closeError; errorLine.hidden = false; }
+
+    let pointerId = null;
+    let dragged = false;
+    let wasOpen = false;
+    row.addEventListener('pointerdown', event => {
+      if (pointerId !== null || (event.pointerType === 'mouse' && event.button !== 0)) return;
+      if (closeBtn.contains(event.target)) return;
+      // 行内手势自己处理：不让主内容区的页签左右滑接手。
+      event.stopPropagation();
+      if (openSwipeRow && openSwipeRow !== collapse) openSwipeRow();
+      wasOpen = swipe.open;
+      if (!swipe.start({ x: event.clientX, y: event.clientY })) return;
+      pointerId = event.pointerId;
+      dragged = false;
+    });
+    row.addEventListener('pointermove', event => {
+      if (event.pointerId !== pointerId) return;
+      const result = swipe.move({ x: event.clientX, y: event.clientY });
+      if (result.dragging) {
+        dragged = true;
+        try { row.setPointerCapture(pointerId); } catch { /* 无效指针：退化为无捕获 */ }
+        setOffset(result.offset, false);
+      }
+    });
+    const finish = event => {
+      if (event.pointerId !== pointerId) return;
+      pointerId = null;
+      const result = swipe.end();
+      setOffset(result.offset, true);
+      row.classList.toggle('open', result.open);
+      if (result.open) { openSwipeRow = collapse; } else if (openSwipeRow === collapse) { openSwipeRow = null; resetConfirm(); }
+      if (dragged) { row.dataset.justSwiped = '1'; setTimeout(() => { delete row.dataset.justSwiped; }, 350); }
+    };
+    row.addEventListener('pointerup', finish);
+    row.addEventListener('pointercancel', event => {
+      if (event.pointerId !== pointerId) return;
+      pointerId = null; swipe.cancel(); setOffset(swipe.offset, true);
+    });
+    box.addEventListener('click', event => {
+      // 滑动结束补发的 click、或行处于展开态时的点击：只收起，不进入会话。
+      if (dragged || row.dataset.justSwiped === '1') { event.preventDefault(); event.stopPropagation(); dragged = false; return; }
+      if (swipe.open) { collapse(); return; }
+      void openSession(item);
+    });
+    closeBtn.addEventListener('click', event => {
+      event.stopPropagation();
+      const step = closeConfirm.press();
+      if (step === 'arm') {
+        closeBtn.dataset.confirm = '1'; closeBtn.textContent = closeConfirm.label;
+        setTimeout(() => { if (closeBtn.isConnected && closeConfirm.state === 'confirm' && !closeBtn.disabled) resetConfirm(); }, 5000);
+        return;
+      }
+      if (step === 'submit') void closeSessionRow(item, closeBtn, errorLine, collapse);
+    });
+
+    const wrap = node('div', { className: 'sessions-card-wrap' }, [row, errorLine]);
+    const actions = designActionsRow(item);
+    if (actions) wrap.appendChild(actions);
+    return wrap;
   }
+
+  async function closeSessionRow(item, button, errorLine, collapse) {
+    if (!write || !smodel) return;
+    button.disabled = true; button.textContent = '关闭中…';
+    try {
+      await write.closeSession(item.id);
+      state.snapshot.sessions = (state.snapshot.sessions || []).filter(entry => entry.id !== item.id);
+      if (state.snapshot.currentId === item.id) state.snapshot.currentId = state.snapshot.sessions[0]?.id || null;
+      ctx.hooks?.haptic?.success?.();
+      applyFilters();
+      void reload({ quiet: true });
+    } catch (error) {
+      // 失败保留列表原状并提示原因；收回操作位，允许再次尝试。
+      button.disabled = false;
+      collapse();
+      errorLine.textContent = `关闭失败：${error?.message || '请重试'}`;
+      errorLine.hidden = false;
+    }
+  }
+
+  // ---- 确认执行范围 ----
+  const auth = { session: null, planId: '', plan: null, preflight: null, preflightError: '', ack: false, submitting: false, error: '', created: null, loading: false };
+  let authClient = null;
+  function openAuthorize(session) {
+    if (!amodel) { showBanner('授权模块尚未就绪，请稍后重试'); return; }
+    authClient = authClient || amodel.createAuthorizeClient(ctx.client);
+    Object.assign(auth, { session, plan: null, preflight: null, preflightError: '', ack: false, submitting: false, error: '', created: null });
+    authPlanId.value = auth.planId;
+    renderAuthorize();
+    showView('authorize');
+    if (typeof ctx.hooks?.pushView === 'function') ctx.hooks.pushView({ type: 'sessions', view: 'authorize', id: session.id });
+  }
+  async function loadAuthorizePlan() {
+    if (!authClient || auth.loading) return;
+    auth.planId = authPlanId.value.trim();
+    Object.assign(auth, { plan: null, preflight: null, preflightError: '', ack: false, error: '', created: null, loading: true });
+    renderAuthorize();
+    try {
+      const result = await authClient.loadPlan(auth.session.project, auth.planId);
+      auth.plan = result.plan; auth.preflight = result.preflight; auth.preflightError = result.preflightError;
+    } catch (error) { auth.error = `读取计划失败：${error?.message || '请重试'}`; }
+    auth.loading = false;
+    renderAuthorize();
+  }
+  async function submitAuthorize() {
+    if (!authClient || auth.submitting) return;
+    const body = amodel.buildCreateBody(auth.plan, { acknowledged: auth.ack });
+    if (!body) return;
+    auth.submitting = true; auth.error = '';
+    renderAuthorize();
+    try {
+      auth.created = await authClient.createRun(body);
+      ctx.hooks?.haptic?.success?.();
+    } catch (error) { auth.error = `提交失败：${error?.message || '请重试'}（已勾选内容保留，可直接再次提交）`; }
+    auth.submitting = false;
+    renderAuthorize();
+  }
+  function renderAuthorize() {
+    if (!amodel) return;
+    const view = amodel.buildAuthorizeView(auth.plan, auth.preflight, { acknowledged: auth.ack, submitting: auth.submitting, created: auth.created });
+    authLoad.disabled = auth.loading;
+    authLoad.textContent = auth.loading ? '读取中…' : '读取计划';
+    const parts = amodel.renderAuthorizeParts(view, auth, {
+      node,
+      onAck: checked => { auth.ack = checked; renderAuthorize(); },
+      onSubmit: () => { void submitAuthorize(); },
+    });
+    authBody.replaceChildren(...parts);
+  }
+  authBack.addEventListener('click', goList);
+  authLoad.addEventListener('click', () => { void loadAuthorizePlan(); });
 
   function renderList(list) {
     if (!list) return;
@@ -358,7 +559,7 @@ export function mount(ctx) {
   // ---- 会话详情与待回答组 ----
   async function openSession(session) {
     state.session = session;
-    state.messages = mapMessages(session);
+    state.messages = smodel ? smodel.buildDetailMessages(session) : mapMessages(session);
     renderPrompt(session);
     state.follow = true;
     const cards = Array.isArray(state.cards) ? state.cards.filter(card => !card?.project || card.project === session.project) : [];
@@ -367,6 +568,7 @@ export function mount(ctx) {
       state.group = qmodel.restoreGroup(state.savedGroup);
     }
     detailTitle.textContent = session.title || '会话';
+    renderDetailActions();
     renderDetailMeta(session);
     showView('detail');
     renderQuestion();
@@ -516,19 +718,39 @@ export function mount(ctx) {
   // 详情打开期间轻轮询：会话有新输出时即时刷新，离开详情页即停。
   function startDetailPolling() {
     if (detailTimer) clearInterval(detailTimer);
+    // 自适应：会话在跑（等回复）时 1.5s 一拍，空闲时 5s 一拍；每拍只读一个轻接口。
+    let lastTickAt = 0;
     detailTimer = setInterval(() => {
-      if (state.view === 'detail' && state.detailSessionId) void refreshDetail();
-    }, 5000);
+      if (state.view !== 'detail' || !state.detailSessionId || refreshing) return;
+      const current = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
+      const waiting = state.awaitingUntil > Date.now() || (smodel ? smodel.isAwaitingReply(current) : false);
+      const nowMs = Date.now();
+      if (!waiting && nowMs - lastTickAt < 5000) return;
+      lastTickAt = nowMs;
+      void refreshDetail();
+    }, 1500);
   }
 
+  // 在途闸：上一拍没回来就不发下一拍，避免慢隧道下请求叠加、旧结果覆盖新结果。
+  let refreshing = false;
   async function refreshDetail() {
+    if (refreshing) return;
+    refreshing = true;
     try {
-      await load({ quiet: true });
+      // 轻量刷新：只重读活跃会话（回复就在这里）。整页 load 要串行打 projects/state/sessions/archives
+      // 四次隧道往返并重绘列表；列表在详情页被隐藏，回到列表时再按当前筛选重绘（见 showView）。
+      if (reader && state.lastResult) {
+        const result = await reader.refreshActive(state.lastResult, { kind: state.kind, query: state.query });
+        state.lastResult = result;
+        state.snapshot = result.snapshot;
+        state.rawArchives = result.rawArchives;
+        // 不直接采用 result.list：它没有全局项目筛选。返回列表时由 applyFilters 重建（见 showView）。
+        state.listStale = true;
+      } else await load({ quiet: true });
       const session = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
       if (!session) return;
-      let messages = mapMessages(session);
-      const echo = [...state.messages].reverse().find(message => message.role === '主人' && !message.at);
-      if (echo && !messages.some(message => message.text === echo.text)) messages = [...messages, echo];
+      if (smodel?.isAwaitingReply(session)) state.awaitingUntil = 0; // 服务端已确认在跑，交给状态判断
+      const messages = smodel ? smodel.buildDetailMessages(session, state.messages) : mapMessages(session);
       if (JSON.stringify(messages) !== JSON.stringify(state.messages)) {
         // 跟随状态以更新瞬间的实测位置为准，不信任可能滞后的 state.follow：
         // 追新只滚底（用户在底部附近），用户上翻阅读时原样保持滚动位置。
@@ -543,7 +765,7 @@ export function mount(ctx) {
       state.session = session;
       detailTitle.textContent = session.title || '会话';
       renderDetailMeta(session);
-    } catch { /* 轮询静默失败，等下一轮 */ }
+    } catch { /* 轮询静默失败，等下一轮 */ } finally { refreshing = false; }
   }
 
   function renderQuestion() {
@@ -770,7 +992,10 @@ export function mount(ctx) {
       saveContext();
       pendingAttachments = [];
       renderAttachments();
-      await refreshSessionState();
+      // 发完不整页 load（串行 4 次隧道往返）：按「等回复」快拍 15s，首拍 800ms 只读活跃会话，
+      // 本轮 liveText 与忙碌/排队状态都由 refreshDetail 带回。
+      state.awaitingUntil = Date.now() + 15000;
+      setTimeout(() => { if (state.view === 'detail') void refreshDetail(); }, 800);
     } catch (error) {
       showBanner(`发送失败：${error?.message || '请重试'}（内容已保留在输入框）`);
     } finally {
@@ -953,6 +1178,7 @@ export function mount(ctx) {
       state.cards = Array.isArray(hubState?.cards) ? hubState.cards : [];
 
       const result = await reader.load({ kind: state.kind, query: state.query });
+      state.lastResult = result;
       state.snapshot = result.snapshot;
       state.list = result.list;
       state.rawArchives = result.rawArchives;

@@ -147,3 +147,102 @@ export function applyRestoreResult(archiveCollection, recordId, result = {}) {
   } : item));
   return { ...col, items, empty: false, reason: null };
 }
+
+// ---- 会话行左滑关闭（纯手势状态机，不碰 DOM） ----
+// 左滑露出「关闭」操作位；越过阈值（或松手时已超半幅）才停在展开态，否则回弹。
+// 滑动（含已展开后的再次拖动）不算点击：end() 返回 result==='tap' 才允许进入会话。
+export const ROW_SWIPE_REVEAL_PX = 88;
+export const ROW_SWIPE_AXIS_LOCK_PX = 8;
+export const ROW_SWIPE_TAP_SLOP_PX = 10;
+
+const finiteNumber = value => typeof value === 'number' && Number.isFinite(value);
+
+export function createRowSwipe({ reveal = ROW_SWIPE_REVEAL_PX } = {}) {
+  let open = false;
+  let origin = null;
+  let axis = null;
+  let offset = 0;
+  const clamp = value => Math.max(-reveal, Math.min(0, value));
+  const base = () => (open ? -reveal : 0);
+  return {
+    get open() { return open; },
+    get offset() { return offset; },
+    start({ x, y }) {
+      if (!finiteNumber(x) || !finiteNumber(y)) return false;
+      origin = { x, y }; axis = null; offset = base();
+      return true;
+    },
+    move({ x, y }) {
+      if (!origin || !finiteNumber(x) || !finiteNumber(y)) return { dragging: false, offset };
+      const dx = x - origin.x; const dy = y - origin.y;
+      if (!axis) {
+        if (Math.abs(dx) < ROW_SWIPE_AXIS_LOCK_PX && Math.abs(dy) < ROW_SWIPE_AXIS_LOCK_PX) return { dragging: false, offset };
+        axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      }
+      if (axis !== 'x') return { dragging: false, offset };
+      offset = clamp(base() + dx);
+      return { dragging: true, offset };
+    },
+    // 取消（指针被系统夺走/页面滚动）：回到手势前的状态，不触发任何动作。
+    cancel() { origin = null; axis = null; offset = base(); },
+    end() {
+      if (!origin) return { result: 'revert', open, offset: base() };
+      const dragged = axis === 'x';
+      const slop = Math.abs(offset - base()) < ROW_SWIPE_TAP_SLOP_PX;
+      origin = null;
+      if (!dragged) {
+        const wasAxisY = axis === 'y';
+        axis = null; offset = base();
+        return { result: wasAxisY ? 'revert' : 'tap', open, offset: base() };
+      }
+      axis = null;
+      if (slop) { offset = base(); return { result: 'revert', open, offset: base() }; }
+      const was = open;
+      open = offset <= -reveal / 2;
+      offset = open ? -reveal : 0;
+      return { result: open ? 'open' : (was ? 'close' : 'revert'), open, offset };
+    },
+    close() { open = false; origin = null; axis = null; offset = 0; },
+  };
+}
+
+// 关闭失败/成功后的列表收口：成功才移除该行；失败保留原状并带可读原因。
+export function applyCloseResult(sessionCollection, id, result = {}) {
+  const col = sessionCollection && Array.isArray(sessionCollection.items)
+    ? sessionCollection : collection([], '暂无会话');
+  if (result.ok === true) {
+    const items = col.items.filter(item => item?.id !== id);
+    return items.length ? { ...col, items } : collection([], '暂无会话');
+  }
+  return {
+    ...col,
+    items: col.items.map(item => (item?.id === id
+      ? { ...item, closeError: String(result.error || '关闭失败，会话保持原状') } : item)),
+  };
+}
+
+// 设计会话卡片的操作按钮：「确认计划·放行落盘」仅未放行时出现；「确认执行范围 →」恒有。
+export function designSessionActions(session = null) {
+  if (!session || session.kind !== 'design') return [];
+  const actions = [];
+  if (session.planApproved !== true) actions.push({ id: 'approve-plan', label: '确认计划 · 放行落盘', primary: true });
+  actions.push({ id: 'design-authorize', label: '确认执行范围 →', primary: false });
+  return actions;
+}
+
+// 关闭会话的二次确认状态机（closeConfirm）：第一次点「关闭」只进入确认态，
+// 再点「确认关闭」才提交；失败或超时回到初始态。滑动手势与此无关。
+export const CLOSE_CONFIRM_LABELS = Object.freeze({ idle: '关闭', confirm: '确认关闭', busy: '关闭中…' });
+export function createCloseConfirm() {
+  let state = 'idle';
+  return {
+    get state() { return state; },
+    get label() { return CLOSE_CONFIRM_LABELS[state]; },
+    press() {
+      if (state === 'idle') { state = 'confirm'; return 'arm'; }
+      if (state === 'confirm') { state = 'busy'; return 'submit'; }
+      return 'ignore';
+    },
+    reset() { state = 'idle'; },
+  };
+}
