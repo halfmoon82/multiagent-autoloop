@@ -248,8 +248,8 @@ export function mount(ctx) {
   const showView = name => {
     state.view = name;
     if (name !== 'detail' && detailTimer) { clearInterval(detailTimer); detailTimer = null; }
-    // 详情轮询只更新数据不重绘隐藏的列表；回到列表时按当前筛选补一次重绘，不显示旧状态。
-    if (name === 'list' && state.listStale && state.list) { state.listStale = false; renderList(state.list); }
+    // 详情轮询只更新快照不重绘隐藏的列表；回到列表时按当前类型/搜索/项目筛选重建一次，不显示旧状态。
+    if (name === 'list' && state.listStale) { state.listStale = false; applyFilters(); }
     if (name !== 'detail') syncActiveSession();
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
     host.classList.toggle('sessions-detail-open', name === 'detail'); // 详情页自己按视口定高，去掉页面底部留白
@@ -543,7 +543,7 @@ export function mount(ctx) {
         state.lastResult = result;
         state.snapshot = result.snapshot;
         state.rawArchives = result.rawArchives;
-        state.list = result.list;
+        // 不直接采用 result.list：它没有全局项目筛选。返回列表时由 applyFilters 重建（见 showView）。
         state.listStale = true;
       } else await load({ quiet: true });
       const session = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);

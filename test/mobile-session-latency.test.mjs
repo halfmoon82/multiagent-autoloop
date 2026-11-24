@@ -207,3 +207,57 @@ test('浏览器：发送后不整页刷新（不读存档），首个分片很�
   assert.equal(archivesAfterSend, 0, '发送后不应整页刷新去读存档');
   assert.deepEqual(pageErrors, []);
 });
+
+// 审阅 P2（PR #297）：详情轮询用 refreshActive 的结果覆盖 state.list，该结果只按类型/搜索词过滤、
+// 不含全局项目筛选；返回列表若直接重绘它，选中项目时会混入其他项目的会话。
+test('浏览器：选中项目后进出详情（期间有轮询），返回列表仍只显示该项目的会话', { skip: browserSkip }, async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'mobile-latency-pf-'));
+  const projectA = path.join(root, 'proj-a');
+  const projectB = path.join(root, 'proj-b');
+  const hub = await fakeHub((req, res) => json(res, req.url === '/v1/state' ? { runs: [], cards: [], lines: [], spending: {} } : { ok: true }));
+  const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
+  const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'server-secret', host: '127.0.0.1', root, deviceAuth, projectRoots: [root] });
+  const url = await listen(server);
+  const browser = await chromium.launch({ headless: true });
+  t.after(async () => { await browser.close(); await close(server); await close(hub.server); rmSync(root, { recursive: true, force: true }); });
+  const page = await (await browser.newContext({ viewport: { width: 390, height: 800 } })).newPage();
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    let stored = null;
+    window.AutoloopSecureStorage = { async get() { return stored; }, async set(value) { stored = value; }, async remove() { stored = null; } };
+    window.AutoloopBiometric = { async verify() { return true; } };
+  });
+  const sessions = [
+    { id: 'a1', prompt: '项目A会话', project: projectA, kind: 'normal', status: 'running', liveText: '', messages: [{ role: 'user', text: '你好', at: '2026-11-24T00:00:00Z' }], updatedAt: '2026-11-24T00:00:02Z' },
+    { id: 'b1', prompt: '项目B会话', project: projectB, kind: 'normal', status: 'idle', liveText: '', messages: [], updatedAt: '2026-11-24T00:00:01Z' },
+  ];
+  let activeReads = 0;
+  await page.route('**/api/mobile/api/projects', route => route.fulfill({ json: { projects: [{ path: projectA, name: 'proj-a' }, { path: projectB, name: 'proj-b' }] } }));
+  await page.route('**/api/mobile/api/sessions', route => { activeReads += 1; return route.fulfill({ json: { sessions: structuredClone(sessions) } }); });
+  await page.route('**/api/mobile/api/session-archives', route => route.fulfill({ json: { sessions: [] } }));
+  await page.goto(`${url}/mobile/`);
+  await page.waitForFunction(() => Boolean(window.AutoloopHooks));
+  await page.locator('#bind-payload').fill(deviceAuth.createBinding().qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  await page.locator('[data-tab="sessions"]').click();
+  await page.waitForFunction(() => document.querySelectorAll('.sessions-item').length === 2);
+  await page.waitForFunction(dir => [...document.querySelectorAll('#project-filter option')].some(o => o.value === dir), projectA);
+  await page.locator('#project-filter').selectOption(projectA);
+  await page.waitForFunction(() => document.querySelectorAll('.sessions-item').length === 1);
+
+  await page.locator('.sessions-item').first().click();
+  await page.locator('.sessions-composer-input').waitFor({ state: 'visible' });
+  const readsAtOpen = activeReads;
+  await page.waitForTimeout(2200); // 运行中 1.5s 一拍，确保详情轮询至少跑过一次
+  assert.ok(activeReads > readsAtOpen, '详情页期间应发生过轮询');
+
+  await page.locator('.sessions-back').first().click();
+  const titles = await page.locator('.sessions-item').allTextContents();
+  assert.equal(titles.length, 1, `返回列表应只剩项目A的会话，实际：${titles.join(' | ')}`);
+  assert.match(titles[0], /项目A会话/);
+  assert.deepEqual(pageErrors, []);
+});
