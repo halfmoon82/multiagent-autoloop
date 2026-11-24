@@ -181,6 +181,8 @@ test('设置页「当前控制台」区块与首屏共用 hooks.consoles 数据�
   assert.match(settings, /export function renderConsoleList/);
   const app = read('mobile/app/www/app.mjs');
   assert.match(app, /settingsPage\.renderConsoleList\(pickerList/, '首屏列表复用设置页同一渲染与动作');
+  // 回归：设置页模块经懒加载清单取得，不得引用未导入的全局 settingsPage（合并 #293 后曾导致首屏列表空白）。
+  assert.match(app, /PAGE_LOADERS\.settings\(\)\.then\(settingsPage =>/, '首屏列表经页面清单加载设置页模块');
   const hooks = createDefaultHooks();
   assert.equal(hooks.consoles.available, false);
   assert.deepEqual(hooks.consoles.list(), []);
@@ -270,7 +272,7 @@ test('浏览器：两台控制台绑定、切换免重复解锁且数据隔离�
   await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
 
   // 设置页「当前控制台」：添加第二台（B）。先试不可达地址：就地报错、不写入列表。
   await page.locator('#open-settings').click();
@@ -284,6 +286,7 @@ test('浏览器：两台控制台绑定、切换免重复解锁且数据隔离�
   assert.equal(await page.evaluate(() => sessionStorage.getItem('__hub_consoles')).then(v => JSON.parse(v).length), 1, '不可达地址不入列表');
 
   // 在 A 上留下页面上下文（打开中的会话与草稿），切到 B 后不得带过去。
+  await page.waitForFunction(() => window.__autoloopPagesReady === true);
   await page.evaluate(() => {
     const input = document.querySelector('.sessions-composer-input');
     input.value = 'A 的草稿';
@@ -295,8 +298,10 @@ test('浏览器：两台控制台绑定、切换免重复解锁且数据隔离�
   await page.locator('#bind-payload').fill(qrB.qrPayload);
   await page.locator('#bind-submit').click();
   // 已解锁时添加：整页重建并直接进入 B，免重复生物识别。
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接') && !document.getElementById('app-main').hidden);
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接') && !document.getElementById('app-main').hidden);
   assert.equal(await page.evaluate(() => window.__verifyCount), 0, '切换/添加后的页面重建不再要求生物识别');
+  // 会话页属于首屏后懒加载的页面（#293）：等全部页面挂载完再检查草稿。
+  await page.waitForFunction(() => window.__autoloopPagesReady === true);
   assert.equal(await page.evaluate(() => document.querySelector('.sessions-composer-input')?.value), '', '切换控制台不带原控制台的输入草稿');
   assert.doesNotMatch(await page.evaluate(() => sessionStorage.getItem('nomoto-sessions-context') || ''), /A 的草稿/, '切换控制台清掉原控制台的页面上下文');
 
@@ -316,7 +321,7 @@ test('浏览器：两台控制台绑定、切换免重复解锁且数据隔离�
   const requests = [];
   page.on('request', req => { if (req.url().includes('/api/mobile/')) requests.push(new URL(req.url()).origin); });
   await page.locator(`#settings-console [data-console-origin="${a.url}"] [data-action="select-console"]`).click();
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接') && !document.getElementById('app-main').hidden);
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接') && !document.getElementById('app-main').hidden);
   assert.equal(await page.evaluate(() => window.__verifyCount), 0);
   assert.ok(requests.length && requests.every(origin => origin === a.url), `切回 A 后只请求 A：${requests.join(',')}`);
 
@@ -339,7 +344,7 @@ test('浏览器：两台控制台绑定、切换免重复解锁且数据隔离�
   assert.equal(await page.locator('#app-main').isVisible(), false, '解锁后首屏是控制台列表');
   assert.match(await page.locator('#console-picker').innerText(), /选择控制台/);
   await page.locator(`#console-picker [data-console-origin="${a.url}"] [data-action="select-console"]`).click();
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接') && !document.getElementById('app-main').hidden);
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接') && !document.getElementById('app-main').hidden);
 
   const text = await page.locator('body').innerText();
   assert.ok(!text.includes(tokenA) && !text.includes(qrB.token), '页面不得出现设备凭证或一次性码');

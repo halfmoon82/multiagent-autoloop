@@ -255,9 +255,10 @@ test('浏览器：中台不可达自动退避重连，持续连不上进重连�
   await page.locator('#bind-submit').click();
   await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
   await page.locator('#unlock').click();
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
 
-  // 用户在会话页输入了一半。
+  // 用户在会话页输入了一半（会话页为首屏后懒加载，#293，先等页面全部挂载）。
+  await page.waitForFunction(() => window.__autoloopPagesReady === true);
   await page.locator('[data-tab="sessions"]').click();
   await page.evaluate(() => {
     const input = document.querySelector('.sessions-composer-input');
@@ -289,7 +290,7 @@ test('浏览器：中台不可达自动退避重连，持续连不上进重连�
   // 中台恢复：到点自动重连成功，回到原来的会话页，输入保留。
   down = false;
   await page.clock.runFor(15000);
-  await page.waitForFunction(() => document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
   await page.waitForFunction(() => document.getElementById('reconnect-panel').hidden && document.getElementById('reconnect-banner').hidden);
   assert.equal(await page.evaluate(() => document.querySelector('.content').hidden), false);
   assert.equal(await page.evaluate(() => document.getElementById('app-main').dataset.activeTab), 'sessions', '恢复后回到原来的页面');
@@ -302,7 +303,7 @@ test('浏览器：中台不可达自动退避重连，持续连不上进重连�
   await page.waitForFunction(() => !document.getElementById('reconnect-panel').hidden);
   down = false;
   await page.locator('#reconnect-now').click();
-  await page.waitForFunction(() => document.getElementById('reconnect-panel').hidden && document.getElementById('connection-status')?.textContent?.includes('已安全连接'));
+  await page.waitForFunction(() => document.getElementById('reconnect-panel').hidden && document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
   assert.equal(await page.evaluate(() => document.getElementById('app-main').dataset.activeTab), 'sessions');
   assert.deepEqual(errors, []);
 });
