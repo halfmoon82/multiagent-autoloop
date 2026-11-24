@@ -15,13 +15,18 @@ function fakeFetch(log, delayMs = 0, clock = { t: 0 }) {
 test('load 记录每个接口的耗时，供根因定位', async () => {
   const log = [];
   const slow = fakeFetch(log);
-  const reader = createSessionsReader({ origin: 'https://x.test', fetchImpl: async url => { await new Promise(r => setTimeout(r, 50)); return slow(url); } });
-  const started = Date.now();
+  // 并行性用在途计数判定，不依赖墙钟阈值（高负载下墙钟断言会偶发失败）。
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const reader = createSessionsReader({ origin: 'https://x.test', fetchImpl: async url => {
+    inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
+    try { await new Promise(r => setTimeout(r, 50)); return await slow(url); } finally { inFlight -= 1; }
+  } });
   await reader.load();
   const timings = reader.timings();
   assert.deepEqual(timings.map(item => item.path).sort(), ['/api/mobile/api/session-archives', '/api/mobile/api/sessions']);
   assert.ok(timings.every(item => item.ms >= 45), '每路耗时应如实记录');
-  assert.ok(Date.now() - started < 95, '两路并行：总耗时约等于单路而不是两路之和');
+  assert.equal(maxInFlight, 2, '两路并行：两个请求同时在途，而不是串行');
 });
 
 test('refreshActive 只打活跃会话接口，沿用上次存档，串行往返减半', async () => {
