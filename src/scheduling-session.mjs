@@ -637,6 +637,9 @@ export class SchedulingSessionManager {
   // §6.3 send：向同一 subject 发新事件；重复 id 幂等；失败保留输入，不回退 ACP。
   async #sendToHub(record, raw, { interrupt, maxPrompt = 4000 }) {
     if (interrupt) {
+      // session-steer：带文本打断在 cancelRun 成功后以 turn+1 把文本 postTurn 出去；
+      // 空文本保持网页版纯停止语义（只取消 run，不 post 新事件）。
+      const steerText = raw ? this.#validatePrompt(raw) : null;
       record.interruptRequested = true;
       try {
         let runId = record.hub.runId;
@@ -657,6 +660,24 @@ export class SchedulingSessionManager {
       record.stopReason = 'interrupted';
       record.updatedAt = this.now().toISOString();
       this.#persist(record);
+      if (!steerText) return toPublicSession(record);
+      // 新轮失败不记入转录、不推进轮次：文本留在客户端草稿可重试，不丢消息。
+      const turn = record.hub.turn + 1;
+      const hubState = await this.#readHubSnapshot();
+      const messageText = await this.#hubTurnText(record, turn, steerText, { hubState });
+      let result;
+      try {
+        result = await this.hubScheduling.postTurn({ sessionId: record.hub.sessionId, turn, project: record.project, text: messageText });
+      } catch (error) {
+        throw new SchedulingSessionError(`发送失败：${safeMessage(error)}（内容已保留，请重试）`, { status: error.status || 502 });
+      }
+      record.hub.turn = turn;
+      record.hub.lastEventId = numericEventId(result);
+      record.status = 'unknown';
+      record.turnStartedAt = this.now().toISOString();
+      record.stopReason = null;
+      this.#pushMessage(record, 'user', steerText);
+      await this.#reconcileHubRun(record, record.hub.lastEventId);
       return toPublicSession(record);
     }
     const message = this.#validatePrompt(raw, maxPrompt);
@@ -740,9 +761,13 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
     // 运行中/初始化中：与 Codex 输入体验一致——默认排队跟进，interrupt 取消当前轮。
     if (interrupt) {
       if (record.status === 'initializing') throw new SchedulingSessionError('会话初始化中，请稍候再试（打断只在运行中可用）', { status: 409 });
-      // 与 Codex 原生 Stop 一致：纯停止本轮；不读取文本（调用方草稿留在客户端），不动队列。
-      // 注意：text 在此分支被有意忽略——控制台前端传空串；带文本调用属于旧 API 约定，不再送达。
-      // 轮次收尾后队列自动续跑（finish 里按 settleMs 延迟 drain），不需要任何手动恢复
+      // session-steer：App「打断」= 打断当前轮并把输入框文字作为新一轮立即发出。
+      // 带文本时插到队首：cancel 引发的旧轮按 interrupted 收尾后，finish 按 settleMs
+      // 延迟 drain 队列，复用 #runTurn 开新轮（与既有队列/settleMs 纪律一致，不另起路径）。
+      // 空文本保持网页版纯停止语义：不读取文本（草稿留在客户端），不动队列。
+      const steerText = raw ? this.#validatePrompt(raw) : null;
+      if (steerText && record.queue.length >= 10) throw new SchedulingSessionError('排队消息过多（最多 10 条），请等本轮结束', { status: 429 });
+      if (steerText) record.queue.unshift({ id: randomUUID(), text: steerText, at: this.now().toISOString() });
       record.interruptRequested = true; // cancel 引发的 prompt 拒绝按中断收尾，不算错误
       record.updatedAt = this.now().toISOString();
       try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
