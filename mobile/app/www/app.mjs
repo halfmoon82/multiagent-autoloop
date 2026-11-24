@@ -133,7 +133,18 @@ function boot() {
   // 网页同源部署（无按键存储）保持单控制台：地址即页面同源，行为与以前一致。
   const hub = { enabled: false, registry: null, storage: null, booted: null, entered: false, adding: false, storageFailed: false, enterAfterUnlock: false };
   const consoleListeners = new Set();
-  const notifyConsoles = () => { for (const fn of consoleListeners) { try { fn(); } catch { /* 单个订阅者异常不影响其他 */ } } };
+  // 本地壳下页面 origin 是 https://localhost 而不是控制台：通知后台轮询/通知内回复、产物下载都读
+  // window.AutoloopConsoleBase 取控制台地址，多控制台时让它始终跟随当前控制台（没有则清掉）。
+  const syncConsoleBase = () => {
+    if (!hub.enabled) return;
+    const current = hub.registry.current();
+    if (current) window.AutoloopConsoleBase = current;
+    else delete window.AutoloopConsoleBase;
+  };
+  const notifyConsoles = () => {
+    syncConsoleBase();
+    for (const fn of consoleListeners) { try { fn(); } catch { /* 单个订阅者异常不影响其他 */ } }
+  };
   // 切换控制台 = 整页重建 shell 连接上下文：页面模块缓存的客户端/数据全部随页面重建，杜绝跨控制台串数据；
   // 会话解锁标记在原生进程内存里，重建后免重复生物识别。
   const enterRequested = window.location.hash === '#enter';
