@@ -16,7 +16,8 @@ const ENGINEERING_TAGS = Object.freeze({
   'eng:test': ['测试', 'test'],
   'eng:refactor': ['重构', 'refactor'],
   'eng:build': ['构建', '编译', 'build', 'lint'],
-  'eng:bug': ['修复', 'bug', '报错', '堆栈'],
+  // '修复' 一词刻意不收进 eng:bug：产品决策卡常描述整批修复的取舍（2026-11-24 起 16 张卡被误自动退回），误拦代价高于漏拦。
+  'eng:bug': ['bug', '报错', '堆栈'],
 });
 
 export const DEFAULT_RULES = Object.freeze([
