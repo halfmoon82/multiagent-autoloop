@@ -143,6 +143,23 @@ test('连接状态机：连接/断线/重连退避/恢复，授权 401 立即回
 // ---------------------------------------------------------------------------
 // RED 3：凭据安全——设备凭证不写入浏览器存储；生物识别不可旁路
 // ---------------------------------------------------------------------------
+test('createMobileClient 所有 JSON 请求携带 x-console-request 标记（服务端写路由校验要求）', async () => {
+  const seen = [];
+  const tokenStore = createTokenStore();
+  await tokenStore.set('t'.repeat(64));
+  const client = createMobileClient({
+    base: 'https://auto.socialmore.net',
+    tokenStore,
+    fetchImpl: async (url, init) => {
+      seen.push({ url: String(url), headers: init.headers });
+      return new Response(JSON.stringify({ files: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  await client.artifacts();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].headers['x-console-request'], '1', '缺标记会被服务端写路由 403 拒绝（真机产物/下载不可用根因）');
+});
+
 test('createTokenStore 默认只在内存保存设备凭证，不碰 localStorage/sessionStorage', async () => {
   const forbidden = name => new Proxy({}, { get() { throw new Error(`不得访问 ${name}`); }, set() { throw new Error(`不得写入 ${name}`); } });
   const saved = {

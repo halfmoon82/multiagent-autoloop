@@ -201,7 +201,9 @@ export function createMobileClient({ base, state = new ShellState(), tokenStore 
   const origin = normalizeBaseUrl(base);
   const doFetch = fetchImpl || ((input, init) => globalThis.fetch(input, init));
   const request = async (url, { method = 'GET', body, token } = {}) => {
-    const headers = { accept: 'application/json' };
+    // x-console-request 与服务端写路由校验同源：原生桥/DownloadManager 与 iframe 带不了自定义头，
+    // 但 App 内所有 JSON 请求都走这里，统一打上控制台请求标记（否则新读路由一律 403 缺标记）。
+    const headers = { accept: 'application/json', 'x-console-request': '1' };
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (token) headers['x-device-token'] = token;
     let response;
