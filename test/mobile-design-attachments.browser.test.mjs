@@ -77,16 +77,18 @@ test('附件「+」与发送键同处输入栏一行，窄屏不独占行', { sk
     const kids = [...composer.children].filter(el => !el.hidden);
     return {
       // 输入栏 align-items:flex-end：同行元素底边对齐、顶边因高度不同而不同，必须按底边判行。
-      rows: new Set([attach, send, input].map(el => Math.round(el.getBoundingClientRect().bottom))).size,
-      attachIndex: [...composer.children].indexOf(attach),
-      sendIndex: [...composer.children].indexOf(send),
-      inputIndex: [...composer.children].indexOf(input),
+      // composer-ux：输入框独占上一行，+ 与发送在下方独立工具行（同一行、位于输入框下方）。
+      rows: new Set([attach, send].map(el => Math.round(el.getBoundingClientRect().bottom))).size,
+      belowInput: attach.getBoundingClientRect().top >= input.getBoundingClientRect().bottom - 1,
+      attachIndex: [...attach.parentElement.children].indexOf(attach),
+      sendIndex: [...send.parentElement.children].indexOf(send),
+      inputIndex: -1,
       attachVisible: !!attach.offsetParent,
       kidCount: kids.length,
     };
   });
   assert.ok(layout.attachVisible, '+ 按钮必须可见');
-  assert.equal(layout.rows, 1, `+、输入框、发送必须在同一行（实测 ${layout.rows} 行）`);
-  assert.ok(layout.attachIndex > layout.inputIndex, '+ 在 DOM 上应位于输入框之后（与发送键同组）');
-  assert.equal(layout.attachIndex, layout.sendIndex - 1, '+ 紧邻发送键之前');
+  assert.equal(layout.rows, 1, `+、发送必须在同一工具行（实测 ${layout.rows} 行）`);
+  assert.ok(layout.belowInput, '工具行位于输入框下方');
+  assert.ok(layout.attachIndex < layout.sendIndex, '+ 在工具行内位于发送键之前');
 });

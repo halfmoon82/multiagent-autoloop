@@ -243,7 +243,7 @@
 .sessions-message:not(.user) .sessions-bubble { background: #fff; border: 1px solid var(--line); color: var(--ink); }
 .sessions-message.user .sessions-bubble { background: var(--brand-ink); border: 1px solid var(--brand-ink); color: #fff; }
 .sessions-composer {
-  flex: none; display: flex; align-items: flex-end; flex-wrap: nowrap; gap: 0.35rem;
+  flex: none; display: flex; flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: 0.25rem;
   margin-top: 0.35rem; padding: 0.35rem; border: 1px solid var(--line); border-radius: 16px; background: #fff;
 }
 .sessions-composer-input { flex: 1 1 0; min-width: 0; margin: 0; border: 0; background: transparent; }
@@ -276,8 +276,6 @@
 .sessions-send-mode { display: block; margin: 0.25rem 0 0.2rem; color: var(--secondary); font-size: 0.64rem; }
 .sessions-steer-btn { flex: none; min-height: 2.75rem; margin: 0; padding: 0.45rem 0.6rem; border-color: var(--brand-ink); color: var(--brand-ink); font-size: 0.7rem; }
 .queue-chip { min-height: 30px; margin: 0; padding: 0.25rem 0.55rem; border: 0; border-radius: 999px; background: var(--mint); color: var(--brand-ink); font-size: 0.64rem; white-space: nowrap; }
-.sessions-composer { flex-wrap: wrap; }
-.sessions-send-mode { flex: 0 0 100%; }
 .sessions-back-bottom { position: absolute; right: 0.35rem; bottom: 5.5rem; z-index: 3; margin: 0; box-shadow: 0 2px 8px rgba(15,61,46,0.14); }
 
 /* 真实附件选择与预览。 */
@@ -287,3 +285,12 @@
 .sessions-attachment-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sessions-attachment-chip button { min-height: 28px; margin: 0; padding: 0.1rem 0.25rem; border: 0; background: transparent; color: var(--brand); font-size: 0.62rem; }
 .sessions-attachment-image { width: 1.6rem; height: 1.6rem; border-radius: 0.35rem; object-fit: cover; }
+
+/* 输入区（composer-ux）：输入框独占一行，加号/语音/打断/发送固定在下方工具行，行高恒定不随输入增高漂移。 */
+.sessions-composer-input { flex: none; width: 100%; box-sizing: border-box; }
+.sessions-composer-tools { flex: none; display: flex; align-items: center; justify-content: flex-start; gap: 0.35rem; height: 2.75rem; min-height: 2.75rem; }
+.sessions-composer-tools .sessions-send { margin-left: auto; }
+.sessions-composer-tools > [hidden] { display: none; }
+.sessions-send-state { color: var(--tertiary); }
+.sessions-send-state.failed { color: var(--danger); }
+.sessions-retry { min-height: 30px; margin: 0.15rem 0 0; padding: 0.2rem 0.6rem; font-size: 0.66rem; }

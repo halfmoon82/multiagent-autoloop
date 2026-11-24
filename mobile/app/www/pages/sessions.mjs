@@ -56,12 +56,12 @@ export function mount(ctx) {
   const growers = [];
   // 主区高度：详情页以消息+输入栏所在视图为准，其余取可视视口。
   const mainHeight = () => (typeof window.visualViewport?.height === 'number' ? window.visualViewport.height : window.innerHeight);
-  const grow = el => {
+  const grow = (el, options = {}) => {
     if (!autogrow || !el) return;
-    growers.push(autogrow.attachAutogrow(el, { getMainHeight: mainHeight }));
+    growers.push(autogrow.attachAutogrow(el, { getMainHeight: mainHeight, ...options }));
   };
   const regrow = () => { for (const item of growers) item.refresh(); };
-  const growLater = el => { void loadAutogrow().then(module => { autogrow = module; grow(el); }); };
+  const growLater = (el, options) => { void loadAutogrow().then(module => { autogrow = module; grow(el, options); }); };
   let smodel = null;
   let qmodel = null;
   let reader = null;
@@ -73,7 +73,7 @@ export function mount(ctx) {
     kind: 'all', query: '', archivedExpanded: false, error: '',
     view: 'list', session: null, group: null, messages: [],
     follow: true, listScroll: 0, promptExpanded: false,
-    drafts: { composer: '', question: '' },
+    drafts: { composer: '', question: '' }, respondingSince: 0,
     projects: [], cards: [], newPrompt: '', selectedKind: null, classification: null,
     list: null, rawArchives: [], menuText: '',
   };
@@ -181,8 +181,10 @@ export function mount(ctx) {
   ]);
   const attachmentList = node('div', { className: 'sessions-attachments' });
   // + 附件按钮与发送键同组放在输入框之后：窄屏下输入框优先占宽，+ 不再被挤到独占一行。
+  // 输入框独占上一行，加号/语音/打断/发送固定在下方独立工具行：行高恒定，不随输入框增高漂移。
+  const composerTools = node('div', { className: 'sessions-composer-tools' }, [attachBtn, micBtn, steerBtn, composerSend]);
   const composerRow = node('div', { className: 'sessions-composer' }, [
-    sendMode, composerInput, micBtn, steerBtn, attachBtn, composerSend,
+    sendMode, composerInput, composerTools,
   ]);
   const queuePreview = node('div', { className: 'sessions-queue-preview', attrs: { hidden: '' } });
   const detailActions = node('div', { className: 'sessions-detail-actions' });
@@ -263,7 +265,7 @@ export function mount(ctx) {
 
   const showView = name => {
     state.view = name;
-    if (name !== 'detail' && detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+    if (name !== 'detail') stopDetailPolling();
     if (name !== 'detail') syncActiveSession();
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
     host.classList.toggle('sessions-detail-open', name === 'detail'); // 详情页自己按视口定高，去掉页面底部留白
@@ -713,12 +715,36 @@ export function mount(ctx) {
   }
 
   // 详情打开期间轻轮询：会话有新输出时即时刷新，离开详情页即停。
-  function startDetailPolling() {
-    if (detailTimer) clearInterval(detailTimer);
-    detailTimer = setInterval(() => {
-      if (state.view === 'detail' && state.detailSessionId) void refreshDetail();
-    }, 5000);
+  // 自适应：本轮进行中（busy/turnStartedAt/刚发送）1 秒，空闲 5 秒，页面隐藏不轮询；每次触发后按最新状态重排。
+  function pollDelay() {
+    const s = state.session;
+    return autogrow?.pollIntervalMs({
+      hidden: document.hidden === true,
+      busy: s?.busy === true,
+      turnStartedAt: s?.turnStartedAt || null,
+      responding: isRespondingNow(),
+    }) ?? 5000;
   }
+  function isRespondingNow() {
+    return Boolean(autogrow && autogrow.isResponding(state.respondingSince));
+  }
+  function startDetailPolling() {
+    stopDetailPolling();
+    const tick = () => {
+      detailTimer = null;
+      if (state.view !== 'detail' || !state.detailSessionId) return;
+      const delay = pollDelay();
+      const run = delay === null ? Promise.resolve() : refreshDetail();
+      void run.finally(() => {
+        if (state.view === 'detail' && state.detailSessionId && !detailTimer) detailTimer = setTimeout(tick, pollDelay() ?? 1000);
+      });
+    };
+    detailTimer = setTimeout(tick, pollDelay() ?? 1000);
+  }
+  function stopDetailPolling() { if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; } }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && state.view === 'detail' && state.detailSessionId) { startDetailPolling(); void refreshDetail(); }
+  });
 
   async function refreshDetail() {
     try {
@@ -858,6 +884,11 @@ export function mount(ctx) {
       node('p', { className: 'sessions-bubble', text: message.text || '' }),
     ]);
     if (message.at) box.appendChild(node('span', { className: 'sessions-time', text: message.at }));
+    if (message.sendState === 'sending') box.appendChild(node('span', { className: 'sessions-time sessions-send-state', text: '发送中…' }));
+    if (message.sendState === 'failed') {
+      box.appendChild(node('span', { className: 'sessions-time sessions-send-state failed', text: '发送失败' }));
+      box.appendChild(node('button', { type: 'button', className: 'sessions-retry', text: '重试', attrs: { 'data-local-id': message.localId } }));
+    }
     if (message.image) box.appendChild(Object.assign(node('img', { className: 'sessions-image', attrs: { alt: '消息图片', loading: 'lazy' } }), { src: message.image }));
     let timer = null;
     const show = event => showMenu(message.text || '', event.clientX || 40, event.clientY || 80);
@@ -938,37 +969,60 @@ export function mount(ctx) {
       void sendComposer(false);
     }
   });
-  growLater(composerInput);
+  growLater(composerInput, { maxRows: 4 }); // 会话输入框上限约 4 行（与 COMPOSER_MAX_ROWS 一致）
   micBtn.addEventListener('click', () => { ctx.hooks?.attachVoice?.(composerInput); });
   newMic.addEventListener('click', () => { ctx.hooks?.attachVoice?.(newPrompt); });
   growLater(newPrompt);
   // 双不可用（无录音能力且无原生识别器）：隐藏所有麦克风，键盘输入不受影响。
   window.addEventListener('autoloop:voice-unavailable', () => { micBtn.hidden = true; newMic.hidden = true; });
-  async function sendComposer(interrupt) {
-    const text = composerInput.value.trim();
-    if (!text || !write || !state.session) return;
-    composerSend.disabled = true;
-    steerBtn.disabled = true;
+  // 乐观上屏：点发送立即清空输入、插入「发送中」气泡并进入「Agent 正在响应」态（不等轮询）；
+  // 失败的气泡保留原文与附件，点「重试」复用同一条（同一 localId），不会重复入账。
+  const outbox = new Map(); // localId → { text, interrupt, attachments }
+  let localSeq = 0;
+  async function deliver(localId) {
+    const entry = outbox.get(localId);
+    if (!entry || !write || !state.session) return;
+    const sid = state.session.id;
+    state.messages = autogrow.settleMessage(state.messages, localId, 'sending');
+    state.respondingSince = Date.now();
+    renderMessages();
+    startDetailPolling();
     try {
-      await write.sendMessage(state.session.id, { text, interrupt, attachments: pendingAttachments });
-      state.messages.push({ role: '主人', text, at: '' });
-      composerInput.value = '';
-      composerInput.dispatchEvent(new Event('autoloop-autogrow'));
-      state.drafts.composer = '';
-      state.follow = true;
-      ctx.hooks?.haptic?.tap?.();
+      await write.sendMessage(sid, { text: entry.text, interrupt: entry.interrupt, attachments: entry.attachments });
+      outbox.delete(localId);
+      state.messages = autogrow.settleMessage(state.messages, localId, 'sent');
       renderMessages();
-      scrollToBottom();
-      saveContext();
-      pendingAttachments = [];
-      renderAttachments();
+      ctx.hooks?.haptic?.tap?.();
       await refreshSessionState();
     } catch (error) {
-      showBanner(`发送失败：${error?.message || '请重试'}（内容已保留在输入框）`);
-    } finally {
-      updateSend();
+      state.respondingSince = 0;
+      state.messages = autogrow.settleMessage(state.messages, localId, 'failed');
+      renderMessages();
+      showBanner(`发送失败：${error?.message || '请重试'}（原文已保留，点消息下方「重试」）`);
     }
   }
+  function sendComposer(interrupt) {
+    const text = composerInput.value.trim();
+    if (!text || !write || !state.session || !autogrow) return Promise.resolve();
+    const localId = `local-${Date.now()}-${++localSeq}`;
+    outbox.set(localId, { text, interrupt, attachments: pendingAttachments });
+    state.messages.push(autogrow.optimisticMessage(text, localId));
+    composerInput.value = '';
+    composerInput.dispatchEvent(new Event('autoloop-autogrow'));
+    state.drafts.composer = '';
+    state.follow = true;
+    pendingAttachments = [];
+    renderAttachments();
+    updateSend();
+    saveContext();
+    scrollToBottomSoon();
+    return deliver(localId);
+  }
+  const scrollToBottomSoon = () => { renderMessages(); scrollToBottom(); };
+  messageWindow.addEventListener('click', event => {
+    const btn = event.target.closest?.('.sessions-retry');
+    if (btn?.dataset.localId) void deliver(btn.dataset.localId);
+  });
   composerSend.addEventListener('click', () => { void sendComposer(false); });
   steerBtn.addEventListener('click', () => { void sendComposer(true); });
 
@@ -1189,7 +1243,7 @@ export function mount(ctx) {
   ctx.hooks?.projectFilter?.onChange?.(() => { applyFilters(); });
   window.addEventListener('online', () => { void load(); });
   window.addEventListener('pagehide', () => {
-    if (detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+    stopDetailPolling();
     saveContext();
   });
   window.addEventListener('autoloop:view-popped', event => {

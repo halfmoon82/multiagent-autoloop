@@ -139,7 +139,7 @@ test('composer 悬浮布局 CSS：详情为 flex 列，消息窗唯一滚动，�
 
 test('页面接线：三处输入框接入 auto-grow，新建表单有麦克风，语音落草稿派发 input', () => {
   const page = read('mobile/app/www/pages/sessions.mjs');
-  assert.match(page, /growLater\(composerInput\)/);
+  assert.match(page, /growLater\(composerInput[,)]/);
   assert.match(page, /growLater\(newPrompt\)/);
   assert.match(page, /grow\(input\);/, '待回答输入也接入');
   assert.match(page, /sessions-new-mic/);
