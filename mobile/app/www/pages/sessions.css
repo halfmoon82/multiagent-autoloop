@@ -44,7 +44,7 @@
 .sessions-view[data-view="detail"] { position: relative; }
 .sessions-detail-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.6rem; }
 .sessions-detail-title { flex: 1 1 10rem; }
-.sessions-back, .sessions-artifacts-btn { min-height: 44px; margin: 0; }
+.sessions-back, .sessions-auth-back, .sessions-artifacts-btn { min-height: 44px; margin: 0; }
 .sessions-artifacts-btn { color: var(--ink-soft); }
 
 .sessions-progress { margin: 0.8rem 0; }
@@ -145,3 +145,35 @@
 /* 新建会话：提示词与麦克风同行，复用会话输入框同一套语音链路。 */
 .sessions-new-prompt-row { display: flex; align-items: flex-end; gap: 0.5rem; }
 .sessions-new-prompt-row .sessions-new-prompt { flex: 1 1 auto; width: auto; }
+
+/* ---- 会话行左滑关闭 / 设计会话操作按钮 / 确认执行范围 ---- */
+.sessions-card-wrap { margin: 0 0 0.5rem; }
+.sessions-swipe-row { position: relative; overflow: hidden; border-radius: 0.6rem; touch-action: pan-y; }
+.sessions-swipe-track { position: relative; background: var(--card, #fff); will-change: transform; }
+.sessions-swipe-track .sessions-item { margin: 0; }
+.sessions-close-action {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 88px; min-height: 56px; margin: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; background: var(--danger, #c62828); border: 0; border-radius: 0 0.6rem 0.6rem 0; font-weight: 600;
+}
+.sessions-close-action:disabled { opacity: 0.6; }
+.sessions-design-actions, .sessions-detail-actions .sessions-design-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.4rem; }
+.sessions-design-btn { min-height: 44px; margin: 0; flex: 1 1 10rem; }
+.sessions-detail-actions:empty { display: none; }
+
+.sessions-auth-plan-row { display: flex; gap: 0.5rem; margin: 0.6rem 0; }
+.sessions-auth-plan {
+  flex: 1 1 auto; min-height: 48px; padding: 0.6rem 0.8rem; font: inherit; font-size: 1rem;
+  color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 0.6rem;
+}
+.sessions-auth-load { flex: 0 0 auto; min-height: 48px; margin: 0; }
+.sessions-auth-section { margin: 0.9rem 0; }
+.sessions-auth-section h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+.sessions-auth-node { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.5rem 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.sessions-auth-node code { white-space: normal; word-break: break-all; }
+.sessions-auth-check.good { color: var(--ink-soft); }
+.sessions-auth-check.warn { color: var(--danger); }
+.sessions-auth-digest { font-family: ui-monospace, monospace; font-size: 0.8rem; overflow-wrap: anywhere; color: var(--ink-soft); }
+.sessions-auth-ack-row { display: flex; align-items: flex-start; gap: 0.6rem; min-height: 48px; margin: 0.8rem 0; }
+.sessions-auth-ack { width: 1.4rem; height: 1.4rem; flex: 0 0 auto; }
+.sessions-auth-submit { width: 100%; min-height: 52px; }

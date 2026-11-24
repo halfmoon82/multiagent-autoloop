@@ -12,6 +12,10 @@ const loadAutogrow = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/composer-autogrow/index.mjs');
 
+const loadAuthorizeModel = typeof window === 'undefined'
+  ? () => Promise.resolve(null)
+  : () => import('../src/features/design-authorize/index.mjs');
+
 export { loadViewModel };
 
 const CONTEXT_KEY = 'nomoto-sessions-context';
@@ -32,6 +36,8 @@ export function mount(ctx) {
   if (!host) return;
 
   const modelPromise = Promise.all([loadViewModel(), loadQuestionModel()]);
+  let amodel = null;
+  void loadAuthorizeModel().then(module => { amodel = module; });
   // 自动长高模块与视图模型并行加载；到位前输入框保持 CSS 最小高度，到位后统一接管。
   let autogrow = null;
   const growers = [];
@@ -125,9 +131,10 @@ export function mount(ctx) {
   const composerSend = node('button', { type: 'button', className: 'sessions-send', text: '发送', attrs: { disabled: '' } });
   const composerRow = node('div', { className: 'sessions-composer' }, [composerInput, micBtn, composerSend]);
   // 详情页是 flex 列：顶部（标题/提示词/待回答）与输入栏固定，只有消息窗在中间滚动；输入栏常驻底部。
+  const detailActions = node('div', { className: 'sessions-detail-actions' });
   const detailTop = node('div', { className: 'sessions-detail-top' }, [
     node('div', { className: 'sessions-detail-head' }, [detailBack, detailTitle, artifactsBtn]),
-    detailPrompt, questionBox,
+    detailActions, detailPrompt, questionBox,
   ]);
   const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
     detailTop, messageWindow, backBottom, composerRow,
@@ -155,11 +162,21 @@ export function mount(ctx) {
     newProjects, newPromptRow, newRecommend, newKinds, newSubmit,
   ]);
 
+  // 确认执行范围：读取计划 → 逐条出示 → 勾选已阅读 → 提交（服务端校验 planDigest）。
+  const authBack = node('button', { type: 'button', className: 'sessions-auth-back', text: '‹ 会话列表' });
+  const authPlanId = node('input', { className: 'sessions-auth-plan', attrs: { type: 'text', placeholder: '计划编号（docs/dag-plans 下的 planId）', 'aria-label': '计划编号', autocomplete: 'off', autocapitalize: 'off' } });
+  const authLoad = node('button', { type: 'button', className: 'sessions-auth-load', text: '读取计划' });
+  const authBody = node('div', { className: 'sessions-auth-body' });
+  const authView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'authorize', hidden: '' } }, [
+    authBack, node('h2', { text: '确认执行范围' }),
+    node('div', { className: 'sessions-auth-plan-row' }, [authPlanId, authLoad]), authBody,
+  ]);
+
   const menuCopy = node('button', { type: 'button', text: '复制' });
   const menu = node('div', { className: 'sessions-menu', attrs: { hidden: '' } }, [menuCopy]);
-  host.replaceChildren(banner, listView, detailView, archiveView, newView, menu);
+  host.replaceChildren(banner, listView, detailView, archiveView, newView, authView, menu);
 
-  const views = { list: listView, detail: detailView, archive: archiveView, new: newView };
+  const views = { list: listView, detail: detailView, archive: archiveView, new: newView, authorize: authView };
   let detailTimer = null;
   // 详情跟随/滚底基于消息窗自身滚动。
   const pageMetrics = () => ({
@@ -206,14 +223,230 @@ export function mount(ctx) {
   };
 
   // ---- 列表 ----
+  function renderDetailActions() {
+    const row = state.session ? designActionsRow(state.session) : null;
+    detailActions.replaceChildren(...(row ? [row] : []));
+  }
+
+  // 设计会话的两颗操作按钮（与网页卡片同口径）：放行落盘仅未放行时出现；确认执行范围恒有。
+  function designActionsRow(session) {
+    const items = smodel ? smodel.designSessionActions(session) : [];
+    if (!items.length) return null;
+    const row = node('div', { className: 'sessions-design-actions', attrs: { 'data-design-actions': session.id } });
+    for (const action of items) {
+      const button = node('button', {
+        type: 'button', className: `sessions-design-btn${action.primary ? ' primary' : ''}`,
+        attrs: { 'data-action': action.id, 'data-session-id': session.id }, text: action.label,
+      });
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        if (action.id === 'approve-plan') void approvePlan(session, button);
+        else openAuthorize(session);
+      });
+      row.appendChild(button);
+    }
+    return row;
+  }
+
+  async function approvePlan(session, button) {
+    if (!write) return;
+    button.disabled = true;
+    try {
+      await write.approvePlan(session.id);
+      for (const item of state.snapshot?.sessions || []) if (item.id === session.id) item.planApproved = true;
+      session.planApproved = true;
+      showBanner('');
+      ctx.hooks?.haptic?.success?.();
+      applyFilters();
+      if (state.view === 'detail' && state.session?.id === session.id) renderDetailActions();
+    } catch (error) {
+      showBanner(`放行落盘失败：${error?.message || '请重试'}`);
+      button.disabled = false;
+    }
+  }
+
+  // 会话行：左滑露出「关闭」→ 再点一次「确认关闭」才真正关闭。滑动中不触发点击进入。
+  let openSwipeRow = null;
   function sessionItem(item) {
+    const swipe = smodel.createRowSwipe();
     const box = node('button', { type: 'button', className: 'sessions-item', attrs: { 'data-session-id': item.id } }, [
       node('strong', { text: item.title || '会话' }),
       node('span', { className: 'sessions-meta', text: [item.projectLabel, item.statusLabel, item.kindLabel, item.updatedLabel].filter(Boolean).join(' · ') }),
     ]);
-    box.addEventListener('click', () => { void openSession(item); });
-    return box;
+    const closeBtn = node('button', { type: 'button', className: 'sessions-close-action', text: '关闭', attrs: { 'data-action': 'close-session', 'data-session-id': item.id, 'aria-label': '关闭会话' } });
+    const track = node('div', { className: 'sessions-swipe-track' }, [box]);
+    const row = node('div', { className: 'sessions-swipe-row', attrs: { 'data-swipe-row': item.id } }, [closeBtn, track]);
+    const errorLine = node('p', { className: 'status error', attrs: { hidden: '' } });
+    const setOffset = (px, animate) => { track.style.transition = animate ? 'transform 160ms ease-out' : 'none'; track.style.transform = px ? `translateX(${px}px)` : ''; };
+    const resetConfirm = () => { closeBtn.textContent = '关闭'; closeBtn.dataset.confirm = '0'; };
+    resetConfirm();
+    const collapse = () => { swipe.close(); setOffset(0, true); resetConfirm(); row.classList.remove('open'); if (openSwipeRow === collapse) openSwipeRow = null; };
+    if (item.closeError) { errorLine.textContent = item.closeError; errorLine.hidden = false; }
+
+    let pointerId = null;
+    let dragged = false;
+    let wasOpen = false;
+    row.addEventListener('pointerdown', event => {
+      if (pointerId !== null || (event.pointerType === 'mouse' && event.button !== 0)) return;
+      if (closeBtn.contains(event.target)) return;
+      // 行内手势自己处理：不让主内容区的页签左右滑接手。
+      event.stopPropagation();
+      if (openSwipeRow && openSwipeRow !== collapse) openSwipeRow();
+      wasOpen = swipe.open;
+      if (!swipe.start({ x: event.clientX, y: event.clientY })) return;
+      pointerId = event.pointerId;
+      dragged = false;
+    });
+    row.addEventListener('pointermove', event => {
+      if (event.pointerId !== pointerId) return;
+      const result = swipe.move({ x: event.clientX, y: event.clientY });
+      if (result.dragging) {
+        dragged = true;
+        try { row.setPointerCapture(pointerId); } catch { /* 无效指针：退化为无捕获 */ }
+        setOffset(result.offset, false);
+      }
+    });
+    const finish = event => {
+      if (event.pointerId !== pointerId) return;
+      pointerId = null;
+      const result = swipe.end();
+      setOffset(result.offset, true);
+      row.classList.toggle('open', result.open);
+      if (result.open) { openSwipeRow = collapse; } else if (openSwipeRow === collapse) { openSwipeRow = null; resetConfirm(); }
+      if (dragged) { row.dataset.justSwiped = '1'; setTimeout(() => { delete row.dataset.justSwiped; }, 350); }
+    };
+    row.addEventListener('pointerup', finish);
+    row.addEventListener('pointercancel', event => {
+      if (event.pointerId !== pointerId) return;
+      pointerId = null; swipe.cancel(); setOffset(swipe.offset, true);
+    });
+    box.addEventListener('click', event => {
+      // 滑动结束补发的 click、或行处于展开态时的点击：只收起，不进入会话。
+      if (dragged || row.dataset.justSwiped === '1') { event.preventDefault(); event.stopPropagation(); dragged = false; return; }
+      if (swipe.open) { collapse(); return; }
+      void openSession(item);
+    });
+    closeBtn.addEventListener('click', event => {
+      event.stopPropagation();
+      if (closeBtn.dataset.confirm !== '1') {
+        closeBtn.dataset.confirm = '1'; closeBtn.textContent = '确认关闭';
+        setTimeout(() => { if (closeBtn.isConnected && closeBtn.dataset.confirm === '1' && !closeBtn.disabled) resetConfirm(); }, 5000);
+        return;
+      }
+      void closeSessionRow(item, closeBtn, errorLine, collapse);
+    });
+
+    const wrap = node('div', { className: 'sessions-card-wrap' }, [row, errorLine]);
+    const actions = designActionsRow(item);
+    if (actions) wrap.appendChild(actions);
+    return wrap;
   }
+
+  async function closeSessionRow(item, button, errorLine, collapse) {
+    if (!write || !smodel) return;
+    button.disabled = true; button.textContent = '关闭中…';
+    try {
+      await write.closeSession(item.id);
+      state.snapshot.sessions = (state.snapshot.sessions || []).filter(entry => entry.id !== item.id);
+      if (state.snapshot.currentId === item.id) state.snapshot.currentId = state.snapshot.sessions[0]?.id || null;
+      ctx.hooks?.haptic?.success?.();
+      applyFilters();
+      void reload({ quiet: true });
+    } catch (error) {
+      // 失败保留列表原状并提示原因；收回操作位，允许再次尝试。
+      button.disabled = false;
+      collapse();
+      errorLine.textContent = `关闭失败：${error?.message || '请重试'}`;
+      errorLine.hidden = false;
+    }
+  }
+
+  // ---- 确认执行范围 ----
+  const auth = { session: null, planId: '', plan: null, preflight: null, preflightError: '', ack: false, submitting: false, error: '', created: null, loading: false };
+  let authClient = null;
+  function openAuthorize(session) {
+    if (!amodel) { showBanner('授权模块尚未就绪，请稍后重试'); return; }
+    authClient = authClient || amodel.createAuthorizeClient(ctx.client);
+    Object.assign(auth, { session, plan: null, preflight: null, preflightError: '', ack: false, submitting: false, error: '', created: null });
+    authPlanId.value = auth.planId;
+    renderAuthorize();
+    showView('authorize');
+    if (typeof ctx.hooks?.pushView === 'function') ctx.hooks.pushView({ type: 'sessions', view: 'authorize', id: session.id });
+  }
+  async function loadAuthorizePlan() {
+    if (!authClient || auth.loading) return;
+    auth.planId = authPlanId.value.trim();
+    Object.assign(auth, { plan: null, preflight: null, preflightError: '', ack: false, error: '', created: null, loading: true });
+    renderAuthorize();
+    try {
+      const result = await authClient.loadPlan(auth.session.project, auth.planId);
+      auth.plan = result.plan; auth.preflight = result.preflight; auth.preflightError = result.preflightError;
+    } catch (error) { auth.error = `读取计划失败：${error?.message || '请重试'}`; }
+    auth.loading = false;
+    renderAuthorize();
+  }
+  async function submitAuthorize() {
+    if (!authClient || auth.submitting) return;
+    const body = amodel.buildCreateBody(auth.plan, { acknowledged: auth.ack });
+    if (!body) return;
+    auth.submitting = true; auth.error = '';
+    renderAuthorize();
+    try {
+      auth.created = await authClient.createRun(body);
+      ctx.hooks?.haptic?.success?.();
+    } catch (error) { auth.error = `提交失败：${error?.message || '请重试'}（已勾选内容保留，可直接再次提交）`; }
+    auth.submitting = false;
+    renderAuthorize();
+  }
+  function renderAuthorize() {
+    if (!amodel) return;
+    const view = amodel.buildAuthorizeView(auth.plan, auth.preflight, { acknowledged: auth.ack, submitting: auth.submitting, created: auth.created });
+    authLoad.disabled = auth.loading;
+    authLoad.textContent = auth.loading ? '读取中…' : '读取计划';
+    const parts = [];
+    if (auth.error) parts.push(node('p', { className: 'status error', text: auth.error, attrs: { 'data-auth-error': '1' } }));
+    if (!view.ready) {
+      parts.push(node('p', { className: 'hint', text: auth.loading ? '正在读取计划…' : '填写计划编号并点「读取计划」，逐条核对后才能提交。' }));
+      authBody.replaceChildren(...parts);
+      return;
+    }
+    parts.push(node('p', { className: 'sessions-meta', text: `${view.title} · planId ${view.planId}` }));
+    parts.push(node('p', { className: 'sessions-meta', text: `项目 ${view.project}`, attrs: { 'data-auth-repo': '1' } }));
+    parts.push(node('p', { className: 'sessions-meta', text: `远端 ${view.remoteLabel}`, attrs: { 'data-auth-remote': '1' } }));
+    parts.push(node('p', { className: 'sessions-meta', text: `${view.summary.businessNodes} 个业务节点${view.summary.reviewNodes ? ` + ${view.summary.reviewNodes} 个整合审查` : ''}${view.summary.maxParallel ? ` · 最大并行 ${view.summary.maxParallel} 路` : ''}` }));
+    const checkBox = node('div', { className: 'sessions-auth-section' }, [node('h3', { text: '环境与权限检查' })]);
+    if (auth.preflightError) checkBox.appendChild(node('p', { className: 'hint', text: `预检读取失败：${auth.preflightError}（未知不当成通过）` }));
+    for (const check of view.checks) checkBox.appendChild(node('p', { className: `sessions-auth-check ${check.ok ? 'good' : 'warn'}`, text: `${check.ok ? '✓' : '!'} ${check.label}：${check.message}` }));
+    parts.push(checkBox);
+    const nodesBox = node('div', { className: 'sessions-auth-section' }, [node('h3', { text: '节点及文件范围' })]);
+    for (const item of view.nodes) {
+      nodesBox.appendChild(node('div', { className: 'sessions-auth-node', attrs: { 'data-auth-node': item.id } }, [
+        node('strong', { text: `${item.wave ? `第 ${item.wave} 波 · ` : ''}${item.title}` }),
+        node('code', { text: item.files.length ? item.files.join('、') : '只读审查，无写入' }),
+        node('small', { text: item.dependsOn.length ? `依赖：${item.dependsOn.join('、')}` : '无依赖，可首批启动' }),
+      ]));
+    }
+    parts.push(nodesBox);
+    const allowedBox = node('div', { className: 'sessions-auth-section' }, [node('h3', { text: '本次允许' })]);
+    for (const item of view.allowed) allowedBox.appendChild(node('p', { className: 'sessions-auth-allowed', text: `✓ ${item.label}${item.note ? `——${item.note}` : ''}`, attrs: { 'data-action-id': item.id } }));
+    parts.push(allowedBox);
+    const deniedBox = node('div', { className: 'sessions-auth-section' }, [node('h3', { text: '始终不包含' }), node('p', { className: 'hint', text: [...view.denied.map(item => item.label), '修改存量串行链'].join('、') })]);
+    parts.push(deniedBox);
+    parts.push(node('p', { className: 'sessions-auth-digest', text: `计划摘要 ${view.planDigest}`, attrs: { 'data-plan-digest': '1' } }));
+    const ack = node('input', { className: 'sessions-auth-ack', attrs: { type: 'checkbox', id: 'sessions-auth-ack', 'aria-label': '我已阅读 PRD、Spec、DAG 和上述执行范围' } });
+    ack.checked = auth.ack;
+    ack.disabled = auth.submitting || Boolean(auth.created);
+    ack.addEventListener('change', () => { auth.ack = ack.checked; renderAuthorize(); });
+    parts.push(node('label', { className: 'sessions-auth-ack-row', attrs: { for: 'sessions-auth-ack' } }, [ack, node('span', { text: '我已阅读 PRD、Spec、DAG 和上述执行范围。' })]));
+    const submit = node('button', { type: 'button', className: 'primary sessions-auth-submit', text: auth.submitting ? '正在创建…' : '确认并进入事件链' });
+    submit.disabled = !view.canSubmit;
+    submit.addEventListener('click', () => { void submitAuthorize(); });
+    parts.push(submit);
+    if (auth.created) parts.push(node('p', { className: 'status good', text: `已创建 DAG ${auth.created.runId}，授权快照已由服务端写入。`, attrs: { 'data-auth-created': '1' } }));
+    authBody.replaceChildren(...parts);
+  }
+  authBack.addEventListener('click', goList);
+  authLoad.addEventListener('click', () => { void loadAuthorizePlan(); });
 
   function renderList(list) {
     if (!list) return;
@@ -289,6 +522,7 @@ export function mount(ctx) {
       state.group = qmodel.restoreGroup(state.savedGroup);
     }
     detailTitle.textContent = session.title || '会话';
+    renderDetailActions();
     showView('detail');
     renderQuestion();
     renderMessages();
