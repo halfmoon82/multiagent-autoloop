@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "designDigest": "9aa3b3d83ae5c945059ddc582fc1e88557ab72f382ac9f4ffe324f60f23e6597",
+  "designDigest": "e7d3411cd5086ed79063a94a4bffff3a7e1b5efdf250766c80979075b90cabba",
   "confirmedAt": "2026-11-25",
   "evidence": "调度会话 ec59a992 内主人 2026-11-25 13:44（+08:00）确认卡 #159 选项一「确认，创建并派发」（含四项界面行为口径）；设计稿见 docs/2026-11-25-nomoto-app-fix3.md 与基线 refs/"
 }

@@ -107,5 +107,6 @@
         "docs/design/2026-11-25-nomoto-fix3-baseline/refs/collapsible-cards.html"
       ]
     }
-  ]
+  ],
+  "fallbackVerifierPath": "docs/design/2026-11-25-nomoto-fix3-baseline/verifiers/fix3-design-fallback.mjs"
 }
