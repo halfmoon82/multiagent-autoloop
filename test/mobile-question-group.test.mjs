@@ -17,6 +17,7 @@ import {
   submitAnswer, toggleAnswered, setScrollTop,
   snapshotGroup, restoreGroup, remainingCount, isComplete,
   buildQuestionGroupBinding, cardsToQuestionGroup, answerPayload,
+  cardsForSession, markCardAnswered,
 } from '../mobile/src/features/question-group/index.mjs';
 
 const FEATURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'mobile', 'src', 'features', 'question-group');
@@ -304,4 +305,41 @@ test('作答载荷：选择用选项下标、文字与语音用文本，未知�
   assert.deepEqual(answerPayload(group.questions[1], '补充说明'), { text: '补充说明' });
   group = appendVoiceDraft(group, '9', '转写内容');
   assert.deepEqual(answerPayload(group.questions[1]), { text: '补充说明 转写内容' });
+});
+
+// ---------------------------------------------------------------------------
+// RED 13（fix4）：卡片按会话归属过滤 + 回答后本地同步，不再跨会话复活
+// ---------------------------------------------------------------------------
+test('cardsForSession：有 lane 的卡片只进对应会话，无 lane 卡片按项目归属', () => {
+  const cards = [
+    { id: 8, state: 'open', title: 'A 的决策', lane: 'scheduling:sess-a', project: '/work/p' },
+    { id: 9, state: 'open', title: 'B 的决策', lane: 'scheduling:sess-b', project: '/work/p' },
+    { id: 10, state: 'open', title: '项目公共决策', project: '/work/p' },
+    { id: 11, state: 'open', title: '别的项目', lane: 'scheduling:sess-c', project: '/work/q' },
+  ];
+  const sessionA = { id: 'sess-a', project: '/work/p', hubSubject: 'scheduling:sess-a' };
+  const mine = cardsForSession(cards, sessionA);
+  assert.deepEqual(mine.map(card => card.id), [8, 10], '只保留本会话 lane 卡片与无 lane 的项目卡片');
+  const sessionB = { id: 'sess-b', project: '/work/p', hubSubject: 'scheduling:sess-b' };
+  assert.deepEqual(cardsForSession(cards, sessionB).map(card => card.id), [9, 10]);
+  const noSubject = { id: 'sess-x', project: '/work/p' };
+  assert.deepEqual(cardsForSession(cards, noSubject).map(card => card.id), [10], '无 hubSubject 的会话只看无 lane 卡片，不抢别的会话的卡');
+  assert.deepEqual(cardsForSession(null, sessionA), []);
+});
+
+test('markCardAnswered：回答成功后本地把卡片标为已答，重建待回答组不再复活', () => {
+  const cards = [
+    { id: 8, state: 'open', title: '选哪个？', options: ['甲', '乙'] },
+    { id: 9, state: 'open', title: '补充？' },
+  ];
+  const next = markCardAnswered(cards, 8, { choice: 1 });
+  assert.equal(next.find(card => card.id === 8).state, 'answered');
+  assert.deepEqual(next.find(card => card.id === 8).answer, { choice: 1 });
+  assert.equal(next.find(card => card.id === 9).state, 'open', '其他卡片不受影响');
+  assert.equal(cards[0].state, 'open', '不改原数组');
+  const textAnswered = markCardAnswered(cards, '9', { text: '补充说明' });
+  assert.deepEqual(textAnswered.find(card => card.id === 9).answer, { text: '补充说明' }, 'id 字符串/数字口径一致');
+  // 已答卡片重建待回答组时被过滤，不再生成待答题。
+  const group = cardsToQuestionGroup(markCardAnswered(cards, 8, { choice: 0 }), { sessionId: 's1' });
+  assert.deepEqual(group.questions.map(q => q.id), ['9']);
 });

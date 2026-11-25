@@ -23,9 +23,9 @@ const PLAN = {
   nodes: [{ id: 'n1', title: '节点一', files: ['src/a.mjs'], dependsOn: [], wave: 1 }],
 };
 
-async function open(t, { sessions, routes }) {
+async function open(t, { sessions, routes, cards = [] }) {
   const root = mkdtempSync(path.join(tmpdir(), 'mobile-session-actions-ui-'));
-  const hub = await fakeHub((req, res) => json(res, req.url === '/v1/state' ? { runs: [], cards: [], lines: [], spending: {} } : { ok: true }));
+  const hub = await fakeHub((req, res) => json(res, req.url === '/v1/state' ? { runs: [], cards, lines: [], spending: {} } : { ok: true }));
   const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
   const server = createConsoleServer({ hubUrl: hub.url, ownerKey: 'server-secret', host: '127.0.0.1', root, deviceAuth, projectRoots: [root] });
   const url = await listen(server);
@@ -160,5 +160,59 @@ test('浏览器：确认执行范围——未勾选不可提交；失败不清�
   assert.equal(sent[1].body.planDigest, DIGEST);
   assert.equal(sent[1].body.confirm, true);
   assert.deepEqual(sent[1].body.confirmedActionIds, ['worktree', 'run-tests']);
+  assert.deepEqual(pageErrors, []);
+});
+
+// fix4 回归（2026-11-25 真机）：会话内决策卡①不按会话绑定——别的会话的卡串进来；
+// ②回答后不消失——回答只改了内存里的待回答组，state.cards 还是 open，重建时又冒出来。
+test('浏览器：会话内决策卡按 lane 归属过滤，回答后跨会话不再复活（fix4）', { skip: browserSkip }, async t => {
+  const cards = [
+    { id: 8, state: 'open', title: 'A 会话的决策？', options: ['选项一', '选项二'], lane: 'scheduling:sess-a', project: '/work/p' },
+    { id: 9, state: 'open', title: 'B 会话的决策？', options: ['好', '不好'], lane: 'scheduling:sess-b', project: '/work/p' },
+    { id: 10, state: 'open', title: '项目公共问题？', project: '/work/p' },
+  ];
+  const sessions = () => [
+    { id: 'sess-a', kind: 'scheduling', status: 'running', project: '/work/p', prompt: '调度 A', hubSubject: 'scheduling:sess-a', messages: [], queue: [], createdAt: '2026-11-25T09:00:00.000Z', updatedAt: '2026-11-25T10:00:00.000Z' },
+    { id: 'sess-b', kind: 'scheduling', status: 'running', project: '/work/p', prompt: '调度 B', hubSubject: 'scheduling:sess-b', messages: [], queue: [], createdAt: '2026-11-25T09:00:00.000Z', updatedAt: '2026-11-25T09:30:00.000Z' },
+  ];
+  const { page, pageErrors, posts } = await open(t, { sessions, cards, routes: () => false });
+  const questionBox = page.locator('.sessions-question');
+
+  // 会话 A：只看自己的卡（8）与项目公共卡（10），看不到 B 会话的卡（9）。
+  await page.locator('.sessions-item[data-session-id="sess-a"]').first().click();
+  await questionBox.locator('.sessions-question-card').waitFor({ timeout: 6000 });
+  let boxText = await questionBox.innerText();
+  assert.match(boxText, /需要您的回答 · 0\/2/, 'A 会话只有卡 8 与公共卡 10 两道题');
+  assert.match(boxText, /A 会话的决策？/);
+  assert.ok(!boxText.includes('B 会话的决策？'), 'B 会话的卡不得串进 A 会话');
+
+  // 回答卡 8（选择）：请求真实打到 /api/mobile/cards/8/answer，题目进入已答。
+  await questionBox.locator('.sessions-option', { hasText: '选项一' }).click();
+  await questionBox.locator('.sessions-question-submit').click();
+  await page.waitForFunction(() => document.querySelector('.sessions-question')?.textContent?.includes('1/2'), null, { timeout: 6000 });
+  assert.ok(posts.some(post => post.pathname === '/api/mobile/cards/8/answer' && post.body?.choice === 0), '回答走 cards answer 写路由');
+
+  // 回到列表进会话 B：自己的卡（9）与公共卡（10）在；已答的卡 8 不得以任何形式复活。
+  await page.locator('.sessions-back[aria-label="返回会话列表"]').click();
+  await page.locator('.sessions-item[data-session-id="sess-b"]').first().click();
+  await questionBox.locator('.sessions-question-card').waitFor({ timeout: 6000 });
+  boxText = await questionBox.innerText();
+  assert.match(boxText, /B 会话的决策？/);
+  assert.ok(!boxText.includes('A 会话的决策？'), '已回答的 A 会话卡不得在 B 会话复活');
+
+  // 先答 B 自己的选择卡 9，再答公共卡 10（文字）：回 A 后公共卡也不再出现（本地 state.cards 已同步）。
+  await questionBox.locator('.sessions-option', { hasText: '好' }).first().click();
+  await questionBox.locator('.sessions-question-submit').click();
+  await page.waitForFunction(() => document.querySelector('.sessions-question')?.textContent?.includes('1/2'), null, { timeout: 6000 });
+  await questionBox.locator('.sessions-question-input').fill('公共回答');
+  await questionBox.locator('.sessions-question-submit').click();
+  await page.waitForFunction(() => document.querySelector('.sessions-question')?.textContent?.includes('已回答'), null, { timeout: 6000 });
+  assert.ok(posts.some(post => post.pathname === '/api/mobile/cards/10/answer' && post.body?.text === '公共回答'));
+  await page.locator('.sessions-back[aria-label="返回会话列表"]').click();
+  await page.locator('.sessions-item[data-session-id="sess-a"]').first().click();
+  await page.waitForTimeout(600);
+  boxText = await questionBox.innerText();
+  assert.ok(!boxText.includes('项目公共问题？'), '已回答的公共卡在 A 会话同样不得复活');
+  assert.ok(!boxText.includes('A 会话的决策？'), 'A 自己的已答卡也不得以待答形式回来');
   assert.deepEqual(pageErrors, []);
 });

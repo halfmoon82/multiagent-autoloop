@@ -544,3 +544,10 @@ test('createSessionsWrite 新建会话与语义分类只走移动端已登记写
   assert.equal(new URL(calls[1][0]).pathname, '/api/mobile/sessions');
   assert.deepEqual(JSON.parse(calls[1][1].body), { project: '/work/A 项目', prompt: '请调度失败任务', kind: 'scheduling' });
 });
+
+test('mobileSessionSummaries 透传 hubSubject：会话内决策卡按 lane 归属过滤的依据（fix4）', () => {
+  const withHub = mobileSessionSummaries([{ ...ACTIVE[0], hubSubject: 'scheduling:11111111' }]);
+  assert.equal(withHub[0].hubSubject, 'scheduling:11111111');
+  const withoutHub = mobileSessionSummaries(ACTIVE);
+  assert.equal(withoutHub[0].hubSubject, null, '无 hubSubject 的会话为 null，不编造');
+});

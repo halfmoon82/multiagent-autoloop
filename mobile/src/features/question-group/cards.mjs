@@ -33,3 +33,33 @@ export function answerPayload(question, answer) {
   }
   return { text: value };
 }
+
+// 会话归属过滤（fix4，2026-11-25 真机：别的会话的决策卡串进本会话）：卡片的 lane 是事项
+// subject，与会话的 hubSubject 对应；有 lane 的卡只进对应会话，无 lane 的卡维持按项目归属。
+// 会话没有 hubSubject（ACP 会话等）时只看无 lane 卡片，不抢别的会话的卡。
+export function cardsForSession(cards, session) {
+  const list = Array.isArray(cards) ? cards : [];
+  const subject = String(session?.hubSubject ?? '').trim();
+  const project = String(session?.project ?? '').trim();
+  return list.filter(card => {
+    if (!card || typeof card !== 'object' || Array.isArray(card)) return false;
+    const lane = String(card.lane ?? '').trim();
+    if (lane) return Boolean(subject) && lane === subject;
+    return !card.project || String(card.project).trim() === project;
+  });
+}
+
+// 回答成功后的本地同步（fix4，2026-11-25 真机：回答过的卡在别的会话/重建时又冒出来）：
+// state.cards 是会话页重建待回答组的唯一来源，回答后必须把它标为已答，
+// 与 cardsToQuestionGroup 的 HANDLED_STATES 过滤衔接；返回新数组，不改原数据。
+export function markCardAnswered(cards, id, payload = {}) {
+  const target = String(id ?? '');
+  const answer = payload && payload.choice !== undefined
+    ? { choice: Number(payload.choice) }
+    : { text: String(payload?.text ?? '') };
+  return (Array.isArray(cards) ? cards : []).map(card => (
+    card && typeof card === 'object' && String(card.id) === target
+      ? { ...card, state: 'answered', answer }
+      : card
+  ));
+}

@@ -222,6 +222,11 @@ test('串行链有自己的详情入口：节点清单、当前环节、整体�
   assert.equal(missing.serialNote, null, '数据缺失不误报为"无活跃链"');
   const empty = buildOverview(snapshot({ 'serial-progress': { chains: [{ sourceFile: 'x.json', project: '/w/p', percent: 0, nodes: [] }] } }), { now: NOW });
   assert.equal(empty.projects.items.find(i => i.runId === 'x.json').chainDetail.empty, true);
+  // 真实 /api/serial-progress 的 current 是节点对象（fix4）：也要认出当前环节，不静默丢失标注。
+  const objectCurrent = buildOverview(snapshot({ 'serial-progress': { chains: [{ sourceFile: 'y.json', project: '/w/p', percent: 30, current: { id: 'b1' }, nodes: [{ id: 'b1', title: '在途', status: 'in_progress', percent: 30 }] }] } }), { now: NOW });
+  const y = objectCurrent.projects.items.find(i => i.runId === 'y.json');
+  assert.equal(y.chainDetail.current, 'b1');
+  assert.equal(y.chainDetail.nodes[0].isCurrent, true);
 });
 
 // 活跃项排前：已完成/已取消的历史 run 会把活跃 DAG 与进行中的串行链挤出首屏（2026-11-24 真机：
