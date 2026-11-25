@@ -206,6 +206,24 @@ test('总览项目进度并入串行链：标注串行链与总进度，不编�
   assert.equal(chain.dagEntry, null, '串行链没有 DAG 页入口，不编造');
 });
 
+test('串行链有自己的详情入口：节点清单、当前环节、整体进度来自种子链数据', () => {
+  const page = buildOverview(snapshot({ 'serial-progress': serialProgressPayload() }), { now: NOW });
+  const chain = page.projects.items.find(item => item.runId === 'health-serial.json');
+  assert.equal(chain.chainEntry.label, '串行链详情');
+  const d = chain.chainDetail;
+  assert.equal(d.percent, 67);
+  assert.equal(d.current, 'd1');
+  assert.deepEqual(d.nodes.map(n => [n.id, n.title, n.percent, n.isCurrent]), [
+    ['a1', '环境检查', 100, false], ['d1', '内存采样观测 14 天', 2, true], ['d2', '双桥验证', 0, false]]);
+  assert.equal(page.serialNote, null);
+  const none = buildOverview(snapshot({ 'serial-progress': { chains: [] } }), { now: NOW });
+  assert.equal(none.serialNote, '暂无活跃串行链');
+  const missing = buildOverview(snapshot({}), { now: NOW });
+  assert.equal(missing.serialNote, null, '数据缺失不误报为"无活跃链"');
+  const empty = buildOverview(snapshot({ 'serial-progress': { chains: [{ sourceFile: 'x.json', project: '/w/p', percent: 0, nodes: [] }] } }), { now: NOW });
+  assert.equal(empty.projects.items.find(i => i.runId === 'x.json').chainDetail.empty, true);
+});
+
 // 活跃项排前：已完成/已取消的历史 run 会把活跃 DAG 与进行中的串行链挤出首屏（2026-11-24 真机：
 // 一屏只见 4 条已完成/已取消，用户误判"活跃项目无展示"，而网页版活跃项目在首屏）。
 test('项目进度活跃项排前：done/cancelled 沉底，活跃 DAG 与进行中串行链置顶且组内稳定', () => {

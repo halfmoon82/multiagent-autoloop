@@ -119,3 +119,19 @@ export function downloadArtifact(browser, artifactId, base) {
   }
   return { browser: source, effects: [{ type: 'download', url, name: str(artifact.name) }] };
 }
+
+// 下载反馈文案（产品语言）：downloading / success / failure 三态，失败按原因给可读提示。
+// reason 取自原生桥 reject 的错误码或 message；令牌缺失引导重新绑定，其余可重试。
+export function downloadFeedback(phase, { name = '', reason = '' } = {}) {
+  const label = str(name) || '文件';
+  if (phase === 'downloading') return { phase, text: `已开始下载 ${label}`, retry: false, rebind: false };
+  if (phase === 'success') return { phase, text: `${label} 已下载完成，可在系统「下载」中查看`, retry: false, rebind: false };
+  const code = str(reason);
+  if (/NO_TOKEN/.test(code)) {
+    return { phase: 'failure', text: '设备凭据已失效，请重新绑定设备后再下载', retry: false, rebind: true };
+  }
+  if (/INVALID_URL/.test(code)) {
+    return { phase: 'failure', text: '下载需要安全连接（HTTPS），请重新连接后重试', retry: true, rebind: false };
+  }
+  return { phase: 'failure', text: `${label} 下载失败，请检查网络后重试`, retry: true, rebind: false };
+}

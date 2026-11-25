@@ -45,9 +45,10 @@ public final class AutoLoopBridge {
       "window.AutoloopDownload={"
           + "start:function(url,name){"
           + "var p=window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.AutoloopDownload;"
-          + "if(!p)return Promise.resolve(false);"
+          + "if(!p)return Promise.resolve({started:false,reason:'NO_BRIDGE'});"
           + "return p.nativeStart({url:String(url),name:String(name||'下载')})"
-          + ".then(function(r){return !!(r&&r.started);}).catch(function(){return false;});}"
+          + ".then(function(r){return {started:!!(r&&r.started),id:r&&r.id};})"
+          + ".catch(function(e){return {started:false,reason:String((e&&e.message)||'')+' '+String((e&&e.code)||'')};});}"
           + "};";
 
   private static WeakReference<WebView> webViewRef = new WeakReference<>(null);

@@ -325,6 +325,21 @@ function main() {
       const absent = web.filter((t) => !xml.includes(t));
       if (absent.length) throw new StepFailure(`网页有而 App 产物页缺少：${absent.slice(0, 5).join('、')}`);
     }],
+    ['产物下载后页面出现提示', () => {
+      const web = (process.env.AUTOLOOP_SMOKE_WEB_ARTIFACTS || '').split(',').map((t) => t.trim()).filter(Boolean);
+      if (!web.length) throw new StepFailure('未提供 AUTOLOOP_SMOKE_WEB_ARTIFACTS，无法选择产物下载', 'not-run');
+      tap(serialA, waitFor(serialA, '产物'));
+      tap(serialA, waitFor(serialA, web[0]));
+      tap(serialA, waitFor(serialA, '下载 '));
+      const end = Date.now() + 15000;
+      while (Date.now() < end) {
+        const xml = dump(serialA);
+        if (/已开始下载|已下载完成/.test(xml)) { screenshot(serialA, 'download-feedback'); return; }
+        if (/下载失败|重新绑定|HTTPS/.test(xml)) { screenshot(serialA, 'download-feedback-failed'); throw new StepFailure('下载后页面显示的是失败提示'); }
+        pause(1);
+      }
+      throw new StepFailure('点击下载后 15s 内页面没有出现任何提示');
+    }],
     ['首屏耗时', () => {
       adb(serialA, ['shell', 'am', 'force-stop', PACKAGE]);
       const out = String(adb(serialA, ['shell', 'am', 'start', '-W', '-n', `${PACKAGE}/.MainActivity`]).stdout || '');

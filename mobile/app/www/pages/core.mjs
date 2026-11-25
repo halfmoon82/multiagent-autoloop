@@ -272,6 +272,7 @@ export function mount(ctx) {
       return box;
     });
     renderProjects(page.projects);
+    if (page.serialNote) refs.projects.appendChild(node('p', { className: 'hint', attrs: { 'data-serial-note': '' }, text: page.serialNote }));
     renderCollection(refs.activity, page.activity, item => node('div', { className: 'core-item' }, [
       node('strong', { text: item.title }),
       node('span', { className: 'core-meta', text: [item.statusLabel, item.at].filter(Boolean).join(' · ') }),

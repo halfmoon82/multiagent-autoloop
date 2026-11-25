@@ -99,8 +99,13 @@ export function buildOverview(snapshot, { now } = {}) {
       nodeCount: nodes.length,
       progressAvailable: false,
       dagEntry: null,
+      chainEntry: { label: '串行链详情' },
+      chainDetail: chainDetail(chain, nodes),
     };
   }).filter(item => item.runId && item.project) : [];
+  // 无活跃（未完结）串行链时如实说明，不把空当成故障，也不误报有进度。
+  const serialNote = !serialAvailable ? null
+    : (chainItems.some(item => (Number.parseFloat(item.statusLabel) || 0) < 100) ? null : '暂无活跃串行链');
   // 活跃项排前：历史 done/cancelled 的 DAG 沉底，进行中串行链排在活跃 DAG 之后、已完结链之前，
   // 避免活跃项目被挤出首屏（2026-11-24 真机：首屏只见已完成/已取消，误判"活跃项目无展示"）。
   const DONE_STATUSES = new Set(['done', 'cancelled', 'canceled', 'failed', 'complete', 'completed']);
@@ -135,8 +140,32 @@ export function buildOverview(snapshot, { now } = {}) {
   return page('overview', {
     ready: available, error,
     openTodoCount: openCards.length,
-    metrics, scheduler, usage: usageText(state, runs, available, error), projects, activity,
+    metrics, scheduler, usage: usageText(state, runs, available, error), projects, serialNote, activity,
   });
+}
+
+function chainDetail(chain, nodes) {
+  const current = String(chain?.current ?? '').trim();
+  const items = nodes.map(n => {
+    const id = String(n?.id ?? '').trim();
+    return {
+      id,
+      title: String(n?.title ?? '').trim() || id || '未命名节点',
+      status: String(n?.status ?? '').trim(),
+      percent: Math.max(0, Math.min(100, Math.round(Number(n?.percent) || 0))),
+      summary: String(n?.summary ?? n?.note ?? '').trim(),
+      part: String(n?.part ?? '').trim(),
+      isCurrent: Boolean(id) && id === current,
+    };
+  });
+  return {
+    percent: Math.max(0, Math.min(100, Math.round(Number(chain?.percent) || 0))),
+    current: current || null,
+    updatedAt: String(chain?.updatedAt ?? '').trim() || null,
+    nodes: items,
+    empty: items.length === 0,
+    reason: items.length ? null : '该串行链暂无节点明细',
+  };
 }
 
 // 调度规则：结构取服务端只读摘要，状态从 Hub lines 叠加；只保留运行/暂停/恢复/编辑。

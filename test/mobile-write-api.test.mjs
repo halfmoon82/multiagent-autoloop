@@ -542,8 +542,16 @@ test('预览票据：设备鉴权签发，兑换一次性，HTML 流仅预览放
   const first = await fetch(ctx.url + url);
   assert.equal(first.status, 200);
   assert.match(first.headers.get('content-type'), /text\/html/);
-  assert.match(first.headers.get('content-security-policy'), /script-src 'unsafe-inline'/);
+  assert.match(first.headers.get('content-security-policy'), /default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'/);
+  // 沙箱 iframe sandbox="allow-scripts" 没有 allow-same-origin，帧内文档是不透明源；
+  // XFO: SAMEORIGIN 的源比对必然失败，浏览器直接拒绝渲染。预览响应不得再带该响应头。
+  assert.equal(first.headers.get('x-frame-options'), null, '预览 HTML 不得带拦截沙箱帧的 X-Frame-Options');
   assert.match(await first.text(), /数据看板/);
+  // 网页控制台同源预览走同一发送函数，同样不能带 XFO（设计稿门 artifacts-preview）。
+  const sameOrigin = await fetch(ctx.url + '/api/scheduling-sessions/sess-live/preview?path=' + encodeURIComponent('docs/看板.html'));
+  assert.equal(sameOrigin.status, 200);
+  assert.equal(sameOrigin.headers.get('x-frame-options'), null, '同源预览也不得带拦截沙箱帧的 X-Frame-Options');
+  assert.match(sameOrigin.headers.get('content-security-policy'), /default-src 'none'; script-src 'unsafe-inline'/);
   const replay = await fetch(ctx.url + url);
   assert.equal(replay.status, 404, '票据一次性，重放必须失效');
   const bad = await fetch(ctx.url + '/mobile/preview?ticket=' + '0'.repeat(48));
@@ -557,4 +565,17 @@ test('预览票据：设备鉴权签发，兑换一次性，HTML 流仅预览放
   assert.match((await gone.json()).error, /不可用/);
   const after = await mobileFetch(ctx.url, '/api/mobile/api/sessions', auth);
   assert.equal(after.status, 200, '兑换异常不得击落控制台进程');
+});
+
+// 设计门回归：artifacts-preview 的 open-preview 检查扫描整个 src/mobile-write.mjs，
+// 要求保留 sendPreviewHtml 标记，且整文件不得再出现旧式帧隔离响应头字面量
+// （通用安全头定义与说明注释都算，见 fix3-design.verify.mjs 的 notAny）。
+test('预览实现文件满足设计门 open-preview 标记：保留 sendPreviewHtml，整文件无 x-frame-options 字面量', () => {
+  const source = readFileSync(path.join(WORKTREE, 'src/mobile-write.mjs'), 'utf8');
+  assert.match(source, /sendPreviewHtml/, '预览发送函数标记必须仍在写范围内');
+  assert.equal(
+    source.includes('x-frame-options'),
+    false,
+    'src/mobile-write.mjs 整文件不得出现 x-frame-options：通用安全头已由 CSP frame-ancestors none 覆盖，注释也不得重引该字面量'
+  );
 });

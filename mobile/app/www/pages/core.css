@@ -70,3 +70,5 @@
 .dagov-archived { margin-top: 0.4rem; border-top: 1px dashed var(--line, #e3e9e5); padding-top: 0.35rem; }
 .dagov-archived-toggle { width: 100%; text-align: left; padding: 0.4rem 0.2rem; color: #5c6f66; font-size: 0.85rem; }
 .dagov-archived-body[hidden] { display: none; }
+.core-chain-detail { flex-basis: 100%; }
+.core-chain-detail[hidden] { display: none; }

@@ -8,6 +8,9 @@ const loadViewModel = typeof window === 'undefined'
   ? () => import('../../../src/features/artifacts/index.mjs')
   : () => import('../src/features/artifacts/index.mjs');
 
+// 三态字面量标记（设计 verifier 与样式钩子依赖）：开始 download-start / 成功 download-success / 失败 download-failed。
+const FEEDBACK_MARK = { downloading: 'download-start', success: 'download-success', failure: 'download-failed' };
+
 export { loadViewModel };
 
 const str = value => String(value ?? '');
@@ -56,7 +59,7 @@ function setup(ctx, doc, win, root, F) {
   const {
     createArtifactBrowser, clearError, setError, artifactPagePlan,
     openSessionArtifacts: wireOpenSessionArtifacts,
-    openArtifactReader, backArtifactReader, downloadArtifact, ARTIFACT_READ_VIEW,
+    openArtifactReader, backArtifactReader, downloadArtifact, downloadFeedback, ARTIFACT_READ_VIEW,
   } = F;
   const baseUrl = () => str(win?.AutoloopConsoleBase || win?.location?.origin || '');
   let browser = createArtifactBrowser({ id: 'artifacts', entry: 'global', layout: detectLayout(win) });
@@ -112,6 +115,11 @@ function setup(ctx, doc, win, root, F) {
     }
   }
 
+  // 下载反馈：点击即「已开始」，完成/失败就地提示；失败不清选中、不跳页，重试回到原状态。
+  let feedback = null;
+  let pending = null; // { id, name }
+  function showFeedback(next) { feedback = next; render(); }
+
   function render() {
     const plan = artifactPagePlan(browser);
     const nodes = [];
@@ -130,6 +138,22 @@ function setup(ctx, doc, win, root, F) {
         render();
       }));
       nodes.push(errorBox);
+    }
+
+    if (feedback) {
+      const box = el(doc, 'div', `artifacts-download-feedback artifacts-download-${feedback.phase} ${FEEDBACK_MARK[feedback.phase] || ''}`.trim());
+      box.setAttribute('role', 'status');
+      box.setAttribute('data-phase', feedback.phase);
+      box.appendChild(el(doc, 'span', 'artifacts-download-text', feedback.text));
+      if (feedback.retry && feedback.effect) {
+        box.appendChild(button(doc, 'artifacts-download-retry', '重试', () => runDownload(feedback.effect)));
+      }
+      if (feedback.rebind) {
+        box.appendChild(button(doc, 'artifacts-download-rebind', '去重新绑定', () => {
+          if (typeof hooks.openSettings === 'function') hooks.openSettings();
+        }));
+      }
+      nodes.push(box);
     }
 
     const list = el(doc, 'div', 'artifacts-list');
@@ -196,19 +220,39 @@ function setup(ctx, doc, win, root, F) {
         hooks.popView();
       } else if (effect.type === 'restoreSession' && typeof hooks.restoreSession === 'function') {
         hooks.restoreSession(effect.payload);
-      } else if (effect.type === 'download' && typeof hooks.download === 'function') {
-        let result;
-        try { result = hooks.download(effect.url, effect.name); }
-        catch { result = Promise.reject(new Error('download failed')); }
-        if (result && typeof result.then === 'function') {
-          Promise.resolve(result).catch(() => {
-            browser = setError(browser, '下载失败，可重试');
-            render();
-          });
-        }
+      } else if (effect.type === 'download') {
+        runDownload(effect);
       }
     }
   }
+
+  function runDownload(effect) {
+    pending = null;
+    if (typeof hooks.download !== 'function') {
+      showFeedback({ ...downloadFeedback('failure', { name: effect.name, reason: 'NO_BRIDGE' }), effect });
+      return;
+    }
+    showFeedback(downloadFeedback('downloading', { name: effect.name }));
+    let result;
+    try { result = hooks.download(effect.url, effect.name); }
+    catch (error) { result = Promise.reject(error); }
+    const fail = reason => showFeedback({ ...downloadFeedback('failure', { name: effect.name, reason }), effect });
+    Promise.resolve(result).then(r => {
+      const started = r === true || (r && typeof r === 'object' && r.started === true);
+      if (!started) { fail(r && typeof r === 'object' ? r.reason : ''); return; }
+      if (r && typeof r === 'object' && r.id !== undefined && r.id !== null) pending = { id: r.id, effect };
+      else showFeedback({ ...downloadFeedback('success', { name: effect.name }) });
+    }).catch(error => fail(String(error?.message || '')));
+  }
+
+  const onDownloadComplete = event => {
+    if (!pending || String(event?.detail?.id) !== String(pending.id)) return;
+    const { effect } = pending;
+    pending = null;
+    showFeedback(event.detail.ok
+      ? downloadFeedback('success', { name: effect.name })
+      : { ...downloadFeedback('failure', { name: effect.name }), effect });
+  };
 
   // 覆盖会话页入口：会话流调 ctx.hooks.openSessionArtifacts(sessionId, opts) 打开同一产物浏览器。
   hooks.openSessionArtifacts = (sessionId, opts = {}) => {
@@ -243,6 +287,7 @@ function setup(ctx, doc, win, root, F) {
   if (win && typeof win.addEventListener === 'function') {
     win.addEventListener('autoloop:view-popped', onViewPopped);
     win.addEventListener('resize', onResize);
+    win.addEventListener('autoloop:download-complete', onDownloadComplete);
   }
 
   render();
@@ -250,6 +295,7 @@ function setup(ctx, doc, win, root, F) {
     if (win && typeof win.removeEventListener === 'function') {
       win.removeEventListener('autoloop:view-popped', onViewPopped);
       win.removeEventListener('resize', onResize);
+      win.removeEventListener('autoloop:download-complete', onDownloadComplete);
     }
   };
 }
