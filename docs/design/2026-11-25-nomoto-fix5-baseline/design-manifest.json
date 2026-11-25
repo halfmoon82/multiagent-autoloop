@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix5-2026-11-25",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix5-baseline/refs/core-dag-render.html",
+      "sha256": "c6033c59c2040677b1a442514e6e0e7aed8de247263c4e99b8f0b2d29aba3699"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix5-baseline/refs/archived-dag.html",
+      "sha256": "9561ca0221ecc71c14d2d0042705d824f5642f91242e02c991a43500bd6ae912"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix5-baseline/verifiers/fix5-design.verify.mjs",
+      "sha256": "5bcc3d05378a1421228c8e5b33723d6313e76e5d619f997af31ce881ebd8ec80"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix5-baseline/verifiers/fix5-design-fallback.mjs",
+      "sha256": "bf18a8d4bc8f67605bf4a6291665ecfafb341c7bcb73847277f824d7bb019852"
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-25-nomoto-fix5-baseline/verifiers/fix5-design.verify.mjs",
+  "fallbackVerifierPath": "docs/design/2026-11-25-nomoto-fix5-baseline/verifiers/fix5-design-fallback.mjs",
+  "surfaces": [
+    {
+      "id": "core-dag-render",
+      "route": "#core",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "active-serial",
+        "active-parallel",
+        "archived"
+      ],
+      "interactions": [
+        "open-chain-detail",
+        "dag-node-pick",
+        "dag-detail-jump",
+        "archived-expand"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-25-nomoto-fix5-baseline/refs/core-dag-render.html"
+      ]
+    },
+    {
+      "id": "archived-dag",
+      "route": "#core",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "with-usage",
+        "token-only",
+        "unreported"
+      ],
+      "interactions": [
+        "archived-date-summary",
+        "archived-token-cost"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-25-nomoto-fix5-baseline/refs/archived-dag.html"
+      ]
+    }
+  ]
+}

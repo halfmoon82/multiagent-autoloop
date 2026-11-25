@@ -1,0 +1,87 @@
+{
+  "plan_id": "2026-11-25-nomoto-app-fix5",
+  "title": "NoMoTo App fix5：DAG 渲染修复（串行链+并行）+ 归档 DAG 创建日期/摘要/Token/费用",
+  "design": {
+    "manifestPath": "docs/design/2026-11-25-nomoto-fix5-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-25-nomoto-fix5-baseline/design-approval.json"
+  },
+  "nodes": [
+    {
+      "id": "dag-render-serial-parallel",
+      "title": "总览 DAG 渲染修复：串行链详情入口与并行环形卡片全路径核对（种子数据回归）",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "主人 2026-11-25 晚要求「DAG 不管串行链还是并行的渲染修复一起派发」。背景：串行链详情入口 fix4 已合并（#323/#324），但真机（19:37 安装包，界面随包冻结）看不到任何链内容；并行 DAG 走 #316 环形卡片路径（dagov），两条路径都缺种子数据级的渲染验证，无法确认真机上节点能否点选。",
+        "output": "1) 串行链：总览条目稳定出现「串行链详情」入口，点开见节点清单（标题/当前环节/百分比/进展），空态/重试齐全；2) 并行 DAG：环形卡片节点扇区可点选膨出、查看详情可跳转，无活跃并行 DAG 时回退行渲染正确；3) 两条路径都有种子数据单测/浏览器回归，后续合并重写不会再静默冲掉。",
+        "error_behavior": "详情为空显示如实空态；渲染异常不拖垮整页；无活跃 DAG 不误报。",
+        "acceptance_example": "种子链+种子 DAG 单测覆盖两路径渲染与交互；浏览器回归点选/展开；与 #316 环形组件并存无重复实现。",
+        "files": [
+          "mobile/app/www/pages/core.mjs",
+          "mobile/app/www/pages/core.css",
+          "mobile/src/core/pages.mjs",
+          "mobile/src/features/dag-ring/",
+          "test/mobile-core*.test.mjs",
+          "test/mobile-dag-ring*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "core-dag-render"
+          ],
+          "states": [
+            "active-serial",
+            "active-parallel",
+            "archived"
+          ],
+          "interactions": [
+            "open-chain-detail",
+            "dag-node-pick",
+            "dag-detail-jump",
+            "archived-expand"
+          ]
+        }
+      }
+    },
+    {
+      "id": "archived-dag-details",
+      "title": "归档区按网页版口径展示创建日期、一句话摘要与 Token/费用",
+      "depends_on": [
+        "dag-render-serial-parallel"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "主人 2026-11-25 晚反馈：归档会话要像网页版一样显示归档 DAG 哪天创建、大致摘要、完成花了多少 Token 和费用。数据口径现成（archive 接口与桌面归档视图同源；串行链读台账累计，DAG 汇总节点上报）。",
+        "output": "App 已归档区每条显示：创建日期、一句话摘要（计划标题/首任务）、Token 与费用；只有 Token 时如实写「费用未上报」，完全未上报如实标注，不编造。",
+        "error_behavior": "单项缺失显示默认文案不空块；归档加载失败就地重试。",
+        "acceptance_example": "单测覆盖三种上报口径与日期/摘要渲染；浏览器回归归档区展示。",
+        "files": [
+          "mobile/src/core/pages.mjs",
+          "mobile/src/core/contract.mjs",
+          "mobile/app/www/pages/core.mjs",
+          "mobile/app/www/pages/core.css",
+          "test/mobile-core*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "archived-dag"
+          ],
+          "states": [
+            "with-usage",
+            "token-only",
+            "unreported"
+          ],
+          "interactions": [
+            "archived-date-summary",
+            "archived-token-cost"
+          ]
+        }
+      }
+    }
+  ]
+}
