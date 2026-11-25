@@ -17,6 +17,7 @@ import { classifySessionRequest } from './session-classify.mjs';
 import { SchedulingSessionError } from './scheduling-session.mjs';
 import { listSessionArtifacts } from './artifacts.mjs';
 import { DagServiceError } from './dag-service.mjs';
+import { delegateOpenCard, CardDelegateError } from './card-delegate.mjs';
 
 function securityHeaders() {
   // 帧隔离只依赖 CSP 的 frame-ancestors 'none'：它与旧式 DENY 帧头等价、现代浏览器均支持，
@@ -38,6 +39,8 @@ function jsonResponse(res, status, value) {
 export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'card-answer', method: 'POST', pattern: /^\/api\/mobile\/cards\/([^/]+)\/answer$/ },
   { key: 'card-authorize', method: 'POST', pattern: /^\/api\/mobile\/cards\/([^/]+)\/authorize$/ },
+  { key: 'card-resolve', method: 'POST', pattern: /^\/api\/mobile\/cards\/([^/]+)\/resolve$/ },
+  { key: 'card-delegate', method: 'POST', pattern: /^\/api\/mobile\/cards\/([^/]+)\/delegate$/ },
   { key: 'session-continue', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/continue$/ },
   { key: 'session-download', method: 'GET', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/download$/ },
   { key: 'sync', method: 'GET', pattern: /^\/api\/mobile\/sync$/ },
@@ -137,7 +140,11 @@ function writeError(res, error) {
   // 本地会话态错误（已关闭/异常等）的 message 本就是给用户看的中文文案，与网页端同口径透传；
   // 其余非 WriteError 一律回落固定文案，不回显 Hub 错误体或内部细节。
   // PlatformModelsError 与网页端同口径：校验文案（如「三档要么都填，要么都不填」）直接给人看，不吞成「请求无效」。
-  const passthrough = (error instanceof SchedulingSessionError || error instanceof PlatformModelsError || error instanceof DagServiceError) && status >= 400 && status < 500 && error.message;
+  const passthrough = error?.message && (
+    ((error instanceof SchedulingSessionError || error instanceof PlatformModelsError || error instanceof DagServiceError) && status >= 400 && status < 500)
+    // 退回事务的冷却/循环/结案失败文案本身就是给用户看的，且 502 分支要说明「重试不重复派发」。
+    || (error instanceof CardDelegateError && status >= 400 && status < 600)
+  ) ? error.message : null;
   jsonResponse(res, status, { error: error instanceof WriteError ? error.message : passthrough || (SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试') });
 }
 
@@ -189,6 +196,54 @@ async function cardWrite(route, req, res, url, ctx, body) {
     } catch { schedulingWake = 'failed'; }
   }
   jsonResponse(res, 200, { ...result, schedulingWake });
+}
+
+// 结案/已处理：与网页 /api/cards/:id/resolve 同一 Hub 端点、同一 reason 口径。
+// 「已处理」是无需文字的快速办结，reason 由调用方给固定文案；Hub 不可用时报错、原卡保留。
+async function cardResolveRoute(req, res, url, route, ctx, body) {
+  const { config, device } = ctx;
+  const cardId = parseId(url.pathname.match(route.pattern)[1]);
+  const state = await hubRequest(config, '/v1/state');
+  const card = (state?.cards || []).find(item => Number(item?.id) === cardId);
+  if (!card) fail(404);
+  if (card.state !== 'open') {
+    jsonResponse(res, 200, { id: card.id, state: card.state, idempotent: true });
+    return;
+  }
+  const reason = String(body.reason ?? '');
+  const fields = { cardId: String(cardId), reason, sourceDeviceId: device.id };
+  let result;
+  try {
+    result = await hubRequest(config, `/v1/cards/${cardId}/resolve`, { method: 'POST', body: { reason } });
+  } catch (error) { auditFailure(ctx, req, 'card.resolve', fields); throw error; }
+  audit(ctx, req, 'card.resolve', fields);
+  jsonResponse(res, 200, { ...result, sourceDeviceId: device.id });
+}
+
+// 退回调度：复用网页的 card-delegate 事务（先落调度事件、Hub 接受后才结案原卡、幂等与冷却同口径）。
+// 设备只提供鉴权与审计；事件走 Hub /v1/events（source 权限），待代理决策列表由 card-delegate 台账承载。
+async function cardDelegateRoute(req, res, url, route, ctx) {
+  const { config, device } = ctx;
+  const cardId = parseId(url.pathname.match(route.pattern)[1]);
+  const state = await hubRequest(config, '/v1/state');
+  const card = (state?.cards || []).find(item => Number(item?.id) === cardId);
+  if (!card) fail(404);
+  if (card.state !== 'open') {
+    jsonResponse(res, 200, { id: card.id, state: card.state, idempotent: true });
+    return;
+  }
+  const fields = { cardId: String(cardId), sourceDeviceId: device.id };
+  let result;
+  try {
+    result = await delegateOpenCard({
+      card,
+      store: config.cardDelegateStore,
+      postEvent: event => hubRequest(config, '/v1/events', { method: 'POST', body: event, auth: 'source' }),
+      resolveCard: (id, reason) => hubRequest(config, `/v1/cards/${id}/resolve`, { method: 'POST', body: { reason } }),
+    });
+  } catch (error) { auditFailure(ctx, req, 'card.delegate', fields); throw error; }
+  audit(ctx, req, 'card.delegate', fields);
+  jsonResponse(res, 200, { ...result, sourceDeviceId: device.id });
 }
 
 async function sessionContinue(res, url, route, ctx) {
@@ -521,6 +576,8 @@ async function executeWrite(route, req, res, url, ctx) {
     const body = req.method === 'GET' ? {} : await readJson(req, route.key === 'session-message' ? 20 * 1024 * 1024 : 65536);
     if (route.key === 'sync') return await syncRoute(req, res, url, ctx, body);
     if (route.key === 'card-answer' || route.key === 'card-authorize') return await cardWrite(route, req, res, url, ctx, body);
+    if (route.key === 'card-resolve') return await cardResolveRoute(req, res, url, route, ctx, body);
+    if (route.key === 'card-delegate') return await cardDelegateRoute(req, res, url, route, ctx);
     if (route.key === 'session-continue') return await sessionContinue(res, url, route, ctx);
     if (route.key === 'session-download') return await sessionDownload(res, url, route, ctx);
     if (route.key === 'rule-action') return await ruleAction(req, res, url, route, ctx, body);

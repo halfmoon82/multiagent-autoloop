@@ -334,7 +334,9 @@ test('待我处理：独立事项列表保留上下文与选项，已回答离�
   assert.equal(open.text, '任意网络还是仅可信私网？');
   assert.deepEqual(open.options, ['任意网络', '仅私网']);
   assert.equal(open.stateLabel, '待处理');
-  assert.deepEqual(open.actions, ['answer-choice', 'answer-text', 'resolve']);
+  // card-quick-actions：三内置操作与网页版同语义（已处理/结案/退回调度），回答语义不变。
+  assert.deepEqual(open.actions, ['answer-choice', 'answer-text', 'mark-handled', 'resolve', 'delegate-return']);
+  assert.deepEqual(open.quickActions.map(action => action.label), ['已处理', '结案', '退回调度']);
   assert.equal(open.actions.includes('open-original-session'), false, '不虚构进入原始会话能力');
   assert.equal(page.items.items.some(item => item.id === 'c2'), false, '已回答卡不残留');
 });

@@ -143,6 +143,25 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
       const payload = choice !== undefined ? { choice: Number(choice) } : { text: String(text ?? '') };
       return call(`/api/mobile/cards/${cardId}/answer`, payload);
     },
+    // 已处理：无需文字的快速办结，复用网页 resolve 端点，原因固定为「已处理」。
+    markHandled(id) {
+      const cardId = encodeURIComponent(String(id ?? '').trim());
+      if (!cardId) throw new Error('事项不存在或已失效');
+      return call(`/api/mobile/cards/${cardId}/resolve`, { reason: '已处理' });
+    },
+    // 结案：与网页「结案」按钮同语义（resolve），原因固定为「结案」。
+    resolveCard(id) {
+      const cardId = encodeURIComponent(String(id ?? '').trim());
+      if (!cardId) throw new Error('事项不存在或已失效');
+      return call(`/api/mobile/cards/${cardId}/resolve`, { reason: '结案' });
+    },
+    // 退回调度（delegate-return）：经设备鉴权走服务端 card-delegate 事务——落调度事件、
+    // 入待代理决策列表并结案原卡；Hub 拒绝时失败抛错，卡片保留可重试。
+    delegateCard(id) {
+      const cardId = encodeURIComponent(String(id ?? '').trim());
+      if (!cardId) throw new Error('事项不存在或已失效');
+      return call(`/api/mobile/cards/${cardId}/delegate`, {});
+    },
     // 关闭会话：会话已结束时服务端返回 alreadyClosed，不重复操作。
     closeSession(id) {
       const value = encodeURIComponent(String(id ?? '').trim());
