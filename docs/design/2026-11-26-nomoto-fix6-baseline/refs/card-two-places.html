@@ -1,0 +1,10 @@
+<!doctype html><html><head><title>card-two-places</title><meta charset="utf-8"><style>body{margin:0;font:15px/1.5 -apple-system,"PingFang SC",sans-serif;background:#eef0f3;color:#1d2129}.wrap{width:402px;margin:0 auto;background:#fff;min-height:520px;padding-bottom:14px}.hd{padding:16px;font-size:19px;font-weight:700}.lbl{margin:16px 14px 6px;font-size:13px;color:#16835c;font-weight:600}.card{margin:8px 14px;padding:12px 14px;background:#fff;border:1px solid #e5e7eb;border-radius:12px}.card .t{font-weight:600}.card .s{font-size:12.5px;color:#6b7280;margin-top:2px}.btn{display:inline-block;margin:6px 8px 0 0;padding:9px 14px;border-radius:10px;font-size:13px;font-weight:600}.btn.pri{background:#16835c;color:#fff}.btn.sec{background:#fff;color:#16835c;border:1.5px solid #16835c}.ok{margin:10px 14px;padding:10px 13px;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:10px;font-size:13px;font-weight:600}.dim{color:#9ca3af}</style></head><body>
+<div class="wrap"><div class="hd">决策卡两处一致性</div>
+<div class="lbl">缺陷①：在「待办」答完后，会话窗口里同一张卡仍残留 → 应同步消失</div>
+<div class="card dim" style="opacity:.5"><div class="s">（会话窗口里这张卡应随待办的回答一并消失）</div></div>
+<div class="lbl">缺陷②：两处都出现这张卡；一处处理后，另一处点「已处理」应静默视为成功并消失</div>
+<div class="card"><div class="t">示例决策卡</div>
+<span class="btn sec">已处理</span></div>
+<div class="ok">已处理（该卡已在别处办结，本地一并收起）</div>
+<div class="lbl">口径：已处理/结案对「目标不存在或已失效(409)」幂等——视为成功、本地收起、不报错残留</div>
+</div></body></html>

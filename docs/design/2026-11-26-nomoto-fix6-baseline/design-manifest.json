@@ -17,6 +17,10 @@
     {
       "path": "docs/design/2026-11-26-nomoto-fix6-baseline/verifiers/fix6-design-fallback.mjs",
       "sha256": "67630232a1be326dc26abef29aa903662cecab0bea3f0959ecf5758604470bd2"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix6-baseline/refs/card-two-places.html",
+      "sha256": "2801b23ae688f96f1fab13ee84ffba174552321456fadeee5b8432ce611dd378"
     }
   ],
   "verifierPath": "docs/design/2026-11-26-nomoto-fix6-baseline/verifiers/fix6-design.verify.mjs",
@@ -61,6 +65,23 @@
       ],
       "referencePaths": [
         "docs/design/2026-11-26-nomoto-fix6-baseline/refs/mobile-ring-target.html"
+      ]
+    },
+    {
+      "id": "card-two-places",
+      "route": "#sessions",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "open"
+      ],
+      "interactions": [
+        "answer-vanish-session",
+        "handled-idempotent"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-26-nomoto-fix6-baseline/refs/card-two-places.html"
       ]
     }
   ]

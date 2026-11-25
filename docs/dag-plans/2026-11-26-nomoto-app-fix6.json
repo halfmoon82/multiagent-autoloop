@@ -1,6 +1,6 @@
 {
   "plan_id": "2026-11-26-nomoto-app-fix6",
-  "title": "NoMoTo App fix6：项目进度环形渲染对齐网页版（节点环+点击详情+费用条+已归档任务环）+ 下拉刷新易用性修复",
+  "title": "NoMoTo App fix6：项目进度环对齐网页版 + 下拉刷新修复 + 决策卡两处一致性",
   "design": {
     "manifestPath": "docs/design/2026-11-26-nomoto-fix6-baseline/design-manifest.json",
     "approvalPath": "docs/design/2026-11-26-nomoto-fix6-baseline/design-approval.json"
@@ -77,6 +77,41 @@
           ],
           "interactions": [
             "pull-anywhere"
+          ]
+        }
+      }
+    },
+    {
+      "id": "card-two-places-consistency",
+      "title": "决策卡两处一致性：待办答复后会话窗同步消失；已处理对 409 幂等收起",
+      "depends_on": [
+        "project-ring-web-parity"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "主人 2026-11-26 晨两个缺陷：①在「待办」答完决策卡后，卡仍留在会话窗口（两处展示不同步）；②同一张卡两处出现，一处处理后另一处点「已处理」报「目标不存在或已失效(409)」且卡永久残留——已处理的语义是办结，对 409 应幂等视为成功并本地收起。",
+        "output": "1) 任一处回答/结案/已处理后，所有展示位置（会话窗口、待办列表、角标）同步移除该卡（本地状态共享，不只改一处）；2) 已处理/结案/选项回答遇到 409（已办结）静默视为成功：本地收起、给出轻提示，不报错、不残留；3) 与 fix4 的 markCardAnswered 机制合并为统一「卡已答」状态源。",
+        "error_behavior": "真失败（非 409）才报错并保留卡片；409 一律幂等成功；Hub 不可用时提示可重试。",
+        "acceptance_example": "单测：待办答后会话窗卡消失；409 幂等收起不残留；浏览器回归两处同步。",
+        "files": [
+          "mobile/src/features/sessions/browser.mjs",
+          "mobile/src/features/sessions/views.mjs",
+          "src/mobile-write.mjs",
+          "test/mobile-card-*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "card-two-places"
+          ],
+          "states": [
+            "open"
+          ],
+          "interactions": [
+            "answer-vanish-session",
+            "handled-idempotent"
           ]
         }
       }
