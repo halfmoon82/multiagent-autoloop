@@ -115,8 +115,27 @@ button:disabled { opacity: 0.6; cursor: default; }
 #app-main .brand-gem { border-radius: 0.8rem; }
 #app-main #project-filter-root { flex: none; }
 .content {
+  position: relative;
   flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: clip;
   overscroll-behavior: contain; scrollbar-width: thin;
+}
+/* 下拉刷新指示：仅在内容顶部出现，跟手位移由 app.mjs 写 transform；pointer-events:none 不抢点击与手势。 */
+.pull-refresh-indicator {
+  position: absolute; z-index: 6; top: 0; left: 0; right: 0;
+  display: flex; align-items: center; justify-content: center; gap: 0.4rem;
+  min-height: 2.4rem; padding: 0.35rem 0.6rem;
+  background: rgba(236, 252, 244, 0.97); color: #16835c;
+  border-bottom: 1px solid var(--line, #e3e8e5);
+  font-size: 0.8rem; font-weight: 650; pointer-events: none;
+  transition: transform 180ms ease-out;
+}
+.pull-refresh-indicator[hidden] { display: none; }
+.pull-refresh-indicator .ptr-icon { display: inline-block; font-size: 1rem; line-height: 1; transition: transform 150ms ease-out; }
+.pull-refresh-indicator.ptr-ready .ptr-icon { transform: rotate(180deg); }
+.pull-refresh-indicator.ptr-refreshing .ptr-icon { animation: ptr-spin 900ms linear infinite; }
+@keyframes ptr-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .pull-refresh-indicator, .pull-refresh-indicator .ptr-icon { transition: none; animation: none; }
 }
 .tab-bar {
   flex: none; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
