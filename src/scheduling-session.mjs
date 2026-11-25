@@ -11,6 +11,7 @@ import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk';
 import { SessionArchive } from './session-archive.mjs';
 import { listArtifacts, readArtifact, resolveDownload } from './artifacts.mjs';
 import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
+import { PRD_GUIDE_PROMPT } from './prd-guide.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
 import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_LABEL, HUB_RECONCILE_INTERVAL_MS, schedulingSubject, schedulingEventId, mapHubStateToStatus, numericEventId, readHubRun } from './hub-scheduling-session.mjs';
 import { buildSchedulingContext, contextTrailer, composeTurnText, prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation, exchangesFrom, HANDOVER_ROUNDS } from './scheduling-context.mjs';
@@ -79,6 +80,8 @@ export function buildDesignPrompt({ project } = {}) {
     `你是 ${project} 上的设计会话，负责把产品需求收敛为可评审的 PRD、Spec 与可并行执行的 DAG。`,
     '【协作方式】两阶段：规划阶段原生 Plan Mode + 只读沙箱，只读取代码与文档、提问和出方案；主人确认计划后控制台放行（退出 Plan Mode + 工作区可写）。',
     '【产出约定】需求闭合后以约定 JSON 块输出 product-spec（背景、成功标准、非目标、验收命令），控制台据此计算 specDigest；主人确认后再拆解 DAG 与执行范围；放行后立即按 AGENTS.md §10 落盘（PRD/spec/issues 文档 + docs/dag-plans/<plan>.json）并登记 GitHub Epic/issues，两项完成才算交付。',
+    PRD_GUIDE_PROMPT,
+    '【设计稿门禁·落盘契约】计划含任何界面改动（新增/改动页面、布局、交互、视觉状态，或节点写范围命中 public/、mobile/app/www/、html/css/jsx/tsx/vue/svelte 及 App 入口、components/pages/views/layouts/hooks/contexts/client/frontend/web 目录的 js/ts）时，docs/dag-plans/<plan>.json 必须带 design 块：design.manifestPath 指向设计清单（design-manifest.json，含 surfaces/verifier/产物 hash），design.approvalPath 指向一次批准记录；每个 UI 节点另需 contract.design（surfaceIds 等归属）。纯后端/纯逻辑计划不写 design 块。服务端在「读取计划与预检」与「新建 DAG」时强制校验：UI 计划缺 design 块按 DESIGN_BASELINE_MISSING 拒绝且不创建 run，UI 节点漏 contract.design 按 DESIGN_CONTRACT_MISSING 拒绝——所以落盘前先自查这两项，不要让主人等到预检才被发现。',
     '【边界】本会话只做规划与设计：不执行实现、不触碰部署、不修改真实调度规则；实现由后续事件链按授权快照派发。',
   ].join('\n');
 }
@@ -89,6 +92,7 @@ export const BRANCH_DISCIPLINE_PROMPT = [
   '- 不直推 main/master 等受保护分支；任何改动先建分支：热修复走 fix/<topic> 分支，或在独立 worktree（git worktree add .worktrees/<名> -b fix/<topic>）里做。',
   '- 单个 issue 的闭环：读 issue → 建分支 → 改代码 → 跑测试 → 提交 → git push -u origin <分支> → gh pr create 开 PR → 等 reviewer 闭环 → 仅在用户明确授权后合并。',
   '- 禁止 force push、禁止删除远端分支；文件编辑与命令工作目录限本项目工作区。以上由控制台权限层强制，违反的请求会被拒绝并记入审计。',
+  '【PRD 引导触发】当对话收敛到「要做新功能/改造」时，先按 PRD 五话题（问题、目标、成功标准、非目标、用户场景）与主人确认需求，再动手；涉及跨模块新能力或产品取舍时，建议主人开设计会话出 PRD/Spec/DAG；涉及界面改动时，必须先出设计稿并经主人确认——服务端会拒绝缺 design 块的 UI 计划（DESIGN_BASELINE_MISSING），未经确认的设计稿不要进入实现。',
 ].join('\n');
 
 export function buildHubMcpServer() {

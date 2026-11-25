@@ -561,7 +561,7 @@ const KIND_NAMES = { normal: '普通会话', scheduling: '调度会话', design:
 const CLASS_META = {
   normal: { icon: '○', title: '普通会话', reason: '单次问答、分析或普通开发，不需要调度协调或 PRD 引导。', contract: '普通会话：直接创建于项目工作区，不组装额外提示词。' },
   scheduling: { icon: '↻', title: '调度会话', reason: '意图是读取状态、诊断失败或恢复规则，沿用现有调度协议。', contract: '调度会话：保留现有调度提示词与 Hub 状态工具，负责协调、自愈和最小升级。' },
-  design: { icon: '▣', title: '设计会话', reason: '涉及跨模块新能力或产品取舍，需要先形成 PRD、Spec 与 DAG。', contract: '设计会话：原生 Plan Mode + read-only；服务端 vibe 负责 PRD/Spec/DAG 校验。' },
+  design: { icon: '▣', title: '设计会话', reason: '涉及跨模块新能力或产品取舍，需要先形成 PRD、Spec 与 DAG。', contract: '设计会话：原生 Plan Mode + read-only；内嵌 PRD 引导（五话题/设计稿门），落盘契约强制 UI 计划带 design 块。' },
 };
 const newSessionDialog = $('new-session-dialog');
 const overrideButtons = [...document.querySelectorAll('[data-type-override]')];
