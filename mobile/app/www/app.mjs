@@ -5,6 +5,8 @@ import {
   ShellState, createTokenStore, createMobileClient, createBiometricGate,
   createKeyedSecureStorage, createConsoleRegistry, createReconnectController, attachReconnectLifecycle,
   bootScreen, reconnectStatusText,
+  createPullRefreshGesture, createVersionWatcher, extractMobileAssetVersion, isBundledShell,
+  readSessionValue, writeSessionValue, restoreTab, REFRESH_TAB_KEY, REFRESH_VERSION_KEY,
 } from './shell.mjs';
 import { createScanSession, createUserMediaCamera } from './scan.mjs';
 
@@ -33,6 +35,16 @@ const PAGE_LOADERS = {
 export const FEATURE_LOADERS = Object.freeze({
   'design-authorize': () => import('./src/features/design-authorize/index.mjs'),
 });
+
+// App 刷新机制（DAG 节点 app-refresh-mechanism）：
+// 下拉刷新只作用于根 Tab 顶部；界面版本自检走入口 no-store + ?v= 内容 hash，同源网页变化才整页重载。
+// 安装版 App 的原生内置壳界面随包冻结，重载拿不到新界面：版本变化如实提示需更新安装包，不重载、不丢状态。
+const PULL_REFRESH_TAB_LABELS = Object.freeze({
+  core: '总览', rules: '规则', rounds: '轮次', todos: '待办',
+  sessions: '会话', artifacts: '产物', dag: 'DAG',
+});
+const VERSION_CHECK_INTERVAL_MS = 120000; // 回前台立即探测；后台最多两分钟轻量探测一次
+const REFRESH_EVENT = 'autoloop:pull-refresh';
 
 // 默认钩子全部是空操作：未就绪时调用不抛错，后续节点只覆盖自己的钩子。
 export function createDefaultHooks() {
@@ -244,6 +256,8 @@ function boot() {
   function selectTab(name) {
     if (!pageEls.has(name) || name === 'settings') return;
     activeTab = name;
+    // 界面版本变化整页重载后回到原 Tab：切换时写入会话存储，控制台切换时由 clearPageContext 清掉。
+    writeSessionValue(REFRESH_TAB_KEY, name);
     stack.clear();
     guard.reset();
     for (const tab of tabs) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
@@ -317,7 +331,8 @@ function boot() {
     return mounted.get(name);
   }
   // 首屏页同步顺序 mount，保持原有钩子覆盖顺序；其余页在首屏渲染后的空闲时段逐个加载。
-  selectTab('core');
+  // 版本自检触发的整页重载后，按会话存储恢复原 Tab（会话页自己的 nomoto-sessions-context 不动）。
+  selectTab(restoreTab(tabs.map(tab => tab.dataset.tab), readSessionValue(REFRESH_TAB_KEY), 'core'));
   void (async () => {
     for (const name of EAGER_PAGES) await ensurePage(name);
     const idle = window.requestIdleCallback ? cb => window.requestIdleCallback(cb, { timeout: 500 }) : cb => setTimeout(cb, 0);
@@ -339,6 +354,166 @@ function boot() {
       select: selectTab,
     });
   }).catch(() => {});
+
+  // ---- App 刷新机制（pullRefresh / versionCheck）----
+  // 下拉刷新：只在根 Tab、内容滚到顶部时接管纵向手势；横向由 tab-swipe 与会话行左滑关闭处理，互不拦截。
+  const ptrIndicator = document.createElement('div');
+  ptrIndicator.id = 'pull-refresh-indicator';
+  ptrIndicator.className = 'pull-refresh-indicator';
+  ptrIndicator.setAttribute('role', 'status');
+  ptrIndicator.setAttribute('aria-live', 'polite');
+  const ptrIcon = document.createElement('span');
+  ptrIcon.className = 'ptr-icon';
+  ptrIcon.textContent = '↓';
+  const ptrText = document.createElement('span');
+  ptrText.id = 'pull-refresh-label';
+  ptrIndicator.append(ptrIcon, ptrText);
+  ptrIndicator.hidden = true;
+  if (content) content.insertBefore(ptrIndicator, content.firstChild);
+
+  const isAtTop = () => {
+    if (content && content.scrollHeight > content.clientHeight + 2) return content.scrollTop <= 1;
+    const root = document.scrollingElement || document.documentElement;
+    return (root?.scrollTop || 0) <= 1;
+  };
+  const ptrShow = (distance, ready, refreshing, text) => {
+    ptrIndicator.hidden = false;
+    ptrText.textContent = text;
+    ptrIndicator.classList.add('ptr-visible');
+    ptrIndicator.classList.toggle('ptr-ready', Boolean(ready));
+    ptrIndicator.classList.toggle('ptr-refreshing', Boolean(refreshing));
+    // 跟手阶段去掉过渡，避免每帧 pointermove 都被 180ms 动画拖慢；刷新态恢复过渡。
+    ptrIndicator.style.transition = refreshing ? '' : 'none';
+    ptrIndicator.style.transform = refreshing
+      ? 'translateY(0)'
+      : `translateY(${Math.max(-48, Math.min(distance, 48) - 48)}px)`;
+  };
+  const ptrHide = () => {
+    ptrIndicator.hidden = true;
+    ptrIndicator.classList.remove('ptr-visible', 'ptr-ready', 'ptr-refreshing');
+    ptrIndicator.style.transition = '';
+    ptrIndicator.style.transform = '';
+  };
+
+  let refreshing = false;
+  const refreshActiveTab = async () => {
+    if (refreshing || !state.canShowMain()) return;
+    if (state.connection !== 'online') { showToast('当前离线，恢复网络后会自动刷新'); return; }
+    refreshing = true;
+    const label = PULL_REFRESH_TAB_LABELS[activeTab] || '当前页';
+    ptrShow(48, false, true, `正在刷新${label}…`);
+    try {
+      // 各页已监听 online 事件重载自身数据；角标走 notify 钩子。整页监听只负责指示与收尾。
+      window.dispatchEvent(new Event('online'));
+      hooks.notify?.refresh?.();
+      hooks.haptic?.success?.();
+      window.dispatchEvent(new CustomEvent(REFRESH_EVENT, { detail: { tab: activeTab } }));
+      await new Promise(resolve => setTimeout(resolve, 600));
+    } finally {
+      refreshing = false;
+      ptrHide();
+    }
+  };
+
+  const pull = createPullRefreshGesture();
+  const usePtr = typeof window.PointerEvent === 'function';
+  const ptrTime = e => (typeof e.timeStamp === 'number' ? e.timeStamp : Date.now());
+  const ptrIdOf = e => (usePtr ? e.pointerId : 'touch');
+  const ptrPoint = e => {
+    if (usePtr) return { x: e.clientX, y: e.clientY };
+    const list = e.touches?.length ? e.touches : (e.changedTouches?.length ? e.changedTouches : null);
+    return list?.length ? { x: list[0].clientX, y: list[0].clientY } : null;
+  };
+  let ptrActiveId = null;
+  let ptrDragging = false;
+  const onPtrDown = e => {
+    if (ptrActiveId !== null || !state.canShowMain() || stack.depth > 0) return;
+    if (usePtr && e.pointerType === 'mouse' && e.button !== 0) return;
+    if (!usePtr && e.touches && e.touches.length > 1) return;
+    const p = ptrPoint(e);
+    if (!p || e.target?.closest?.('input, textarea, [contenteditable="true"]')) return;
+    if (!pull.start({ x: p.x, y: p.y, t: ptrTime(e), atTop: isAtTop() })) return;
+    ptrActiveId = ptrIdOf(e);
+  };
+  const onPtrMove = e => {
+    if (ptrActiveId === null || ptrIdOf(e) !== ptrActiveId) return;
+    const p = ptrPoint(e);
+    if (!p) return;
+    const r = pull.move({ x: p.x, y: p.y });
+    if (!r.pulling) return;
+    ptrDragging = true;
+    const label = PULL_REFRESH_TAB_LABELS[activeTab] || '当前页';
+    ptrShow(r.distance, r.ready, false, r.ready ? `松开立即刷新${label}` : `下拉刷新${label}`);
+    // 旧 WebView：仅纵向拖拽且已到顶时阻止原生回弹；横向与页内滚动照常。
+    if (!usePtr && e.cancelable !== false) e.preventDefault();
+  };
+  const onPtrUp = e => {
+    if (ptrActiveId === null || ptrIdOf(e) !== ptrActiveId) return;
+    const p = ptrPoint(e);
+    const r = pull.end(p ? { x: p.x, y: p.y } : {});
+    const wasDragging = ptrDragging;
+    ptrActiveId = null;
+    ptrDragging = false;
+    if (!usePtr && wasDragging && e.cancelable !== false) e.preventDefault();
+    if (r.fired) void refreshActiveTab();
+    else ptrHide();
+  };
+  const onPtrCancel = e => {
+    if (ptrActiveId === null || ptrIdOf(e) !== ptrActiveId) return;
+    ptrActiveId = null;
+    ptrDragging = false;
+    pull.cancel();
+    ptrHide();
+  };
+  if (content) {
+    if (usePtr) {
+      content.addEventListener('pointerdown', onPtrDown);
+      content.addEventListener('pointermove', onPtrMove);
+      content.addEventListener('pointerup', onPtrUp);
+      content.addEventListener('pointercancel', onPtrCancel);
+    } else {
+      content.addEventListener('touchstart', onPtrDown, { passive: false });
+      content.addEventListener('touchmove', onPtrMove, { passive: false });
+      content.addEventListener('touchend', onPtrUp, { passive: false });
+      content.addEventListener('touchcancel', onPtrCancel, { passive: false });
+    }
+  }
+
+  // 界面版本自检：入口 no-store + ?v= 内容 hash；回前台/定时轻量探测，变化即整页重载拿新界面。
+  // 当前 tab 已写入 REFRESH_TAB_KEY，会话页的 nomoto-sessions-context 不动，重载后回到原位置。
+  const getVersionEntryUrl = () => {
+    const base = consoleBase();
+    if (!base) return null;
+    try { return new URL('/mobile/index.html', base).toString(); }
+    catch { return null; }
+  };
+  const versionCheck = createVersionWatcher({
+    getEntryUrl: getVersionEntryUrl,
+    baseline: extractMobileAssetVersion(document.documentElement.outerHTML),
+    intervalMs: VERSION_CHECK_INTERVAL_MS,
+    onChanged: ({ version }) => {
+      try {
+        if (readSessionValue(REFRESH_VERSION_KEY) === version) return; // 已处理过该版本，防重复提示/循环
+        writeSessionValue(REFRESH_VERSION_KEY, version);
+      } catch { /* 存储不可用仍继续，至多多一次 */ }
+      // 原生内置壳：界面随安装包冻结，重载只会重放随包资源，拿不到控制台新界面。
+      // 如实提示需更新安装包，不伪称已切换，也不重载丢掉当前 tab 与输入。
+      if (isBundledShell(window.location.href, consoleBase())) {
+        showToast('控制台界面已更新，请更新安装包以获得新界面');
+        return;
+      }
+      // 网页同源部署：入口 ?v= 来自服务端改写，整页重载可拿到新界面。
+      showToast('控制台界面已更新，自动为你切换到新版…');
+      setTimeout(() => { window.location.reload(); }, 600);
+    },
+  });
+  versionCheck.start();
+  void versionCheck.check();
+  const onVersionForeground = () => { void versionCheck.onForeground(); };
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') onVersionForeground();
+  });
+  window.addEventListener('resume', onVersionForeground);
 
   // ---- 首屏控制台列表（console-picker）与重连页（reconnect）：运行时创建，文本一律 textContent ----
   const make = (tag, props = {}, text) => {

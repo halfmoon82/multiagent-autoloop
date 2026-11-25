@@ -603,3 +603,183 @@ export function attachReconnectLifecycle({ win, doc, controller }) {
     win.removeEventListener('online', onOnline);
   };
 }
+
+// ---------------------------------------------------------------------------
+// App 刷新机制（DAG 节点 app-refresh-mechanism）：下拉刷新手势与界面版本自检的纯逻辑。
+// 本段不碰 DOM、不写浏览器存储，DOM 接线与整页重载在 app.mjs；可在 Node 里直接做边界测试。
+
+export const PULL_REFRESH_THRESHOLD_PX = 56; // 下拉越过该距离，松手触发当前页重载
+export const PULL_REFRESH_MAX_PX = 96; // 跟手指示的最大位移，避免把内容拖出屏幕
+export const PULL_REFRESH_AXIS_LOCK_PX = 8; // 超过该位移才锁定主轴：纵向归下拉，横向留给 tab-swipe / 左滑关闭
+
+const finite = value => typeof value === 'number' && Number.isFinite(value);
+
+/**
+ * 下拉刷新手势状态机：start → move* → end/cancel。
+ * 只在内容滚到顶部且主轴判定为纵向向下时才 pulling；横向一旦锁定就不再抢手势，
+ * 保证与 tab 滑动切页、会话行左滑关闭、折叠卡片点击互不冲突。
+ */
+export function createPullRefreshGesture({
+  thresholdPx = PULL_REFRESH_THRESHOLD_PX,
+  maxPullPx = PULL_REFRESH_MAX_PX,
+  axisLockPx = PULL_REFRESH_AXIS_LOCK_PX,
+} = {}) {
+  let session = null;
+  return {
+    active: () => Boolean(session),
+    start({ x, y, t, atTop = true, enabled = true } = {}) {
+      if (!enabled || !atTop || !finite(x) || !finite(y)) { session = null; return false; }
+      session = { x, y, t: finite(t) ? t : 0, dx: 0, dy: 0, axis: null };
+      return true;
+    },
+    move({ x, y } = {}) {
+      if (!session) return { pulling: false, distance: 0, ready: false };
+      if (finite(x)) session.dx = x - session.x;
+      if (finite(y)) session.dy = y - session.y;
+      if (!session.axis && Math.max(Math.abs(session.dx), Math.abs(session.dy)) >= axisLockPx) {
+        session.axis = Math.abs(session.dy) > Math.abs(session.dx) ? 'y' : 'x';
+      }
+      if (session.axis !== 'y' || session.dy <= 0) return { pulling: false, distance: 0, ready: false };
+      return {
+        pulling: true,
+        distance: Math.min(session.dy, maxPullPx),
+        ready: session.dy >= thresholdPx,
+      };
+    },
+    end({ x, y } = {}) {
+      if (!session) return { fired: false, distance: 0 };
+      const s = session;
+      session = null;
+      if (finite(x)) s.dx = x - s.x;
+      if (finite(y)) s.dy = y - s.y;
+      const fired = s.axis === 'y' && s.dy >= thresholdPx;
+      return { fired, distance: fired ? Math.min(s.dy, maxPullPx) : 0 };
+    },
+    cancel() {
+      const interrupted = Boolean(session);
+      session = null;
+      return { fired: false, interrupted };
+    },
+  };
+}
+
+/**
+ * 从服务端改写后的移动入口 HTML 提取 ?v=<16位内容 hash>。
+ * 服务端把本地 css/mjs 引用改写成带版本号的 URL（src/server.mjs versionMobileText），
+ * 客户端不需要新接口：no-store 拉入口，解析任一资源的 ?v= 即为当前界面版本。
+ */
+export function extractMobileAssetVersion(html) {
+  if (typeof html !== 'string') return null;
+  const match = /[?&]v=([0-9a-f]{16})(?![0-9a-f])/i.exec(html);
+  return match ? match[1].toLowerCase() : null;
+}
+
+/**
+ * 轻量界面版本自检：入口 no-store 探测，?v= 带当前已知 hash（与服务端版本口径一致）；
+ * 探测失败静默保持现状，不弹错、不抛错；仅当版本变化才回调整页重载。
+ */
+export function createVersionWatcher({
+  getEntryUrl,
+  fetchImpl = null,
+  baseline = null,
+  onChanged = () => {},
+  intervalMs = 0,
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  clearTimer = id => clearTimeout(id),
+} = {}) {
+  if (typeof getEntryUrl !== 'function') throw new TypeError('createVersionWatcher 需要 getEntryUrl');
+  const doFetch = fetchImpl || ((input, init) => globalThis.fetch(input, init));
+  let current = baseline;
+  let timer = null;
+  let inFlight = null;
+  let stopped = false;
+
+  const clear = () => { if (timer !== null) { clearTimer(timer); timer = null; } };
+  const check = () => {
+    if (inFlight) return inFlight;
+    if (stopped) return Promise.resolve({ ok: false, reason: 'stopped' });
+    const entry = getEntryUrl();
+    if (!entry) return Promise.resolve({ ok: false, reason: 'no-base' });
+    inFlight = (async () => {
+      try {
+        const url = new URL(entry);
+        url.searchParams.set('v', current || '');
+        const response = await doFetch(url.toString(), { cache: 'no-store', headers: { accept: 'text/html' } });
+        if (!response || response.ok === false) return { ok: false, reason: 'http' };
+        const version = extractMobileAssetVersion(await response.text());
+        if (!version) return { ok: false, reason: 'no-version' };
+        if (current === null) { current = version; return { ok: true, changed: false, version }; }
+        if (version === current) return { ok: true, changed: false, version };
+        const previous = current;
+        current = version;
+        try { onChanged({ version, previous }); }
+        catch { /* 回调异常不改探测结论，调用方自己负责整页重载的兜底 */ }
+        return { ok: true, changed: true, version, previous };
+      } catch {
+        // 探测失败静默保持现状：离线、证书错误、控制台临时不可达都不打扰用户。
+        return { ok: false, reason: 'network' };
+      } finally {
+        inFlight = null;
+      }
+    })();
+    return inFlight;
+  };
+  const schedule = () => {
+    clear();
+    if (!intervalMs || stopped) return;
+    timer = setTimer(() => { timer = null; void check().then(schedule); }, intervalMs);
+  };
+  return {
+    check,
+    get version() { return current; },
+    start() { stopped = false; schedule(); },
+    stop() { stopped = true; clear(); },
+    onForeground() {
+      if (stopped) return Promise.resolve({ ok: false, reason: 'stopped' });
+      return check().then(result => { schedule(); return result; });
+    },
+  };
+}
+
+/**
+ * 判断当前页面是否为随安装包冻结的「原生内置壳」：页面 origin 与控制台地址不同。
+ * 这种壳里 window.location.reload() 只会重新加载随包资源，拿不到控制台新界面；
+ * 版本变化只能如实提示需更新安装包，不得伪称已切换，更不该重载丢掉页面状态。
+ * 页面与控制台同源（网页同源部署）时返回 false，沿用整页重载换新界面的既有行为。
+ */
+export function isBundledShell(pageUrl, consoleBase) {
+  if (typeof pageUrl !== 'string' || typeof consoleBase !== 'string' || !consoleBase) return false;
+  try {
+    return new URL(pageUrl).origin !== new URL(consoleBase).origin;
+  } catch {
+    return false;
+  }
+}
+
+// 整页重载需要保留的上下文键：tab 由壳写入，会话上下文由会话页写入 nomoto-sessions-context。
+export const REFRESH_TAB_KEY = 'nomoto-active-tab';
+export const REFRESH_VERSION_KEY = 'nomoto-version-reloaded';
+
+const sessionStore = () => {
+  try { return globalThis.sessionStorage ?? null; }
+  catch { return null; }
+};
+
+export function readSessionValue(key, storage) {
+  try {
+    const store = storage === undefined ? sessionStore() : storage;
+    return store ? store.getItem(key) : null;
+  } catch { return null; }
+}
+
+export function writeSessionValue(key, value, storage) {
+  try {
+    const store = storage === undefined ? sessionStore() : storage;
+    if (store) store.setItem(key, String(value));
+  } catch { /* 隐私模式下存储不可用：本次会话仍照常，重载可能不保留位置 */ }
+}
+
+/** 非法的存档值不把用户带到不存在的页面，回落默认 Tab。 */
+export function restoreTab(allowed, saved, fallback = 'core') {
+  return Array.isArray(allowed) && allowed.includes(saved) ? saved : fallback;
+}
