@@ -77,6 +77,8 @@ export function mobileSessionSummaries(sessions = []) {
         agent: String(session.agent ?? '').trim() || null,
         model: session.model ?? null,
         continuedFrom: session.continuedFrom ?? null,
+        // 事项 subject：会话内决策卡按 lane 归属过滤的依据（fix4）；ACP 会话没有，为 null 不编造。
+        hubSubject: String(session.hubSubject ?? '').trim() || null,
         createdAt: String(session.createdAt ?? '').trim() || null,
         updatedAt: String(session.updatedAt ?? '').trim() || null,
         queue: (Array.isArray(session.queue) ? session.queue : (Array.isArray(session.queued) ? session.queued : []))

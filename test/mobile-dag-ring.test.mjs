@@ -388,3 +388,74 @@ test('浏览器：总览活跃环点节点膨出说明、详情跳 DAG 页；已
   await archived.locator('.dagov-archived-toggle').click();
   assert.match(await archived.locator('.dagov-archived-body').innerText(), /dagrun-dead|proj-beta/);
 });
+
+// fix4 回归（2026-11-25）：#316 重写总览时误删 #315 的串行链详情入口与无活跃链空态——
+// 视图模型仍在产出 chainEntry/chainDetail/serialNote，页面却不渲染。此处做整页防回归。
+test('浏览器：总览串行链条目渲染详情入口与节点清单，活跃链不误报空态（fix4）', { skip: browserSkip }, async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'mobile-serial-entry-'));
+  const projectA = path.join(root, 'proj-alpha');
+  mkdirSync(path.join(projectA, '.git'), { recursive: true });
+  // 真实 /api/serial-progress 形状：current 是节点对象、nodes 带 kind/percent。
+  writeFileSync(path.join(root, 'alpha-serial.json'), JSON.stringify({
+    project: projectA,
+    lastEventAt: '2026-11-25T10:00:00+08:00',
+    plan: ['n1', 'n2'],
+    nodes: {
+      n1: { title: '需求确认', status: 'done', summary: '已确认' },
+      n2: { title: '开发实现', status: 'in_progress', summary: '开发中' },
+    },
+  }));
+  const hub = await fakeHub((req, res) => json(res, { runs: [], cards: [], lines: [], spending: { today: {} } }));
+  const rulesFile = path.join(root, 'rules.json');
+  writeFileSync(rulesFile, JSON.stringify({ sources: {}, agents: {}, rules: [] }));
+  const sessionsFake = { async list() { return []; }, async listArchived() { return []; } };
+  const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
+  const server = createConsoleServer({
+    hubUrl: hub.url, ownerKey: 'server-secret', host: '127.0.0.1', root, rulesFile, deviceAuth,
+    projectRoots: [projectA],
+    dagService: createDagService({ root, store: { listRuns: () => [] } }),
+  }, sessionsFake);
+  const url = await listen(server);
+  let browser;
+  t.after(async () => {
+    if (browser) await browser.close();
+    await close(server); await close(hub.server);
+    rmSync(root, { recursive: true, force: true });
+  });
+  const qr = deviceAuth.createBinding();
+  browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  page.on('pageerror', e => console.log('PAGE_ERROR', e.message.slice(0, 200)));
+  await page.addInitScript(() => {
+    let stored = null;
+    window.AutoloopSecureStorage = { async get() { return stored; }, async set(v) { stored = v; }, async remove() { stored = null; } };
+    window.AutoloopBiometric = { async verify() { return true; } };
+  });
+  await page.goto(`${url}/mobile/`);
+  await page.locator('#bind-payload').fill(qr.qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+
+  // 串行链条目在活跃区，带「串行链详情」入口（#316 误删的正是这个按钮）。
+  const row = page.locator('.core-item[data-project-run="alpha-serial.json"]');
+  await row.waitFor({ timeout: 6000 });
+  const toggle = row.locator('[data-chain-entry="alpha-serial.json"]');
+  await toggle.waitFor({ timeout: 4000 });
+  assert.match(await toggle.innerText(), /串行链详情/);
+  // 点开详情：整体进度 + 节点清单 + 当前环节（真实 API 的 current 是节点对象）。
+  await toggle.click();
+  const panel = row.locator('[data-chain-detail="alpha-serial.json"]');
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-chain-detail="alpha-serial.json"]');
+    return el && !el.hidden && el.textContent.includes('需求确认');
+  }, null, { timeout: 4000 });
+  const detailText = await panel.innerText();
+  assert.match(detailText, /整体进度 65%/);
+  assert.match(detailText, /需求确认/);
+  assert.match(detailText, /开发实现/);
+  assert.match(detailText, /当前环节/, '当前节点必须标注（current 为节点对象也要认）');
+  // 有活跃链时不显示「暂无活跃串行链」空态。
+  assert.equal(await page.locator('[data-serial-note]').count(), 0, '有活跃串行链时不显示空态');
+});

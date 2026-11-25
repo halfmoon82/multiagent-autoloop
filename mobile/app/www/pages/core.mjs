@@ -169,6 +169,37 @@ export function mount(ctx) {
       });
       box.appendChild(open);
     }
+    // 串行链详情入口（#315 引入、#316 重写总览时误删，fix4 加回）：点击展开节点进度清单，
+    // 数据来自视图模型 chainDetail（真实串行链状态），失败可重试，不编造节点。
+    if (item.chainEntry && item.chainDetail) {
+      const panel = node('div', { className: 'core-chain-detail', attrs: { 'data-chain-detail': item.runId ?? '', hidden: '' } });
+      const toggle = node('button', { type: 'button', className: 'core-action', attrs: { 'data-chain-entry': item.runId ?? '', 'aria-expanded': 'false' }, text: item.chainEntry.label });
+      const fill = () => {
+        panel.replaceChildren();
+        try {
+          const detail = item.chainDetail;
+          if (detail.empty) { panel.appendChild(node('p', { className: 'hint', text: detail.reason })); return; }
+          panel.appendChild(node('p', { className: 'core-meta', text: `整体进度 ${detail.percent}%` }));
+          const list = node('ul', { className: 'core-list' });
+          for (const n of detail.nodes) {
+            const line = [n.title, n.isCurrent ? '当前环节' : n.status, `${n.percent}%`, n.summary].filter(Boolean).join(' · ');
+            list.appendChild(node('li', { attrs: { 'data-chain-node': n.id }, text: line }));
+          }
+          panel.appendChild(list);
+        } catch (error) {
+          const retry = node('button', { type: 'button', className: 'core-retry', attrs: { 'data-chain-retry': item.runId ?? '' }, text: '重试' });
+          retry.addEventListener('click', fill);
+          panel.append(node('p', { className: 'hint', text: String(error?.message || '详情读取失败') }), retry);
+        }
+      };
+      toggle.addEventListener('click', () => {
+        const open = panel.hidden;
+        panel.hidden = !open;
+        toggle.setAttribute('aria-expanded', String(open));
+        if (open) fill();
+      });
+      box.append(toggle, panel);
+    }
     return box;
   }
 

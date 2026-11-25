@@ -150,7 +150,8 @@ export function buildOverview(snapshot, { now } = {}) {
 }
 
 function chainDetail(chain, nodes) {
-  const current = String(chain?.current ?? '').trim();
+  // 真实 /api/serial-progress 的 current 是节点对象，测试种子也可能是 id 字符串，两种口径都认（fix4）。
+  const current = String(chain?.current?.id ?? chain?.current ?? '').trim();
   const items = nodes.map(n => {
     const id = String(n?.id ?? '').trim();
     return {

@@ -564,7 +564,9 @@ export function mount(ctx) {
     state.messages = smodel ? smodel.buildDetailMessages(session) : mapMessages(session);
     renderPrompt(session);
     state.follow = true;
-    const cards = Array.isArray(state.cards) ? state.cards.filter(card => !card?.project || card.project === session.project) : [];
+    // 决策卡按会话归属过滤（fix4）：有 lane 的卡只进 lane 对应会话，无 lane 的卡按项目归属；
+    // 不再只按项目过滤，别的会话的卡不会串进来。
+    const cards = qmodel?.cardsForSession ? qmodel.cardsForSession(state.cards, session) : [];
     state.group = qmodel ? qmodel.cardsToQuestionGroup(cards, { id: 'session-cards', sessionId: session.id }) : null;
     if (qmodel && state.savedGroup && state.savedSessionId === session.id) {
       state.group = qmodel.restoreGroup(state.savedGroup);
@@ -857,6 +859,10 @@ export function mount(ctx) {
         input.addEventListener('input', () => {
           state.group = qmodel.setDraft(state.group, active.id, input.value);
           state.drafts.question = input.value;
+          // 回答链路（fix4）：文字题渲染时草稿为空、按钮禁用；输入后必须同步解锁，
+          // 否则文字决策卡永远提交不了，卡片一直挂在待答里「不消失」。
+          const submitBtn = questionBox.querySelector('.sessions-question-submit');
+          if (submitBtn) submitBtn.disabled = !String(input.value).trim();
           saveContext();
         });
         card.appendChild(input);
@@ -902,6 +908,9 @@ export function mount(ctx) {
     try {
       await write.answerCard(active.id, payload);
       state.group = qmodel.submitAnswer(state.group, active.id, active.kind === 'choice' ? active.selected : payload.text, { ok: true });
+      // 回答链路闭环（fix4）：state.cards 是重建待回答组的唯一来源，回答成功后必须本地同步为已答，
+      // 否则切到别的会话/重建分组时已答卡片又以未答形式复活。
+      if (qmodel.markCardAnswered) state.cards = qmodel.markCardAnswered(state.cards, active.id, payload);
       ctx.hooks?.haptic?.success?.();
     } catch (error) {
       state.group = qmodel.submitAnswer(state.group, active.id, null, { ok: false, error: error?.message || '提交失败，请重试' });
