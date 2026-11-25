@@ -109,6 +109,7 @@ export function buildOverview(snapshot, { now } = {}) {
   // 活跃项排前：历史 done/cancelled 的 DAG 沉底，进行中串行链排在活跃 DAG 之后、已完结链之前，
   // 避免活跃项目被挤出首屏（2026-11-24 真机：首屏只见已完成/已取消，误判"活跃项目无展示"）。
   const DONE_STATUSES = new Set(['done', 'cancelled', 'canceled', 'failed', 'complete', 'completed']);
+  const FAIL_STATUSES = new Set(['failed', 'error']);
   const itemRank = item => {
     const isSerial = item.status === 'serial';
     const done = isSerial
@@ -123,7 +124,11 @@ export function buildOverview(snapshot, { now } = {}) {
     .map((item, index) => ({ item, index, rank: itemRank(item) }))
     .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
     // archived：已完结的归入「已归档」折叠区（2026-11-25 用户定：活跃项直接展示环，完成的收进已归档）。
-    .map(entry => ({ ...entry.item, archived: entry.rank >= 2 }));
+    // failed/error 不算已完成——失败信号留在首屏可见，绝不藏进归档（同日用户二次确认）。
+    .map(entry => ({
+      ...entry.item,
+      archived: entry.rank >= 2 && !FAIL_STATUSES.has(String(entry.item.status || '').toLowerCase()),
+    }));
   const projects = collection(projectItems, dagAvailable || serialAvailable
     ? '暂无项目进度'
     : `DAG 数据缺失：${dagError || '未读取到项目 DAG 进度'}；${serialError || '串行进度数据缺失，未读取到串行链进度'}`);

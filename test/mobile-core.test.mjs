@@ -645,3 +645,21 @@ test('buildActiveDagCard：提取环卡片字段（节点 summary/状态/波次/
   assert.equal(flags['live-serial.json'], false, '进行中串行链不归档');
   assert.equal(flags['done-serial.json'], true, '已完结串行链归已归档');
 });
+
+// 失败的 DAG/串行链不算已完成，不得折进已归档（2026-11-25 用户定：留在首屏可见）。
+test('项目进度：failed 不归档——失败信号必须留在首屏，不藏进已归档', () => {
+  const run = {
+    runId: 'dagrun-failed', project: '/work/移动控制台', planId: 'mobile-app', status: 'failed',
+    createdAt: '2026-11-19T09:00:00+08:00',
+    authorizationSnapshot: { schema: 2, planDigest: 'f'.repeat(64), allowedActions: ['worktree'], digest: 'e'.repeat(64) },
+    nodes: [{ id: 'a', title: '失败节点', depends_on: [] }],
+    publish: { nodes: { a: { state: 'failed', slot: null } } },
+  };
+  const page = buildOverview(snapshot({
+    'dag-runs': { runs: [{ ...run, mobileSummary: mobileDagSummaries([run], [])[0] }] },
+  }), { now: NOW });
+  const item = page.projects.items.find(entry => entry.runId === 'dagrun-failed');
+  assert.ok(item, '失败 DAG 必须在项目进度里');
+  assert.equal(item.archived, false, 'failed 不得进入已归档（失败信号留在首屏）');
+  assert.ok(item.statusLabel && item.statusLabel !== '状态未知', '失败状态如实标注（不兜底不编造）');
+});
