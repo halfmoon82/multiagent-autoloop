@@ -13,6 +13,14 @@ const object = value => (value && typeof value === 'object' && !Array.isArray(va
 const page = (id, extra = {}) => ({ id, title: MOBILE_PAGE_TITLES[id], ready: true, error: null, ...extra });
 const notReady = (id, reason, extra = {}) => ({ id, title: MOBILE_PAGE_TITLES[id], ready: false, error: reason, ...extra });
 
+// 决策卡三内置操作，顺序按设计稿，语义与网页版一致：结案=resolve、退回调度=delegate-card，
+// 已处理=无需文字的快速办结（复用 resolve，原因固定为「已处理」）。选项/文字回答保持不变。
+export const CARD_QUICK_ACTIONS = Object.freeze([
+  { id: 'mark-handled', label: '已处理' },
+  { id: 'resolve', label: '结案' },
+  { id: 'delegate-return', label: '退回调度' },
+]);
+
 // 今日用量：已上报费用 → Token + 费用未上报 → 用量未上报。只信 Hub 自报值，不折算、不按模型估算。
 function usageText(state, runs, available, error) {
   if (!available) return `状态数据缺失，用量未上报（${error || '未读取到控制台状态'}）`;
@@ -306,7 +314,8 @@ export function buildTodos(snapshot, { hiddenIds } = {}) {
       project, projectLabel: projectName(project),
       createdAt: String(card?.createdAt || '').trim() || null,
       options: array(card?.options).map(String),
-      actions: ['answer-choice', 'answer-text', 'resolve'],
+      actions: ['answer-choice', 'answer-text', ...CARD_QUICK_ACTIONS.map(action => action.id)],
+      quickActions: CARD_QUICK_ACTIONS.map(action => ({ ...action })),
       readOnly: false,
       choice: null,
       lane: String(card?.lane || '').trim() || null,
