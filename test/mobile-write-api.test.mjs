@@ -566,3 +566,16 @@ test('预览票据：设备鉴权签发，兑换一次性，HTML 流仅预览放
   const after = await mobileFetch(ctx.url, '/api/mobile/api/sessions', auth);
   assert.equal(after.status, 200, '兑换异常不得击落控制台进程');
 });
+
+// 设计门回归：artifacts-preview 的 open-preview 检查扫描整个 src/mobile-write.mjs，
+// 要求保留 sendPreviewHtml 标记，且整文件不得再出现旧式帧隔离响应头字面量
+// （通用安全头定义与说明注释都算，见 fix3-design.verify.mjs 的 notAny）。
+test('预览实现文件满足设计门 open-preview 标记：保留 sendPreviewHtml，整文件无 x-frame-options 字面量', () => {
+  const source = readFileSync(path.join(WORKTREE, 'src/mobile-write.mjs'), 'utf8');
+  assert.match(source, /sendPreviewHtml/, '预览发送函数标记必须仍在写范围内');
+  assert.equal(
+    source.includes('x-frame-options'),
+    false,
+    'src/mobile-write.mjs 整文件不得出现 x-frame-options：通用安全头已由 CSP frame-ancestors none 覆盖，注释也不得重引该字面量'
+  );
+});
