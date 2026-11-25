@@ -5,7 +5,7 @@
 import {
   MOBILE_PAGE_TITLES, MOBILE_NAVIGATION, statusLabel, dagStatusLabel, cardStateLabel,
   billingText, projectName, scheduleLabel, ruleStatus, collection, titleOf, formatTokens,
-  runTaskInfo, sameLocalDay, ACTION_LABELS, OVERVIEW_GROUP_EMPTY,
+  runTaskInfo, sameLocalDay, archiveUsageLabel, archiveCreatedLabel, ACTION_LABELS, OVERVIEW_GROUP_EMPTY,
 } from './contract.mjs';
 
 const array = value => (Array.isArray(value) ? value : []);
@@ -129,9 +129,44 @@ export function buildOverview(snapshot, { now, hiddenIds } = {}) {
       ...entry.item,
       archived: entry.rank >= 2 && !FAIL_STATUSES.has(String(entry.item.status || '').toLowerCase()),
     }));
-  const projects = collection(projectItems, dagAvailable || serialAvailable
+  // 归档详情（与网页 /api/archive 同源）：按 runId（DAG）或链词干（串行）匹配；
+  // 接口里有而总览没有的归档任务补成独立已归档行。单项缺失用默认文案，不留空块。
+  const archiveAvailable = Boolean(snapshot?.available?.archive);
+  const archiveError = snapshot?.errors?.archive || null;
+  const archiveEntries = archiveAvailable ? array(snapshot.archive).filter(entry => entry && typeof entry === 'object') : [];
+  const archiveDetail = entry => ({
+    createdLabel: archiveCreatedLabel(entry?.createdAt),
+    summary: String(entry?.title ?? '').trim() || '暂无摘要',
+    usageLabel: archiveUsageLabel(entry?.usage),
+  });
+  const entryKey = entry => (entry.kind === 'serial' ? `serial:${String(entry.source ?? '')}-serial.json` : `dag:${String(entry.runId ?? '')}`);
+  const entryByKey = new Map(archiveEntries.map(entry => [entryKey(entry), entry]));
+  const matched = new Set();
+  const withArchive = projectItems.map(item => {
+    if (!item.archived || !archiveAvailable) return item;
+    const key = item.status === 'serial' ? `serial:${item.runId}` : `dag:${item.runId}`;
+    const entry = entryByKey.get(key);
+    if (entry) matched.add(key);
+    return { ...item, archiveDetail: archiveDetail(entry) };
+  });
+  for (const entry of archiveEntries) {
+    const key = entryKey(entry);
+    if (matched.has(key)) continue;
+    const project = String(entry.project ?? '').trim();
+    withArchive.push({
+      runId: String(entry.runId || `${entry.source ?? ''}-serial.json`).trim() || null,
+      project, projectLabel: projectName(project), planId: null,
+      status: entry.kind === 'serial' ? 'serial' : String(entry.reason ?? ''),
+      statusLabel: entry.reason === 'completed' ? '全部完成' : '已取消',
+      nodeCount: Number(entry.nodes?.total) || 0,
+      progressAvailable: false, dagEntry: null, archived: true,
+      archiveDetail: archiveDetail(entry),
+    });
+  }
+  const projects = collection(withArchive, dagAvailable || serialAvailable || archiveEntries.length
     ? '暂无项目进度'
-    : `DAG 数据缺失：${dagError || '未读取到项目 DAG 进度'}；${serialError || '串行进度数据缺失，未读取到串行链进度'}`);
+    : `DAG 数据缺失：${dagError || '未读取到项目 DAG 进度'}；${serialError || '串行进度数据缺失，未读取到串行链进度'}`,
+  { archiveError: archiveAvailable ? null : archiveError });
 
   const sorted = [...runs].sort((a, b) => String(b?.finishedAt || b?.createdAt || '').localeCompare(String(a?.finishedAt || a?.createdAt || '')));
   const activity = collection(sorted.slice(0, 5).map(run => ({

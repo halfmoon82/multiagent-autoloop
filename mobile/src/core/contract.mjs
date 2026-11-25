@@ -129,3 +129,24 @@ export function sameLocalDay(iso, now) {
     && value.getMonth() === now.getMonth()
     && value.getDate() === now.getDate();
 }
+
+// 归档任务最终用量（口径同 public/archive-view.mjs archiveUsageText）：只信上报值，
+// 有费用写费用，只有 Token 写「费用未上报」，完全没有写「用量未上报」，不当 0、不编造。
+export function archiveUsageLabel(usage) {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return '用量未上报';
+  const tokens = Number(usage.tokens) || ((Number(usage.input) || 0) + (Number(usage.output) || 0));
+  const hasCost = typeof usage.cost === 'number' && Number.isFinite(usage.cost);
+  const tokenText = tokens > 0 ? `Token ${formatTokens(tokens)}` : null;
+  if (hasCost && tokenText) return `费用 $${usage.cost.toFixed(2)} · ${tokenText}`;
+  if (hasCost) return `费用 $${usage.cost.toFixed(2)} · Token 未上报`;
+  if (tokenText) return `${tokenText} · 费用未上报`;
+  return '用量未上报';
+}
+
+// 创建日期（本地日历日）；缺失或无法解析写「创建日期未记录」。
+export function archiveCreatedLabel(iso) {
+  const value = iso ? new Date(iso) : null;
+  if (!value || Number.isNaN(value.getTime())) return '创建日期未记录';
+  const pad = n => String(n).padStart(2, '0');
+  return `创建于 ${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+}

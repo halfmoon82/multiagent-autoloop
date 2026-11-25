@@ -268,6 +268,13 @@ export function mount(ctx) {
       }));
       else refs.projects.appendChild(renderProjectRow(item));
     }
+    // 归档接口读取失败：就地提示并可重试，不编造归档详情。
+    if (archived.length && collection.archiveError) {
+      const retry = node('button', { type: 'button', className: 'core-action', attrs: { 'data-archive-retry': '' }, text: '重试' });
+      retry.addEventListener('click', () => { void reload(); });
+      refs.projects.appendChild(node('p', { className: 'hint', attrs: { 'data-archive-error': '' }, text: `归档详情读取失败：${collection.archiveError}` }));
+      refs.projects.appendChild(retry);
+    }
     if (archived.length) {
       const body = node('div', { className: 'dagov-archived-body', attrs: { hidden: '' } });
       for (const item of archived) body.appendChild(renderProjectRow(item));
@@ -293,6 +300,14 @@ export function mount(ctx) {
         if (typeof select === 'function') select(item.dagEntry.page);
       });
       box.appendChild(open);
+    }
+    // 归档详情（与网页 /api/archive 同源）：创建日期、摘要、Token 与费用；缺失项由视图模型给默认文案。
+    if (item.archiveDetail) {
+      box.append(
+        node('span', { className: 'core-meta arch-summary', attrs: { 'data-archive-summary': '' }, text: item.archiveDetail.summary }),
+        node('span', { className: 'core-meta arch-created', attrs: { 'data-archive-created': '' }, text: item.archiveDetail.createdLabel }),
+        node('span', { className: 'core-meta arch-usage', attrs: { 'data-archive-usage': '' }, text: item.archiveDetail.usageLabel }),
+      );
     }
     // 串行链详情入口（#315 引入、#316 重写总览时误删，fix4 加回）：点击展开节点进度清单，
     // 数据来自视图模型 chainDetail（真实串行链状态），失败可重试，不编造节点。
@@ -504,7 +519,20 @@ export function mount(ctx) {
       if (!write) write = model.createCoreWrite(ctx.client);
       const core = model.createMobileCore({ api: key => ctx.client.api(key) });
       const { snapshot } = await core.load();
-      fullSnapshot = snapshot;
+      // 归档详情单独读取（snapshot 装配不含 archive）；失败只标记缺失，不影响其他页面。
+      let archive = null;
+      let archiveError = null;
+      try {
+        const data = await ctx.client.api('archive');
+        if (data && Array.isArray(data.archived)) archive = data.archived;
+        else archiveError = '归档数据缺失，未读取到已归档任务';
+      } catch (error) { archiveError = String(error?.message || error || '读取失败'); }
+      fullSnapshot = {
+        ...snapshot,
+        available: { ...snapshot.available, archive: archive !== null },
+        errors: archiveError ? { ...snapshot.errors, archive: archiveError } : snapshot.errors,
+        archive,
+      };
       renderCurrent();
       for (const banner of banners) banner.clear();
     } catch (error) {
