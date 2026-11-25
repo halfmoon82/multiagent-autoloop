@@ -38,7 +38,7 @@ function usageText(state, runs, available, error) {
 
 // 总览：四组计数与最近 5 条标题概要、待调度处理分组、项目 DAG 进度与最近动态。
 // 环形进度百分比由后续 dag-ring 节点提供，本节点不编造进度数字。
-export function buildOverview(snapshot, { now } = {}) {
+export function buildOverview(snapshot, { now, hiddenIds } = {}) {
   const reference = now instanceof Date ? now : new Date(now ?? Date.now());
   const available = Boolean(snapshot?.available?.state);
   const error = snapshot?.errors?.state || null;
@@ -49,7 +49,7 @@ export function buildOverview(snapshot, { now } = {}) {
   const running = runs.filter(run => run?.state === 'claimed');
   const retrying = runs.filter(run => run?.state === 'queued' && (run?.attempts || 0) > 0);
   const doneToday = runs.filter(run => ['done', 'nothing'].includes(run?.state) && sameLocalDay(run?.finishedAt || run?.createdAt, reference));
-  const openCards = cards.filter(card => card?.state === 'open');
+  const openCards = pendingCards(cards, hiddenIds);
   const attention = runs.filter(run => ['unknown', 'cancelled'].includes(run?.state));
   const runTitles = list => list.slice(0, 5).map(run => runTaskInfo(run).taskSummary);
   const group = (id, label, list) => ({ id, label, count: list.length, titles: runTitles(list), emptyReason: OVERVIEW_GROUP_EMPTY[id] });
@@ -250,32 +250,51 @@ export function buildRuns(snapshot) {
 }
 
 // 待我处理：保留决策上下文，只给选项回答、文字回答与结案，不虚构「进入原始会话」。
-export function buildTodos(snapshot) {
+// 只列仍待处理（open）的卡：回答/结案后卡片离开待办（2026-11-25 真机反馈「答完卡还在」）。
+// hiddenIds：本机刚回答成功、Hub 状态尚未重读到的卡，立即隐藏，避免重读往返期间残留。
+// 卡片 lane 为 scheduling:<会话id> 时标注来源会话，让跨会话的卡一眼可辨。
+export function buildTodos(snapshot, { hiddenIds } = {}) {
   const available = Boolean(snapshot?.available?.state);
   const error = snapshot?.errors?.state || null;
   if (!available) return notReady('todos', error, { items: collection([], `状态数据缺失：${error || '未读取到控制台状态'}`) });
 
-  const cards = array(object(snapshot.state).cards);
-  const items = cards.filter(card => ['open', 'decided'].includes(String(card?.state || '').trim())).map(card => {
-    const stateValue = String(card?.state || '').trim();
-    const open = stateValue === 'open';
+  const items = pendingCards(object(snapshot.state).cards, hiddenIds).map(card => {
     const project = String(card?.project || card?.cwd || '').trim();
+    const sourceLabel = cardSourceLabel(card);
     return {
       id: card?.id ?? null,
       title: titleOf(card?.title, '待处理事项'),
       text: titleOf(card?.text, ''),
-      state: stateValue,
-      stateLabel: cardStateLabel(stateValue),
+      state: 'open',
+      stateLabel: cardStateLabel('open'),
       rule: titleOf(card?.rule, ''),
       project, projectLabel: projectName(project),
       createdAt: String(card?.createdAt || '').trim() || null,
       options: array(card?.options).map(String),
-      actions: open ? ['answer-choice', 'answer-text', 'resolve'] : [],
-      readOnly: !open,
-      choice: open ? null : (card?.choice ?? card?.answer ?? null),
+      actions: ['answer-choice', 'answer-text', 'resolve'],
+      readOnly: false,
+      choice: null,
+      lane: String(card?.lane || '').trim() || null,
+      ...(sourceLabel ? { sourceLabel } : {}),
     };
   });
   return page('todos', { items: collection(items, '没有等待您处理的事项。') });
+}
+
+// 仍待处理的卡：state=open 且不在本机刚答过的隐藏集合里。待办列表与角标共用同一口径。
+export function pendingCards(cards, hiddenIds) {
+  const hidden = new Set([...(hiddenIds || [])].map(String));
+  return array(cards).filter(card => String(card?.state || '').trim() === 'open'
+    && card?.id !== undefined && card?.id !== null && !hidden.has(String(card.id)));
+}
+
+// 卡片来源标注：只认 scheduling:<会话id> 形态的会话 lane；DAG 巡检/代理等系统 lane 不冒充会话。
+const SYSTEM_LANES = /^scheduling:(?:dag|dag-stall|card-delegate):/;
+export function cardSourceLabel(card) {
+  const lane = String(card?.lane || '').trim();
+  if (!lane.startsWith('scheduling:') || SYSTEM_LANES.test(lane)) return '';
+  const id = lane.slice('scheduling:'.length);
+  return id ? `来自会话 ${id.slice(0, 8)}` : '';
 }
 
 // 执行授权：目标项目、授权范围、外部动作边界取服务端冻结摘要；移动端只读展示，确认/创建不在本页。
@@ -344,7 +363,7 @@ export function buildPages(snapshot, options = {}) {
     overview: buildOverview(snapshot, options),
     rules: buildRules(snapshot),
     runs: buildRuns(snapshot),
-    todos: buildTodos(snapshot),
+    todos: buildTodos(snapshot, options),
     authorize: buildAuthorization(snapshot),
     navigation: MOBILE_NAVIGATION,
   };

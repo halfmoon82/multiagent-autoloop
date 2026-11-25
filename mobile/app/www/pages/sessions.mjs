@@ -569,7 +569,9 @@ export function mount(ctx) {
     const cards = qmodel?.cardsForSession ? qmodel.cardsForSession(state.cards, session) : [];
     state.group = qmodel ? qmodel.cardsToQuestionGroup(cards, { id: 'session-cards', sessionId: session.id }) : null;
     if (qmodel && state.savedGroup && state.savedSessionId === session.id) {
-      state.group = qmodel.restoreGroup(state.savedGroup);
+      // 恢复的草稿组里已在别处回答/结案的卡要剔除，不复活残留卡。
+      const restored = qmodel.restoreGroup(state.savedGroup);
+      state.group = smodel ? smodel.pruneQuestionGroup(restored, smodel.openCardsBySession(state.cards, session, qmodel.cardsForSession).map(card => String(card.id))) : restored;
     }
     detailTitle.textContent = session.title || '会话';
     renderDetailActions();
@@ -907,10 +909,13 @@ export function mount(ctx) {
     if (button) button.disabled = true;
     try {
       await write.answerCard(active.id, payload);
-      state.group = qmodel.submitAnswer(state.group, active.id, active.kind === 'choice' ? active.selected : payload.text, { ok: true });
       // 回答链路闭环（fix4）：state.cards 是重建待回答组的唯一来源，回答成功后必须本地同步为已答，
       // 否则切到别的会话/重建分组时已答卡片又以未答形式复活。
       if (qmodel.markCardAnswered) state.cards = qmodel.markCardAnswered(state.cards, active.id, payload);
+      // 回答成功：卡已在 Hub 结案，立即从会话卡组移除（不留「已回答」残留行）。
+      state.group = smodel
+        ? smodel.pruneQuestionGroup(state.group, state.group.questions.map(item => item.id).filter(id => String(id) !== String(active.id)))
+        : qmodel.submitAnswer(state.group, active.id, active.kind === 'choice' ? active.selected : payload.text, { ok: true });
       ctx.hooks?.haptic?.success?.();
     } catch (error) {
       state.group = qmodel.submitAnswer(state.group, active.id, null, { ok: false, error: error?.message || '提交失败，请重试' });
@@ -1248,6 +1253,11 @@ export function mount(ctx) {
         : [];
       const hubState = await ctx.client.api('state').catch(() => null);
       state.cards = Array.isArray(hubState?.cards) ? hubState.cards : [];
+      // 详情页打开时同步卡组：在「待我处理」或别的端已回答/结案的卡立即离开当前会话。
+      if (hubState && smodel && qmodel && state.view === 'detail' && state.session && state.group) {
+        const pruned = smodel.pruneQuestionGroup(state.group, smodel.openCardsBySession(state.cards, state.session, qmodel.cardsForSession).map(card => String(card.id)));
+        if (pruned !== state.group) { state.group = pruned; renderQuestion(); saveContext(); }
+      }
 
       const result = await reader.load({ kind: state.kind, query: state.query });
       state.lastResult = result;
