@@ -2,7 +2,7 @@
 // 真机反馈（2026-11-25）：流式有，但「输出完之后马上会被前端给吞掉」。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
@@ -11,9 +11,13 @@ import { createDeviceStore } from '../src/device-auth.mjs';
 import { fakeHub, json, listen, close } from './helpers.mjs';
 
 const browserSkip = (() => {
-  try { return existsSyncGuard() ? false : 'npm test 阶段未安装 Playwright Chromium，跳过浏览器回归'; }
-  catch { return '无法探测 Playwright Chromium，跳过浏览器回归'; }
-  function existsSyncGuard() { return Boolean(chromium.executablePath()); }
+  try {
+    return existsSync(chromium.executablePath())
+      ? false
+      : 'npm test 阶段未安装 Playwright Chromium，跳过浏览器回归（安装浏览器后本地会真实执行）';
+  } catch {
+    return '无法探测 Playwright Chromium，跳过浏览器回归';
+  }
 })();
 
 test('浏览器：流式气泡运行中可见，轮次结束后最终消息留在转录（不得吞掉）', { skip: browserSkip }, async t => {
