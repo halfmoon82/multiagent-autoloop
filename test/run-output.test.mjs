@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { cleanFinalMessage, finalMessageFromStdout, readFinalMessage, MAX_FINAL_MESSAGE_CHARS } from '../src/run-output.mjs';
+import { cleanFinalMessage, finalMessageFromStdout, readFinalMessage, readPartialMessage, MAX_FINAL_MESSAGE_CHARS } from '../src/run-output.mjs';
 
 // 复刻两种插件的真实输出形状（plugins/codex/agent.ts、plugins/claude/agent.ts 的 read() 解析口径）。
 const codexStdout = (...texts) => [
@@ -99,4 +99,39 @@ test('readFinalMessage returns null for unknown runs and rejects non-integer ids
   assert.equal(readFinalMessage({ root, runId: '../5' }), null);
   assert.equal(readFinalMessage({ root, runId: 0 }), null);
   assert.equal(readFinalMessage({ root: null, runId: 5 }), null);
+});
+
+// ---------- 运行中部分输出（Hub 会话流式回显，2026-11-25） ----------
+test('partialMessageFromStdout：未完成轮也能取已产出文本（Codex 无 turn.completed / Claude 无 result）', async () => {
+  const { partialMessageFromStdout: partial } = await import('../src/run-output.mjs');
+  // Codex：只有半截 item.completed，没有 turn.completed —— final 路径返回 null，partial 必须给出文本
+  const codexHalf = [
+    JSON.stringify({ type: 'thread.started' }),
+    JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '先回答一部分' } }),
+  ].join('\n');
+  assert.equal(finalMessageFromStdout(codexHalf), null, '未完成轮 final 必须是 null');
+  assert.equal(partial(codexHalf), '先回答一部分');
+  // Claude stream-json：最后一条 assistant 文本事件即当前进度
+  const claudeHalf = [
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: '第一段' }] } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: '第一段\n第二段（更长）' }] } }),
+    JSON.stringify({ type: 'tool_progress', tool: 'Read' }),
+  ].join('\n');
+  assert.equal(partial(claudeHalf), '第一段\n第二段（更长）');
+  assert.equal(partial('不是 JSON 的杂行'), null);
+});
+
+test('readPartialMessage：按最新 attempt/turn 发现 stdout，截断到上限', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'partial-out-'));
+  try {
+    const dir = path.join(root, 'worker', 'runs', '42-1');
+    mkdirSync(dir, { recursive: true });
+    const longText = '字'.repeat(21000);
+    writeFileSync(path.join(dir, 'stdout-1.log'), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: longText }] } }));
+    const partial = readPartialMessage({ root, runId: 42 });
+    assert.ok(partial.includes('已截断'), '超过上限必须截断');
+    assert.ok([...partial].length <= 20000 + 20);
+    assert.equal(readPartialMessage({ root, runId: 999 }), null, '不存在的 run 返回 null');
+    assert.equal(readPartialMessage({ root: null, runId: 42 }), null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

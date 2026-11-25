@@ -14,7 +14,7 @@ import { buildOpenItemsTasks } from './scheduling-prompt-open-items.mjs';
 import { prepareSessionCodexHome, defaultUserCodexHome } from './session-codex-home.mjs';
 import { HubSchedulingSessionAdapter, HubSchedulingError, HUB_SCHEDULING_AGENT_LABEL, HUB_RECONCILE_INTERVAL_MS, schedulingSubject, schedulingEventId, mapHubStateToStatus, numericEventId, readHubRun } from './hub-scheduling-session.mjs';
 import { buildSchedulingContext, contextTrailer, composeTurnText, prevAgentFrom, hasOpenCardsFor, snapshotLinesFrom, isBareContinuation, exchangesFrom, HANDOVER_ROUNDS } from './scheduling-context.mjs';
-import { readFinalMessage } from './run-output.mjs';
+import { readFinalMessage, readPartialMessage } from './run-output.mjs';
 import { ROOT_NODE } from './dag-run.mjs';
 import { saveSessionAttachments, attachmentPrompt } from './session-attachments.mjs';
 
@@ -249,7 +249,25 @@ export class SchedulingSessionManager {
     const sessions = [...this.sessions.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     // #100：前端轮询时顺带对活跃 Hub 会话做节流对账。只更新记录状态，不改 list 的同步返回形状。
     this.#reconcileActiveHubSessions(sessions);
+    // Hub 会话没有 ACP 分片通道：运行中从本机 worker stdout 回显部分输出到 liveText（1s 节流），
+    // 让 App/网页的流式气泡对 Hub 会话同样生效（2026-11-25 真机反馈：Hub 会话整条等对账无增量）。
+    this.#streamActiveHubSessions(sessions);
     return sessions.map(toPublicSession);
+  }
+
+  // 运行中的 Hub 会话：按 runId 读本机执行目录的最新 stdout，把已产出的 agent 文本放进 liveText。
+  // 纯本地文件读取、1s 会话级节流；终态由对账路径清 liveText 并落定最终消息，这里只负责「在途增量」。
+  #streamActiveHubSessions(sessions) {
+    if (!this.runtimeRoot) return;
+    const nowMs = Date.now();
+    for (const record of sessions) {
+      const hub = record.hub;
+      if (!hub?.runId || record.status !== 'running') continue;
+      if (Number.isFinite(hub.lastLiveAt) && nowMs - hub.lastLiveAt < 1000) continue;
+      hub.lastLiveAt = nowMs;
+      const partial = readPartialMessage({ root: this.runtimeRoot, runId: hub.runId });
+      if (typeof partial === 'string' && partial) record.liveText = partial;
+    }
   }
 
   // #100：与前端轮询对齐的节流对账。每次 list() 扫描活跃 Hub 会话，仅在超过 hubReconcileMs
@@ -1144,7 +1162,7 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
       this.#persist(record);
       return run;
     }
-    if (terminal) { record.hub.lastAgent = agent; record.turnStartedAt = null; }
+    if (terminal) { record.hub.lastAgent = agent; record.turnStartedAt = null; record.liveText = ''; }
     if (run.runId) record.hub.runId = run.runId;
     record.hub.lastState = run.state ?? null;
     record.status = mapHubStateToStatus(run.state);

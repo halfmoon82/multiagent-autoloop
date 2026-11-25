@@ -51,34 +51,81 @@ export function cleanFinalMessage(text, max = MAX_FINAL_MESSAGE_CHARS) {
  * 读某一轮的完整最终回复。取最后一次执行（attempt 最大）的最后一份 stdout（回执重写会产生 stdout-2…）；
  * 最后一份解析不出时往前找。runId 必须是正整数，杜绝路径拼接越界。
  */
-export function readFinalMessage({ root, runId } = {}) {
+// 发现某轮的全部 stdout 文件（最新 attempt、最新 turn 在前），供最终/部分读取共用。
+function listStdoutFiles(root, runId) {
   const id = Number(runId);
-  if (!root || !Number.isSafeInteger(id) || id <= 0) return null;
+  if (!root || !Number.isSafeInteger(id) || id <= 0) return [];
   const runsDir = path.join(root, 'worker', 'runs');
-  if (!existsSync(runsDir)) return null;
+  if (!existsSync(runsDir)) return [];
   let dirs;
   try {
     dirs = readdirSync(runsDir)
       .map(name => { const match = RUN_DIR.exec(name); return match && Number(match[1]) === id ? { name, attempt: Number(match[2]) } : null; })
       .filter(Boolean)
       .sort((a, b) => b.attempt - a.attempt);
-  } catch { return null; }
+  } catch { return []; }
+  const files = [];
   for (const { name } of dirs) {
     const dir = path.join(runsDir, name);
-    let outputs = [];
     try {
       if (!statSync(dir).isDirectory()) continue;
-      outputs = readdirSync(dir)
+      for (const entry of readdirSync(dir)
         .map(file => { const match = STDOUT.exec(file); return match ? { file, turn: Number(match[1]) } : null; })
         .filter(Boolean)
-        .sort((a, b) => b.turn - a.turn);
-    } catch { continue; }
-    for (const { file } of outputs) {
-      try {
-        const message = cleanFinalMessage(finalMessageFromStdout(readFileSync(path.join(dir, file), 'utf8')));
-        if (message) return message;
-      } catch { /* 单份读不到就看更早的一份 */ }
+        .sort((a, b) => b.turn - a.turn)) {
+        files.push(path.join(dir, entry.file));
+      }
+    } catch { /* 单个目录读不到就跳过 */ }
+  }
+  return files;
+}
+
+export function readFinalMessage({ root, runId } = {}) {
+  for (const file of listStdoutFiles(root, runId)) {
+    try {
+      const message = cleanFinalMessage(finalMessageFromStdout(readFileSync(file, 'utf8')));
+      if (message) return message;
+    } catch { /* 单份读不到就看更早的一份 */ }
+  }
+  return null;
+}
+
+// 运行中回显：不要求 turn.completed / result success——只要 worker 已吐出部分 agent 文本就返回，
+// 让 Hub 会话在前端有流式输出（2026-11-25 真机反馈：Hub 会话整条等对账，期间毫无增量）。
+export function partialMessageFromStdout(text) {
+  const events = parseLines(text);
+  const isCodex = events.some(event => event.type === 'thread.started' || event.type === 'turn.started'
+    || event.type === 'item.completed' || event.type === 'turn.completed');
+  if (isCodex) {
+    const messages = events.filter(event => event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string');
+    return messages.length ? messages.map(message => message.item.text).join('\n') : null;
+  }
+  // Claude stream-json：同一 msg id 的后续事件内容更全，取最后一条带文本的 assistant 事件。
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event?.type === 'assistant') {
+      const texts = (Array.isArray(event.message?.content) ? event.message.content : [])
+        .filter(block => block?.type === 'text' && typeof block.text === 'string')
+        .map(block => block.text);
+      if (texts.length) return texts.join('\n');
     }
+    if (event?.type === 'result' && typeof event.result === 'string' && event.result) return event.result;
+  }
+  return null;
+}
+
+export const MAX_PARTIAL_MESSAGE_CHARS = 20000;
+
+/** 读某一轮当前已产出的部分回复（不要求完成）；读不到返回 null。长度收敛，避免长轮撑爆前端。 */
+export function readPartialMessage({ root, runId, max = MAX_PARTIAL_MESSAGE_CHARS } = {}) {
+  for (const file of listStdoutFiles(root, runId)) {
+    try {
+      const partial = partialMessageFromStdout(readFileSync(file, 'utf8'));
+      if (partial && partial.trim()) {
+        const chars = [...partial.trim()];
+        return chars.length > max ? chars.slice(0, max).join('') + '\n…（输出过长，已截断实时预览）' : partial.trim();
+      }
+    } catch { /* 单份读不到就看更早的一份 */ }
   }
   return null;
 }

@@ -775,6 +775,16 @@ export function mount(ctx) {
       if (echo && !messages.some(message => message.text === echo.text)) messages = [...messages, echo];
       const liveBubble = smodel?.buildComposerView({ session }).stream;
       if (liveBubble) messages = [...messages, liveBubble];
+      // 防吞（2026-11-25 真机：轮次结束瞬间流式文本整体消失）：新数据把流式气泡摘掉、
+      // 而转录既没包含同文消息、也没新落定 agent 消息时，保留气泡到转录真正接住它为止——
+      // 终态消息迟到一拍也不能让已流出的文字从界面上蒸发；新消息一落定气泡即离场，不残留。
+      const prevLast = state.messages[state.messages.length - 1];
+      if (prevLast && prevLast.streaming && prevLast.text) {
+        const caught = messages.some(m => m.role === '会话' && m.text && (m.text === prevLast.text || m.text.includes(prevLast.text)));
+        const prevAgentCount = state.messages.filter(m => m.role === '会话' && m.at).length;
+        const nextAgentCount = messages.filter(m => m.role === '会话' && m.at).length;
+        if (!caught && nextAgentCount <= prevAgentCount) messages = [...messages, prevLast];
+      }
       if (JSON.stringify(messages) !== JSON.stringify(state.messages)) {
         // 跟随状态以更新瞬间的实测位置为准，不信任可能滞后的 state.follow：
         // 追新只滚底（用户在底部附近），用户上翻阅读时原样保持滚动位置。
