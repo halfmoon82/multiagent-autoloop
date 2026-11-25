@@ -29,6 +29,19 @@ const TABS = [['core', '总览'], ['rules', '规则'], ['rounds', '轮次'], ['t
 
 export const EXIT = { pass: 0, fail: 1, notRun: 3 };
 
+// 下拉刷新冒烟：核心 Tab 都在内容顶部；y 从 22% 拉到 62% 越过 56px 阈值且保持足够时长。
+export const PULL_REFRESH_SMOKE_TABS = Object.freeze([['core', '总览'], ['rules', '规则'], ['rounds', '轮次'], ['todos', '待办'], ['sessions', '会话']]);
+
+/** 生成 adb swipe 参数（x 取屏幕中线，y 按比例）；尺寸非法返回 null 由调用方标未执行。 */
+export function pullSwipeArgs(width, height, { fromY = 0.22, toY = 0.62, durationMs = 500 } = {}) {
+  const w = Number(width); const h = Number(height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  return ['shell', 'input', 'swipe',
+    String(Math.round(w / 2)), String(Math.round(h * fromY)),
+    String(Math.round(w / 2)), String(Math.round(h * toY)),
+    String(durationMs)];
+}
+
 export function findAdb(env = process.env) {
   const sdk = env.ANDROID_HOME || env.ANDROID_SDK_ROOT || '';
   const candidates = [sdk && path.join(sdk, 'platform-tools', 'adb'), 'adb'].filter(Boolean);
@@ -255,6 +268,33 @@ function main() {
       tap(serialA, waitFor(serialA, '展开', 10000));
       pause(1);
       waitFor(serialA, '收起', 8000);
+    }],
+    ...PULL_REFRESH_SMOKE_TABS.map(([, label]) => [`下拉刷新：${label}`, () => {
+      tap(serialA, waitFor(serialA, label));
+      pause(1);
+      const size = /(\d+)x(\d+)/.exec(sh(serialA, 'wm size'));
+      const args = pullSwipeArgs(size?.[1], size?.[2]);
+      if (!args) throw new StepFailure('读不到屏幕尺寸，无法下拉');
+      // 先回到内容顶部再下拉，落在纵向区间，不与卡片滚动/左滑关闭抢手势。
+      adb(serialA, ['shell', 'input', 'swipe',
+        String(Math.round(Number(size[1]) / 2)), String(Math.round(Number(size[2]) * 0.5)),
+        String(Math.round(Number(size[1]) / 2)), String(Math.round(Number(size[2]) * 0.95)), '120']);
+      adb(serialA, args);
+      const refreshing = waitFor(serialA, '正在刷新', 6000);
+      screenshot(serialA, `pull-refresh-${label}`);
+      return { reason: `下拉出现刷新指示（约 ${refreshing.x},${refreshing.y}）` };
+    }]),
+    ['界面版本变化自动换新', () => {
+      const turn = process.env.AUTOLOOP_SMOKE_VERSION_TURN || '';
+      if (!turn) throw new StepFailure('未提供 AUTOLOOP_SMOKE_VERSION_TURN（控制台重打包后的版本号）；该步未执行', 'not-run');
+      // 真机流程：重打包移动资源后切到「规则」，回前台等版本自检提示「控制台界面已更新」并自动换回原 tab。
+      tap(serialA, waitFor(serialA, '总览'));
+      tap(serialA, waitFor(serialA, '规则'));
+      try { waitFor(serialA, '控制台界面已更新', 60000); }
+      catch { throw new StepFailure('回前台 60s 内没有看到版本更新提示与自动换新'); }
+      const current = selectedTab(dump(serialA));
+      if (current !== '规则') throw new StepFailure(`自动换新后没有回到原 tab（当前 ${current || '未知'}）`);
+      return { reason: `换到版本 ${turn} 后仍停在规则 tab` };
     }],
     ['三类通知到达', () => {
       const dumpsys = sh(serialA, 'dumpsys notification --noredact');
