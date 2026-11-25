@@ -231,12 +231,15 @@ export function redeemPreviewTicket(ticket) {
 }
 
 // 预览文档的响应头：放行内联脚本与样式（设计稿交互需要），其余默认全禁；仍可被沙箱 iframe 安全嵌。
+// 不设 X-Frame-Options：预览只在 sandbox="allow-scripts"（无 allow-same-origin）的不透明源 iframe 中打开，
+// SAMEORIGIN 的源比对对不透明源必然失败，浏览器会直接拒绝渲染（artifact-preview-fix 事故根因）。
+// 安全边界不依赖该响应头：iframe sandbox + CSP default-src 'none' 已阻断外连与同源控制台访问，
+// 票据仍是 60 秒一次性兑换，去掉 XFO 不会放宽预览的隔离。
 export function sendPreviewHtml(res, html) {
   res.writeHead(200, {
     'content-type': 'text/html; charset=utf-8',
     'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
     'cache-control': 'no-store',
-    'x-frame-options': 'SAMEORIGIN',
   });
   res.end(String(html ?? ''));
 }

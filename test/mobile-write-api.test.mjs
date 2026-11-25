@@ -542,8 +542,16 @@ test('预览票据：设备鉴权签发，兑换一次性，HTML 流仅预览放
   const first = await fetch(ctx.url + url);
   assert.equal(first.status, 200);
   assert.match(first.headers.get('content-type'), /text\/html/);
-  assert.match(first.headers.get('content-security-policy'), /script-src 'unsafe-inline'/);
+  assert.match(first.headers.get('content-security-policy'), /default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'/);
+  // 沙箱 iframe sandbox="allow-scripts" 没有 allow-same-origin，帧内文档是不透明源；
+  // XFO: SAMEORIGIN 的源比对必然失败，浏览器直接拒绝渲染。预览响应不得再带该响应头。
+  assert.equal(first.headers.get('x-frame-options'), null, '预览 HTML 不得带拦截沙箱帧的 X-Frame-Options');
   assert.match(await first.text(), /数据看板/);
+  // 网页控制台同源预览走同一发送函数，同样不能带 XFO（设计稿门 artifacts-preview）。
+  const sameOrigin = await fetch(ctx.url + '/api/scheduling-sessions/sess-live/preview?path=' + encodeURIComponent('docs/看板.html'));
+  assert.equal(sameOrigin.status, 200);
+  assert.equal(sameOrigin.headers.get('x-frame-options'), null, '同源预览也不得带拦截沙箱帧的 X-Frame-Options');
+  assert.match(sameOrigin.headers.get('content-security-policy'), /default-src 'none'; script-src 'unsafe-inline'/);
   const replay = await fetch(ctx.url + url);
   assert.equal(replay.status, 404, '票据一次性，重放必须失效');
   const bad = await fetch(ctx.url + '/mobile/preview?ticket=' + '0'.repeat(48));
