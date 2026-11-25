@@ -1,6 +1,6 @@
 {
   "plan_id": "2026-11-25-nomoto-app-fix5b",
-  "title": "NoMoTo App fix5b：App 刷新机制（下拉刷新 + 界面版本变化自动重载）",
+  "title": "NoMoTo App fix5b：App 刷新机制 + 决策卡三内置操作（已处理/结案/退回调度）",
   "design": {
     "manifestPath": "docs/design/2026-11-25-nomoto-fix5b-baseline/design-manifest.json",
     "approvalPath": "docs/design/2026-11-25-nomoto-fix5b-baseline/design-approval.json"
@@ -37,6 +37,39 @@
           "interactions": [
             "pull-refresh",
             "version-reload"
+          ]
+        }
+      }
+    },
+    {
+      "id": "card-quick-actions",
+      "title": "决策卡内置三操作对齐网页版：已处理 / 结案 / 退回调度",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "主人 2026-11-25 晚：待我决策卡片选项天然带「已处理」「结案」「退回调度」，App 现在三个都没有。网页版口径（public/views.mjs）：结案=resolve；退回调度=delegate-card（入待代理决策列表，等调度给代理结论）；已处理=无需文字的快速办结。fix4 已让回答/结案后卡片消失，缺的是这三个内置操作入口与退回调度的服务端链路。",
+        "output": "1) 每张决策卡内置「已处理」「结案」「退回调度」三操作（与网页版语义一致）；2) 已处理/结案点完即消失（沿用 fix4 闭环）；3) 退回调度：经设备鉴权写路由代理控制台 delegate 能力，卡片入待代理列表并唤醒调度会话，App 内给出「已退回调度，等待代理结论」提示；4) 文字/选项回答不变。",
+        "error_behavior": "操作失败就地报错卡片保留；Hub/控制台不可用时提示可重试；退回后调度未接管期间卡片状态如实展示。",
+        "acceptance_example": "单测覆盖三操作语义与 delegate 链路（含 403/失败重试）；浏览器回归：点退回调度→提示→卡片进待代理列表。",
+        "files": [
+          "src/mobile-write.mjs",
+          "mobile/src/features/sessions/browser.mjs",
+          "mobile/src/core/pages.mjs",
+          "test/（卡操作回归）"
+        ],
+        "design": {
+          "surfaceIds": [
+            "card-actions"
+          ],
+          "states": [
+            "open"
+          ],
+          "interactions": [
+            "mark-handled",
+            "delegate-return"
           ]
         }
       }

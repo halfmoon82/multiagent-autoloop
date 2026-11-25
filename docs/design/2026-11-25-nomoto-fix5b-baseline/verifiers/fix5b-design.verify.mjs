@@ -7,6 +7,8 @@ import path from 'node:path';
 const MARKERS = {
   'pull-refresh': { file: 'mobile/app/www/app.mjs', any: ['pull-to-refresh', 'pullRefresh', 'touchstart', '下拉', 'ptr-'] },
   'version-reload': { file: 'mobile/app/www/app.mjs', any: ['mobileVersion', 'assetVersion', '版本', 'location.reload', 'versionCheck'] },
+  'mark-handled': { file: 'mobile/src/core/pages.mjs', any: ['已处理', 'markHandled', 'handled'] },
+  'delegate-return': { file: 'mobile/src/features/sessions/browser.mjs', any: ['delegate', '退回调度', 'returnToScheduler'] },
 };
 
 const read = (worktree, rel) => { try { return readFileSync(path.join(worktree, rel), 'utf8'); } catch { return null; } };
