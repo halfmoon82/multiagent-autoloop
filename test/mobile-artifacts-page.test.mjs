@@ -9,7 +9,7 @@ const skip = existsSync(chromium.executablePath()) ? false : '未安装 Playwrig
 
 const pageSource = readFileSync(new URL('../mobile/app/www/pages/artifacts.mjs', import.meta.url), 'utf8');
 
-async function boot(t, { artifacts, artifactFile }) {
+async function boot(t, { artifacts, artifactFile, downloadImpl = 'ok' }) {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -22,13 +22,17 @@ async function boot(t, { artifacts, artifactFile }) {
     }));
   }
   await page.setContent(`<main><div id="page-artifacts" class="page" data-page="artifacts"></div></main>`);
+  await page.evaluate(({ impl }) => {
+    const table = { ok: () => Promise.resolve({ started: true }), done: () => Promise.resolve({ started: true, id: 7 }), fail: () => Promise.resolve({ started: false, reason: 'net' }), notoken: () => Promise.resolve({ started: false, reason: 'AUTOLOOP_DOWNLOAD_NO_TOKEN' }) };
+    window.__downloadImpl = table[impl];
+  }, { impl: downloadImpl });
   await page.evaluate(async ({ artifactsJson, fileJson }) => {
     const mod = await import('https://test.local/artifacts.mjs');
     const F = await import('https://test.local/src/features/artifacts/index.mjs');
     const hooks = {
       artifacts: () => Promise.resolve(JSON.parse(artifactsJson)),
       selectTab() {}, pushView() {}, popView() {},
-      download: () => Promise.resolve(true),
+      download: (url, name) => { window.__dl = (window.__dl || []).concat([{ url, name }]); return window.__downloadImpl(); },
     };
     const ctx = {
       hooks,
@@ -62,4 +66,44 @@ test('异步 hooks.artifacts 解析后渲染列表；html 产物预览用 allow-
     return f && !f.closest('.artifacts-preview').hidden && (f.getAttribute('src') || '').includes('/mobile/preview?ticket=');
   }, null, { timeout: 3000 });
   assert.equal(await frame.getAttribute('sandbox'), 'allow-scripts', 'A+ 预览：脚本可运行、不同源');
+});
+
+const ROW = [{ id: 's1:a.md', name: 'a.md', path: 'a.md', sessionId: 's1', taskLabel: 't', sizeText: '1KB', kindLabel: 'MD' }];
+async function openReader(page) {
+  await page.evaluate(() => { window.AutoloopConsoleBase = 'https://auto.example'; window.__mod.mount(window.__ctx, { feature: window.__F }); });
+  await page.waitForSelector('.artifacts-row');
+  await page.locator('.artifacts-row').click();
+}
+
+test('下载成功：立即出现「已开始下载」，原生回传完成后出现成功提示', { skip }, async t => {
+  const page = await boot(t, { artifacts: ROW, artifactFile: {}, downloadImpl: 'done' });
+  await openReader(page);
+  await page.locator('.artifacts-download').click();
+  await page.waitForSelector('.artifacts-download-feedback[data-phase="downloading"]');
+  assert.match(await page.locator('.artifacts-download-feedback').innerText(), /已开始下载 a\.md/);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('autoloop:download-complete', { detail: { id: 7, ok: true } })));
+  await page.waitForSelector('.artifacts-download-feedback[data-phase="success"]');
+  assert.match(await page.locator('.artifacts-download-feedback').innerText(), /已下载完成/);
+});
+
+test('下载失败：就地可读提示与重试，不清空选中、不跳页；重试重新发起', { skip }, async t => {
+  const page = await boot(t, { artifacts: ROW, artifactFile: {}, downloadImpl: 'fail' });
+  await openReader(page);
+  await page.locator('.artifacts-download').click();
+  await page.waitForSelector('.artifacts-download-feedback[data-phase="failure"]');
+  assert.match(await page.locator('.artifacts-download-feedback').innerText(), /下载失败.*重试/s);
+  assert.equal(await page.locator('.artifacts-download').count(), 1, '阅读视图仍在');
+  await page.locator('.artifacts-download-retry').click();
+  await page.waitForSelector('.artifacts-download-feedback[data-phase="failure"]');
+  assert.equal(await page.evaluate(() => window.__dl.length), 2);
+});
+
+test('未绑定/令牌缺失：引导重新绑定，不给重试', { skip }, async t => {
+  const page = await boot(t, { artifacts: ROW, artifactFile: {}, downloadImpl: 'notoken' });
+  await openReader(page);
+  await page.locator('.artifacts-download').click();
+  await page.waitForSelector('.artifacts-download-feedback[data-phase="failure"]');
+  assert.match(await page.locator('.artifacts-download-feedback').innerText(), /重新绑定/);
+  assert.equal(await page.locator('.artifacts-download-retry').count(), 0);
+  assert.equal(await page.locator('.artifacts-download-rebind').count(), 1);
 });

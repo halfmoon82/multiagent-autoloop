@@ -574,3 +574,14 @@ test('mount 返回键逐级退出：阅读页 popView；无栈时回会话交回
   assert.equal(restored.length, 1);
   assert.deepEqual(restored[0].restore, restore, '返回会话不丢草稿与滚动');
 });
+
+test('downloadFeedback 三态文案：开始/成功/失败（令牌缺失引导重新绑定）', async () => {
+  const { downloadFeedback } = await import('../mobile/src/features/artifacts/index.mjs');
+  assert.match(downloadFeedback('downloading', { name: 'a.md' }).text, /已开始下载 a\.md/);
+  assert.match(downloadFeedback('success', { name: 'a.md' }).text, /已下载完成/);
+  const net = downloadFeedback('failure', { name: 'a.md', reason: 'x' });
+  assert.equal(net.retry, true);
+  const nt = downloadFeedback('failure', { name: 'a.md', reason: 'AUTOLOOP_DOWNLOAD_NO_TOKEN' });
+  assert.equal(nt.rebind, true);
+  assert.equal(nt.retry, false);
+});
