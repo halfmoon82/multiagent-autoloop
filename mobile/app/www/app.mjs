@@ -5,7 +5,7 @@ import {
   ShellState, createTokenStore, createMobileClient, createBiometricGate,
   createKeyedSecureStorage, createConsoleRegistry, createReconnectController, attachReconnectLifecycle,
   bootScreen, reconnectStatusText,
-  createPullRefreshGesture, createVersionWatcher, extractMobileAssetVersion,
+  createPullRefreshGesture, createVersionWatcher, extractMobileAssetVersion, isBundledShell,
   readSessionValue, writeSessionValue, restoreTab, REFRESH_TAB_KEY, REFRESH_VERSION_KEY,
 } from './shell.mjs';
 import { createScanSession, createUserMediaCamera } from './scan.mjs';
@@ -37,7 +37,8 @@ export const FEATURE_LOADERS = Object.freeze({
 });
 
 // App 刷新机制（DAG 节点 app-refresh-mechanism）：
-// 下拉刷新只作用于根 Tab 顶部；界面版本自检走入口 no-store + ?v= 内容 hash，变化才整页重载。
+// 下拉刷新只作用于根 Tab 顶部；界面版本自检走入口 no-store + ?v= 内容 hash，同源网页变化才整页重载。
+// 安装版 App 的原生内置壳界面随包冻结，重载拿不到新界面：版本变化如实提示需更新安装包，不重载、不丢状态。
 const PULL_REFRESH_TAB_LABELS = Object.freeze({
   core: '总览', rules: '规则', rounds: '轮次', todos: '待办',
   sessions: '会话', artifacts: '产物', dag: 'DAG',
@@ -492,9 +493,16 @@ function boot() {
     intervalMs: VERSION_CHECK_INTERVAL_MS,
     onChanged: ({ version }) => {
       try {
-        if (readSessionValue(REFRESH_VERSION_KEY) === version) return; // 已因该版本重载过，防循环
+        if (readSessionValue(REFRESH_VERSION_KEY) === version) return; // 已处理过该版本，防重复提示/循环
         writeSessionValue(REFRESH_VERSION_KEY, version);
-      } catch { /* 存储不可用仍继续重载，至多多一次 */ }
+      } catch { /* 存储不可用仍继续，至多多一次 */ }
+      // 原生内置壳：界面随安装包冻结，重载只会重放随包资源，拿不到控制台新界面。
+      // 如实提示需更新安装包，不伪称已切换，也不重载丢掉当前 tab 与输入。
+      if (isBundledShell(window.location.href, consoleBase())) {
+        showToast('控制台界面已更新，请更新安装包以获得新界面');
+        return;
+      }
+      // 网页同源部署：入口 ?v= 来自服务端改写，整页重载可拿到新界面。
       showToast('控制台界面已更新，自动为你切换到新版…');
       setTimeout(() => { window.location.reload(); }, 600);
     },

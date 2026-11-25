@@ -741,6 +741,21 @@ export function createVersionWatcher({
   };
 }
 
+/**
+ * 判断当前页面是否为随安装包冻结的「原生内置壳」：页面 origin 与控制台地址不同。
+ * 这种壳里 window.location.reload() 只会重新加载随包资源，拿不到控制台新界面；
+ * 版本变化只能如实提示需更新安装包，不得伪称已切换，更不该重载丢掉页面状态。
+ * 页面与控制台同源（网页同源部署）时返回 false，沿用整页重载换新界面的既有行为。
+ */
+export function isBundledShell(pageUrl, consoleBase) {
+  if (typeof pageUrl !== 'string' || typeof consoleBase !== 'string' || !consoleBase) return false;
+  try {
+    return new URL(pageUrl).origin !== new URL(consoleBase).origin;
+  } catch {
+    return false;
+  }
+}
+
 // 整页重载需要保留的上下文键：tab 由壳写入，会话上下文由会话页写入 nomoto-sessions-context。
 export const REFRESH_TAB_KEY = 'nomoto-active-tab';
 export const REFRESH_VERSION_KEY = 'nomoto-version-reloaded';

@@ -15,6 +15,7 @@ import {
   extractMobileAssetVersion,
   createPullRefreshGesture,
   createVersionWatcher,
+  isBundledShell,
   readSessionValue, writeSessionValue, restoreTab,
   REFRESH_TAB_KEY, REFRESH_VERSION_KEY,
   PULL_REFRESH_THRESHOLD_PX,
@@ -155,6 +156,27 @@ test('版本 watcher：定时与回前台触发检查，停止后不再排程', 
   assert.equal((await w.onForeground()).ok, false);
 });
 
+// 内置壳判定：页面 origin 与控制台地址不一致时，整页重载拿不到新界面，禁止伪称已切换。
+test('内置壳判定：随包冻结页面与远程控制台 origin 不同才为真', () => {
+  assert.equal(isBundledShell('https://localhost/mobile/index.html', 'https://console.example'), true);
+  assert.equal(isBundledShell('https://127.0.0.1:50761/mobile/', 'https://console.example:50761'), true);
+  assert.equal(isBundledShell('http://127.0.0.1:50761/mobile/', 'http://127.0.0.1:50761'), false);
+  assert.equal(isBundledShell('https://console.example/mobile/', 'https://console.example'), false);
+  assert.equal(isBundledShell('https://console.example/mobile/', ''), false);
+  assert.equal(isBundledShell('https://console.example/mobile/', null), false);
+  assert.equal(isBundledShell('', 'https://console.example'), false);
+});
+
+test('源码标记：版本变化重载受内置壳判定约束且如实提示需更新安装包', () => {
+  const app = read('mobile/app/www/app.mjs');
+  assert.match(app, /isBundledShell\s*\(/);
+  assert.match(app, /请更新安装包|需更新安装包/);
+  const body = app.slice(app.indexOf('onChanged:'), app.indexOf('versionCheck.start()'));
+  const gateAt = body.indexOf('isBundledShell');
+  const reloadAt = body.indexOf('location.reload');
+  assert.ok(gateAt >= 0 && reloadAt > gateAt, '版本回调必须先判内置壳，再决定是否整页重载');
+});
+
 // ---------------------------------------------------------------------------
 // 上下文保留与源码标记
 // ---------------------------------------------------------------------------
@@ -288,5 +310,35 @@ test('浏览器：下拉刷新出现指示并触发重载；界面版本变化�
   await page.waitForFunction(() => document.getElementById('app-main')?.dataset.activeTab === 'rules', null, { timeout: 8000 });
   assert.ok(probeCount >= 2, `版本探测未发生（probeCount=${probeCount}）`);
   assert.match(await page.locator('#tab-bar .tab[aria-selected="true"]').textContent(), /规则/);
+
+  // 内置壳模式（安装版 App）：页面 origin 与控制台地址不同，版本变化不得整页重载，
+  // 也不得伪称「已切换到新版」，应如实提示需更新安装包，并保留当前 tab 与页面状态。
+  await page.evaluate(() => {
+    window.AutoloopConsoleBase = 'https://console.example';
+    const realFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : (input?.url || String(input));
+      if (url.includes('console.example/mobile/index.html')) {
+        return Promise.resolve(new Response(
+          '<!doctype html><html><head><link rel="stylesheet" href="./styles.css?v=eeeeeeeeeeeeeeee"></head><body></body></html>',
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        ));
+      }
+      return realFetch(input, init);
+    };
+  });
+  let bundledReloaded = false;
+  const trackReload = () => { bundledReloaded = true; };
+  page.on('load', trackReload);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await page.waitForFunction(() => {
+    const el = document.getElementById('toast');
+    return el && !el.hidden && el.textContent.includes('请更新安装包');
+  }, null, { timeout: 8000 });
+  assert.doesNotMatch(await page.locator('#toast').textContent(), /自动为你切换到新版/);
+  assert.equal(bundledReloaded, false, '内置壳版本变化不应整页重载');
+  assert.equal(await page.evaluate(() => document.getElementById('app-main')?.dataset.activeTab), 'rules');
+  page.off('load', trackReload);
+
   assert.deepEqual(errors, []);
 });

@@ -284,17 +284,18 @@ function main() {
       screenshot(serialA, `pull-refresh-${label}`);
       return { reason: `下拉出现刷新指示（约 ${refreshing.x},${refreshing.y}）` };
     }]),
-    ['界面版本变化自动换新', () => {
+    ['安装版界面版本变化如实提示更新', () => {
       const turn = process.env.AUTOLOOP_SMOKE_VERSION_TURN || '';
       if (!turn) throw new StepFailure('未提供 AUTOLOOP_SMOKE_VERSION_TURN（控制台重打包后的版本号）；该步未执行', 'not-run');
-      // 真机流程：重打包移动资源后切到「规则」，回前台等版本自检提示「控制台界面已更新」并自动换回原 tab。
+      // 安装版 App 原生内置壳界面随包冻结：重打包移动资源后切到「规则」回前台，
+      // 应如实提示「请更新安装包」而非伪称已切换；不重载、仍停在规则 tab。
       tap(serialA, waitFor(serialA, '总览'));
       tap(serialA, waitFor(serialA, '规则'));
-      try { waitFor(serialA, '控制台界面已更新', 60000); }
-      catch { throw new StepFailure('回前台 60s 内没有看到版本更新提示与自动换新'); }
+      try { waitFor(serialA, '请更新安装包', 60000); }
+      catch { throw new StepFailure('回前台 60s 内没有看到「请更新安装包」提示'); }
       const current = selectedTab(dump(serialA));
-      if (current !== '规则') throw new StepFailure(`自动换新后没有回到原 tab（当前 ${current || '未知'}）`);
-      return { reason: `换到版本 ${turn} 后仍停在规则 tab` };
+      if (current !== '规则') throw new StepFailure(`提示更新后没有停在原 tab（当前 ${current || '未知'}）`);
+      return { reason: `版本 ${turn} 变化后如实提示需更新安装包，仍停在规则 tab（界面随包冻结，符合设计）` };
     }],
     ['三类通知到达', () => {
       const dumpsys = sh(serialA, 'dumpsys notification --noredact');
