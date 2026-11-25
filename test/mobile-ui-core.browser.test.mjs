@@ -119,7 +119,8 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   });
   await page.waitForFunction(() => {
     const expand = document.querySelector('#page-core .card-expand');
-    return expand && expand.nextElementSibling?.textContent?.includes('折叠接线回归');
+    return expand && expand.parentElement?.classList?.contains('collapsible-card')
+      && expand.parentElement.textContent.includes('折叠接线回归');
   }, null, { timeout: 5000 });
 
   // 总览：四组计数、最近一条标题、费用、项目 DAG 全部来自后端。
