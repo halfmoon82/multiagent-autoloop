@@ -127,6 +127,8 @@ export function mount(ctx) {
   refs.authorize = makeSection(todosEl, 'authorize', '执行授权');
 
   let write = null;
+  // 本机刚回答成功的卡：Hub 状态重读前也不再显示（失败不进此集合，卡与选项原样保留）。
+  const answeredIds = new Set();
 
   async function answer(item, payload, submit, errorNode) {
     submit.disabled = true;
@@ -134,6 +136,9 @@ export function mount(ctx) {
     try {
       await write.answerCard(item.id, payload);
       drafts.delete(item.id);
+      // 回答成功即隐藏该卡并同步角标，不等重读往返；重读到 Hub 已结案后自然不再出现。
+      answeredIds.add(String(item.id));
+      renderCurrent();
       await reload();
     } catch (error) {
       errorNode.textContent = String(error?.message || '提交失败，请重试');
@@ -367,7 +372,7 @@ export function mount(ctx) {
       if (item.text) box.appendChild(node('p', { className: 'core-card-text', text: item.text }));
       box.appendChild(node('p', {
         className: 'core-meta',
-        text: [item.stateLabel, item.projectLabel, item.rule, item.createdAt].filter(Boolean).join(' · '),
+        text: [item.stateLabel, item.sourceLabel, item.projectLabel, item.rule, item.createdAt].filter(Boolean).join(' · '),
       }));
       if (item.readOnly) {
         box.appendChild(node('p', { className: 'core-answer', text: `已回答：${item.choice ?? ''}` }));
@@ -470,7 +475,10 @@ export function mount(ctx) {
 
   function renderCurrent() {
     if (!fullSnapshot || !coreModel) return;
-    const pages = coreModel.buildPages(filteredSnapshot());
+    // 已确认离开 open 的卡移出隐藏集合，集合不无限增长。
+    const openIds = new Set((fullSnapshot.state?.cards || []).filter(card => card?.state === 'open').map(card => String(card.id)));
+    for (const id of answeredIds) if (!openIds.has(id)) answeredIds.delete(id);
+    const pages = coreModel.buildPages(filteredSnapshot(), { hiddenIds: answeredIds });
     renderOverview(pages.overview);
     renderRules(pages.rules);
     renderRuns(pages.runs);

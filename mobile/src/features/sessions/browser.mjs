@@ -189,6 +189,33 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
   };
 }
 
+// 决策卡归属会话（session-bind，2026-11-25 真机反馈「卡出现在不同会话里」）：归属口径沿用
+// question-group 的 cardsForSession（lane = 会话 hubSubject；无 lane 的卡按项目），本函数只再收窄到
+// 仍 open 的卡，作为会话卡组「哪些题还该留着」的依据。别的会话的卡仍完整留在「待我处理」，过滤不丢数据。
+export function openCardsBySession(cards, session, cardsForSession) {
+  const scoped = typeof cardsForSession === 'function' ? cardsForSession(cards, session) : [];
+  return (Array.isArray(scoped) ? scoped : []).filter(card => String(card?.state ?? '').trim() === 'open');
+}
+
+// 回答后移除（answer-vanish）：卡片回答/结案后立即离开会话卡组——只保留仍在 openIds 里的题
+// （已答回看行一并去掉），焦点落到剩余第一道未答题；组无变化时返回原对象，避免无谓重渲染。
+export function pruneQuestionGroup(group, openIds) {
+  if (!group || typeof group !== 'object' || !Array.isArray(group.questions)) return group;
+  const keep = new Set([...(openIds || [])].map(String));
+  const questions = group.questions.filter(question => keep.has(String(question?.id)));
+  if (questions.length === group.questions.length) return group;
+  const ids = new Set(questions.map(question => question.id));
+  const active = questions.find(question => question.id === group.activeId && question.state !== 'answered')
+    || questions.find(question => question.state !== 'answered');
+  return {
+    ...group,
+    questions,
+    answered: (Array.isArray(group.answered) ? group.answered : []).filter(id => ids.has(id)),
+    expanded: (Array.isArray(group.expanded) ? group.expanded : []).filter(id => ids.has(id)),
+    activeId: active ? active.id : null,
+  };
+}
+
 // 虚拟列表：只算可视区上下 overscan 条，超长会话不整表渲染。
 export function visibleRange({ scrollTop = 0, viewportHeight = 0, itemHeight = 1, total = 0, overscan = 4 } = {}) {
   const height = Math.max(1, Number(itemHeight) || 1);
