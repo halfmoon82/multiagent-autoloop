@@ -186,10 +186,13 @@ test('浏览器：会话内决策卡按 lane 归属过滤，回答后跨会话�
   assert.match(boxText, /A 会话的决策？/);
   assert.ok(!boxText.includes('B 会话的决策？'), 'B 会话的卡不得串进 A 会话');
 
-  // 回答卡 8（选择）：请求真实打到 /api/mobile/cards/8/answer，题目进入已答。
+  // 回答卡 8（选择）：请求真实打到 /api/mobile/cards/8/answer，卡立即离开卡组（不留已回答残留行）。
   await questionBox.locator('.sessions-option', { hasText: '选项一' }).click();
   await questionBox.locator('.sessions-question-submit').click();
-  await page.waitForFunction(() => document.querySelector('.sessions-question')?.textContent?.includes('1/2'), null, { timeout: 6000 });
+  await page.waitForFunction(() => {
+    const text = document.querySelector('.sessions-question')?.textContent || '';
+    return text.includes('0/1') && !text.includes('A 会话的决策？');
+  }, null, { timeout: 6000 });
   assert.ok(posts.some(post => post.pathname === '/api/mobile/cards/8/answer' && post.body?.choice === 0), '回答走 cards answer 写路由');
 
   // 回到列表进会话 B：自己的卡（9）与公共卡（10）在；已答的卡 8 不得以任何形式复活。
@@ -200,13 +203,19 @@ test('浏览器：会话内决策卡按 lane 归属过滤，回答后跨会话�
   assert.match(boxText, /B 会话的决策？/);
   assert.ok(!boxText.includes('A 会话的决策？'), '已回答的 A 会话卡不得在 B 会话复活');
 
-  // 先答 B 自己的选择卡 9，再答公共卡 10（文字）：回 A 后公共卡也不再出现（本地 state.cards 已同步）。
+  // 先答 B 自己的选择卡 9，再答公共卡 10（文字）：每答一张即消失，全部答完卡组隐藏；回 A 后公共卡也不再出现。
   await questionBox.locator('.sessions-option', { hasText: '好' }).first().click();
   await questionBox.locator('.sessions-question-submit').click();
-  await page.waitForFunction(() => document.querySelector('.sessions-question')?.textContent?.includes('1/2'), null, { timeout: 6000 });
+  await page.waitForFunction(() => {
+    const text = document.querySelector('.sessions-question')?.textContent || '';
+    return text.includes('0/1') && !text.includes('B 会话的决策？');
+  }, null, { timeout: 6000 });
   await questionBox.locator('.sessions-question-input').fill('公共回答');
   await questionBox.locator('.sessions-question-submit').click();
-  await page.waitForFunction(() => document.querySelector('.sessions-question')?.textContent?.includes('已回答'), null, { timeout: 6000 });
+  await page.waitForFunction(() => {
+    const box = document.querySelector('.sessions-question');
+    return !box || box.hidden || !box.textContent.includes('项目公共问题？');
+  }, null, { timeout: 6000 });
   assert.ok(posts.some(post => post.pathname === '/api/mobile/cards/10/answer' && post.body?.text === '公共回答'));
   await page.locator('.sessions-back[aria-label="返回会话列表"]').click();
   await page.locator('.sessions-item[data-session-id="sess-a"]').first().click();

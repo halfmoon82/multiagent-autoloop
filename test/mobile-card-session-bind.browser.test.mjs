@@ -20,7 +20,7 @@ test('浏览器：会话卡按会话归属，回答→卡消失→切会话不�
   const cards = [
     { id: 41, title: '会话A的问题', state: 'open', options: ['继续', '结案'], project: '/work/p', lane: 'scheduling:sess-a' },
     { id: 42, title: '会话B的问题', state: 'open', options: ['好', '不好'], project: '/work/p', lane: 'scheduling:sess-b' },
-    { id: 43, title: '规则卡无会话', state: 'open', options: ['是'], project: '/work/p' },
+    { id: 43, title: '规则卡无会话', state: 'open', options: ['是'], project: '/work/other' },
   ];
   const sessions = [
     { id: 'sess-a', kind: 'scheduling', hubSubject: 'scheduling:sess-a', project: '/work/p', status: 'idle', prompt: '调度会话 A', updatedAt: '2026-11-25T02:00:00Z' },
@@ -73,7 +73,7 @@ test('浏览器：会话卡按会话归属，回答→卡消失→切会话不�
   await page.waitForFunction(() => document.querySelector('.sessions-question')?.textContent?.includes('会话A的问题'));
   const textA = await questionText();
   assert.equal(textA.includes('会话B的问题'), false, '不串 B 会话的卡');
-  assert.equal(textA.includes('规则卡无会话'), false, '无会话 lane 的卡不进会话页');
+  assert.equal(textA.includes('规则卡无会话'), false, '无会话 lane 的别项目卡不进会话页');
   assert.match(textA, /问题 1 \/ 1/, '本会话只有 1 道题');
 
   // 回答失败：就地报错，卡与选项保留。
