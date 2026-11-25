@@ -107,3 +107,9 @@ test('未绑定/令牌缺失：引导重新绑定，不给重试', { skip }, asy
   assert.equal(await page.locator('.artifacts-download-retry').count(), 0);
   assert.equal(await page.locator('.artifacts-download-rebind').count(), 1);
 });
+
+test('pages/artifacts.mjs 含三态字面量标记（设计 verifier 依赖）', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../mobile/app/www/pages/artifacts.mjs', import.meta.url), 'utf8');
+  for (const m of ['download-start', 'download-success', 'download-failed']) assert.ok(src.includes(m), m);
+});

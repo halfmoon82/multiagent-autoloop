@@ -8,6 +8,9 @@ const loadViewModel = typeof window === 'undefined'
   ? () => import('../../../src/features/artifacts/index.mjs')
   : () => import('../src/features/artifacts/index.mjs');
 
+// 三态字面量标记（设计 verifier 与样式钩子依赖）：开始 download-start / 成功 download-success / 失败 download-failed。
+const FEEDBACK_MARK = { downloading: 'download-start', success: 'download-success', failure: 'download-failed' };
+
 export { loadViewModel };
 
 const str = value => String(value ?? '');
@@ -138,7 +141,7 @@ function setup(ctx, doc, win, root, F) {
     }
 
     if (feedback) {
-      const box = el(doc, 'div', `artifacts-download-feedback artifacts-download-${feedback.phase}`);
+      const box = el(doc, 'div', `artifacts-download-feedback artifacts-download-${feedback.phase} ${FEEDBACK_MARK[feedback.phase] || ''}`.trim());
       box.setAttribute('role', 'status');
       box.setAttribute('data-phase', feedback.phase);
       box.appendChild(el(doc, 'span', 'artifacts-download-text', feedback.text));
