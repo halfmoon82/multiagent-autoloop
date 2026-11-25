@@ -1,0 +1,85 @@
+{
+  "plan_id": "2026-11-26-nomoto-app-fix6",
+  "title": "NoMoTo App fix6：项目进度环形渲染对齐网页版（节点环+点击详情+费用条+已归档任务环）+ 下拉刷新易用性修复",
+  "design": {
+    "manifestPath": "docs/design/2026-11-26-nomoto-fix6-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-26-nomoto-fix6-baseline/design-approval.json"
+  },
+  "nodes": [
+    {
+      "id": "project-ring-web-parity",
+      "title": "项目进度环与网页版对齐：扇区环+节点标签+点选详情+费用条+已归档任务环",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "heavy",
+      "contract": {
+        "input": "主人 2026-11-26 晨（卡片 167 答复）：要的是那个环、环中节点可点击，且整个展现渲染与网页版除布局外内容形式一模一样；已归档会话里也要同款环（现在的简化环不对）。批评设计稿门禁没有严格执行——根因承认：fix3/fix5 设计稿把目标画成了列表详情，门禁照错误基准验收。本次基准 = 网页版真实渲染截图 refs/web-ring-baseline.png。网页版形态（public/ 项目任务进度面板）：串行链/并行 DAG 同面板、环形扇区=节点且弧排标签、中心总进度百分比、点扇区右侧出节点详情（标题/状态/节点内进度/任务摘要/执行 Agent/模型/费用 Token/查看运行详情）、底部费用汇总条（等待重试/今日完成/待处理/今日费用/链累计 Token 与费用/创建于）、已归档任务环折叠（N 环·全部完成 X·已取消 Y）。",
+        "output": "移动端总览「项目任务进度」与网页版同内容同形式（仅窄屏布局适配）：①串行链与活跃并行 DAG 均渲染环形扇区（扇区=节点、弧排节点标签、中心总进度%与节点数）；②点扇区出节点详情（标题/状态/节点内进度/任务摘要/执行 Agent/模型/费用 Token/查看运行详情，字段与网页一致，未上报如实标注）；③费用汇总条（今日费用/链累计/创建于等，与网页同口径）；④已归档任务环折叠（同款环、计数与网页一致）；⑤布局允许窄屏差异（环尺寸、详情在环下方），内容与交互形式不缩水。",
+        "error_behavior": "无活跃项目时如实空态；扇区数据缺失照常渲染环并标注；详情加载失败就地重试。",
+        "acceptance_example": "与网页版同一份 /api/serial-progress + dag-runs 数据做快照对比测试：节点数、标签、百分比、费用字段逐一相等；浏览器回归点扇区详情；已归档环计数一致。",
+        "files": [
+          "mobile/app/www/pages/core.mjs",
+          "mobile/app/www/pages/core.css",
+          "mobile/src/core/pages.mjs",
+          "mobile/src/features/dag-ring/",
+          "test/mobile-core*.test.mjs",
+          "test/mobile-dag-ring*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "project-ring"
+          ],
+          "states": [
+            "active-chain",
+            "node-picked",
+            "archived"
+          ],
+          "interactions": [
+            "ring-sectors",
+            "ring-node-labels",
+            "ring-node-pick",
+            "ring-node-detail",
+            "ring-cost-chips",
+            "archived-rings"
+          ]
+        }
+      }
+    },
+    {
+      "id": "pull-refresh-usability",
+      "title": "下拉刷新易用性修复：页面任意位置下拉可触发、指示明显可见",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "主人 2026-11-26 晨：App 下拉刷新还是没看到。fix5b（#336）已在 .content 根 Tab 顶部接线 pointer/touch 手势状态机，但真机不可见/不可触发——需核实实现（可能要求从内容最顶缘起拉、指示过弱或与滚动冲突）。",
+        "output": "页面任意位置（列表任意滚动位置回到顶部后）下拉均可触发刷新；刷新指示器明显可见（idle/refreshing 两态，reduced-motion 降级）；与下拉手势冲突的组件（折叠卡片、左滑）不受影响；版本自动重载保持。",
+        "error_behavior": "触发失败不阻塞滚动；离线刷新给可读提示。",
+        "acceptance_example": "emulator-smoke 真机手势：列表中部起拉→顶部 overscroll→指示器→数据重载；浏览器回归滚动不误触。",
+        "files": [
+          "mobile/app/www/app.mjs",
+          "mobile/app/www/shell.mjs",
+          "mobile/app/www/styles.css",
+          "mobile/app/scripts/emulator-smoke.mjs",
+          "test/mobile-app-refresh*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "app-refresh"
+          ],
+          "states": [
+            "idle",
+            "refreshing"
+          ],
+          "interactions": [
+            "pull-anywhere"
+          ]
+        }
+      }
+    }
+  ]
+}

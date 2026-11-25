@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix6-2026-11-26",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix6-baseline/refs/web-ring-baseline.png",
+      "sha256": "366ae83749c70281bda41c03e1ea038a816784c75005ac5c822fc8c45bdf9064"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix6-baseline/refs/mobile-ring-target.html",
+      "sha256": "3de4aa4c37ac7fddf21f0c145c25c1ad0ee3bea5a7df68af56904f3415239474"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix6-baseline/verifiers/fix6-design.verify.mjs",
+      "sha256": "96608485453ac6e254db5a99d0b41e174154ac3c7cf4af39cacb286ba15a089d"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix6-baseline/verifiers/fix6-design-fallback.mjs",
+      "sha256": "67630232a1be326dc26abef29aa903662cecab0bea3f0959ecf5758604470bd2"
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-26-nomoto-fix6-baseline/verifiers/fix6-design.verify.mjs",
+  "fallbackVerifierPath": "docs/design/2026-11-26-nomoto-fix6-baseline/verifiers/fix6-design-fallback.mjs",
+  "surfaces": [
+    {
+      "id": "project-ring",
+      "route": "#core",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "active-chain",
+        "node-picked",
+        "archived"
+      ],
+      "interactions": [
+        "ring-sectors",
+        "ring-node-labels",
+        "ring-node-pick",
+        "ring-node-detail",
+        "ring-cost-chips",
+        "archived-rings"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-26-nomoto-fix6-baseline/refs/web-ring-baseline.png",
+        "docs/design/2026-11-26-nomoto-fix6-baseline/refs/mobile-ring-target.html"
+      ]
+    },
+    {
+      "id": "app-refresh",
+      "route": "#app",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "idle",
+        "refreshing"
+      ],
+      "interactions": [
+        "pull-anywhere"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-26-nomoto-fix6-baseline/refs/mobile-ring-target.html"
+      ]
+    }
+  ]
+}
