@@ -173,12 +173,12 @@ test('浏览器：五页渲染真实字段，回答一条待办后列表更新�
   assert.equal(await card.locator('[data-card-option="1"]').getAttribute('aria-pressed'), 'true');
   assert.equal(await card.locator('[data-card-text]').inputValue(), '我先填着的草稿');
 
-  // 模拟 mobile-write-api 节点上线：回答成功 → 重新拉取 → 列表显示已回答，角标归零。
+  // 模拟 mobile-write-api 节点上线：回答成功 → 卡立即离开待办（不残留「已回答」），角标归零。
   // 成功路径走真实服务端写路由，让 Hub 写代际与状态缓存失效按生产逻辑执行；
   // 不能在浏览器侧伪造成 200，否则绕过服务端缓存失效，重载仍会读到旧状态。
   await page.unroute('**/api/mobile/cards/*/answer');
   await card.locator('[data-card-submit]').click();
-  await page.waitForFunction(() => document.querySelector('[data-card-id="9"]')?.textContent?.includes('已回答'));
+  await page.waitForFunction(() => !document.querySelector('[data-card-id="9"]'));
   assert.deepEqual(await page.evaluate(() => window.__badges.at(-1)), 0);
   assert.deepEqual(pageErrors, []);
 });

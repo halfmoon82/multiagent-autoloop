@@ -324,20 +324,19 @@ test('执行轮次：state 缺失或 runs 为空都给明确空态', () => {
 // ---------------------------------------------------------------------------
 // RED 5：待我处理——保留决策上下文，只给选项/文字/结案，不虚构「进入原始会话」
 // ---------------------------------------------------------------------------
-test('待我处理：独立事项列表保留上下文与选项，已回答只读，动作不越界', () => {
+test('待我处理：独立事项列表保留上下文与选项，已回答离开列表，动作不越界', () => {
   const page = buildTodos(snapshot());
   assert.equal(page.ready, true);
-  assert.equal(page.items.items.length, 2, 'open / decided，不含已结案');
-  const [open, decided] = page.items.items;
+  // decision-card-lifecycle（2026-11-25）：回答/结案后卡离开待办，不再只读残留。
+  assert.equal(page.items.items.length, 1, '只列 open，不含已回答/已结案');
+  const [open] = page.items.items;
   assert.equal(open.title, '移动网络的访问边界');
   assert.equal(open.text, '任意网络还是仅可信私网？');
   assert.deepEqual(open.options, ['任意网络', '仅私网']);
   assert.equal(open.stateLabel, '待处理');
   assert.deepEqual(open.actions, ['answer-choice', 'answer-text', 'resolve']);
   assert.equal(open.actions.includes('open-original-session'), false, '不虚构进入原始会话能力');
-  assert.equal(decided.stateLabel, '已回答');
-  assert.equal(decided.readOnly, true);
-  assert.equal(decided.choice, '提供');
+  assert.equal(page.items.items.some(item => item.id === 'c2'), false, '已回答卡不残留');
 });
 
 test('待我处理：无卡片或 state 缺失时明确空态，不编造待办', () => {
@@ -392,7 +391,7 @@ test('buildPages 五个页面齐全；上游文本是纯字符串，不拼接 HT
   assert.ok(!dump.includes('<script') && !dump.includes('</div>') && !dump.includes('onerror='));
   assert.ok(!dump.includes('deviceToken') && !dump.includes('ownerKey') && !dump.includes('server-secret'));
   assert.equal(pages.overview.openTodoCount, 1);
-  assert.equal(pages.todos.items.items.length, 2);
+  assert.equal(pages.todos.items.items.length, 1, '已回答卡不进待办');
 });
 
 test('状态与卡片标签口径与现有网页控制台一致（未知如实显示「未知」）', () => {
@@ -516,7 +515,7 @@ test('端到端：经 /api/mobile/api/<key> 读取真实服务端响应，五个
   assert.equal(pages.overview.metrics.items.find(g => g.id === 'running').count, 1);
   assert.equal(pages.rules.items.items[0].name, '移动控制台 · 设计推进');
   assert.equal(pages.runs.items.items.length, 5);
-  assert.equal(pages.todos.items.items.length, 2);
+  assert.equal(pages.todos.items.items.length, 1, '已回答卡不进待办');
   assert.equal(pages.authorize.items.items.length, 2);
   const dump = JSON.stringify(pages);
   assert.ok(!dump.includes('server-secret') && !dump.includes(deviceToken), '页面不得含密钥或设备凭证');
