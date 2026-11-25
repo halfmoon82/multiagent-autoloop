@@ -1,6 +1,6 @@
 {
   "plan_id": "2026-11-26-nomoto-app-fix6",
-  "title": "NoMoTo App fix6：项目进度环对齐网页版 + 下拉刷新修复 + 决策卡两处一致性",
+  "title": "NoMoTo App fix6：项目进度环对齐网页版 + 下拉刷新 + 决策卡两处一致性 + 产物图片预览",
   "design": {
     "manifestPath": "docs/design/2026-11-26-nomoto-fix6-baseline/design-manifest.json",
     "approvalPath": "docs/design/2026-11-26-nomoto-fix6-baseline/design-approval.json"
@@ -112,6 +112,41 @@
           "interactions": [
             "answer-vanish-session",
             "handled-idempotent"
+          ]
+        }
+      }
+    },
+    {
+      "id": "artifact-image-preview",
+      "title": "产物图片可直接预览：App 产物页支持 png/jpg 等图片在线查看，不必下载",
+      "depends_on": [
+        "card-two-places-consistency"
+      ],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "主人 2026-11-26 晨：PNG 没办法预览，所有产物都要能预览，不能让用户直接下载。现状：App 产物页只列 md/html 文档（图片类在服务端 DOWNLOAD_EXTENSIONS 但移动端列表不返回），PNG 只能桌面下载。",
+        "output": "App 产物页列出图片类产物（png/jpg/jpeg/webp/gif，大小封顶沿用 500KB 文档口径或按需放宽到 5MB），点行内预览按钮直接在线查看（复用一次性票据/只读文件路由，不下载）；HTML 预览保持不变；下载按钮仍保留给确实需要落盘的场景。",
+        "error_behavior": "图片超封顶给明确提示与下载备选；加载失败就地重试。",
+        "acceptance_example": "单测覆盖图片列表与预览路由；模拟器 smoke：点图片产物→在线可见。",
+        "files": [
+          "mobile/src/features/artifacts/page.mjs",
+          "mobile/app/www/pages/artifacts.mjs",
+          "src/mobile-write.mjs",
+          "test/mobile-artifacts*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "artifact-viewer"
+          ],
+          "states": [
+            "html",
+            "image"
+          ],
+          "interactions": [
+            "image-preview"
           ]
         }
       }

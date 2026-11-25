@@ -1,16 +1,83 @@
-<!doctype html><html><head><title>mobile-ring-target</title><meta charset="utf-8"><style>body{margin:0;font:15px/1.5 -apple-system,"PingFang SC",sans-serif;background:#eef0f3;color:#1d2129}.wrap{width:402px;margin:0 auto;background:#fff;min-height:760px;padding-bottom:14px}.hd{padding:14px 16px;font-size:17px;font-weight:700}.row{display:flex;justify-content:space-between;align-items:center;margin:4px 16px}.row .pct{font-size:24px;font-weight:800;color:#0f3d2e}.tag{font-size:11px;padding:2px 8px;border-radius:99px;background:#eef0f3;color:#4b5563}.ringbox{display:flex;flex-direction:column;align-items:center;margin:6px 0}.meta{margin:6px 16px;font-size:12.5px;color:#6b7280}.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 16px}.chip{font-size:11.5px;padding:4px 9px;border-radius:99px;background:#f3f4f6;color:#374151}.lbl{margin:16px 14px 6px;font-size:13px;color:#16835c;font-weight:600}.detail{margin:8px 14px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px}.detail .t{font-weight:700}.detail .s{font-size:12.5px;color:#6b7280;margin-top:3px}.lnk{margin:4px 16px;font-size:13px;color:#16835c;font-weight:600}.arch{margin:8px 14px;padding:10px 14px;border:1px dashed #d1d5db;border-radius:12px;font-size:13px;color:#4b5563}</style></head><body>
-<div class="wrap"><div class="hd">项目任务进度（与网页版同内容同形式，仅布局适配窄屏）</div>
-<div class="lbl">活跃串行链：环形扇区=节点（弧排标签），中心总进度，点扇区出详情</div>
-<div class="row"><div><b>health-service-core</b> <span class="tag">串行链</span></div><div class="pct">78%</div></div>
-<div class="ringbox"><svg width="320" height="320" viewBox="0 0 320 320"><circle cx="160" cy="160" r="150" fill="none" stroke="#e5e7eb" stroke-width="26"/><path d="M160 10 A150 150 0 0 1 290 90" fill="none" stroke="#0f3d2e" stroke-width="26"/><path d="M290 90 A150 150 0 0 1 300 200" fill="none" stroke="#16835c" stroke-width="26"/><text x="160" y="156" text-anchor="middle" font-size="34" font-weight="800" fill="#0f3d2e">78%</text><text x="160" y="182" text-anchor="middle" font-size="12" fill="#6b7280">总进度 · 18 个节点</text></svg></div>
-<div class="meta">状态 进行中 · 开发中 ｜ 节点内进度 2%</div>
+<!doctype html><html><head><title>fix6 设计稿：项目进度环（可点击原型）</title><meta charset="utf-8"><style>
+body{margin:0;font:15px/1.5 -apple-system,"PingFang SC",sans-serif;background:#eef0f3;color:#1d2129}
+.wrap{width:402px;margin:0 auto;background:#fff;min-height:900px;padding-bottom:16px}
+.hd{padding:14px 16px;font-size:17px;font-weight:700}.lbl{margin:14px 14px 6px;font-size:13px;color:#16835c;font-weight:600}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#eef0f3;color:#4b5563;margin-left:6px}
+.row{display:flex;justify-content:space-between;align-items:center;margin:2px 16px}
+.pct{font-size:26px;font-weight:800;color:#0f3d2e}
+.ringbox{display:flex;flex-direction:column;align-items:center;margin:2px 0}
+.meta{margin:4px 16px;font-size:12.5px;color:#6b7280}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 16px}
+.chip{font-size:11.5px;padding:4px 9px;border-radius:99px;background:#f3f4f6;color:#374151}
+.detail{margin:8px 14px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px}
+.detail .t{font-weight:700}.detail .s{font-size:12.5px;color:#6b7280;margin-top:3px}
+.kv{display:flex;gap:10px;margin:3px 16px;font-size:13px}.kv b{color:#374151;min-width:64px;font-weight:600}
+.lnk{margin:4px 16px;font-size:13px;color:#16835c;font-weight:600}
+.arch{margin:8px 14px;padding:10px 14px;border:1px dashed #d1d5db;border-radius:12px;font-size:13px;color:#4b5563}
+.seg{cursor:pointer;transition:opacity .15s}.seg:hover{opacity:.85}.seg.sel{stroke:#0f3d2e;stroke-width:2}
+</style></head><body>
+<div class="wrap"><div class="hd">项目任务进度（设计稿 · 可点击原型）</div>
+<div class="lbl">形态与网页版一致：厚扇区环 + 弧排节点标签 + 内圈箭头（进行中节点）+ 中心总进度；点扇区出详情</div>
+<div class="row"><div><b id="pname">health-service-core</b><span class="tag">串行链</span></div><div class="pct" id="ppct">78%</div></div>
+<div class="ringbox">
+<svg width="352" height="352" viewBox="0 0 352 352" id="ring">
+<circle cx="176" cy="176" r="128" fill="none" stroke="#e5e7eb" stroke-width="40"/>
+<g id="sectors"></g>
+<g id="arrows"></g>
+<circle cx="176" cy="176" r="102" fill="#fff"/>
+<text x="176" y="172" text-anchor="middle" font-size="36" font-weight="800" fill="#0f3d2e">78%</text>
+<text x="176" y="196" text-anchor="middle" font-size="12" fill="#6b7280">总进度 · 18 个节点</text>
+</svg></div>
+<div class="meta">状态 进行中 · 开发中 ｜ 节点内进度 <span id="np">2%</span></div>
 <div class="chips"><span class="chip">等待重试 0</span><span class="chip">今日完成 0</span><span class="chip">待处理 0</span><span class="chip">今日费用 $27.39</span><span class="chip">链累计 $27.39 · 199M Token</span><span class="chip">创建于 2026/11/16 14:00</span></div>
-<div class="lbl">交互：点扇区 → 节点详情（标题/状态/进度/摘要/执行 Agent/模型/费用 Token）</div>
-<div class="detail"><div class="t">内存采样观测 14 天（外部长时） <span class="tag">进行中</span></div>
-<div class="s">任务摘要：内存采样已从 11 月 16 日 17:24 开始自动记录，需满 14 天…</div>
+<div class="lbl" style="margin-top:10px">点扇区试交互（选中扇区膨出、下方详情切换）：</div>
+<div class="detail" id="detail">
+<div class="t">内存采样观测 14 天（外部长时） <span class="tag">进行中</span></div>
+<div class="s">任务摘要：内存采样已从 11 月 16 日 17:24 开始自动记录，需满 14 天才能出结论，预计 11 月 30 日 17:24 后出具判定。</div>
 <div class="s">执行 Agent：Claude Code ｜ 模型：claude-sonnet-5-5</div>
-<div class="s">费用 Token：最近一轮 $0.14 · 58,680 Token（入 57,954/出 726）</div></div>
+<div class="s">费用 Token：最近一轮 $0.14 · 58,680 Token（入 57,954 / 出 726）</div></div>
 <div class="lnk">查看运行详情 →</div>
+<div class="kv"><b>执行 Agent</b><span>Claude Code</span></div>
+<div class="kv"><b>模型</b><span>claude-sonnet-5-5</span></div>
+<div class="kv"><b>费用 Token</b><span>费用 $0.14 · Token 58,680（入 57,954 / 出 726）</span></div>
+<div class="lnk">查看 PR</div>
 <div class="lbl">已归档的任务环（同款环，展开看）</div>
 <div class="arch">已归档的任务环 13 · 全部完成 12 · 已取消 1 · 展开查看</div>
-</div></body></html>
+</div>
+<script>
+// 设计原型：6 个示意扇区（真实实现为 18 节点全量弧排标签）
+const data=[
+ {label:'内存采样',p:22,color:'#16835c',st:'进行中',np:'2%',sum:'内存采样已从 11 月 16 日 17:24 开始自动记录，需满 14 天出结论。',agent:'Claude Code',model:'claude-sonnet-5-5',cost:'费用 $0.14 · Token 58,680（入 57,954 / 出 726）',cur:true},
+ {label:'cron 循环',p:11,color:'#8fbfb0',st:'完成',np:'100%',sum:'定时任务多租户改造已通过复审并合并。',agent:'Claude Code',model:'claude-sonnet-5-5',cost:'费用 $0.09 · Token 41,233（入 40,881 / 出 352）'},
+ {label:'环境变量',p:11,color:'#8fbfb0',st:'完成',np:'100%',sum:'环境变量注入与回读已自测通过。',agent:'Codex',model:'kimi-for-coding',cost:'费用 $0.05 · Token 22,104'},
+ {label:'病人档案',p:11,color:'#b98a32',st:'进行中',np:'64%',sum:'病人档案聚合接口联调中。',agent:'Claude Code',model:'claude-sonnet-5-5',cost:'费用 $0.11 · Token 47,502',cur:true},
+ {label:'租户端',p:22,color:'#2563eb',st:'待开始',np:'0%',sum:'租户端展示适配，依赖病人档案接口。',agent:'未派发',model:'未上报',cost:'未上报'},
+ {label:'病人端',p:22,color:'#9db3ab',st:'待开始',np:'0%',sum:'病人端展示适配。',agent:'未派发',model:'未上报',cost:'未上报'},
+];
+const NS='http://www.w3.org/2000/svg', secs=document.getElementById('sectors'), arrs=document.getElementById('arrows');
+const R=128,W=40,CX=176,CY=176;let a=-90;
+function pt(r,ang){const rad=ang*Math.PI/180;return [CX+r*Math.cos(rad),CY+r*Math.sin(rad)];}
+function arc(r0,r1,a0,a1){const [x0,y0]=pt(r1,a0),[x1,y1]=pt(r1,a1),[x2,y2]=pt(r0,a1),[x3,y3]=pt(r0,a0);const laf=(a1-a0)>180?1:0;return `M${x0} ${y0} A${r1} ${r1} 0 ${laf} 1 ${x1} ${y1} L${x2} ${y2} A${r0} ${r0} 0 ${laf} 0 ${x3} ${y3} Z`;}
+function txtArc(r,a0,a1,label){const mid=(a0+a1)/2,rad=mid*Math.PI/180;const t=document.createElementNS(NS,'text');t.setAttribute('x',CX+r*Math.cos(rad));t.setAttribute('y',CY+r*Math.sin(rad));t.setAttribute('text-anchor','middle');t.setAttribute('font-size','11');t.setAttribute('fill','#fff');t.setAttribute('transform',`rotate(${mid+90} ${CX+r*Math.cos(rad)} ${CY+r*Math.sin(rad)})`);t.textContent=label;return t;}
+data.forEach((d,i)=>{
+ const a0=a+1.2,a1=a+d.p-1.2;
+ const p=document.createElementNS(NS,'path');p.setAttribute('d',arc(R-W/2-14,R+W/2-14,a0,a1));p.setAttribute('fill',d.color);p.setAttribute('class','seg');p.setAttribute('data-i',i);secs.appendChild(p);
+ secs.appendChild(txtArc(R+4,a0,a1,d.label));
+ if(d.st!=='完成'){ // 内圈箭头弧（进行中/待开始节点）：黑色弧 + 箭头
+   const b0=a0+3,b1=a1-3;const path=document.createElementNS(NS,'path');
+   const [qx0,qy0]=pt(96,b0),[qx1,qy1]=pt(96,b1);
+   path.setAttribute('d',`M${qx0} ${qy0} A96 96 0 0 1 ${qx1} ${qy1}`);path.setAttribute('stroke','#1f2937');path.setAttribute('stroke-width','7');path.setAttribute('fill','none');arrs.appendChild(path);
+   const tri=document.createElementNS(NS,'polygon');const [tx,ty]=pt(96,b1);const rad=(b1+90)*Math.PI/180;
+   tri.setAttribute('points',`${tx},${ty} ${tx-7*Math.cos(rad)-5*Math.sin(rad)},${ty-7*Math.sin(rad)+5*Math.cos(rad)} ${tx-7*Math.cos(rad)+5*Math.sin(rad)},${ty-7*Math.sin(rad)-5*Math.cos(rad)}`);tri.setAttribute('fill','#1f2937');arrs.appendChild(tri);
+ }
+ a+=d.p;
+});
+document.getElementById('ring').addEventListener('click',e=>{
+ const seg=e.target.closest('.seg');if(!seg)return;
+ document.querySelectorAll('.seg').forEach(s=>s.classList.remove('sel'));seg.classList.add('sel');
+ const d=data[+seg.dataset.i];
+ document.getElementById('detail').innerHTML=`<div class="t">${d.label}（示意节点） <span class="tag">${d.st}</span></div><div class="s">任务摘要：${d.sum}</div><div class="s">执行 Agent：${d.agent} ｜ 模型：${d.model}</div><div class="s">费用 Token：${d.cost}</div>`;
+ document.getElementById('np').textContent=d.np;
+});
+</script>
+</body></html>
