@@ -301,3 +301,90 @@ test('浏览器：DAG 环中心进度与节点契约、切项目后各页同步�
   assert.equal(await page.evaluate(() => window.AutoloopHooks.projectFilter.current().selectedId), projectB);
   assert.deepEqual(pageErrors, []);
 });
+
+// 总览活跃 DAG 交互环（2026-11-25 用户定）：环渲染扇区、点节点膨出节点卡（干嘛的）、
+// 查看详情跳 DAG 页选中该环与节点；已完成 DAG 收进「已归档」折叠区。
+test('浏览器：总览活跃环点节点膨出说明、详情跳 DAG 页；已完成 DAG 折叠进已归档', { skip: browserSkip }, async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'mobile-dagov-'));
+  const projectA = path.join(root, 'proj-alpha');
+  const projectB = path.join(root, 'proj-beta');
+  mkdirSync(path.join(projectA, '.git'), { recursive: true });
+  mkdirSync(path.join(projectB, '.git'), { recursive: true });
+  const hub = await fakeHub((req, res) => json(res, { runs: [], cards: [], lines: [], spending: { today: {} } }));
+  const rulesFile = path.join(root, 'rules.json');
+  writeFileSync(rulesFile, JSON.stringify({ sources: {}, agents: {}, rules: [] }));
+  const mkRun = (runId, project, planId, nodeId, status) => ({
+    runId, nodeId: '__root__', project, planId, status,
+    createdAt: '2026-11-20T09:00:00+08:00',
+    authorizationSnapshot: { schema: 2, planDigest: 'a'.repeat(64), allowedActions: ['worktree'], deniedActions: ['deploy'] },
+    nodes: [{ id: nodeId, title: `${nodeId} 标题`, depends_on: [], contract: { input: `${nodeId} 输入`, output: `${nodeId} 输出`, error_behavior: '保留', acceptance_example: '验收' } }],
+    publish: { nodes: { [nodeId]: { state: status === 'done' ? 'accepted' : 'dev', slot: 1 } } },
+  });
+  const rootA = mkRun('dagrun-live', projectA, 'plan-a', 'node-a', 'running');
+  const rootB = mkRun('dagrun-dead', projectB, 'plan-b', 'node-b', 'done');
+  const sessionsFake = { async list() { return []; }, async listArchived() { return []; } };
+  const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
+  const server = createConsoleServer({
+    hubUrl: hub.url, ownerKey: 'server-secret', host: '127.0.0.1', root, rulesFile, deviceAuth,
+    projectRoots: [projectA, projectB],
+    dagService: createDagService({ root, store: { listRuns: () => [rootA, rootB] } }),
+  }, sessionsFake);
+  const url = await listen(server);
+  let browser;
+  t.after(async () => {
+    if (browser) await browser.close();
+    await close(server); await close(hub.server);
+    rmSync(root, { recursive: true, force: true });
+  });
+  const qr = deviceAuth.createBinding();
+  browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  page.on('pageerror', e => console.log('PAGE_ERROR', e.message.slice(0, 200)));
+  await page.addInitScript(() => {
+    let stored = null;
+    window.AutoloopSecureStorage = { async get() { return stored; }, async set(v) { stored = v; }, async remove() { stored = null; } };
+    window.AutoloopBiometric = { async verify() { return true; } };
+  });
+  await page.goto(`${url}/mobile/`);
+  await page.locator('#bind-payload').fill(qr.qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+
+  // 活跃环卡片渲染：SVG 扇区数 = 节点数，中心有总进度。
+  const ringCard = page.locator('.dagov-card[data-dagov-run="dagrun-live"]');
+  await ringCard.waitFor({ timeout: 6000 });
+  assert.equal(await ringCard.locator('.dagov-seg').count(), 1, '一个节点一个扇区');
+  assert.match(await ringCard.innerText(), /总进度/);
+  // 活跃节点带箭头（未完成节点）。
+  assert.equal(await ringCard.locator('polygon').count(), 1, '进行中节点的箭头标记');
+
+  // 点节点 → 膨出节点卡：标题 + 状态（干嘛的摘要缺失时至少有标题与状态，不编造）。
+  await ringCard.locator('.dagov-seg').first().dispatchEvent('click'); // SVG path 的可见性判定不稳定，直接派发点击
+  const nodeCard = ringCard.locator('.dagov-node-card');
+  await nodeCard.waitFor({ timeout: 4000 });
+  assert.match(await nodeCard.innerText(), /node-a 标题/);
+  assert.match(await nodeCard.innerText(), /已完成|进行中|排队中|未知|开发中|待派发/);
+
+  // 查看详情 → DAG 页选中该环与节点，节点契约可见。
+  await nodeCard.getByRole('button', { name: /查看详情/ }).click();
+  await page.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => document.querySelector('#app-main')?.dataset.activeTab), 'dag', '应切到 DAG 页');
+  await page.waitForFunction(() => {
+    const pressed = document.querySelector('#page-dag .dag-node[aria-pressed="true"]');
+    return pressed && pressed.textContent.includes('node-a');
+  }, null, { timeout: 6000 });
+  const dagText = await page.locator('#page-dag .dag-detail').innerText();
+  assert.match(dagText, /node-a 输入/, 'DAG 页节点契约（输入）可见');
+
+  // 已完成 DAG 不在活跃环里，收进「已归档」折叠区。
+  await page.evaluate(() => window.AutoloopNav.selectTab('core'));
+  const archived = page.locator('.dagov-archived');
+  await archived.waitFor({ timeout: 4000 });
+  assert.match(await archived.locator('.dagov-archived-toggle').innerText(), /已归档（1）/);
+  assert.equal(await archived.locator('.dagov-archived-body .core-item').count(), 1, '归档区内一条（已完成 DAG）');
+  assert.equal(await archived.locator('.dagov-archived-body').isHidden(), true, '默认折叠');
+  await archived.locator('.dagov-archived-toggle').click();
+  assert.match(await archived.locator('.dagov-archived-body').innerText(), /dagrun-dead|proj-beta/);
+});

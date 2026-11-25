@@ -40,8 +40,30 @@ export function mount(ctx) {
   let reload = () => {};
   retry.addEventListener('click', () => { void reload(); });
 
+  // 总览活跃环「查看详情」跨页跳入：按 taskId 选中环与节点（2026-11-25）。
+  // 模型未加载时先记账，加载后由 applyPick 真正应用。
+  let pendingPick = null;
+  let applyPick = () => {};
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('autoloop:dag-pick', event => {
+      const detail = event?.detail || {};
+      if (!detail.taskId) return;
+      pendingPick = { taskId: String(detail.taskId), nodeId: String(detail.nodeId || '') };
+      applyPick();
+    });
+  }
+
   Promise.all([modelPromise, filterPromise]).then(([model, filterModel]) => {
     let fullView = model.buildDagRingView({ available: {}, errors: {}, dagRuns: [] });
+    applyPick = () => {
+      if (!pendingPick) return;
+      const items = activeView?.rings?.items || [];
+      if (!items.some(item => item.taskId === pendingPick.taskId)) return;
+      selectedId = pendingPick.taskId;
+      selectedNodeId = pendingPick.nodeId || null;
+      pendingPick = null;
+      render();
+    };
     let activeView = fullView;
     let activeFilter = null;
     let selectedId = null;
@@ -161,7 +183,8 @@ export function mount(ctx) {
       ]));
     };
 
-    const render = () => { renderRings(); renderDetail(); };
+    // 每次渲染后重放未落地的跨页跳入：数据未到时 applyPick 会保留 pendingPick，加载完成即生效。
+    const render = () => { renderRings(); renderDetail(); applyPick(); };
 
     reload = async () => {
       banner.hidden = true;
