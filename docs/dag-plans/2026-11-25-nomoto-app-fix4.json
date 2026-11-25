@@ -1,0 +1,78 @@
+{
+  "plan_id": "2026-11-25-nomoto-app-fix4",
+  "title": "NoMoTo App fix4：串行链详情入口回归修复 + 决策卡生命周期与会话绑定",
+  "design": {
+    "manifestPath": "docs/design/2026-11-25-nomoto-fix4-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-25-nomoto-fix4-baseline/design-approval.json"
+  },
+  "nodes": [
+    {
+      "id": "serial-chain-detail-restore",
+      "title": "恢复总览串行链详情入口（#316 回归删除，数据仍在但无按钮）",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "2026-11-25 真机截图：总览串行链只有一行百分比，无详情入口。根因已定位：PR #315 在 mobile/app/www/pages/core.mjs 加的 chainEntry toggle + 节点清单面板被随后 PR #316 重写总览时整块删除；视图模型 mobile/src/core/pages.mjs 的 chainEntry/chainDetail 数据仍在。",
+        "output": "在当前（含 #316 进度环/已归档展示）总览渲染里恢复串行链详情交互：条目出现「串行链详情」按钮，点开见该链节点清单（业务标题/当前环节/百分比/一句话进展）与整体进度，失败就地重试；与 #316 新 UI 并存不冲突。",
+        "error_behavior": "详情为空就显示如实空态；渲染异常不拖垮整页（try/catch 就地重试）。",
+        "acceptance_example": "单测断言 chainEntry 渲染存在且与 #316 元素共存；浏览器/真机回归：点开详情可见节点清单；git 历史冲突防护（回归测试文件名带节点 id）。",
+        "files": [
+          "mobile/app/www/pages/core.mjs",
+          "mobile/app/www/pages/core.css",
+          "test/mobile-core*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "core-projects-serial"
+          ],
+          "states": [
+            "active-chain",
+            "chain-detail-open"
+          ],
+          "interactions": [
+            "open-chain-detail",
+            "chain-detail-retry"
+          ]
+        }
+      }
+    },
+    {
+      "id": "decision-card-lifecycle",
+      "title": "决策卡：回答/结案后立即消失 + 按会话归属不串会话",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "2026-11-25 真机反馈两个缺陷：①决策卡回答后仍残留——输入其他要求或在「待我处理」选结案，卡还在；②卡未绑定会话——会出现在不同会话里。回答链路：移动端 POST /api/mobile/cards/:id/answer → 控制台代答 Hub /v1/cards/:id/answer；卡片 subject 携带 scheduling:<会话id>。",
+        "output": "1) 选项回答或结案后，该卡立即从待办/会话卡列表消失（核实 Hub 回答后状态与前端刷新/过滤口径，哪环断修哪环）；2) 决策卡按会话归属：会话页/待办只显示与当前会话相关的卡，跨会话的卡标注来源会话或按用户要求隐藏；3) 列表与计数同步（待办角标不残留已答卡）。",
+        "error_behavior": "回答失败就地报错并保留卡与选项；Hub 不可用时如实提示可重试；过滤不丢数据（卡仍可在其归属会话看到）。",
+        "acceptance_example": "单测覆盖回答后过滤、结案 payload、按会话归属过滤与角标计数；浏览器回归：回答→卡消失→切会话不串卡。",
+        "files": [
+          "src/mobile-write.mjs",
+          "mobile/src/features/sessions/browser.mjs",
+          "mobile/src/core/pages.mjs",
+          "mobile/src/core/contract.mjs",
+          "test/（卡回答与归属回归）"
+        ],
+        "design": {
+          "surfaceIds": [
+            "decision-cards"
+          ],
+          "states": [
+            "open",
+            "answered"
+          ],
+          "interactions": [
+            "answer-vanish",
+            "session-bind"
+          ]
+        }
+      }
+    }
+  ]
+}
