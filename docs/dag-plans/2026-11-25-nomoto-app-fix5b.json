@@ -1,0 +1,45 @@
+{
+  "plan_id": "2026-11-25-nomoto-app-fix5b",
+  "title": "NoMoTo App fix5b：App 刷新机制（下拉刷新 + 界面版本变化自动重载）",
+  "design": {
+    "manifestPath": "docs/design/2026-11-25-nomoto-fix5b-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-25-nomoto-fix5b-baseline/design-approval.json"
+  },
+  "nodes": [
+    {
+      "id": "app-refresh-mechanism",
+      "title": "App 刷新机制：各 tab 下拉刷新 + 界面版本变化自动重载回原位置",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "主人 2026-11-25 晚反馈：App 没有任何下拉刷新功能（任何 tab 都没有），要求作为节点修复。背景：App 界面随安装包冻结，但数据可刷新；且以后界面更新靠重打包，期间用户需要手动刷新数据与触发换新。",
+        "output": "1) 各核心 tab（总览/规则/轮次/待办/会话）顶部下拉手势触发当前页数据重载（带刷新指示）；2) 版本自检：回前台/定时轻量探测控制台移动资源版本（入口 no-store，?v= 内容 hash），变化即整页重载拿新界面并回到原 tab 与会话上下文；3) 手势与左滑关闭、折叠卡片、tab 滑动切换不冲突。",
+        "error_behavior": "探测失败静默保持现状不弹错；离线刷新给可读提示；重载不丢绑定与当前控制台。",
+        "acceptance_example": "模拟器：下拉刷新各 tab 生效且回原位置；版本变化后自动换新界面；手势冲突回归（左滑/折叠/滑动切换不受影响）。",
+        "files": [
+          "mobile/app/www/app.mjs",
+          "mobile/app/www/shell.mjs",
+          "mobile/app/www/styles.css",
+          "mobile/app/scripts/emulator-smoke.mjs",
+          "test/（刷新机制回归）"
+        ],
+        "design": {
+          "surfaceIds": [
+            "app-refresh"
+          ],
+          "states": [
+            "idle",
+            "refreshing"
+          ],
+          "interactions": [
+            "pull-refresh",
+            "version-reload"
+          ]
+        }
+      }
+    }
+  ]
+}

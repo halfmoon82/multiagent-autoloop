@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix5b-2026-11-25",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix5b-baseline/refs/app-refresh.html",
+      "sha256": "d386d3145942158acdc181fe92ec5a2c122e2a23436606c586da70449ac2cfeb"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix5b-baseline/verifiers/fix5b-design.verify.mjs",
+      "sha256": "10b82bb4f4c3b0dd3be65bccac38d36ea7e9c9184a1ce17c29fe2748179e800f"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix5b-baseline/verifiers/fix5b-design-fallback.mjs",
+      "sha256": "c5e651af188495a9c9bece60f617d156c6a22b55e84d26b31d4659e74fefe379"
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-25-nomoto-fix5b-baseline/verifiers/fix5b-design.verify.mjs",
+  "fallbackVerifierPath": "docs/design/2026-11-25-nomoto-fix5b-baseline/verifiers/fix5b-design-fallback.mjs",
+  "surfaces": [
+    {
+      "id": "app-refresh",
+      "route": "#app",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "idle",
+        "refreshing"
+      ],
+      "interactions": [
+        "pull-refresh",
+        "version-reload"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-25-nomoto-fix5b-baseline/refs/app-refresh.html"
+      ]
+    }
+  ]
+}
