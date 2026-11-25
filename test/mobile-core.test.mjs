@@ -576,3 +576,54 @@ test('浏览器回归在无浏览器环境下显式跳过，不在 npm test 阶�
   assert.match(src, /skip:\s*browserSkip/, '测试声明 skip，缺浏览器时跳过而不是失败');
   assert.match(src, /chromium\.launch/, '浏览器可用时仍执行真实浏览器回归');
 });
+
+// 总览活跃环视图模型（2026-11-25）：节点扇区数据齐全（summary=干嘛的），已归档标记正确分级。
+test('buildActiveDagCard：提取环卡片字段（节点 summary/状态/波次/taskId）；项目进度 archived 分级', async () => {
+  const { buildActiveDagCard } = await import('../mobile/src/features/dag-ring/index.mjs');
+  const run = {
+    runId: 'dagrun-ring', project: '/work/移动控制台', planId: 'mobile-app', status: 'running',
+    createdAt: '2026-11-19T09:00:00+08:00',
+    authorizationSnapshot: { schema: 2, planDigest: 'f'.repeat(64), allowedActions: ['worktree'], digest: 'e'.repeat(64) },
+    nodes: [
+      { id: 'a', title: '环卡片甲', depends_on: [] },
+      { id: 'b', title: '环卡片乙', depends_on: ['a'] },
+    ],
+    publish: { nodes: { a: { state: 'accepted', slot: 1 }, b: { state: 'dev', slot: 2 } } },
+  };
+  const nodeRuns = [
+    { runId: 'n1', nodeId: 'a', project: '/work/移动控制台', planId: 'mobile-app', role: 'dev', status: 'done', agent: 'Codex', usage: { cost: 1, input: 10, output: 5 } },
+    { runId: 'n2', nodeId: 'b', project: '/work/移动控制台', planId: 'mobile-app', role: 'dev', status: 'claimed', slot: 2, agent: 'K2', usage: { cost: 0.5, input: 5, output: 2 } },
+  ];
+  const withSummary = { ...run, mobileSummary: mobileDagSummaries([run], nodeRuns)[0] };
+  withSummary.mobileSummary.ring.nodes = withSummary.mobileSummary.ring.nodes.map((node, i) => (
+    { ...node, summary: i === 0 ? '甲节点：负责页面骨架' : '乙节点：负责数据接线' }
+  ));
+  const card = buildActiveDagCard(withSummary);
+  assert.ok(card, '有 ring 的 run 必须产出卡片');
+  assert.equal(card.taskId, 'dag:/work/移动控制台:mobile-app');
+  assert.equal(card.runId, 'dagrun-ring');
+  assert.match(card.waveLabel, /第 2\/2 波/);
+  const a = card.nodes.find(n => n.id === 'a');
+  assert.equal(a.summary, '甲节点：负责页面骨架');
+  assert.equal(a.statusKind, 'done');
+  const b = card.nodes.find(n => n.id === 'b');
+  assert.equal(b.statusKind, 'active');
+  assert.equal(b.agent, 'K2');
+  assert.equal(buildActiveDagCard({ runId: 'x' }), null, '无 ring 不编造卡片');
+
+  const page = buildOverview(snapshot({
+    'dag-runs': { runs: [
+      { ...run, mobileSummary: mobileDagSummaries([run], nodeRuns)[0] },
+      { ...run, runId: 'dagrun-done', status: 'done', mobileSummary: { ...mobileDagSummaries([run], nodeRuns)[0], runId: 'dagrun-done', status: 'done' } },
+    ] },
+    'serial-progress': { chains: [
+      { sourceFile: 'live-serial.json', project: '/work/健康核心', percent: 40, nodes: [{ id: 'b', status: 'in_progress', percent: 40 }] },
+      { sourceFile: 'done-serial.json', project: '/work/旧项目', percent: 100, nodes: [{ id: 'a', status: 'done', percent: 100 }] },
+    ] },
+  }), { now: NOW });
+  const flags = Object.fromEntries(page.projects.items.map(item => [item.runId, item.archived]));
+  assert.equal(flags['dagrun-ring'], false, '活跃 DAG 不归档');
+  assert.equal(flags['dagrun-done'], true, '已完成 DAG 归已归档');
+  assert.equal(flags['live-serial.json'], false, '进行中串行链不归档');
+  assert.equal(flags['done-serial.json'], true, '已完结串行链归已归档');
+});

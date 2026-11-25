@@ -117,7 +117,8 @@ export function buildOverview(snapshot, { now } = {}) {
   const projectItems = [...dagItems, ...chainItems]
     .map((item, index) => ({ item, index, rank: itemRank(item) }))
     .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
-    .map(entry => entry.item);
+    // archived：已完结的归入「已归档」折叠区（2026-11-25 用户定：活跃项直接展示环，完成的收进已归档）。
+    .map(entry => ({ ...entry.item, archived: entry.rank >= 2 }));
   const projects = collection(projectItems, dagAvailable || serialAvailable
     ? '暂无项目进度'
     : `DAG 数据缺失：${dagError || '未读取到项目 DAG 进度'}；${serialError || '串行进度数据缺失，未读取到串行链进度'}`);
