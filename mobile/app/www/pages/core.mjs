@@ -57,6 +57,86 @@ export function buildChainDetail(item) {
   return { toggle, panel };
 }
 
+const DAGOV_NS = 'http://www.w3.org/2000/svg';
+const DAGOV_COLORS = { done: '#2f9e6e', active: '#e8a33d', blocked: '#d9534f', error: '#d9534f' };
+const dagovColor = kind => DAGOV_COLORS[kind] || '#9db3ab';
+function dagovArc(cx, cy, rOut, rIn, a0, a1) {
+  const rad = deg => (deg - 90) * Math.PI / 180;
+  const p = (r, a) => [cx + r * Math.cos(rad(a)), cy + r * Math.sin(rad(a))];
+  const [x0, y0] = p(rOut, a0); const [x1, y1] = p(rOut, a1);
+  const [x2, y2] = p(rIn, a1); const [x3, y3] = p(rIn, a0);
+  const large = a1 - a0 > 180 ? 1 : 0;
+  const svgPath = document.createElementNS(DAGOV_NS, 'path');
+  svgPath.setAttribute('d', `M ${x0} ${y0} A ${rOut} ${rOut} 0 ${large} 1 ${x1} ${y1} L ${x2} ${y2} A ${rIn} ${rIn} 0 ${large} 0 ${x3} ${y3} Z`);
+  return svgPath;
+}
+function dagovSvg(tag, attrs) {
+  const el = document.createElementNS(DAGOV_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value));
+  return el;
+}
+
+// 并行 DAG 环形卡片（#316）：模块级导出，种子数据可在 Node 下直接驱动点选/详情跳转。
+// selectedId=当前膨出节点；onSelect(nodeId|'')=点扇区；onDetail({taskId,runId,nodeId})=查看详情。
+export function buildDagRingCard(item, card, { selectedId = '', onSelect = () => {}, onDetail = () => {} } = {}) {
+  const wrap = node('div', { className: 'dagov-card', attrs: { 'data-dagov-run': card.runId } }, [
+    node('div', { className: 'dagov-head' }, [
+      node('strong', { text: card.projectLabel || item.projectLabel || '未识别项目' }),
+      node('span', { className: 'dagov-badge', text: '并行 DAG' }),
+    ]),
+    node('p', { className: 'dagov-meta', text: [card.planId, card.waveLabel, `${card.nodeCount} 个节点 · ${card.statusLabel}`].filter(Boolean).join(' · ') }),
+  ]);
+  const svg = dagovSvg('svg', { viewBox: '0 0 140 140', class: 'dagov-ring', role: 'img' });
+  const cx = 70; const cy = 70; const rIn = 34;
+  const n = card.nodes.length;
+  const gap = n > 1 ? 3 : 0;
+  const slice = (360 - gap * n) / n;
+  card.nodes.forEach((sector, index) => {
+    // 单节点特判：整环用 359.999°，起终点重合的 360° 路径画不出扇区（review P3-1 实测 boundingBox=0）。
+    const a0 = index * (slice + gap) + gap / 2;
+    const a1 = n === 1 ? a0 + 359.999 : a0 + slice;
+    const selected = sector.id === selectedId;
+    const inflated = selected ? 9 : 0;
+    const path = dagovArc(cx, cy, 52 + inflated, rIn, a0, a1);
+    path.setAttribute('fill', dagovColor(sector.statusKind));
+    path.setAttribute('class', 'dagov-seg');
+    path.setAttribute('data-node-id', sector.id);
+    path.addEventListener('click', () => {
+      onSelect(selected ? '' : sector.id);
+    });
+    svg.appendChild(path);
+    if (sector.statusKind !== 'done') {
+      const mid = (a0 + a1) / 2;
+      const rad = (mid - 90) * Math.PI / 180;
+      const tx = cx + (52 + inflated + 7) * Math.cos(rad);
+      const ty = cy + (52 + inflated + 7) * Math.sin(rad);
+      svg.appendChild(dagovSvg('polygon', { points: `${tx},${ty} ${tx - 5},${ty - 8} ${tx + 5},${ty - 8}`, fill: '#0f3d2e', transform: `rotate(${mid} ${tx} ${ty})` }));
+    }
+  });
+  const center = dagovSvg('text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'dagov-percent' });
+  center.textContent = `${card.percent}%`;
+  const sub = dagovSvg('text', { x: cx, y: cy + 14, 'text-anchor': 'middle', class: 'dagov-sub' });
+  sub.textContent = `总进度 · ${card.nodeCount} 节点`;
+  svg.appendChild(center); svg.appendChild(sub);
+  wrap.appendChild(svg);
+
+  const picked = card.nodes.find(sector => sector.id === selectedId);
+  if (picked) {
+    const nodeCard = node('div', { className: 'dagov-node-card', attrs: { 'data-node-card': picked.id } }, [
+      node('strong', { text: picked.title }),
+      node('span', { className: 'core-meta', text: [picked.statusLabel, picked.agent && `执行 ${picked.agent}`, picked.model].filter(Boolean).join(' · ') }),
+    ]);
+    if (picked.summary) nodeCard.appendChild(node('p', { className: 'dagov-node-summary', text: picked.summary }));
+    const detail = node('button', { type: 'button', className: 'core-action', text: '查看详情 →' });
+    detail.addEventListener('click', () => {
+      onDetail({ taskId: card.taskId, runId: card.runId, nodeId: picked.id });
+    });
+    nodeCard.appendChild(detail);
+    wrap.appendChild(nodeCard);
+  }
+  return wrap;
+}
+
 function makeSection(container, key, title) {
   const card = node('section', { className: 'card core-section', attrs: { 'data-core-section': key } }, [
     node('h3', { text: title }),
@@ -177,7 +257,15 @@ export function mount(ctx) {
     for (const item of active) {
       const run = (fullSnapshot?.dagRuns || []).find(entry => String(entry?.mobileSummary?.runId ?? entry?.runId ?? '') === String(item.runId ?? ''));
       const card = dagRingModel && run ? dagRingModel.buildActiveDagCard(run) : null;
-      if (card && item.dagEntry) refs.projects.appendChild(renderDagRingCard(item, card));
+      if (card && item.dagEntry) refs.projects.appendChild(buildDagRingCard(item, card, {
+        selectedId: dagovSelection.get(card.runId) || '',
+        onSelect: id => { dagovSelection.set(card.runId, id); renderCurrent(); },
+        onDetail: detail => {
+          const select = ctx.hooks?.selectTab || window.AutoloopNav?.selectTab;
+          if (typeof select === 'function') select('dag');
+          window.dispatchEvent(new CustomEvent('autoloop:dag-pick', { detail }));
+        },
+      }));
       else refs.projects.appendChild(renderProjectRow(item));
     }
     if (archived.length) {
@@ -214,88 +302,6 @@ export function mount(ctx) {
       box.append(toggle, panel);
     }
     return box;
-  }
-
-  const DAGOV_NS = 'http://www.w3.org/2000/svg';
-  const DAGOV_COLORS = { done: '#2f9e6e', active: '#e8a33d', blocked: '#d9534f', error: '#d9534f' };
-  const dagovColor = kind => DAGOV_COLORS[kind] || '#9db3ab';
-  function dagovArc(cx, cy, rOut, rIn, a0, a1) {
-    const rad = deg => (deg - 90) * Math.PI / 180;
-    const p = (r, a) => [cx + r * Math.cos(rad(a)), cy + r * Math.sin(rad(a))];
-    const [x0, y0] = p(rOut, a0); const [x1, y1] = p(rOut, a1);
-    const [x2, y2] = p(rIn, a1); const [x3, y3] = p(rIn, a0);
-    const large = a1 - a0 > 180 ? 1 : 0;
-    const svgPath = document.createElementNS(DAGOV_NS, 'path');
-    svgPath.setAttribute('d', `M ${x0} ${y0} A ${rOut} ${rOut} 0 ${large} 1 ${x1} ${y1} L ${x2} ${y2} A ${rIn} ${rIn} 0 ${large} 0 ${x3} ${y3} Z`);
-    return svgPath;
-  }
-  function dagovSvg(tag, attrs) {
-    const el = document.createElementNS(DAGOV_NS, tag);
-    for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value));
-    return el;
-  }
-
-  function renderDagRingCard(item, card) {
-    const selectedId = dagovSelection.get(card.runId) || '';
-    const wrap = node('div', { className: 'dagov-card', attrs: { 'data-dagov-run': card.runId } }, [
-      node('div', { className: 'dagov-head' }, [
-        node('strong', { text: card.projectLabel || item.projectLabel || '未识别项目' }),
-        node('span', { className: 'dagov-badge', text: '并行 DAG' }),
-      ]),
-      node('p', { className: 'dagov-meta', text: [card.planId, card.waveLabel, `${card.nodeCount} 个节点 · ${card.statusLabel}`].filter(Boolean).join(' · ') }),
-    ]);
-    const svg = dagovSvg('svg', { viewBox: '0 0 140 140', class: 'dagov-ring', role: 'img' });
-    const cx = 70; const cy = 70; const rIn = 34;
-    const n = card.nodes.length;
-    const gap = n > 1 ? 3 : 0;
-    const slice = (360 - gap * n) / n;
-    card.nodes.forEach((sector, index) => {
-      // 单节点特判：整环用 359.999°，起终点重合的 360° 路径画不出扇区（review P3-1 实测 boundingBox=0）。
-      const a0 = index * (slice + gap) + gap / 2;
-      const a1 = n === 1 ? a0 + 359.999 : a0 + slice;
-      const selected = sector.id === selectedId;
-      const inflated = selected ? 9 : 0;
-      const path = dagovArc(cx, cy, 52 + inflated, rIn, a0, a1);
-      path.setAttribute('fill', dagovColor(sector.statusKind));
-      path.setAttribute('class', 'dagov-seg');
-      path.setAttribute('data-node-id', sector.id);
-      path.addEventListener('click', () => {
-        dagovSelection.set(card.runId, selected ? '' : sector.id);
-        renderCurrent();
-      });
-      svg.appendChild(path);
-      if (sector.statusKind !== 'done') {
-        const mid = (a0 + a1) / 2;
-        const rad = (mid - 90) * Math.PI / 180;
-        const tx = cx + (52 + inflated + 7) * Math.cos(rad);
-        const ty = cy + (52 + inflated + 7) * Math.sin(rad);
-        svg.appendChild(dagovSvg('polygon', { points: `${tx},${ty} ${tx - 5},${ty - 8} ${tx + 5},${ty - 8}`, fill: '#0f3d2e', transform: `rotate(${mid} ${tx} ${ty})` }));
-      }
-    });
-    const center = dagovSvg('text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'dagov-percent' });
-    center.textContent = `${card.percent}%`;
-    const sub = dagovSvg('text', { x: cx, y: cy + 14, 'text-anchor': 'middle', class: 'dagov-sub' });
-    sub.textContent = `总进度 · ${card.nodeCount} 节点`;
-    svg.appendChild(center); svg.appendChild(sub);
-    wrap.appendChild(svg);
-
-    const picked = card.nodes.find(sector => sector.id === selectedId);
-    if (picked) {
-      const nodeCard = node('div', { className: 'dagov-node-card', attrs: { 'data-node-card': picked.id } }, [
-        node('strong', { text: picked.title }),
-        node('span', { className: 'core-meta', text: [picked.statusLabel, picked.agent && `执行 ${picked.agent}`, picked.model].filter(Boolean).join(' · ') }),
-      ]);
-      if (picked.summary) nodeCard.appendChild(node('p', { className: 'dagov-node-summary', text: picked.summary }));
-      const detail = node('button', { type: 'button', className: 'core-action', text: '查看详情 →' });
-      detail.addEventListener('click', () => {
-        const select = ctx.hooks?.selectTab || window.AutoloopNav?.selectTab;
-        if (typeof select === 'function') select('dag');
-        window.dispatchEvent(new CustomEvent('autoloop:dag-pick', { detail: { taskId: card.taskId, runId: card.runId, nodeId: picked.id } }));
-      });
-      nodeCard.appendChild(detail);
-      wrap.appendChild(nodeCard);
-    }
-    return wrap;
   }
 
   function renderOverview(page) {
