@@ -1,0 +1,150 @@
+{
+  "plan_id": "2026-11-25-nomoto-app-fix3",
+  "title": "NoMoTo App fix3：产物下载可点通、HTML 预览可打开、总览串行链可打开、折叠卡片逐张展开",
+  "design": {
+    "manifestPath": "docs/design/2026-11-25-nomoto-fix3-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-25-nomoto-fix3-baseline/design-approval.json"
+  },
+  "nodes": [
+    {
+      "id": "artifacts-download-feedback",
+      "title": "产物下载反馈：下载成功/失败都在页面给出明确提示",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "用户更正（2026-11-25）：下载功能本身正常、文件实际已下载成功，只是页面没有任何提示，用户完全不知道已成功；要求加提示。顺带加固：若下载真的失败（未绑定/令牌失效/网络失败），也应就地显示可读错误与重试，不再静默。",
+        "output": "1) 点下载后页面立即给出「已开始下载」反馈，下载完成有明确成功提示（原生 DownloadManager 已有系统通知，页面内同时给轻提示，双保险）；2) 下载真实失败时就地显示可读原因与重试入口；令牌缺失引导重新绑定；3) 保持「下载必须带设备令牌、不退化成普通跳转」的安全契约不变。",
+        "error_behavior": "失败不清空已选产物、不跳页；错误文案产品语言；重试回到原状态。",
+        "acceptance_example": "单测覆盖成功/失败/未绑定三态的提示文案与时机；模拟器 smoke 真点下载并断言页面出现成功提示；失败路径页面有可见提示。",
+        "files": [
+          "mobile/app/www/app.mjs",
+          "mobile/app/www/pages/artifacts.mjs",
+          "mobile/app/www/shell.mjs",
+          "mobile/app/native/java/cool/autoloop/console/auth/AutoLoopDownloads.java",
+          "mobile/app/native/java/cool/autoloop/console/auth/AutoLoopBridge.java",
+          "mobile/src/features/artifacts/page.mjs",
+          "mobile/app/scripts/emulator-smoke.mjs",
+          "test/mobile-artifacts*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "artifacts-reader"
+          ],
+          "states": [
+            "downloading",
+            "download-success",
+            "download-failure"
+          ],
+          "interactions": [
+            "download-start-feedback",
+            "download-success-feedback",
+            "download-failure-feedback"
+          ]
+        }
+      }
+    },
+    {
+      "id": "artifact-preview-fix",
+      "title": "HTML 预览修复：沙箱 iframe 被 X-Frame-Options 挡下导致打不开",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "产物阅读页点「预览」打不开。本轮诊断根因：服务端 sendPreviewHtml 给预览 HTML 设了 X-Frame-Options: SAMEORIGIN，而移动端 iframe 是 sandbox=\"allow-scripts\"（无 allow-same-origin），帧内文档被当成不透明来源，SAMEORIGIN 比对失败，浏览器直接拒绝渲染。",
+        "output": "1) 预览能正常显示设计稿 HTML；2) 安全边界不降级：保留 CSP（default-src 'none' + 内联脚本/样式放行）、一次性 60 秒票据用一次即焚、iframe sandbox 不放松；X-Frame-Options 不再是安全依赖（本就不该拦沙箱帧）。3) 服务端去掉/替换该响应头并留注释说明。",
+        "error_behavior": "票据过期/文件被删仍就地 404 提示可重试；不影响控制台进程（既有 try/catch 保持）。",
+        "acceptance_example": "单测断言预览响应头不再含阻挡沙箱帧的 XFO、CSP 与票据机制不变；浏览器/集成回归预览打开可见内容。",
+        "files": [
+          "src/mobile-write.mjs（sendPreviewHtml）",
+          "test/（预览响应头与票据回归）"
+        ],
+        "design": {
+          "surfaceIds": [
+            "artifacts-preview"
+          ],
+          "states": [
+            "preview-open"
+          ],
+          "interactions": [
+            "open-preview",
+            "preview-retry"
+          ]
+        }
+      }
+    },
+    {
+      "id": "serial-chain-overview-entry",
+      "title": "总览串行链可打开：节点进度详情 + 活跃链渲染验证",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "用户报告总览「项目 DAG 进度」里串行链路看不到、打不开：当前实现 chainItems 的 dagEntry=null，条目不响应点击，节点级进度（part/percent/summary）无处可看；且当前无活跃链，渲染是否成功无法验证。",
+        "output": "1) 每条串行链有明确入口，点开可见该链节点清单（业务标题、当前环节、百分比、一句话进展）与整体进度；2) 无活跃链时该区块有如实空态，不误报；3) 用种子链数据（测试夹具）验证活跃链渲染路径，不再依赖真机碰巧有活跃链。",
+        "error_behavior": "链数据缺失时沿用既有「串行进度数据缺失」如实提示；点开详情失败就地重试。",
+        "acceptance_example": "单测覆盖链条目渲染/排序/详情展开与种子链数据；浏览器回归点开详情可见节点进度。",
+        "files": [
+          "mobile/src/core/pages.mjs",
+          "mobile/src/core/contract.mjs",
+          "mobile/app/www/pages/core.mjs",
+          "mobile/app/www/pages/core.css",
+          "test/mobile-core*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "core-projects-serial"
+          ],
+          "states": [
+            "active-chain",
+            "chain-detail-open",
+            "no-active-chain"
+          ],
+          "interactions": [
+            "open-chain-detail",
+            "chain-detail-retry"
+          ]
+        }
+      }
+    },
+    {
+      "id": "collapsible-card-expand-fix",
+      "title": "折叠卡片逐张展开：每张卡片右下角展开按钮，只展开当前这张",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "用户报告被折叠的静态卡片展示不正确：现在 Tab 右上方只有一个「展开」按钮，点击只能展开最底下那张卡片。本轮诊断根因：collapsible-cards.mjs 把展开按钮插在卡片之前（兄弟节点），而 CSS 给 .card-expand 设 position:absolute，定位基准不是卡片而是整页，所有按钮叠在 Tab 右上角互相遮挡，最上面那张属于最后一张卡片。",
+        "output": "按用户要求：每张被折叠的静态信息卡片右下角各有「展开/收起」按钮，点击只展开当前这张卡片；保留跨刷新展开状态、按需加载内容（data-expand-src）与失败重试、交互内容（有按钮/输入的卡片）不参与折叠的既有行为。",
+        "error_behavior": "高度不超过阈值的卡片不出现展开按钮；展开内容加载失败保留展开态并就地重试。",
+        "acceptance_example": "单测断言每张可折叠卡片有独立按钮且互不影响；CSS/浏览器回归多张卡片场景逐张展开。",
+        "files": [
+          "mobile/app/www/collapsible-cards.mjs",
+          "mobile/app/www/styles.css",
+          "test/（折叠卡片回归）"
+        ],
+        "design": {
+          "surfaceIds": [
+            "collapsible-cards"
+          ],
+          "states": [
+            "collapsed",
+            "expanded"
+          ],
+          "interactions": [
+            "expand-own-card",
+            "collapse-own-card"
+          ]
+        }
+      }
+    }
+  ]
+}

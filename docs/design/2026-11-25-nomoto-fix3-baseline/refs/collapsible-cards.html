@@ -1,0 +1,12 @@
+<!doctype html><html><head><title>collapsible-cards</title><meta charset="utf-8"><style>body{margin:0;font:15px/1.5 -apple-system,"PingFang SC",sans-serif;background:#eef0f3;color:#1d2129}.wrap{width:402px;margin:0 auto;background:#fff;min-height:700px;padding-bottom:14px}.hd{padding:16px;font-size:19px;font-weight:700}.lbl{margin:16px 14px 6px;font-size:13px;color:#16835c;font-weight:600}.card{position:relative;margin:8px 14px;padding:12px 14px 40px;background:#fff;border:1px solid #e5e7eb;border-radius:12px}.card .t{font-weight:600}.card .s{font-size:12.5px;color:#6b7280;margin-top:2px}.card .exp{position:absolute;right:10px;bottom:10px;padding:5px 12px;border:1px solid #d1d5db;border-radius:99px;background:#fff;color:#16835c;font-size:12px;font-weight:600;box-shadow:0 1px 4px rgba(15,61,46,.08)}.dim{color:#9ca3af}.fade{position:relative;height:22px;margin:-30px 14px 8px;background:linear-gradient(transparent,#fff);pointer-events:none}</style></head><body>
+<div class="wrap"><div class="hd">会话 / 规则（静态信息卡片）</div>
+<div class="lbl">状态 collapsed：每张卡片右下角各自有「展开」，只展开当前这张</div>
+<div class="card"><div class="t">调度规则运行说明</div><div class="s">规则按事件触发……（内容较高被折叠）</div></div><div class="fade"></div>
+<div class="card"><span class="exp">展开</span><div class="t">项目归档说明</div><div class="s">归档后进度面板撤下……</div></div>
+<div class="card"><span class="exp">展开</span><div class="t">费用上报口径</div><div class="s">只有 Token 时显示……</div></div>
+<div class="lbl">状态 expanded：展开的卡片右下角变「收起」，其他卡片不受影响</div>
+<div class="card"><span class="exp">收起</span><div class="t">调度规则运行说明（已展开）</div><div class="s">规则按事件触发，每条规则独立工作区……（全文可见，内容与折叠前同一卡片）</div><br><div class="s">多行正文第二段……</div></div>
+<div class="card"><span class="exp">展开</span><div class="t">项目归档说明</div><div class="s">归档后进度面板撤下……</div></div>
+<div class="lbl">交互验收：点 A 卡片展开只动 A；刷新后展开状态保留；带按钮/输入的卡片不折叠</div>
+<div class="card dim"><div class="s">不再出现整页右上角单个按钮、也不再只能展开最底下一张卡片</div></div>
+</div></body></html>

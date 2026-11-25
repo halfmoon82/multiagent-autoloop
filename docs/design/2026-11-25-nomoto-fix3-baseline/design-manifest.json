@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix3-2026-11-25",
+  "artifacts": [
+    {
+      "path": "docs/2026-11-25-nomoto-app-fix3.md",
+      "sha256": "565bed985ecd8a3c87887202eab04161bb1dd70b8689c5fbc3edffacd94ad676"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix3-baseline/refs/artifacts-reader.html",
+      "sha256": "832f4712c78721cfb22b8d1cd9a2ce730083206017fdbeea3640fc96debcb797"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix3-baseline/refs/artifacts-preview.html",
+      "sha256": "8eb662e83ed2b32c0affb4e3bdbec71dc8b555467e9e3ba3867f4e644a1160fe"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix3-baseline/refs/core-projects-serial.html",
+      "sha256": "c6033c59c2040677b1a442514e6e0e7aed8de247263c4e99b8f0b2d29aba3699"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix3-baseline/refs/collapsible-cards.html",
+      "sha256": "b52e71fcb64198ba578c13a1f81ef3fb024141faace0a0fd46b7d880faf0de54"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix3-baseline/verifiers/fix3-design.verify.mjs",
+      "sha256": "ba5b1297965986098a63bd599be143999152adbdacbec49d1fc280ffbb8e5d72"
+    },
+    {
+      "path": "docs/design/2026-11-25-nomoto-fix3-baseline/verifiers/fix3-design-fallback.mjs",
+      "sha256": "92243c07266935742b179ffa793ddce778a578cf8a1cb8a31e49fef2850a2312"
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-25-nomoto-fix3-baseline/verifiers/fix3-design.verify.mjs",
+  "surfaces": [
+    {
+      "id": "artifacts-reader",
+      "route": "#artifacts",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "downloading",
+        "download-success",
+        "download-failure"
+      ],
+      "interactions": [
+        "download-start-feedback",
+        "download-success-feedback",
+        "download-failure-feedback"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-25-nomoto-fix3-baseline/refs/artifacts-reader.html"
+      ]
+    },
+    {
+      "id": "artifacts-preview",
+      "route": "#artifacts",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "preview-open"
+      ],
+      "interactions": [
+        "open-preview",
+        "preview-retry"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-25-nomoto-fix3-baseline/refs/artifacts-preview.html"
+      ]
+    },
+    {
+      "id": "core-projects-serial",
+      "route": "#core",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "active-chain",
+        "chain-detail-open",
+        "no-active-chain"
+      ],
+      "interactions": [
+        "open-chain-detail",
+        "chain-detail-retry"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-25-nomoto-fix3-baseline/refs/core-projects-serial.html"
+      ]
+    },
+    {
+      "id": "collapsible-cards",
+      "route": "#core",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "collapsed",
+        "expanded"
+      ],
+      "interactions": [
+        "expand-own-card",
+        "collapse-own-card"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-25-nomoto-fix3-baseline/refs/collapsible-cards.html"
+      ]
+    }
+  ]
+}
