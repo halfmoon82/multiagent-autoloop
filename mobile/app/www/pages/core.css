@@ -53,3 +53,6 @@
 .core-meta, .core-item .core-meta { color: var(--secondary); font-size: 0.7rem; line-height: 1.45; }
 .core-status { display: inline-flex; padding: 0.2rem 0.45rem; border-radius: 999px; background: var(--mint); color: var(--brand-ink); font-size: 0.66rem; }
 .core-action { min-height: 40px; border-radius: 0.65rem; font-size: 0.74rem; }
+
+.core-chain-detail { flex-basis: 100%; }
+.core-chain-detail[hidden] { display: none; }
