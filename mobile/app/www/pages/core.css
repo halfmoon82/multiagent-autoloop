@@ -72,3 +72,5 @@
 .dagov-archived-body[hidden] { display: none; }
 .core-chain-detail { flex-basis: 100%; }
 .core-chain-detail[hidden] { display: none; }
+.core-item .arch-summary, .core-item .arch-created, .core-item .arch-usage { display: block; }
+.core-item .arch-usage { color: #5c6f66; }
