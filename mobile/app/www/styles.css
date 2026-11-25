@@ -159,16 +159,16 @@ button:disabled { opacity: 0.6; cursor: default; }
 #app-main #project-filter-root .pf-status { font-size: 0.6rem; line-height: 1.25; text-align: left; }
 #app-main .header-meta .gear-btn { width: 2.5rem; min-height: 2.5rem; }
 
-/* 非 DAG 卡片默认限高，按需展开。 */
-.collapsible-card { position: relative; max-height: 160px; overflow: hidden; }
+/* 非 DAG 卡片默认限高，按需展开。按钮是卡片的子节点，absolute 的定位基准就是这张卡片；
+   底部留出按钮空间，正文不会被遮住。 */
+.collapsible-card { position: relative; max-height: 160px; overflow: hidden; padding-bottom: 2.5rem; }
 .collapsible-card[data-expanded="true"] { max-height: none; overflow: auto; }
 .card-expand {
-  position: absolute; z-index: 4; top: 0.35rem; right: 0.35rem;
+  position: absolute; z-index: 4; right: 0.35rem; bottom: 0.35rem;
   min-height: 30px; margin: 0; padding: 0.2rem 0.5rem;
   border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,0.96);
   color: var(--brand-ink); font-size: 0.66rem; box-shadow: 0 1px 4px rgba(15,61,46,0.08);
 }
-.collapsible-card + .card-expand { float: right; }
 #app-main .connection-dot { flex: none; width: 0.65rem; height: 0.65rem; border-radius: 50%; background: #16835c; box-shadow: 0 0 0 3px rgba(22,131,92,0.14); }
 #app-main .connection-dot[data-state="offline"], #app-main .connection-dot[data-state="error"] { background: #b64a43; box-shadow: 0 0 0 3px rgba(182,74,67,0.14); }
 #app-main .connection-dot[data-state="connecting"] { background: #b98a32; box-shadow: 0 0 0 3px rgba(185,138,50,0.14); }

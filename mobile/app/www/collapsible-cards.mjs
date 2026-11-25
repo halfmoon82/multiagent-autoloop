@@ -1,4 +1,4 @@
-// 静态信息卡片自动折叠后必须能再展开/收起：折叠的卡片插入展开控件，状态跨常规刷新保持。
+// 静态信息卡片自动折叠后必须能再展开/收起：展开控件插在卡片内部右下角，状态跨常规刷新保持。
 // 声明 data-expand-src 的卡片在展开时按需加载内容，失败就地重试（不跳页、不清空状态）。
 const SELECTOR = '.card, .core-card, .core-item, .sessions-item, .sessions-question-card, .sessions-current-card, .sessions-archived-item, .sessions-queue-item';
 const COLLAPSED_HEIGHT = 160;
@@ -98,11 +98,24 @@ function loadContent(el) {
   run();
 }
 
+// 展开控件自身也是 button，判定「可操作内容」时必须排除它和就地重试按钮，
+// 否则观察器下次评估会把已折叠卡片误判为可交互，把自己的展开按钮摘掉。
+function hasOwnInteractiveContent(el) {
+  for (const node of el.querySelectorAll('button,input,select,textarea')) {
+    if (node.classList?.contains('card-expand') || node.classList?.contains('card-expand-retry')) continue;
+    return true;
+  }
+  return false;
+}
+
 function prepare(el, root, store) {
   if (el.closest('#page-dag')) return; // DAG 卡片是可操作内容，不参与静态折叠
   // 可操作内容不参与自动折叠：模型/输入/确认等必须直接可点，展开控件不能插进按钮里。
-  if (el.querySelector('button,input,select,textarea')) {
-    el.previousElementSibling?.classList?.contains('card-expand') && el.previousElementSibling.remove();
+  // 卡片自身是按钮/表单控件时同样跳过，避免把展开按钮嵌进另一个按钮。
+  if (el.matches('button,input,select,textarea,a[href]') || hasOwnInteractiveContent(el)) {
+    for (const child of [...el.children]) {
+      if (child.classList?.contains('card-expand')) child.remove();
+    }
     el.classList.remove('collapsible-card');
     el.dataset.collapsible = 'interactive';
     el.dataset.expanded = 'true';
@@ -135,7 +148,7 @@ function prepare(el, root, store) {
     setExpanded(el, button, next, store, key);
     if (next) loadContent(el);
   });
-  el.before(button);
+  el.append(button); // 按钮属于这张卡片：定位基准才是卡片本身，不会叠到整页右上角
   if (expanded) loadContent(el); // 刷新后恢复展开态时补回按需内容
 }
 

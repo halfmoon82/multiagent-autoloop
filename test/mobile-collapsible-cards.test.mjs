@@ -18,18 +18,21 @@ test('长卡片默认限高可展开，短卡片不加按钮，button 卡片无�
     status: 200, contentType: 'text/javascript', body: readFileSync('mobile/app/www/collapsible-cards.mjs', 'utf8'),
   }));
   await page.setContent(`<div id="page-core">
-    <button id="long" class="card sessions-item">${'很长的会话内容。'.repeat(80)}</button>
+    <div id="long" class="card sessions-item">${'很长的会话内容。'.repeat(80)}</div>
+    <button id="clickable" class="sessions-item">${'可点击会话条目。'.repeat(80)}</button>
     <div id="short" class="card">短内容</div>
     <div id="confirm" class="card"><button>确认保存</button>${'保存确认内容。'.repeat(80)}</div>
     <div id="model" class="card"><select><option>模型选择必须直接可用</option></select>${'模型配置内容。'.repeat(80)}</div>
     <div id="auth" class="core-card">${'执行授权与路径。'.repeat(80)}</div>
   </div><div id="page-dag"><div id="dag" class="card">${'DAG 不折叠。'.repeat(80)}</div></div>
 `);
-  await page.addStyleTag({ content: '.collapsible-card{max-height:160px;overflow:hidden}.collapsible-card[data-expanded="true"]{max-height:none;overflow:auto}' });
+  await page.addStyleTag({ content: '.collapsible-card{position:relative;max-height:160px;overflow:hidden;padding-bottom:2.5rem}.collapsible-card[data-expanded="true"]{max-height:none;overflow:auto}.card-expand{position:absolute;right:0.35rem;bottom:0.35rem}' });
   await page.addScriptTag({ type: 'module', content: "import { attachCollapsibleCards } from 'https://test.local/collapsible-cards.mjs'; attachCollapsibleCards(document);" });
   await page.waitForFunction(() => document.querySelector('.card-expand'), null, { timeout: 2000 });
-  assert.equal(await page.locator('#long > .card-expand').count(), 0, '展开按钮不嵌套在原 button 内');
-  assert.equal(await page.locator('.card-expand').count(), 2, '短卡、保存确认、模型表单与 DAG 都不加按钮');
+  assert.equal(await page.locator('#clickable').getAttribute('data-collapsible'), 'interactive', '卡片自身是按钮时不折叠');
+  assert.equal(await page.locator('#clickable > .card-expand').count(), 0, '展开按钮不嵌套在可点击卡片内');
+  assert.equal(await page.locator('#long > .card-expand').count(), 1, '每张可折叠卡片内部有自己的展开按钮');
+  assert.equal(await page.locator('.card-expand').count(), 2, '短卡、可点击条目、保存确认、模型表单与 DAG 都不加按钮');
   assert.equal(await page.locator('#confirm').getAttribute('data-collapsible'), 'interactive');
   assert.equal(await page.locator('#confirm').getAttribute('data-expanded'), 'true');
   assert.equal(await page.locator('#model').getAttribute('data-collapsible'), 'interactive');
@@ -56,7 +59,7 @@ test('隐藏 Tab 里的长卡片先不判定，可见后经观察器折叠', { s
   }));
   await page.setContent(`<div id="tab-todos" hidden><div id="pending-card" class="core-card">${'待办页执行授权长内容。'.repeat(80)}</div></div>
 <div id="tab-core"><div id="core-card" class="core-card">${'总览页长内容。'.repeat(80)}</div></div>`);
-  await page.addStyleTag({ content: '.collapsible-card{max-height:160px;overflow:hidden}.collapsible-card[data-expanded="true"]{max-height:none;overflow:auto}' });
+  await page.addStyleTag({ content: '.collapsible-card{position:relative;max-height:160px;overflow:hidden;padding-bottom:2.5rem}.collapsible-card[data-expanded="true"]{max-height:none;overflow:auto}.card-expand{position:absolute;right:0.35rem;bottom:0.35rem}' });
   await page.addScriptTag({ type: 'module', content: "import { observeCollapsibleCards } from 'https://test.local/collapsible-cards.mjs'; window.__observer = observeCollapsibleCards(document);" });
   await page.waitForFunction(() => document.querySelector('#core-card[data-expanded="false"]'), null, { timeout: 2000 });
   assert.equal(await page.locator('#pending-card').getAttribute('data-collapsible'), null, '隐藏 Tab 中的卡片不得被永久标记');
@@ -64,14 +67,14 @@ test('隐藏 Tab 里的长卡片先不判定，可见后经观察器折叠', { s
   await page.evaluate(() => { document.getElementById('tab-todos').hidden = false; document.getElementById('tab-core').hidden = true; });
   await page.waitForFunction(() => document.querySelector('#pending-card[data-expanded="false"]'), null, { timeout: 2000 });
   assert.equal(await page.locator('#pending-card').getAttribute('data-collapsible'), '');
-  assert.equal(await page.evaluate(() => document.getElementById('pending-card').previousElementSibling?.className || ''), 'card-expand');
+  assert.equal(await page.locator('#pending-card > .card-expand').count(), 1, '可见后卡片内部补上自己的展开按钮');
 });
 
 
 // 折叠视觉由页面 CSS 提供；测试页内联同一规则，节点模块本身只管状态与控件。
-const PAGE_CSS = `.collapsible-card{max-height:160px;overflow:hidden}
+const PAGE_CSS = `.collapsible-card{position:relative;max-height:160px;overflow:hidden;padding-bottom:2.5rem}
 .collapsible-card[data-expanded="true"]{max-height:none;overflow:auto}
-.card-expand{position:static;display:block}`;
+.card-expand{position:absolute;right:0.35rem;bottom:0.35rem}`;
 
 function moduleSource() {
   return readFileSync(new URL('../mobile/app/www/collapsible-cards.mjs', import.meta.url), 'utf8');
@@ -111,7 +114,7 @@ test('长卡片折叠→展开→再折叠：展开控件、aria 与状态同步
   await page.waitForFunction(() => document.querySelector('#long[data-expanded="false"]'));
   assert.equal(await page.locator('#long').getAttribute('data-collapsible'), '');
   assert.equal(await page.locator('.card-expand').count(), 1, '短卡片不加展开控件');
-  assert.equal(await page.evaluate(() => document.querySelector('#long').previousElementSibling?.className), 'card-expand');
+  assert.equal(await page.locator('#long > .card-expand').count(), 1, '展开按钮在卡片内部');
   assert.equal(await page.locator('.card-expand').getAttribute('aria-expanded'), 'false');
 
   await page.locator('.card-expand').click();
@@ -159,4 +162,60 @@ test('展开内容加载失败就地重试，成功后展示内容', { skip }, a
   assert.equal(await page.locator('#long').getAttribute('data-expanded'), 'true');
   assert.equal(await page.evaluate(() => document.querySelector('#long [data-expand-content="loaded"]').textContent), '详情加载成功');
   assert.equal(await page.locator('.card-expand-retry').count(), 0, '成功后移除重试入口');
+});
+
+// 用户报告回归：整页右上角只有一个按钮、只能展开最底下一张卡片。
+// 修好后每张卡片内部右下角各有独立按钮，定位基准是自己的卡片，点击一张不影响其他卡片。
+test('多张卡片各有独立右下角按钮，逐张展开互不影响', { skip }, async t => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 402, height: 874 } });
+  await page.route('**/collapsible-cards.mjs', route => route.fulfill({
+    status: 200, contentType: 'text/javascript', body: moduleSource(),
+  }));
+  await page.addStyleTag({ content: readFileSync('mobile/app/www/styles.css', 'utf8') });
+  await page.setContent(`<!doctype html><meta charset="utf-8"><div class="app"><main id="app-main"><div class="content" id="page-core">
+    <div id="card-a" class="card">${LONG}</div>
+    <div id="card-b" class="card">${LONG}</div>
+    <div id="card-c" class="card">${LONG}</div>
+  </div></main></div>`);
+  await page.addScriptTag({ type: 'module', content: "import { attachCollapsibleCards } from 'https://test.local/collapsible-cards.mjs'; attachCollapsibleCards(document);" });
+  await page.waitForFunction(() => document.querySelectorAll('.card-expand').length === 3, null, { timeout: 3000 });
+
+  const layout = await page.evaluate(() => ['card-a', 'card-b', 'card-c'].map(id => {
+    const card = document.getElementById(id);
+    const button = card.querySelector(':scope > .card-expand');
+    if (!button) return { id, directChild: false, count: 0, inside: false, bottomRight: false, pos: 'none' };
+    const c = card.getBoundingClientRect();
+    const b = button.getBoundingClientRect();
+    return {
+      id,
+      directChild: !!button,
+      count: card.querySelectorAll('.card-expand').length,
+      inside: b.left >= c.left - 1 && b.right <= c.right + 1 && b.top >= c.top - 1 && b.bottom <= c.bottom + 1,
+      bottomRight: c.right - b.right < 24 && c.bottom - b.bottom < 24,
+      pos: `${Math.round(b.x)},${Math.round(b.y)}`,
+    };
+  }));
+  for (const item of layout) {
+    assert.equal(item.directChild, true, `${item.id} 内部有自己的展开按钮`);
+    assert.equal(item.count, 1, `${item.id} 恰好一个按钮`);
+    assert.equal(item.inside, true, `${item.id} 按钮在自己卡片范围内`);
+    assert.equal(item.bottomRight, true, `${item.id} 按钮在卡片右下角`);
+  }
+  assert.equal(new Set(layout.map(item => item.pos)).size, 3, '三个按钮位置各不相同，不再叠在整页右上角');
+
+  // 只点第二张：只有第二张展开，第一、三张保持折叠。
+  await page.locator('#card-b > .card-expand').click();
+  assert.equal(await page.locator('#card-b').getAttribute('data-expanded'), 'true');
+  assert.equal(await page.locator('#card-a').getAttribute('data-expanded'), 'false');
+  assert.equal(await page.locator('#card-c').getAttribute('data-expanded'), 'false');
+  assert.equal(await page.locator('#card-b > .card-expand').innerText(), '收起');
+  assert.equal(await page.locator('#card-a > .card-expand').innerText(), '展开');
+  // 再点第一张：第二张已展开不受影响。
+  await page.locator('#card-a > .card-expand').click();
+  assert.equal(await page.locator('#card-a').getAttribute('data-expanded'), 'true');
+  assert.equal(await page.locator('#card-b').getAttribute('data-expanded'), 'true');
+  assert.equal(await page.locator('#card-c').getAttribute('data-expanded'), 'false');
+  assert.equal(await page.locator('#card-c > .card-expand').innerText(), '展开');
 });
