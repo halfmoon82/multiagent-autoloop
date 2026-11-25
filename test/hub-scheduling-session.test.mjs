@@ -899,3 +899,35 @@ test('进行中的 Hub 会话暴露 turnStartedAt，终态后清空（界面据�
   assert.equal(finished.status, 'idle');
   assert.equal(finished.turnStartedAt, null, '本轮已结束不应再显示进行中');
 });
+
+// 流式回显（2026-11-25）：运行中的 Hub 会话从本机 worker stdout 回显部分输出到 liveText；
+// failed/error 终态必须清 liveText（假气泡不残留，review P2-2/P3-3）。
+test('运行中的 Hub 会话 list() 回显 stdout 部分输出到 liveText；failed 终态清除', async () => {
+  const spawned = flagSpawn();
+  const ov = { state: 'running' };
+  const client = fakeHubClient(ov);
+  const adapter = new HubSchedulingSessionAdapter({ hubConfig: HUB_CONFIG, hubClient: client });
+  const manager = new SchedulingSessionManager({
+    cwd: '/x', adapterPath: '/a.js', spawnFn: spawned.fn, hubScheduling: adapter,
+    archiveRoot: mkdtempSync(path.join(tmpdir(), 'hub-live-')),
+    hubReconcileMs: 0, // 强制每次 list() 都对账
+  });
+  const started = await manager.start({ project: fixtureProject(), prompt: '首轮调度' });
+  // 中台 run id = fakeHubClient buildRun 默认 6586。
+  const runDir = path.join(manager.runtimeRoot, 'worker', 'runs', '6586-1');
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(path.join(runDir, 'stdout-1.log'), JSON.stringify({
+    type: 'assistant', message: { content: [{ type: 'text', text: '部分输出：先看这里' }] },
+  }));
+
+  const live = manager.list().find(item => item.id === started.id);
+  assert.equal(live.liveText, '部分输出：先看这里', '运行中的 Hub 会话必须把 stdout 部分输出回显到 liveText');
+
+  // failed 终态：对账映射 error，liveText 必须清除（不依赖前端的假气泡防控）。
+  ov.state = 'failed';
+  manager.list(); // 触发对账（异步），等它落地
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const dead = manager.list().find(item => item.id === started.id);
+  assert.equal(dead.status, 'error');
+  assert.equal(dead.liveText, '', 'failed/error 终态不得残留 liveText');
+});

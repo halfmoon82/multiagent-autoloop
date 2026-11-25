@@ -8,6 +8,9 @@ const loadViewModel = typeof window === 'undefined'
 const loadFilterModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/project-filter/index.mjs');
+const loadDagRingModel = typeof window === 'undefined'
+  ? () => Promise.resolve(null)
+  : () => import('../src/features/dag-ring/index.mjs');
 
 export { loadViewModel };
 
@@ -61,7 +64,10 @@ export function mount(ctx) {
   if (typeof document === 'undefined') return;
   const modelPromise = loadViewModel();
   const filterPromise = loadFilterModel();
+  const dagRingPromise = loadDagRingModel();
   if (!modelPromise || !filterPromise) return;
+  let dagRingModel = null;
+  dagRingPromise.then(model => { dagRingModel = model; if (fullSnapshot && coreModel) renderCurrent(); });
 
   const drafts = new Map();
   const refs = {};
@@ -117,6 +123,137 @@ export function mount(ctx) {
     }
   }
 
+  // 项目 DAG 进度（2026-11-25 用户定交互）：活跃 DAG 直接渲染可点击的环形进度——
+  // 扇区=节点、活跃节点带箭头、点节点膨出显示「干嘛的」、查看详情跳 DAG 页对应节点；
+  // 已完成/已取消的收进「已归档」折叠区，展开才看。
+  const dagovSelection = new Map();
+
+  function renderProjects(collection) {
+    refs.projects.replaceChildren();
+    if (!collection || collection.empty) {
+      refs.projects.appendChild(node('p', { className: 'hint', text: collection?.reason || '暂无数据' }));
+      return;
+    }
+    const items = collection.items || [];
+    const active = items.filter(item => !item.archived);
+    const archived = items.filter(item => item.archived);
+    for (const item of active) {
+      const run = (fullSnapshot?.dagRuns || []).find(entry => String(entry?.mobileSummary?.runId ?? entry?.runId ?? '') === String(item.runId ?? ''));
+      const card = dagRingModel && run ? dagRingModel.buildActiveDagCard(run) : null;
+      if (card && item.dagEntry) refs.projects.appendChild(renderDagRingCard(item, card));
+      else refs.projects.appendChild(renderProjectRow(item));
+    }
+    if (archived.length) {
+      const body = node('div', { className: 'dagov-archived-body', attrs: { hidden: '' } });
+      for (const item of archived) body.appendChild(renderProjectRow(item));
+      const toggle = node('button', { type: 'button', className: 'dagov-archived-toggle', text: `已归档（${archived.length}）· 展开查看` });
+      toggle.addEventListener('click', () => {
+        const open = body.hidden;
+        body.hidden = !open;
+        toggle.textContent = open ? `已归档（${archived.length}）· 收起` : `已归档（${archived.length}）· 展开查看`;
+      });
+      refs.projects.appendChild(node('div', { className: 'dagov-archived' }, [toggle, body]));
+    }
+  }
+
+  function renderProjectRow(item) {
+    const box = node('div', { className: 'core-item', attrs: { 'data-project-run': item.runId ?? '' } }, [
+      node('strong', { text: item.projectLabel || '未识别项目' }),
+      node('span', { className: 'core-meta', text: `${item.statusLabel || '状态未知'} · ${item.nodeCount} 个节点` }),
+    ]);
+    if (item.dagEntry) {
+      const open = node('button', { type: 'button', className: 'core-action', attrs: { 'data-dag-entry': item.runId ?? '' }, text: item.dagEntry.label });
+      open.addEventListener('click', () => {
+        const select = ctx.hooks?.selectTab || window.AutoloopNav?.selectTab;
+        if (typeof select === 'function') select(item.dagEntry.page);
+      });
+      box.appendChild(open);
+    }
+    return box;
+  }
+
+  const DAGOV_NS = 'http://www.w3.org/2000/svg';
+  const DAGOV_COLORS = { done: '#2f9e6e', active: '#e8a33d', blocked: '#d9534f', error: '#d9534f' };
+  const dagovColor = kind => DAGOV_COLORS[kind] || '#9db3ab';
+  function dagovArc(cx, cy, rOut, rIn, a0, a1) {
+    const rad = deg => (deg - 90) * Math.PI / 180;
+    const p = (r, a) => [cx + r * Math.cos(rad(a)), cy + r * Math.sin(rad(a))];
+    const [x0, y0] = p(rOut, a0); const [x1, y1] = p(rOut, a1);
+    const [x2, y2] = p(rIn, a1); const [x3, y3] = p(rIn, a0);
+    const large = a1 - a0 > 180 ? 1 : 0;
+    const svgPath = document.createElementNS(DAGOV_NS, 'path');
+    svgPath.setAttribute('d', `M ${x0} ${y0} A ${rOut} ${rOut} 0 ${large} 1 ${x1} ${y1} L ${x2} ${y2} A ${rIn} ${rIn} 0 ${large} 0 ${x3} ${y3} Z`);
+    return svgPath;
+  }
+  function dagovSvg(tag, attrs) {
+    const el = document.createElementNS(DAGOV_NS, tag);
+    for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value));
+    return el;
+  }
+
+  function renderDagRingCard(item, card) {
+    const selectedId = dagovSelection.get(card.runId) || '';
+    const wrap = node('div', { className: 'dagov-card', attrs: { 'data-dagov-run': card.runId } }, [
+      node('div', { className: 'dagov-head' }, [
+        node('strong', { text: card.projectLabel || item.projectLabel || '未识别项目' }),
+        node('span', { className: 'dagov-badge', text: '并行 DAG' }),
+      ]),
+      node('p', { className: 'dagov-meta', text: [card.planId, card.waveLabel, `${card.nodeCount} 个节点 · ${card.statusLabel}`].filter(Boolean).join(' · ') }),
+    ]);
+    const svg = dagovSvg('svg', { viewBox: '0 0 140 140', class: 'dagov-ring', role: 'img' });
+    const cx = 70; const cy = 70; const rIn = 34;
+    const n = card.nodes.length;
+    const gap = n > 1 ? 3 : 0;
+    const slice = (360 - gap * n) / n;
+    card.nodes.forEach((sector, index) => {
+      // 单节点特判：整环用 359.999°，起终点重合的 360° 路径画不出扇区（review P3-1 实测 boundingBox=0）。
+      const a0 = index * (slice + gap) + gap / 2;
+      const a1 = n === 1 ? a0 + 359.999 : a0 + slice;
+      const selected = sector.id === selectedId;
+      const inflated = selected ? 9 : 0;
+      const path = dagovArc(cx, cy, 52 + inflated, rIn, a0, a1);
+      path.setAttribute('fill', dagovColor(sector.statusKind));
+      path.setAttribute('class', 'dagov-seg');
+      path.setAttribute('data-node-id', sector.id);
+      path.addEventListener('click', () => {
+        dagovSelection.set(card.runId, selected ? '' : sector.id);
+        renderCurrent();
+      });
+      svg.appendChild(path);
+      if (sector.statusKind !== 'done') {
+        const mid = (a0 + a1) / 2;
+        const rad = (mid - 90) * Math.PI / 180;
+        const tx = cx + (52 + inflated + 7) * Math.cos(rad);
+        const ty = cy + (52 + inflated + 7) * Math.sin(rad);
+        svg.appendChild(dagovSvg('polygon', { points: `${tx},${ty} ${tx - 5},${ty - 8} ${tx + 5},${ty - 8}`, fill: '#0f3d2e', transform: `rotate(${mid} ${tx} ${ty})` }));
+      }
+    });
+    const center = dagovSvg('text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'dagov-percent' });
+    center.textContent = `${card.percent}%`;
+    const sub = dagovSvg('text', { x: cx, y: cy + 14, 'text-anchor': 'middle', class: 'dagov-sub' });
+    sub.textContent = `总进度 · ${card.nodeCount} 节点`;
+    svg.appendChild(center); svg.appendChild(sub);
+    wrap.appendChild(svg);
+
+    const picked = card.nodes.find(sector => sector.id === selectedId);
+    if (picked) {
+      const nodeCard = node('div', { className: 'dagov-node-card', attrs: { 'data-node-card': picked.id } }, [
+        node('strong', { text: picked.title }),
+        node('span', { className: 'core-meta', text: [picked.statusLabel, picked.agent && `执行 ${picked.agent}`, picked.model].filter(Boolean).join(' · ') }),
+      ]);
+      if (picked.summary) nodeCard.appendChild(node('p', { className: 'dagov-node-summary', text: picked.summary }));
+      const detail = node('button', { type: 'button', className: 'core-action', text: '查看详情 →' });
+      detail.addEventListener('click', () => {
+        const select = ctx.hooks?.selectTab || window.AutoloopNav?.selectTab;
+        if (typeof select === 'function') select('dag');
+        window.dispatchEvent(new CustomEvent('autoloop:dag-pick', { detail: { taskId: card.taskId, runId: card.runId, nodeId: picked.id } }));
+      });
+      nodeCard.appendChild(detail);
+      wrap.appendChild(nodeCard);
+    }
+    return wrap;
+  }
+
   function renderOverview(page) {
     refs.usage.replaceChildren(node('p', { className: 'core-usage', text: page.usage || '用量未上报' }));
     if (!page.ready && page.error) refs.usage.appendChild(node('p', { className: 'hint', text: page.error }));
@@ -135,51 +272,7 @@ export function mount(ctx) {
       if (group.id === 'attention') box.appendChild(node('p', { className: 'hint', text: '调度方按契约自行处理，不升级给您' }));
       return box;
     });
-    renderCollection(refs.projects, page.projects, item => {
-      const box = node('div', { className: 'core-item', attrs: { 'data-project-run': item.runId ?? '' } }, [
-        node('strong', { text: item.projectLabel || '未识别项目' }),
-        node('span', { className: 'core-meta', text: `${item.statusLabel || '状态未知'} · ${item.nodeCount} 个节点` }),
-      ]);
-      if (item.dagEntry) {
-        const open = node('button', { type: 'button', className: 'core-action', attrs: { 'data-dag-entry': item.runId ?? '' }, text: item.dagEntry.label });
-        // 经壳的既有导航接缝进入 DAG 页（不直接依赖其他页面模块）。
-        open.addEventListener('click', () => {
-          const select = ctx.hooks?.selectTab || window.AutoloopNav?.selectTab;
-          if (typeof select === 'function') select(item.dagEntry.page);
-        });
-        box.appendChild(open);
-      }
-      if (item.chainEntry && item.chainDetail) {
-        const panel = node('div', { className: 'core-chain-detail', attrs: { 'data-chain-detail': item.runId ?? '', hidden: '' } });
-        const toggle = node('button', { type: 'button', className: 'core-action', attrs: { 'data-chain-entry': item.runId ?? '', 'aria-expanded': 'false' }, text: item.chainEntry.label });
-        const fill = () => {
-          panel.replaceChildren();
-          try {
-            const detail = item.chainDetail;
-            if (detail.empty) { panel.appendChild(node('p', { className: 'hint', text: detail.reason })); return; }
-            panel.appendChild(node('p', { className: 'core-meta', text: `整体进度 ${detail.percent}%` }));
-            const list = node('ul', { className: 'core-list' });
-            for (const n of detail.nodes) {
-              const line = [n.title, n.isCurrent ? '当前环节' : n.status, `${n.percent}%`, n.summary].filter(Boolean).join(' · ');
-              list.appendChild(node('li', { attrs: { 'data-chain-node': n.id }, text: line }));
-            }
-            panel.appendChild(list);
-          } catch (error) {
-            const retry = node('button', { type: 'button', className: 'core-retry', attrs: { 'data-chain-retry': item.runId ?? '' }, text: '重试' });
-            retry.addEventListener('click', fill);
-            panel.append(node('p', { className: 'hint', text: String(error?.message || '详情读取失败') }), retry);
-          }
-        };
-        toggle.addEventListener('click', () => {
-          const open = panel.hidden;
-          panel.hidden = !open;
-          toggle.setAttribute('aria-expanded', String(open));
-          if (open) fill();
-        });
-        box.append(toggle, panel);
-      }
-      return box;
-    });
+    renderProjects(page.projects);
     if (page.serialNote) refs.projects.appendChild(node('p', { className: 'hint', attrs: { 'data-serial-note': '' }, text: page.serialNote }));
     renderCollection(refs.activity, page.activity, item => node('div', { className: 'core-item' }, [
       node('strong', { text: item.title }),

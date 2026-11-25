@@ -54,5 +54,21 @@
 .core-status { display: inline-flex; padding: 0.2rem 0.45rem; border-radius: 999px; background: var(--mint); color: var(--brand-ink); font-size: 0.66rem; }
 .core-action { min-height: 40px; border-radius: 0.65rem; font-size: 0.74rem; }
 
+/* 活跃 DAG 交互环（2026-11-25）：扇区=节点、活跃节点外缘箭头、点选膨出节点卡。 */
+.dagov-card { padding: 0.55rem 0; border-bottom: 1px solid var(--line, #e3e9e5); }
+.dagov-card:last-child { border-bottom: 0; }
+.dagov-head { display: flex; align-items: center; gap: 0.5rem; }
+.dagov-badge { padding: 0.05rem 0.45rem; border-radius: 999px; background: #e7f5ee; color: #0f3d2e; font-size: 0.74rem; }
+.dagov-meta { margin: 0.15rem 0 0.3rem; color: #5c6f66; font-size: 0.82rem; }
+.dagov-ring { display: block; width: min(78vw, 300px); margin: 0.1rem auto; }
+.dagov-seg { cursor: pointer; transition: opacity 0.12s; }
+.dagov-seg:hover { opacity: 0.82; }
+.dagov-percent { font-size: 20px; font-weight: 700; fill: #123527; }
+.dagov-sub { font-size: 9px; fill: #5c6f66; }
+.dagov-node-card { margin-top: 0.35rem; padding: 0.55rem 0.65rem; border: 1px solid #cfe0d6; border-radius: 0.7rem; background: #f4faf6; display: grid; gap: 0.25rem; }
+.dagov-node-summary { margin: 0; font-size: 0.85rem; color: #2c4438; }
+.dagov-archived { margin-top: 0.4rem; border-top: 1px dashed var(--line, #e3e9e5); padding-top: 0.35rem; }
+.dagov-archived-toggle { width: 100%; text-align: left; padding: 0.4rem 0.2rem; color: #5c6f66; font-size: 0.85rem; }
+.dagov-archived-body[hidden] { display: none; }
 .core-chain-detail { flex-basis: 100%; }
 .core-chain-detail[hidden] { display: none; }

@@ -60,6 +60,46 @@ export function buildDagRingView(snapshot) {
   return { rings: collection(items, reason), selectedId: null, selected: null, available, error };
 }
 
+// 总览活跃 DAG 卡片：从 run 的 mobileSummary.ring 提取交互环所需的最小字段集。
+// 节点带 summary（干嘛的）与状态；缺失不编造。供 core 页渲染可点击扇区环（2026-11-25 用户定交互）。
+export function buildActiveDagCard(run) {
+  const summary = object(object(run).mobileSummary);
+  const data = object(summary.ring);
+  const nodes = array(data.nodes).map(node => {
+    const source = object(node);
+    return {
+      id: text(source.id),
+      title: text(source.title || source.id),
+      summary: text(source.summary),
+      statusLabel: text(source.statusLabel),
+      statusKind: text(source.statusKind),
+      percent: Number.isFinite(source.percent) ? source.percent : null,
+      agent: text(source.agent),
+      model: text(source.model),
+    };
+  }).filter(node => node.id);
+  if (!nodes.length || !summary.ring) return null;
+  const ringModel = object(data.ring);
+  const totalWaves = array(data.waves).length;
+  const openWave = array(data.waves).findIndex(w => array(object(w).nodes).some(n => object(n).statusKind !== 'done'));
+  const project = text(summary.project ?? run.project);
+  const planId = text(summary.planId ?? run.planId);
+  return {
+    runId: text(summary.runId ?? run.runId),
+    taskId: taskIdOf(project, planId),
+    project,
+    projectLabel: projectName(project),
+    planId,
+    status: text(summary.status ?? run.status),
+    statusLabel: dagStatusLabel(text(summary.status ?? run.status)),
+    percent: Number.isFinite(ringModel.percent) ? ringModel.percent : 0,
+    nodeCount: nodes.length,
+    doneCount: nodes.filter(node => node.statusKind === 'done').length,
+    waveLabel: totalWaves ? `第 ${(openWave >= 0 ? openWave + 1 : totalWaves)}/${totalWaves} 波` : '',
+    nodes,
+  };
+}
+
 // 选中一个环：切换选中态并带出该环的节点清单，供下方详情点击节点查看；不可变，不改原视图。
 export function selectRing(view, taskId) {
   const items = array(view?.rings?.items);
