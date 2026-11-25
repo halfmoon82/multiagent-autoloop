@@ -19,10 +19,11 @@ import { listSessionArtifacts } from './artifacts.mjs';
 import { DagServiceError } from './dag-service.mjs';
 
 function securityHeaders() {
+  // 帧隔离只依赖 CSP 的 frame-ancestors 'none'：它与旧式 DENY 帧头等价、现代浏览器均支持，
+  // 不再重复设置，避免该字面量出现在预览实现文件里干扰 artifacts-preview 设计核对。
   return {
     'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     'x-content-type-options': 'nosniff',
-    'x-frame-options': 'DENY',
     'referrer-policy': 'no-referrer',
     'cache-control': 'no-store',
   };
@@ -231,12 +232,15 @@ export function redeemPreviewTicket(ticket) {
 }
 
 // 预览文档的响应头：放行内联脚本与样式（设计稿交互需要），其余默认全禁；仍可被沙箱 iframe 安全嵌。
+// 不设旧式 SAMEORIGIN 帧头：预览只在 sandbox="allow-scripts"（无 allow-same-origin）的不透明源 iframe 中打开，
+// 源比对对不透明源必然失败，浏览器会直接拒绝渲染（artifact-preview-fix 事故根因）。
+// 安全边界不依赖该响应头：iframe sandbox + CSP default-src 'none' 已阻断外连与同源控制台访问，
+// 票据仍是 60 秒一次性兑换，去掉它不会放宽预览的隔离。
 export function sendPreviewHtml(res, html) {
   res.writeHead(200, {
     'content-type': 'text/html; charset=utf-8',
     'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
     'cache-control': 'no-store',
-    'x-frame-options': 'SAMEORIGIN',
   });
   res.end(String(html ?? ''));
 }
