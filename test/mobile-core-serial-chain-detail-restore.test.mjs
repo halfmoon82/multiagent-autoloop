@@ -114,10 +114,10 @@ test('渲染异常就地重试，不把整页拖垮', () => {
 test('恢复的详情入口与 #316 活跃 DAG 环卡片并存，样式随原 #315 合同保留', () => {
   const src = readFileSync(path.join(ROOT, 'mobile', 'app', 'www', 'pages', 'core.mjs'), 'utf8');
   const css = readFileSync(path.join(ROOT, 'mobile', 'app', 'www', 'pages', 'core.css'), 'utf8');
-  const row = src.slice(src.indexOf('function renderProjectRow'), src.indexOf('const DAGOV_NS'));
+  const row = src.slice(src.indexOf('function renderProjectRow'), src.indexOf('function renderOverview'));
   assert.match(row, /item\.chainEntry && item\.chainDetail/, '串行链行恢复详情入口');
   assert.match(row, /buildChainDetail\(item\)/, '详情面板由导出的 buildChainDetail 渲染');
-  assert.match(src, /renderDagRingCard\(item, card\)/, '#316 活跃 DAG 环路径仍在');
+  assert.match(src, /buildDagRingCard\(item, card/, '#316 活跃 DAG 环路径仍在');
   assert.match(src, /else\s+refs\.projects\.appendChild\(renderProjectRow\(item\)\)/, '无环/无 dagEntry 才走行渲染');
   assert.match(css, /\.core-chain-detail\s*\{/, '详情面板布局样式保留');
   assert.match(css, /\.core-chain-detail\[hidden\]\s*\{\s*display:\s*none/, '收起时隐藏');
@@ -127,7 +127,7 @@ test('恢复的详情入口与 #316 活跃 DAG 环卡片并存，样式随原 #3
 // 与本节点恢复的导出实现并存会在一条串行链上出现两个「串行链详情」按钮。
 test('详情面板只创建一份，行渲染不内联重复实现（#324 去重）', () => {
   const src = readFileSync(path.join(ROOT, 'mobile', 'app', 'www', 'pages', 'core.mjs'), 'utf8');
-  const row = src.slice(src.indexOf('function renderProjectRow'), src.indexOf('const DAGOV_NS'));
+  const row = src.slice(src.indexOf('function renderProjectRow'), src.indexOf('function renderOverview'));
   assert.doesNotMatch(row, /className: 'core-chain-detail'/, '详情面板只在 buildChainDetail 内创建');
   assert.equal((src.match(/data-chain-entry/g) || []).length, 1, '全页只有一个串行链详情入口');
   assert.equal((row.match(/buildChainDetail\(item\)/g) || []).length, 1, '行渲染只挂载一份详情面板');
