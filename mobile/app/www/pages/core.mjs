@@ -11,6 +11,11 @@ const loadFilterModel = typeof window === 'undefined'
 const loadDagRingModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/dag-ring/index.mjs');
+// 决策卡三内置操作的写客户端复用 sessions 的 createSessionsWrite（已登记 markHandled /
+// resolveCard / delegateCard 三个固定写路由），不另造一套写实现；按需加载，Node 下不装配 DOM。
+const loadCardWrite = typeof window === 'undefined'
+  ? () => Promise.resolve(null)
+  : () => import('../src/features/sessions/index.mjs');
 
 export { loadViewModel };
 
@@ -170,6 +175,12 @@ function renderCollection(container, collection, itemNode) {
 }
 
 const LABELS = { run: '运行', pause: '暂停', resume: '恢复' };
+// 视图模型的 quickActions id → createSessionsWrite 的写方法；语义与网页版一致。
+const CARD_QUICK_METHOD = Object.freeze({
+  'mark-handled': 'markHandled',
+  resolve: 'resolveCard',
+  'delegate-return': 'delegateCard',
+});
 
 /** 页面挂载点。ctx 含 client / state / hooks；跨页互调一律走 ctx.hooks。 */
 export function mount(ctx) {
@@ -207,6 +218,20 @@ export function mount(ctx) {
   refs.authorize = makeSection(todosEl, 'authorize', '执行授权');
 
   let write = null;
+  // 三操作的写客户端按需加载；只解析一次，失败留给按钮点击时就地报错，不阻塞回答链路。
+  let cardWritePromise = null;
+  const getCardWrite = () => {
+    if (!cardWritePromise) {
+      cardWritePromise = loadCardWrite()
+        .then(model => (model && typeof model.createSessionsWrite === 'function' ? model.createSessionsWrite(ctx.client) : null))
+        .catch(() => null);
+    }
+    return cardWritePromise;
+  };
+  // 退回调度成功的提示放在待办页容器上：renderCurrent 只重建各 section body，不碰这里，
+  // 所以卡片离开待办后提示仍在，满足「已退回调度，等待代理结论」的可见性。
+  const quickNotice = node('div', { className: 'hint', attrs: { 'data-card-quick-notice': '', hidden: '' } });
+  todosEl.appendChild(quickNotice);
   // 本机刚回答成功的卡：Hub 状态重读前也不再显示（失败不进此集合，卡与选项原样保留）。
   const answeredIds = new Set();
 
@@ -224,6 +249,31 @@ export function mount(ctx) {
       errorNode.textContent = String(error?.message || '提交失败，请重试');
       errorNode.hidden = false;
       submit.disabled = false; // 失败保留草稿与选项，允许原样重试
+    }
+  }
+
+  // 决策卡三内置操作：已处理/结案复用 resolve 端点、退回调度走 card-delegate 事务。
+  // 成功沿用 fix4 闭环隐藏卡并刷新；失败就地报错、按钮复原，卡与选项原样保留可重试。
+  async function quickAction(item, action, button, errorNode) {
+    button.disabled = true;
+    errorNode.hidden = true;
+    quickNotice.hidden = true;
+    try {
+      const client = await getCardWrite();
+      if (!client || typeof client[action.method] !== 'function') throw new Error('操作通道不可用，请刷新后重试');
+      await client[action.method](item.id);
+      drafts.delete(item.id);
+      answeredIds.add(String(item.id));
+      if (action.id === 'delegate-return') {
+        quickNotice.textContent = `${item.title ? `${item.title}：` : ''}已退回调度，等待代理结论`;
+        quickNotice.hidden = false;
+      }
+      renderCurrent();
+      await reload();
+    } catch (error) {
+      errorNode.textContent = String(error?.message || '操作失败，请重试');
+      errorNode.hidden = false;
+      button.disabled = false;
     }
   }
 
@@ -435,6 +485,19 @@ export function mount(ctx) {
         void answer(item, selected === null ? { text } : { choice: selected }, submit, errorNode);
       });
       box.append(textarea, submit, errorNode);
+      // 三内置操作：每张决策卡都渲染，顺序取视图模型 quickActions（已处理/结案/退回调度）。
+      const quick = node('div', { className: 'core-actions' });
+      for (const action of item.quickActions || []) {
+        const method = CARD_QUICK_METHOD[action.id];
+        if (!method) continue;
+        const button = node('button', {
+          type: 'button', className: 'core-action',
+          attrs: { 'data-card-quick': action.id }, text: action.label,
+        });
+        button.addEventListener('click', () => { void quickAction(item, { ...action, method }, button, errorNode); });
+        quick.appendChild(button);
+      }
+      if (quick.childElementCount) box.appendChild(quick);
       return box;
     });
   }
