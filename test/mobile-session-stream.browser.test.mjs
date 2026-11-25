@@ -108,13 +108,19 @@ test('浏览器：流式气泡运行中可见，轮次结束后最终消息留�
   });
   assert.equal(swallowed, false, '轮次结束后最终消息必须留在转录，流式文本不得整体消失');
 
-  // 阶段四（review P2-1）：打断/出错终态不推 agent 消息——气泡必须随终态离场，不得永久残留。
-  record.status = 'idle';
+  // 阶段四（review P2-1 负分支实测）：重新制造一个正在显示的气泡（running + liveText），
+  // 然后打成 error 终态且不推 agent 消息——guard 必须把它丢掉，不得永久残留、不得拼接下一轮。
+  record.status = 'running';
+  record.turnStartedAt = new Date().toISOString();
+  record.liveText = '第二轮正在输出';
+  record.updatedAt = new Date().toISOString();
+  await page.waitForFunction(() => document.querySelector('#page-sessions')?.innerText?.includes('第二轮正在输出'), null, { timeout: 6000 });
+  record.status = 'error';
   record.liveText = '';
-  record.error = '被主人打断';
+  record.error = '本轮执行出错';
   record.turnStartedAt = null;
   record.updatedAt = new Date().toISOString();
   await page.waitForTimeout(1500);
   const afterInterrupt = await page.evaluate(() => document.querySelector('#page-sessions')?.innerText || '');
-  assert.ok(!afterInterrupt.includes('正在输出的第一段'), '打断/出错终态不得残留流式气泡（否则下一轮还会拼到它尾巴上）');
+  assert.ok(!afterInterrupt.includes('第二轮正在输出'), '打断/出错终态不得残留流式气泡（否则下一轮还会拼到它尾巴上）');
 });
