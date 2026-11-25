@@ -206,8 +206,9 @@ export function mount(ctx) {
     const gap = n > 1 ? 3 : 0;
     const slice = (360 - gap * n) / n;
     card.nodes.forEach((sector, index) => {
+      // 单节点特判：整环用 359.999°，起终点重合的 360° 路径画不出扇区（review P3-1 实测 boundingBox=0）。
       const a0 = index * (slice + gap) + gap / 2;
-      const a1 = a0 + slice;
+      const a1 = n === 1 ? a0 + 359.999 : a0 + slice;
       const selected = sector.id === selectedId;
       const inflated = selected ? 9 : 0;
       const path = dagovArc(cx, cy, 52 + inflated, rIn, a0, a1);

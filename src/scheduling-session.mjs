@@ -1167,6 +1167,9 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
     record.hub.lastState = run.state ?? null;
     record.status = mapHubStateToStatus(run.state);
     if (typeof record.error === 'string' && record.error.startsWith('Hub 状态待复核')) record.error = null;
+    // failed/error/cancelled 等一切非运行终态都不留 liveText：buildComposerView 只看文本非空，
+    // 残留 partial 会让失败会话永远挂一个「正在输出」假气泡（review P2-2）。
+    if (record.status !== 'running' && record.status !== 'unknown') record.liveText = '';
     record.updatedAt = this.now().toISOString();
     this.#persist(record);
     return run;

@@ -779,7 +779,9 @@ export function mount(ctx) {
       // 而转录既没包含同文消息、也没新落定 agent 消息时，保留气泡到转录真正接住它为止——
       // 终态消息迟到一拍也不能让已流出的文字从界面上蒸发；新消息一落定气泡即离场，不残留。
       const prevLast = state.messages[state.messages.length - 1];
-      if (prevLast && prevLast.streaming && prevLast.text) {
+      // 仅当会话仍在等回复/运行时才替气泡兜底：打断/出错/cancelled 等终态不推 agent 消息，
+      // 气泡必须随终态离场，否则永久残留、下一轮流式还会拼到它的尾巴上（review P2-1）。
+      if (prevLast && prevLast.streaming && prevLast.text && smodel?.isAwaitingReply(session)) {
         const caught = messages.some(m => m.role === '会话' && m.text && (m.text === prevLast.text || m.text.includes(prevLast.text)));
         const prevAgentCount = state.messages.filter(m => m.role === '会话' && m.at).length;
         const nextAgentCount = messages.filter(m => m.role === '会话' && m.at).length;

@@ -77,18 +77,18 @@ test('浏览器：流式气泡运行中可见，轮次结束后最终消息留�
   // 运行中：流式气泡可见
   await page.waitForFunction(() => document.querySelector('#page-sessions')?.innerText?.includes('正在输出的第一段'), null, { timeout: 6000 });
 
-  // 阶段二：终态迟到一拍的中间形状——liveText 已清、最终消息还没进转录。
+  // 阶段二：仍在等回复（running）但 liveText 暂时为空、最终消息还没进转录的间隙——
   // 防吞：此刻流式气泡必须留在界面上（旧实现会把它整体摘掉，已流出的文字蒸发）。
-  record.status = 'idle';
   record.liveText = '';
   record.activity = '';
-  record.turnStartedAt = null;
   record.updatedAt = new Date().toISOString();
   await page.waitForTimeout(1500);
   const midState = await page.evaluate(() => document.querySelector('#page-sessions')?.innerText || '');
   assert.ok(midState.includes('正在输出的第一段'), '终态消息迟到一拍时，流式文本不得从界面消失（防吞）');
 
-  // 阶段三：最终消息入转录（与 ACP finish / Hub 对账终态同一形状）——气泡被转录接住后离场。
+  // 阶段三：轮次落定——最终消息入转录、状态转 idle（与 ACP finish / Hub 对账终态同一形状），气泡被接住后离场。
+  record.status = 'idle';
+  record.turnStartedAt = null;
   record.messages.push({ role: 'agent', text: '最终完整回答：全部做完了', at: new Date().toISOString() });
   record.updatedAt = new Date().toISOString();
 
@@ -103,4 +103,14 @@ test('浏览器：流式气泡运行中可见，轮次结束后最终消息留�
     return text.includes('正在输出的第一段') && !text.includes('最终完整回答');
   });
   assert.equal(swallowed, false, '轮次结束后最终消息必须留在转录，流式文本不得整体消失');
+
+  // 阶段四（review P2-1）：打断/出错终态不推 agent 消息——气泡必须随终态离场，不得永久残留。
+  record.status = 'idle';
+  record.liveText = '';
+  record.error = '被主人打断';
+  record.turnStartedAt = null;
+  record.updatedAt = new Date().toISOString();
+  await page.waitForTimeout(1500);
+  const afterInterrupt = await page.evaluate(() => document.querySelector('#page-sessions')?.innerText || '');
+  assert.ok(!afterInterrupt.includes('正在输出的第一段'), '打断/出错终态不得残留流式气泡（否则下一轮还会拼到它尾巴上）');
 });
