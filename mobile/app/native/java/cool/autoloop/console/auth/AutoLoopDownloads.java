@@ -1,7 +1,12 @@
 package cool.autoloop.console.auth;
 
 import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.database.Cursor;
+import android.os.Build;
 import android.net.Uri;
 import android.os.Environment;
 import android.webkit.DownloadListener;
@@ -23,6 +28,39 @@ public class AutoLoopDownloads extends Plugin {
   public void load() {
     super.load();
     AutoLoopBridge.inject(this, AutoLoopBridge.DOWNLOAD_SHIM);
+    registerCompleteReceiver();
+  }
+
+  /** 下载结束（成功/失败）时通知页面，页面内给轻提示；系统通知栏提示保持不变。 */
+  private void registerCompleteReceiver() {
+    BroadcastReceiver receiver = new BroadcastReceiver() {
+      @Override
+      public void onReceive(Context context, Intent intent) {
+        long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L);
+        if (id < 0) return;
+        boolean ok = false;
+        DownloadManager manager = (DownloadManager) context.getSystemService(Context.DOWNLOAD_SERVICE);
+        try (Cursor c = manager.query(new DownloadManager.Query().setFilterById(id))) {
+          if (c != null && c.moveToFirst()) {
+            ok = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                == DownloadManager.STATUS_SUCCESSFUL;
+          }
+        } catch (Exception ignored) {
+          ok = false;
+        }
+        WebView webView = AutoLoopBridge.webView();
+        if (webView == null) return;
+        final String js = "window.dispatchEvent(new CustomEvent('autoloop:download-complete',{detail:{id:"
+            + id + ",ok:" + ok + "}}));";
+        webView.post(() -> webView.evaluateJavascript(js, null));
+      }
+    };
+    IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+    if (Build.VERSION.SDK_INT >= 33) {
+      getContext().registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
+    } else {
+      getContext().registerReceiver(receiver, filter);
+    }
   }
 
   @PluginMethod
