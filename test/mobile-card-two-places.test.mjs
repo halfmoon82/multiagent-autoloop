@@ -79,6 +79,26 @@ test('409 幂等成功：服务端明示 idempotent 的 409 视为办结、本�
   resetLocallyAnswered();
 });
 
+test('选项回答（answerCard）遇 409 幂等同样静默收起：登记统一状态源并给轻提示', async () => {
+  resetLocallyAnswered();
+  const write = createSessionsWrite(fakeClient(), {
+    fetchImpl: async () => ({
+      ok: false, status: 409,
+      json: async () => ({ error: '目标不存在或已失效', idempotent: true, state: 'decided' }),
+    }),
+  });
+  const result = await write.answerCard(21, { choice: 1 });
+  assert.equal(result.ok, true, '409 幂等按成功返回，不抛错');
+  assert.equal(result.idempotent, true);
+  assert.equal(isCardAnsweredLocal(21), true, '选项回答遇 409 也收起本地卡');
+  assert.equal(isCardAnsweredLocal('21'), true, '数字/字符串 id 同一口径，待办与会话窗共享过滤');
+  const notice = buildCardAnsweredNotice(result, openCard(21));
+  assert.match(notice.text, /已在别处办结/);
+  assert.equal(notice.tone, 'ok');
+  assert.equal(buildCardAnsweredNotice({ idempotent: false }, openCard(21)), null, '真失败不出轻提示');
+  resetLocallyAnswered();
+});
+
 test('真失败（502/无 idempotent 标记的 409）报错并保留卡片，不进已答源', async () => {
   resetLocallyAnswered();
   const offline = createSessionsWrite(fakeClient(), {
