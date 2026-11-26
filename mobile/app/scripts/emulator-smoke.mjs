@@ -29,10 +29,10 @@ const TABS = [['core', '总览'], ['rules', '规则'], ['rounds', '轮次'], ['t
 
 export const EXIT = { pass: 0, fail: 1, notRun: 3 };
 
-// 下拉刷新冒烟：覆盖核心 Tab 的「列表中部起拉 → 顶部 overscroll → 指示器 → 数据重载」。
+// 下拉刷新冒烟：覆盖核心 Tab 的「已到顶下拉 → 指示器 → 数据重载」，并单独验证滚动浏览不误触。
 export const PULL_REFRESH_SMOKE_TABS = Object.freeze([['core', '总览'], ['rules', '规则'], ['rounds', '轮次'], ['todos', '待办'], ['sessions', '会话']]);
 
-/** 生成 adb swipe 参数（x 取屏幕中线，y 按比例）；尺寸非法返回 null 由调用方标未执行。 */
+/** 已到顶下拉的 swipe 参数（x 取屏幕中线，y 按比例，匀速）；尺寸非法返回 null 由调用方标未执行。 */
 export function pullSwipeArgs(width, height, { fromY = 0.22, toY = 0.62, durationMs = 500 } = {}) {
   const w = Number(width); const h = Number(height);
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
@@ -43,8 +43,8 @@ export function pullSwipeArgs(width, height, { fromY = 0.22, toY = 0.62, duratio
 }
 
 /**
- * 真机连续下拉手势：从列表中部（避开顶缘）起拉，一次滑动先靠原生滚动回到顶部，
- * 再继续下拉形成 overscroll。长时长确保浏览器收到完整 touchmove 序列。
+ * 真机连续滚动手势：从列表中部（避开顶缘）起拉，一次滑动先靠原生滚动回到顶部，
+ * 再继续下拉。滚动守卫下这是「列表中部起拉」，用于验证不误触刷新。
  */
 export function pullFromListArgs(width, height, { fromY = 0.45, toY = 0.95, durationMs = 600 } = {}) {
   const w = Number(width); const h = Number(height);
@@ -171,6 +171,11 @@ function main() {
     }
     throw new StepFailure(`等待界面出现「${text}」超时（${ms / 1000}s）`);
   };
+  // 滚动浏览类步骤：手势结束后不应出现刷新指示，出现即守卫失守。
+  const assertNoPullRefresh = (serial, step) => {
+    pause(1);
+    if (/正在刷新/.test(dump(serial))) throw new StepFailure(`${step}误触发了下拉刷新`);
+  };
   const tap = (serial, node) => adb(serial, ['shell', 'input', 'tap', String(node.x), String(node.y)]);
   const typeText = (serial, text) => adb(serial, ['shell', 'input', 'text', text.replace(/ /g, '%s')]);
   const launch = (serial) => adb(serial, ['shell', 'monkey', '-p', PACKAGE, '-c', 'android.intent.category.LAUNCHER', '1']);
@@ -292,20 +297,40 @@ function main() {
       adb(serialA, ['shell', 'input', 'swipe',
         String(Math.round(w / 2)), String(Math.round(h * 0.8)),
         String(Math.round(w / 2)), String(Math.round(h * 0.3)), '250']);
-      pause(1);
-      if (/正在刷新/.test(dump(serialA))) throw new StepFailure('普通列表滚动误触发了下拉刷新');
+      assertNoPullRefresh(serialA, '普通列表滚动');
     }],
-    ...PULL_REFRESH_SMOKE_TABS.map(([, label]) => [`下拉刷新：${label}`, () => {
-      tap(serialA, waitFor(serialA, label));
+    ['会话页上滑浏览历史不误触下拉刷新', () => {
+      tap(serialA, waitFor(serialA, '会话'));
+      pause(1);
+      const size = /(\d+)x(\d+)/.exec(sh(serialA, 'wm size'));
+      const w = Number(size?.[1]); const h = Number(size?.[2]);
+      if (!w || !h) throw new StepFailure('读不到屏幕尺寸，无法判定会话浏览误触');
+      // 手指下移把消息流往上滚看历史，到顶后继续下拉；滚动守卫必须拦住。
+      adb(serialA, ['shell', 'input', 'swipe',
+        String(Math.round(w / 2)), String(Math.round(h * 0.25)),
+        String(Math.round(w / 2)), String(Math.round(h * 0.95)), '600']);
+      assertNoPullRefresh(serialA, '会话页上滑浏览历史');
+    }],
+    ['列表中部起拉不误触下拉刷新', () => {
+      tap(serialA, waitFor(serialA, '总览'));
       pause(1);
       const size = /(\d+)x(\d+)/.exec(sh(serialA, 'wm size'));
       const args = pullFromListArgs(size?.[1], size?.[2]);
+      if (!args) throw new StepFailure('读不到屏幕尺寸，无法判定列表中部起拉');
+      adb(serialA, args);
+      assertNoPullRefresh(serialA, '列表中部起拉');
+    }],
+    ...PULL_REFRESH_SMOKE_TABS.map(([, label]) => [`已到顶下拉刷新：${label}`, () => {
+      tap(serialA, waitFor(serialA, label));
+      pause(1);
+      const size = /(\d+)x(\d+)/.exec(sh(serialA, 'wm size'));
+      const args = pullSwipeArgs(size?.[1], size?.[2]);
       if (!args) throw new StepFailure('读不到屏幕尺寸，无法下拉');
-      // 一次连续手势：列表中部起拉 → 原生滚动回顶 → overscroll 越过阈值 → 指示器 → 数据重载。
+      // 切 tab 后内容在顶部，匀速下拉越过阈值 → 指示器 → 数据重载。
       adb(serialA, args);
       const refreshing = waitFor(serialA, '正在刷新', 6000);
       screenshot(serialA, `pull-refresh-${label}`);
-      return { reason: `列表中部起拉→顶部 overscroll 出现刷新指示（约 ${refreshing.x},${refreshing.y}）` };
+      return { reason: `已到顶下拉出现刷新指示（约 ${refreshing.x},${refreshing.y}）` };
     }]),
     ['安装版界面版本变化如实提示更新', () => {
       const turn = process.env.AUTOLOOP_SMOKE_VERSION_TURN || '';

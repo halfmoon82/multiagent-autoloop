@@ -356,8 +356,8 @@ function boot() {
   }).catch(() => {});
 
   // ---- App 刷新机制（pullRefresh / versionCheck）----
-  // 下拉刷新：任意位置起拉——未到顶时先把列表滚到顶，到顶后继续下拉产生 overscroll 才接管；
-  // 横向由 tab-swipe 与会话行左滑关闭处理，互不拦截。
+  // 下拉刷新滚动守卫（issue #349）：仅起拉时已到顶、明确向下且非惯性才接管；
+  // 会话页上滑浏览历史与长列表滚动浏览不误触；横向由 tab-swipe 与会话行左滑关闭处理，互不拦截。
   const ptrIndicator = document.createElement('div');
   ptrIndicator.id = 'pull-refresh-indicator';
   ptrIndicator.className = 'pull-refresh-indicator';
@@ -373,10 +373,13 @@ function boot() {
   ptrIndicator.dataset.state = 'idle';
   if (content) content.insertBefore(ptrIndicator, content.firstChild);
 
+  // 滚动守卫的到顶判定：测量异常一律当作「不在顶部」，宁可不触发也不误触。
   const isAtTop = () => {
-    if (content && content.scrollHeight > content.clientHeight + 2) return content.scrollTop <= 1;
-    const root = document.scrollingElement || document.documentElement;
-    return (root?.scrollTop || 0) <= 1;
+    try {
+      if (content && content.scrollHeight > content.clientHeight + 2) return content.scrollTop <= 1;
+      const root = document.scrollingElement || document.documentElement;
+      return (root?.scrollTop || 0) <= 1;
+    } catch { return false; }
   };
   const ptrShow = (distance, ready, refreshing, text) => {
     ptrIndicator.hidden = false;
@@ -450,7 +453,7 @@ function boot() {
     if (!touchActive) return;
     const p = ptrPoint(e);
     if (!p) return;
-    const r = pull.move({ x: p.x, y: p.y, atTop: isAtTop() });
+    const r = pull.move({ x: p.x, y: p.y, atTop: isAtTop(), t: ptrTime(e) });
     if (!r.pulling) return; // 未到顶：不阻止默认，列表照常滚动（触发失败不阻塞滚动）
     ptrDragging = true;
     if (e.cancelable !== false) e.preventDefault(); // 到顶下拉：挡住原生 overscroll / pointercancel
@@ -459,7 +462,7 @@ function boot() {
   const onTouchEnd = e => {
     if (!touchActive) return;
     touchActive = false;
-    const r = pull.end({});
+    const r = pull.end({ t: ptrTime(e) });
     const wasDragging = ptrDragging;
     ptrDragging = false;
     if (wasDragging && e.cancelable !== false) e.preventDefault(); // 拖拽后不当成点击
@@ -484,14 +487,14 @@ function boot() {
     if (pointerActiveId === null || e.pointerId !== pointerActiveId) return;
     const p = ptrPoint(e);
     if (!p) return;
-    const r = pull.move({ x: p.x, y: p.y, atTop: isAtTop() });
+    const r = pull.move({ x: p.x, y: p.y, atTop: isAtTop(), t: ptrTime(e) });
     if (!r.pulling) return;
     ptrDragging = true;
     ptrShow(r.distance, r.ready, false, r.ready ? `松开立即刷新${ptrPullLabel()}` : `下拉刷新${ptrPullLabel()}`);
   };
   const onPtrUp = e => {
     if (pointerActiveId === null || e.pointerId !== pointerActiveId) return;
-    const r = pull.end({});
+    const r = pull.end({ t: ptrTime(e) });
     const wasDragging = ptrDragging;
     pointerActiveId = null;
     ptrDragging = false;
