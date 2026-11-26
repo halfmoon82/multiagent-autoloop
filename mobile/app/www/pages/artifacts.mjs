@@ -151,7 +151,37 @@ function setup(ctx, doc, win, root, F) {
       previewBox.hidden = false;
     } catch {
       previewBox.hidden = true;
-      previewFailure = { id: str(selected.id), selected };
+      previewFailure = { id: str(selected.id), selected, kind: 'image' };
+      render();
+    } finally {
+      previewLoading = false;
+    }
+  }
+
+  // 文本类产物（md/markdown/txt）在线预览：复用设备鉴权的只读文件路由取原文，
+  // 用 textContent 就地渲染，不拼 HTML、不建 iframe、不触发原生下载。
+  // 加载失败就地给「重试」，不清选中、不跳页；超封顶在 render 里给提示与下载备选。
+  async function openTextPreview(selected) {
+    if (!previewBox) return;
+    if (!previewBox.hidden && previewFailure === null) { previewBox.hidden = true; return; }
+    if (previewLoading) return;
+    previewLoading = true;
+    try {
+      const client = typeof ctx.client === 'object' && ctx.client ? ctx.client : null;
+      if (!client || typeof client.sessionArtifactFile !== 'function') throw new Error('no client');
+      const data = await client.sessionArtifactFile(selected.sessionId, selected.path);
+      const content = str(data?.content);
+      if (!content) throw new Error('empty document');
+      // 重试成功后重渲染撤掉就地失败提示，再往新建的 pre 上放纯文本（不解析、不下载）。
+      previewFailure = null;
+      render();
+      const textNode = findChild(previewBox, 'pre');
+      if (!textNode) throw new Error('no text slot');
+      textNode.textContent = content;
+      previewBox.hidden = false;
+    } catch {
+      previewBox.hidden = true;
+      previewFailure = { id: str(selected.id), selected, kind: 'text' };
       render();
     } finally {
       previewLoading = false;
@@ -192,7 +222,8 @@ function setup(ctx, doc, win, root, F) {
       box.appendChild(button(doc, 'artifacts-preview-retry', '重试', () => {
         const target = previewFailure;
         previewFailure = null;
-        void openImagePreview(target.selected);
+        if (target.kind === 'text') void openTextPreview(target.selected);
+        else void openImagePreview(target.selected);
       }));
       nodes.push(box);
     }
@@ -258,6 +289,25 @@ function setup(ctx, doc, win, root, F) {
           previewBox.appendChild(el(doc, 'img', 'artifacts-preview-image'));
           reader.appendChild(previewBox);
         }
+      } else if (plan.selected.previewKind === 'text') {
+        if (plan.selected.textOverCap) {
+          // 超封顶不静默失败：明确提示 + 保留下载按钮作为落盘备选。
+          reader.appendChild(el(doc, 'div', 'artifacts-text-cap',
+            '文本超过 500KB，无法在线预览，请下载查看'));
+        } else {
+          reader.appendChild(button(doc, 'artifacts-preview-toggle artifacts-text-preview', '在线预览', () => {
+            void openTextPreview(plan.selected);
+          }));
+          previewBox = el(doc, 'div', 'artifacts-preview');
+          previewBox.hidden = true;
+          // 正文只用 textContent 写入，不拼接不可信 HTML、不建 iframe。
+          previewBox.appendChild(el(doc, 'pre', 'artifacts-preview-text'));
+          reader.appendChild(previewBox);
+        }
+      } else if (plan.selected.previewKind === 'unsupported') {
+        // pdf/word 等无法在线渲染：如实提示，下载按钮已在上方保留。
+        reader.appendChild(el(doc, 'div', 'artifacts-unsupported-preview',
+          '该格式暂不支持在线预览，请下载后查看'));
       }
     }
     nodes.push(reader);

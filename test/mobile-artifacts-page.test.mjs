@@ -36,7 +36,10 @@ async function boot(t, { artifacts, artifactFile, downloadImpl = 'ok' }) {
     };
     const ctx = {
       hooks,
-      client: { sessionPreviewTicket: () => Promise.resolve({ ticket: 't1', url: '/mobile/preview?ticket=t1' }) },
+      client: {
+        sessionPreviewTicket: () => Promise.resolve({ ticket: 't1', url: '/mobile/preview?ticket=t1' }),
+        sessionArtifactFile: () => Promise.resolve(JSON.parse(fileJson)),
+      },
       state: {},
     };
     window.__mod = mod;
@@ -106,6 +109,47 @@ test('未绑定/令牌缺失：引导重新绑定，不给重试', { skip }, asy
   assert.match(await page.locator('.artifacts-download-feedback').innerText(), /重新绑定/);
   assert.equal(await page.locator('.artifacts-download-retry').count(), 0);
   assert.equal(await page.locator('.artifacts-download-rebind').count(), 1);
+});
+
+test('md 产物点「在线预览」：真实 Chromium 中走只读文件路由，纯文本可读、不解析 HTML', { skip }, async t => {
+  const page = await boot(t, {
+    artifacts: [{ id: 's1:docs/plan.md', name: 'plan.md', path: 'docs/plan.md', sessionId: 's1', taskLabel: '核心任务', sizeText: '1KB', kindLabel: 'MD' }],
+    artifactFile: { name: 'plan.md', path: 'docs/plan.md', content: '# 在线可读\n<b data-x="1">按纯文本显示</b>' },
+  });
+  await page.evaluate(() => {
+    window.AutoloopConsoleBase = 'https://auto.example';
+    window.__mod.mount(window.__ctx, { feature: window.__F });
+  });
+  await page.waitForSelector('.artifacts-row');
+  await page.locator('.artifacts-row').click();
+  const preview = page.locator('.artifacts-preview-toggle');
+  assert.match(await preview.innerText(), /在线预览/);
+  await preview.click();
+  await page.waitForFunction(() => {
+    const node = document.querySelector('.artifacts-preview-text');
+    return node && !node.closest('.artifacts-preview').hidden && /在线可读/.test(node.textContent);
+  }, null, { timeout: 3000 });
+  const text = await page.locator('.artifacts-preview-text').innerText();
+  assert.ok(text.includes('<b data-x="1">按纯文本显示</b>'), '不可信内容按纯文本显示，不拼接 HTML');
+  assert.equal(await page.locator('.artifacts-preview-frame').count(), 0, 'md 不走 HTML iframe');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('b[data-x]').length), 0, '不解析为元素');
+  assert.match(await page.locator('.artifacts-download').innerText(), /下载 plan\.md/, '下载按钮保留');
+});
+
+test('pdf/word 产物在真实 Chromium 中如实提示暂不支持，保留下载', { skip }, async t => {
+  const page = await boot(t, {
+    artifacts: [{ id: 's1:out/手册.pdf', name: '手册.pdf', path: 'out/手册.pdf', sessionId: 's1', taskLabel: '核心任务', sizeText: '2KB', kindLabel: 'PDF' }],
+    artifactFile: {},
+  });
+  await page.evaluate(() => {
+    window.AutoloopConsoleBase = 'https://auto.example';
+    window.__mod.mount(window.__ctx, { feature: window.__F });
+  });
+  await page.waitForSelector('.artifacts-row');
+  await page.locator('.artifacts-row').click();
+  assert.match(await page.locator('.artifacts-reader').innerText(), /暂不支持在线预览，请下载后查看/);
+  assert.equal(await page.locator('.artifacts-preview-toggle').count(), 0, '不支持格式不给在线预览按钮');
+  assert.match(await page.locator('.artifacts-download').innerText(), /下载 手册\.pdf/);
 });
 
 test('pages/artifacts.mjs 含三态字面量标记（设计 verifier 依赖）', async () => {

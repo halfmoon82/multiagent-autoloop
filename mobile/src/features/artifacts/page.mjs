@@ -38,7 +38,15 @@ export function artifactImageMime(ext) {
 export function isImageArtifact(artifact) {
   return ARTIFACT_IMAGE_EXTENSIONS.includes(extOf(isObj(artifact) ? (str(artifact.ext) || str(artifact.path) || str(artifact.name)) : ''));
 }
-// 预览能力标注：纯数据，供行内预览按钮与封顶提示使用；HTML 预览保持原样，Markdown 仍无预览。
+
+// artifact-doc-preview：文本类产物（md/markdown/txt）走设备鉴权的只读文件路由取原文，
+// 用 textContent 纯文本渲染；封顶口径与服务端 readArtifact 的 500KB 对齐。
+// pdf/word 等二进制无法在线渲染，如实提示并保留下载，不假装能预览。
+export const ARTIFACT_TEXT_EXTENSIONS = Object.freeze(['.md', '.markdown', '.txt']);
+export const ARTIFACT_TEXT_MAX_BYTES = 500 * 1024;
+export const ARTIFACT_UNSUPPORTED_EXTENSIONS = Object.freeze(['.pdf', '.doc', '.docx']);
+
+// 预览能力标注：纯数据，供行内预览按钮与封顶提示使用；HTML 预览与图片在线查看保持原样。
 export function artifactPreviewMeta(artifact) {
   const source = isObj(artifact) ? artifact : {};
   const ext = extOf(str(source.ext) || str(source.path) || str(source.name));
@@ -47,10 +55,22 @@ export function artifactPreviewMeta(artifact) {
       previewKind: 'image',
       imageMime: artifactImageMime(ext),
       imageOverCap: num(source.size) > ARTIFACT_IMAGE_MAX_BYTES,
+      textOverCap: false,
     };
   }
-  if (ext === '.html' || ext === '.htm') return { previewKind: 'html', imageMime: null, imageOverCap: false };
-  return { previewKind: null, imageMime: null, imageOverCap: false };
+  if (ext === '.html' || ext === '.htm') return { previewKind: 'html', imageMime: null, imageOverCap: false, textOverCap: false };
+  if (ARTIFACT_TEXT_EXTENSIONS.includes(ext)) {
+    return {
+      previewKind: 'text',
+      imageMime: null,
+      imageOverCap: false,
+      textOverCap: num(source.size) > ARTIFACT_TEXT_MAX_BYTES,
+    };
+  }
+  if (ARTIFACT_UNSUPPORTED_EXTENSIONS.includes(ext)) {
+    return { previewKind: 'unsupported', imageMime: null, imageOverCap: false, textOverCap: false };
+  }
+  return { previewKind: null, imageMime: null, imageOverCap: false, textOverCap: false };
 }
 
 // 阅读视图登记项：供 ctx.hooks.pushView 登记，返回键据此逐级退出。
