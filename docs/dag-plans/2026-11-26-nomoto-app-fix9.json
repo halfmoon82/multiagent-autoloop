@@ -1,0 +1,42 @@
+{
+  "plan_id": "2026-11-26-nomoto-app-fix9",
+  "title": "NoMoTo App fix9：去掉「确认执行范围 →」按钮，设计会话卡只保留「确认计划·放行落盘」",
+  "design": {
+    "manifestPath": "docs/design/2026-11-26-nomoto-fix9-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-26-nomoto-fix9-baseline/design-approval.json"
+  },
+  "nodes": [
+    {
+      "id": "remove-design-authorize-button",
+      "title": "去掉「确认执行范围 →」按钮及其入口，设计会话卡单按钮化",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "主人 2026-11-26 晚决定：「确认执行范围 →」按钮点进去既没有计划也没有可操作步骤，且所有执行授权都在调度会话对话里完成——「好的，那就去掉吧」（issue #355）。",
+        "output": "1) 设计会话卡片只渲染「确认计划·放行落盘」一颗授权按钮；2) 移除「确认执行范围 →」入口与 design-authorize 视图挂载路由（死代码清理或标注保留原因）；3) 网页版确认页保留作手工兜底不受影响。",
+        "error_behavior": "移除后无残留入口与死链；其余会话操作（关闭/回答/语音）不受影响。",
+        "acceptance_example": "单测：设计会话卡片只渲染一颗授权按钮；浏览器回归无「确认执行范围」入口；设计验证器 notAny 核对「确认执行范围」不存在。",
+        "files": [
+          "mobile/src/features/sessions/views.mjs",
+          "mobile/src/features/design-authorize/",
+          "mobile/app/www/pages/sessions.mjs",
+          "test/（单按钮回归）"
+        ],
+        "design": {
+          "surfaceIds": [
+            "design-card-single-button"
+          ],
+          "states": [
+            "default"
+          ],
+          "interactions": [
+            "single-auth-button"
+          ]
+        }
+      }
+    }
+  ]
+}

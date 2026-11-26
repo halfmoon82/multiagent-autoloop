@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix9-2026-11-26",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix9-baseline/refs/design-card-single-button.html",
+      "sha256": "2212dd14d186ecc2bed76e272c4716b50358e25f2de975f0052d541fb69b9db7"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix9-baseline/verifiers/fix9-design.verify.mjs",
+      "sha256": "524d8c85bf0b0be5bad3a59e7f0aaf0c612a5bbe3723d6b7a9f9e768a9667c28"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix9-baseline/verifiers/fix9-design-fallback.mjs",
+      "sha256": "8f515c67872332f7df9d8be9f67fe473d79ff5c56aa5e3e403c87ea49cb77f50"
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-26-nomoto-fix9-baseline/verifiers/fix9-design.verify.mjs",
+  "fallbackVerifierPath": "docs/design/2026-11-26-nomoto-fix9-baseline/verifiers/fix9-design-fallback.mjs",
+  "surfaces": [
+    {
+      "id": "design-card-single-button",
+      "route": "#sessions",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "default"
+      ],
+      "interactions": [
+        "single-auth-button"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-26-nomoto-fix9-baseline/refs/design-card-single-button.html"
+      ]
+    }
+  ]
+}
