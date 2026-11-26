@@ -405,13 +405,31 @@ export function mount(ctx) {
   todosEl.appendChild(quickNotice);
   // 本机刚回答成功的卡：Hub 状态重读前也不再显示（失败不进此集合，卡与选项原样保留）。
   const answeredIds = new Set();
+  // 统一「卡已答」状态源（sessions 功能模块，2026-11-26 review P2-1）：
+  // 在会话窗办结的卡，待办列表与角标同源收起；状态源变化时立即重渲染，不等切页或下拉刷新。
+  let answeredSource = null;
+  void loadCardWrite().then(model => {
+    if (!model || typeof model.onLocallyAnsweredChange !== 'function') return;
+    answeredSource = model;
+    model.onLocallyAnsweredChange(() => renderCurrent());
+  }).catch(() => null);
+
+  // 另一处已办结（幂等成功）时给轻提示；真成功无提示，真失败走各自的错误分支。
+  async function showHandledNotice(result, item) {
+    const model = await loadCardWrite().catch(() => null);
+    const notice = model?.buildCardAnsweredNotice?.(result, item);
+    if (!notice) return;
+    quickNotice.textContent = notice.text;
+    quickNotice.hidden = false;
+  }
 
   async function answer(item, payload, submit, errorNode) {
     submit.disabled = true;
     errorNode.hidden = true;
     try {
-      await write.answerCard(item.id, payload);
+      const result = await write.answerCard(item.id, payload);
       drafts.delete(item.id);
+      await showHandledNotice(result, item);
       // 回答成功即隐藏该卡并同步角标，不等重读往返；重读到 Hub 已结案后自然不再出现。
       answeredIds.add(String(item.id));
       renderCurrent();
@@ -432,8 +450,9 @@ export function mount(ctx) {
     try {
       const client = await getCardWrite();
       if (!client || typeof client[action.method] !== 'function') throw new Error('操作通道不可用，请刷新后重试');
-      await client[action.method](item.id);
+      const result = await client[action.method](item.id);
       drafts.delete(item.id);
+      if (action.id !== 'delegate-return') await showHandledNotice(result, item);
       answeredIds.add(String(item.id));
       if (action.id === 'delegate-return') {
         quickNotice.textContent = `${item.title ? `${item.title}：` : ''}已退回调度，等待代理结论`;
@@ -694,7 +713,10 @@ export function mount(ctx) {
     const openIds = new Set((fullSnapshot.state?.cards || []).filter(card => card?.state === 'open').map(card => String(card.id)));
     for (const id of answeredIds) if (!openIds.has(id)) answeredIds.delete(id);
     const projectScope = activeFilter && !activeFilter.isAll ? String(activeFilter.selectedLabel || activeFilter.selectedId || '') : '';
-    const pages = coreModel.buildPages(filteredSnapshot(), { hiddenIds: answeredIds, projectScope });
+    // 隐藏集合 = 本页刚答的卡 ∪ 统一状态源里所有本机已办结的卡（含会话窗答的），角标计数同源。
+    const hiddenIds = new Set(answeredIds);
+    for (const id of answeredSource?.locallyAnsweredIds?.() || []) hiddenIds.add(String(id));
+    const pages = coreModel.buildPages(filteredSnapshot(), { hiddenIds, projectScope });
     renderOverview(pages.overview);
     renderRules(pages.rules);
     renderRuns(pages.runs);

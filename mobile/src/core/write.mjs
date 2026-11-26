@@ -2,6 +2,8 @@
 // 纯逻辑、不碰 DOM；fetch 由调用方注入（浏览器默认 globalThis.fetch）。
 // 设备凭证只放在 x-device-token 头里，不进 URL、页面、日志或错误文案。
 
+import { markCardAnsweredLocal } from '../features/sessions/browser.mjs';
+
 const RULE_ACTIONS = Object.freeze(['run', 'pause', 'resume']);
 
 export function createCoreWrite(client, { fetchImpl } = {}) {
@@ -9,7 +11,7 @@ export function createCoreWrite(client, { fetchImpl } = {}) {
     throw new TypeError('createCoreWrite 需要带 api/tokenStore 的移动端客户端');
   }
   const doFetch = fetchImpl || ((url, init) => globalThis.fetch(url, init));
-  const call = async (path, body) => {
+  const call = async (path, body, opts = {}) => {
     const token = await client.tokenStore.get();
     if (typeof token !== 'string' || !token) throw new Error('尚未绑定设备，请重新绑定后再操作');
     const url = new URL(path, client.origin);
@@ -31,6 +33,8 @@ export function createCoreWrite(client, { fetchImpl } = {}) {
     let payload = {};
     try { payload = await response.json(); } catch { /* 非 JSON 响应用通用错误文案 */ }
     if (!response.ok) {
+      // 对端明示「已办结」的 409 是幂等成功（调用方决定是否收起本地卡）；普通 409 仍按失败处理。
+      if (opts.idempotent409 && response.status === 409 && payload?.idempotent === true) return { ...payload, ok: true };
       const error = new Error(String(payload?.error || `操作失败（${response.status}），请重试`));
       error.status = response.status;
       error.route = payload?.route ?? null;
@@ -67,10 +71,13 @@ export function createCoreWrite(client, { fetchImpl } = {}) {
   return {
     getPlatformModels() { return admin('GET'); },
     savePlatformModels(payload) { return admin('PUT', payload); },
-    answerCard(id, { choice, text } = {}) {
+    async answerCard(id, { choice, text } = {}) {
       const cardId = encodeURIComponent(String(id));
       const payload = choice !== undefined ? { choice: Number(choice) } : { text: String(text ?? '') };
-      return call(`/api/mobile/cards/${cardId}/answer`, payload);
+      // 回答成功或另一处已办结（幂等 409）都登记统一「卡已答」状态源，与会话窗同源。
+      const result = await call(`/api/mobile/cards/${cardId}/answer`, payload, { idempotent409: true });
+      markCardAnsweredLocal(id, payload);
+      return result;
     },
     async ruleAction(name, action) {
       if (!RULE_ACTIONS.includes(action)) throw new Error(`不支持的动作：${String(action)}`);

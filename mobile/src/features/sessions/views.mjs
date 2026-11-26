@@ -231,6 +231,16 @@ export function designSessionActions(session = null) {
   return actions;
 }
 
+// ---- 卡两处一致性：办结幂等的轻提示（card-two-places，2026-11-26 晨）----
+// 另一处已把卡办结（409/幂等成功）时不再报错，只给一条可见的轻提示；真失败返回 null，
+// 由调用方照常显示错误并保留卡片。文案固定，不回显 Hub 错误体。
+export const CARD_HANDLED_NOTICE = '该卡已在别处办结，本地一并收起';
+export function buildCardAnsweredNotice(result = {}, card = null) {
+  if (result?.idempotent !== true) return null;
+  const title = String(card?.title ?? '').trim();
+  return { tone: 'ok', role: 'status', text: `${title ? `${title}：` : ''}${CARD_HANDLED_NOTICE}` };
+}
+
 // 关闭会话的二次确认状态机（closeConfirm）：第一次点「关闭」只进入确认态，
 // 再点「确认关闭」才提交；失败或超时回到初始态。滑动手势与此无关。
 export const CLOSE_CONFIRM_LABELS = Object.freeze({ idle: '关闭', confirm: '确认关闭', busy: '关闭中…' });

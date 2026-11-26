@@ -9,6 +9,60 @@ import { mobileSessionSummaries, mobileArchiveSummaries, mobileArchiveTranscript
 export const SESSION_READ_PATHS = Object.freeze(['/api/mobile/api/sessions', '/api/mobile/api/session-archives']);
 export const SESSION_CONTEXT_KEY = 'nomoto-sessions-context';
 
+// ---- 统一「卡已答」状态源（card-two-places，2026-11-26 晨）----
+// fix4 的 markCardAnswered 只改会话页的 state.cards，待办页另持 answeredIds，两处各自为政，
+// 于是在「待办」答完的卡仍留在会话窗。这里把本机已办结的卡收敛到唯一状态源：
+// 会话页与待办页共用同一个 sessions 写客户端（index.mjs → browser.mjs），任一处办结成功都登记，
+// 会话卡归属过滤（openCardsBySession）从同一处取，切回会话窗时该卡即随待办一起收起。
+// 只记本机观察到的办结；Hub 重读到已结案后自然不再出现，不编造远端状态。
+const locallyAnsweredCards = new Map(); // id -> { answer, at }
+const cardKey = id => String(id ?? '').trim();
+
+export function markCardAnsweredLocal(id, payload = {}) {
+  const key = cardKey(id);
+  if (!key) return false;
+  locallyAnsweredCards.set(key, {
+    answer: payload && payload.choice !== undefined
+      ? { choice: Number(payload.choice) }
+      : { text: String(payload?.text ?? '') },
+    at: Date.now(),
+  });
+  notifyLocallyAnswered(key);
+  return true;
+}
+export function isCardAnsweredLocal(id) { return locallyAnsweredCards.has(cardKey(id)); }
+export function locallyAnsweredIds() { return [...locallyAnsweredCards.keys()]; }
+export function resetLocallyAnswered() { locallyAnsweredCards.clear(); }
+
+// 状态源变化订阅（2026-11-26 review P2-1）：任一处办结登记后立刻通知订阅方
+// （待办页据此重渲染收起该卡并同步角标），不等切页重载或下拉刷新。
+const answeredListeners = new Set();
+export function onLocallyAnsweredChange(listener) {
+  if (typeof listener !== 'function') return () => {};
+  answeredListeners.add(listener);
+  return () => answeredListeners.delete(listener);
+}
+function notifyLocallyAnswered(key) {
+  for (const listener of answeredListeners) {
+    try { listener(key); } catch { /* 单个监听器异常不影响登记与其他监听器 */ }
+  }
+}
+
+// 与 fix4 的 markCardAnswered 合并为同一入口：既产出标记已答的卡片副本，又登记统一状态源。
+// 不改原数组，与 cardsToQuestionGroup 的 HANDLED_STATES 过滤衔接。
+export function markCardAnswered(cards, id, payload = {}) {
+  const key = cardKey(id);
+  const answer = payload && payload.choice !== undefined
+    ? { choice: Number(payload.choice) }
+    : { text: String(payload?.text ?? '') };
+  markCardAnsweredLocal(key, payload);
+  return (Array.isArray(cards) ? cards : []).map(card => (
+    card && typeof card === 'object' && cardKey(card.id) === key
+      ? { ...card, state: 'answered', answer }
+      : card
+  ));
+}
+
 function resolveUrl(origin, path) {
   const base = typeof origin === 'string' && origin ? origin : globalThis.location?.origin;
   const url = new URL(path, base || 'https://localhost');
@@ -100,6 +154,12 @@ export function createSessionsReader({ origin = '', fetchImpl, getToken, isActiv
   };
 }
 
+// 办结类写路由 → 卡片 id；非卡路径返回 null，不进统一已答源。
+const cardIdFromWriteUrl = url => {
+  const match = /^\/api\/mobile\/cards\/([^/]+)\/(?:answer|resolve|delegate|authorize)$/.exec(new URL(url).pathname);
+  return match ? decodeURIComponent(match[1]) : null;
+};
+
 // 写操作：只打 src/mobile-write.mjs 已登记的固定写路由；同源、设备凭证在头。
 export function createSessionsWrite(client, { fetchImpl } = {}) {
   if (!client || !client.origin || typeof client.tokenStore?.get !== 'function') {
@@ -126,8 +186,17 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
     let payload = {};
     try { payload = await response.json(); } catch { /* 非 JSON 响应用通用错误文案 */ }
     if (!response.ok) {
+      // 对端明示「已办结」的 409 是幂等成功：静默收起、不报错残留（普通 409 错误仍按失败处理）。
+      if (response.status === 409 && payload?.idempotent === true) {
+        const answeredId = cardIdFromWriteUrl(url);
+        if (answeredId) markCardAnsweredLocal(answeredId, body);
+        return { ...payload, ok: true };
+      }
       throw new Error(String(payload?.error || `操作失败（${response.status}），请重试`));
     }
+    // 办结类写成功（含幂等成功）都登记统一「卡已答」源；非卡路径不受影响。
+    const answeredId = cardIdFromWriteUrl(url);
+    if (answeredId) markCardAnsweredLocal(answeredId, body);
     return payload;
   };
 
@@ -213,7 +282,9 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
 // 仍 open 的卡，作为会话卡组「哪些题还该留着」的依据。别的会话的卡仍完整留在「待我处理」，过滤不丢数据。
 export function openCardsBySession(cards, session, cardsForSession) {
   const scoped = typeof cardsForSession === 'function' ? cardsForSession(cards, session) : [];
-  return (Array.isArray(scoped) ? scoped : []).filter(card => String(card?.state ?? '').trim() === 'open');
+  // 连同本机已答源一起过滤：另一处（待办/别的会话）办结后，会话窗重建卡组时一并收起。
+  return (Array.isArray(scoped) ? scoped : []).filter(card =>
+    String(card?.state ?? '').trim() === 'open' && !isCardAnsweredLocal(card?.id));
 }
 
 // 回答后移除（answer-vanish）：卡片回答/结案后立即离开会话卡组——只保留仍在 openIds 里的题

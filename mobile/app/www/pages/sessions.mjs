@@ -161,6 +161,8 @@ export function mount(ctx) {
   const pendingStrip = node('button', { type: 'button', className: 'sessions-pending-strip', attrs: { hidden: '' } });
   pendingStrip.addEventListener('click', () => { questionBox.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
   const questionBox = node('div', { className: 'sessions-question' });
+  // 另一处已办结（幂等成功）的轻提示：独立于 questionBox（卡组清空时它会隐藏）。
+  const cardNoticeEl = node('p', { className: 'hint', attrs: { role: 'status', 'data-card-handled-notice': '', hidden: '' } });
   // 消息区：详情页 flex 列中唯一的滚动区（flex:1; min-height:0; overflow:auto），顶部与输入栏不随消息流滚走。
   const messageWindow = node('div', { className: 'sessions-message-window' });
   const backBottom = node('button', { type: 'button', className: 'sessions-back-bottom', text: '回到底部 ↓', attrs: { hidden: '' } });
@@ -190,7 +192,7 @@ export function mount(ctx) {
   const queuePreview = node('div', { className: 'sessions-queue-preview', attrs: { hidden: '' } });
   const detailActions = node('div', { className: 'sessions-detail-actions' });
   const detailTop = node('div', { className: 'sessions-detail-top' }, [
-    detailHero, detailActions, detailContext, sessionTools, infoPanel, queuePanel, pendingStrip,
+    detailHero, detailActions, detailContext, sessionTools, infoPanel, queuePanel, pendingStrip, cardNoticeEl,
   ]);
   const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
     detailTop, messageWindow, backBottom, queuePreview, attachmentInput, attachmentList, composerRow,
@@ -566,7 +568,11 @@ export function mount(ctx) {
     state.follow = true;
     // 决策卡按会话归属过滤（fix4）：有 lane 的卡只进 lane 对应会话，无 lane 的卡按项目归属；
     // 不再只按项目过滤，别的会话的卡不会串进来。
-    const cards = qmodel?.cardsForSession ? qmodel.cardsForSession(state.cards, session) : [];
+    // 经统一「卡已答」源过滤（openCardsBySession）：在待办/别处刚办结的卡，Hub 状态还没翻过去时
+    // 重新打开会话也不再出现（2026-11-26 review P2-1 同根因：主路径原先只按 lane/项目过滤）。
+    const cards = smodel?.openCardsBySession
+      ? smodel.openCardsBySession(state.cards, session, qmodel?.cardsForSession)
+      : (qmodel?.cardsForSession ? qmodel.cardsForSession(state.cards, session) : []);
     state.group = qmodel ? qmodel.cardsToQuestionGroup(cards, { id: 'session-cards', sessionId: session.id }) : null;
     if (qmodel && state.savedGroup && state.savedSessionId === session.id) {
       // 恢复的草稿组里已在别处回答/结案的卡要剔除，不复活残留卡。
@@ -908,7 +914,10 @@ export function mount(ctx) {
     const button = questionBox.querySelector('.sessions-question-submit');
     if (button) button.disabled = true;
     try {
-      await write.answerCard(active.id, payload);
+      const answerResult = await write.answerCard(active.id, payload);
+      const handledNotice = smodel?.buildCardAnsweredNotice?.(answerResult, active);
+      cardNoticeEl.textContent = handledNotice ? handledNotice.text : '';
+      cardNoticeEl.hidden = !handledNotice;
       // 回答链路闭环（fix4）：state.cards 是重建待回答组的唯一来源，回答成功后必须本地同步为已答，
       // 否则切到别的会话/重建分组时已答卡片又以未答形式复活。
       if (qmodel.markCardAnswered) state.cards = qmodel.markCardAnswered(state.cards, active.id, payload);
@@ -1235,6 +1244,14 @@ export function mount(ctx) {
       if (!sessionModel || !questionModel) return;
       smodel = sessionModel;
       qmodel = questionModel;
+      // 统一「卡已答」源订阅（2026-11-26 review g3a1 P2）：会话详情已打开时在别处（待办）
+      // 办结的卡，登记瞬间就从当前卡组剔除并重渲染，不等整页重载——切回会话窗即已收起。
+      smodel.onLocallyAnsweredChange?.(() => {
+        if (state.view !== 'detail' || !state.session || !state.group) return;
+        const pruned = smodel.pruneQuestionGroup(state.group,
+          smodel.openCardsBySession(state.cards, state.session, qmodel?.cardsForSession).map(card => String(card.id)));
+        if (pruned !== state.group) { state.group = pruned; renderQuestion(); saveContext(); }
+      });
       reader = smodel.createSessionsReader({
         origin: ctx.client.origin,
         getToken: () => ctx.client.tokenStore.get(),
