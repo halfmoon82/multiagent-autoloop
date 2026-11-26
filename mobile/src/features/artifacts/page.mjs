@@ -13,10 +13,45 @@ import { ARTIFACT_ERRORS } from './contract.mjs';
 const str = value => String(value ?? '');
 const isObj = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const arr = value => (Array.isArray(value) ? value : []);
+const num = (value, fallback = 0) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+function extOf(value) {
+  const name = str(value).split(/[\\/]/).pop() || '';
+  const i = name.lastIndexOf('.');
+  return i >= 0 ? name.slice(i).toLowerCase() : '';
+}
 
 export const ARTIFACT_PAGE = 'artifacts';
 export const ARTIFACT_SESSION_PAGE = 'sessions';
 export const ARTIFACT_READ_VIEW = 'artifact-read';
+
+// artifact-image-preview：图片类产物可在线查看，不下载。服务端 DOWNLOAD_EXTENSIONS 的只读子集；
+// 文档沿用 500KB 口径，图片按需放宽到 5MB，超封顶在列表标注并给下载备选。
+export const ARTIFACT_IMAGE_EXTENSIONS = Object.freeze(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+export const ARTIFACT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const IMAGE_MIME = Object.freeze({
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif',
+});
+export function artifactImageMime(ext) {
+  return IMAGE_MIME[str(ext).toLowerCase()] || null;
+}
+export function isImageArtifact(artifact) {
+  return ARTIFACT_IMAGE_EXTENSIONS.includes(extOf(isObj(artifact) ? (str(artifact.ext) || str(artifact.path) || str(artifact.name)) : ''));
+}
+// 预览能力标注：纯数据，供行内预览按钮与封顶提示使用；HTML 预览保持原样，Markdown 仍无预览。
+export function artifactPreviewMeta(artifact) {
+  const source = isObj(artifact) ? artifact : {};
+  const ext = extOf(str(source.ext) || str(source.path) || str(source.name));
+  if (ARTIFACT_IMAGE_EXTENSIONS.includes(ext)) {
+    return {
+      previewKind: 'image',
+      imageMime: artifactImageMime(ext),
+      imageOverCap: num(source.size) > ARTIFACT_IMAGE_MAX_BYTES,
+    };
+  }
+  if (ext === '.html' || ext === '.htm') return { previewKind: 'html', imageMime: null, imageOverCap: false };
+  return { previewKind: null, imageMime: null, imageOverCap: false };
+}
 
 // 阅读视图登记项：供 ctx.hooks.pushView 登记，返回键据此逐级退出。
 export function artifactReadView(browser) {
@@ -53,8 +88,13 @@ export function artifactPagePlan(browser) {
   const dualPane = binding.pane === 'dual';
   const readerVisible = Boolean(source.opened === true && binding.selected);
   const selected = binding.selected;
+  // 行模型来自 views.mjs（不含 ext/size）：回原始产物按 id 补齐预览能力，不改动共享视图模型。
+  const byId = new Map(arr(source.artifacts).map(artifact => [str(artifact.id), artifact]));
+  const withPreview = row => ({ ...row, ...artifactPreviewMeta(byId.get(row.id)) });
   return {
     ...binding,
+    artifacts: binding.artifacts.map(withPreview),
+    selected: selected ? withPreview(selected) : null,
     dualPane,
     readerVisible,
     listVisible: !readerVisible || dualPane,

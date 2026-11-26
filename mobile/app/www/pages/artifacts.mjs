@@ -33,6 +33,16 @@ function button(doc, className, text, onClick) {
   return node;
 }
 
+// 同时兼容真实 DOM（children 是 HTMLCollection、tagName 大写）与测试假 DOM（tag 小写）。
+function findChild(node, tag) {
+  const kids = node && node.children;
+  if (!kids) return null;
+  for (const child of Array.from(kids)) {
+    if (child.tag === tag || child.tagName === tag.toUpperCase()) return child;
+  }
+  return null;
+}
+
 /** 挂载点。ctx 含 client / state / hooks。其余参数仅供测试注入，浏览器走默认。 */
 export function mount(ctx, { doc = globalThis.document, win = globalThis.window, feature } = {}) {
   if (!ctx || !doc) return () => {};
@@ -89,13 +99,15 @@ function setup(ctx, doc, win, root, F) {
 
   // A+ 预览：iframe 请求带不了 x-device-token 头，先换一次性票据再 frame.src=预览地址；
   // 沙箱 allow-scripts（不同源）：设计稿里的跳转与脚本可运行，产物脚本碰不到控制台。
+  // 图片产物（artifact-image-preview）不走 iframe：设备鉴权的只读文件路由取字节，就地 data URL 渲染，不下载。
   let previewBox = null;
   let previewLoading = false;
   async function togglePreview(selected) {
     if (!previewBox) return;
     if (!previewBox.hidden) { previewBox.hidden = true; return; }
-    const frame = previewBox.querySelector('iframe');
-    if (frame && frame.dataset.loadedFor === selected.id) { previewBox.hidden = false; return; }
+    const frame = findChild(previewBox, 'iframe');
+    if (!frame) return;
+    if (frame.dataset.loadedFor === selected.id) { previewBox.hidden = false; return; }
     if (previewLoading) return;
     previewLoading = true;
     try {
@@ -115,6 +127,37 @@ function setup(ctx, doc, win, root, F) {
     }
   }
 
+  // 图片在线查看：行内按钮 → 复用只读文件路由（带设备凭据）→ data URL 就地显示。
+  // 加载失败就地给「重试」，不清选中、不跳页、不触发原生下载。
+  let previewFailure = null; // { id, selected }
+  async function openImagePreview(selected) {
+    if (!previewBox) return;
+    if (!previewBox.hidden && previewFailure === null) { previewBox.hidden = true; return; }
+    if (previewLoading) return;
+    previewLoading = true;
+    try {
+      const client = typeof ctx.client === 'object' && ctx.client ? ctx.client : null;
+      if (!client || typeof client.sessionArtifactFile !== 'function') throw new Error('no client');
+      const data = await client.sessionArtifactFile(selected.sessionId, selected.path);
+      const content = str(data?.content).trim();
+      if (!content) throw new Error('empty image');
+      const mime = str(data?.mimeType) || str(selected.imageMime) || 'image/png';
+      // 重试成功后重渲染，撤掉就地失败提示；再往新建的 img 上放 data URL（不落盘、不下载）。
+      previewFailure = null;
+      render();
+      const image = findChild(previewBox, 'img');
+      if (!image) throw new Error('no image slot');
+      image.setAttribute('src', `data:${mime};base64,${content}`);
+      previewBox.hidden = false;
+    } catch {
+      previewBox.hidden = true;
+      previewFailure = { id: str(selected.id), selected };
+      render();
+    } finally {
+      previewLoading = false;
+    }
+  }
+
   // 下载反馈：点击即「已开始」，完成/失败就地提示；失败不清选中、不跳页，重试回到原状态。
   let feedback = null;
   let pending = null; // { id, name }
@@ -123,6 +166,8 @@ function setup(ctx, doc, win, root, F) {
   function render() {
     const plan = artifactPagePlan(browser);
     const nodes = [];
+    previewBox = null;
+    if (previewFailure && (!plan.selected || str(plan.selected.id) !== previewFailure.id)) previewFailure = null;
 
     const head = el(doc, 'div', 'artifacts-head');
     head.appendChild(el(doc, 'strong', 'artifacts-entry', plan.entryLabel));
@@ -138,6 +183,18 @@ function setup(ctx, doc, win, root, F) {
         render();
       }));
       nodes.push(errorBox);
+    }
+
+    if (previewFailure) {
+      const box = el(doc, 'div', 'artifacts-preview-error');
+      box.setAttribute('role', 'status');
+      box.appendChild(el(doc, 'span', 'artifacts-preview-error-text', '预览加载失败，可重试'));
+      box.appendChild(button(doc, 'artifacts-preview-retry', '重试', () => {
+        const target = previewFailure;
+        previewFailure = null;
+        void openImagePreview(target.selected);
+      }));
+      nodes.push(box);
     }
 
     if (feedback) {
@@ -187,6 +244,20 @@ function setup(ctx, doc, win, root, F) {
         frame.setAttribute('sandbox', 'allow-scripts');
         previewBox.appendChild(frame);
         reader.appendChild(previewBox);
+      } else if (plan.selected.previewKind === 'image') {
+        if (plan.selected.imageOverCap) {
+          // 超封顶不静默失败：明确提示 + 保留下载按钮作为落盘备选。
+          reader.appendChild(el(doc, 'div', 'artifacts-image-cap',
+            '图片超过 5MB，无法在线预览，请下载查看'));
+        } else {
+          reader.appendChild(button(doc, 'artifacts-preview-toggle artifacts-image-preview', '在线查看', () => {
+            void openImagePreview(plan.selected);
+          }));
+          previewBox = el(doc, 'div', 'artifacts-preview');
+          previewBox.hidden = true;
+          previewBox.appendChild(el(doc, 'img', 'artifacts-preview-image'));
+          reader.appendChild(previewBox);
+        }
       }
     }
     nodes.push(reader);
