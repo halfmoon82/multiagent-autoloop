@@ -41,18 +41,18 @@ body {
 }
 .card {
   background: var(--card); border: 1px solid var(--line); border-radius: 0.9rem;
-  padding: 1rem; margin: 0 0 1rem; box-shadow: 0 1px 3px rgba(15, 61, 46, 0.06);
+  padding: 0.75rem; margin: 0 0 0.7rem; box-shadow: 0 1px 3px rgba(15, 61, 46, 0.06);
 }
 h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
 .hint { margin: 0.4rem 0 0.9rem; color: var(--ink-soft); font-size: 0.9rem; }
 label { display: block; margin: 0.8rem 0 0.3rem; font-size: 0.9rem; font-weight: 600; }
 input[type="text"], input[type="url"] {
-  width: 100%; min-height: 48px; padding: 0.7rem 0.8rem; font: inherit; font-size: 1rem;
+  width: 100%; min-height: 40px; padding: 0.45rem 0.7rem; font: inherit; font-size: 1rem;
   color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 0.6rem;
 }
 input[type="text"]:focus-visible, input[type="url"]:focus-visible, button:focus-visible { outline: 3px solid var(--mint); outline-offset: 2px; }
 button {
-  min-height: 48px; padding: 0.7rem 1rem; margin: 0.6rem 0 0; font: inherit; font-size: 1rem;
+  min-height: 40px; padding: 0.45rem 0.9rem; margin: 0.5rem 0 0; font: inherit; font-size: 0.9rem;
   color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 0.6rem; cursor: pointer;
 }
 button.primary { width: 100%; color: #fff; background: var(--ink); border-color: var(--ink); font-weight: 600; }

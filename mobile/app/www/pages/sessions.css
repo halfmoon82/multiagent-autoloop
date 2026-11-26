@@ -4,11 +4,11 @@
 
 .sessions-banner {
   display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
-  padding: 0.7rem 0.9rem; margin: 0 0 1rem;
+  padding: 0.5rem 0.7rem; margin: 0 0 0.6rem;
   background: #fbe9e7; border: 1px solid var(--danger); border-radius: 0.7rem; color: var(--danger);
 }
 .sessions-banner-text { flex: 1 1 12rem; }
-.sessions-retry { min-height: 44px; margin: 0; color: var(--danger); border-color: var(--danger); }
+.sessions-retry { min-height: 36px; margin: 0; color: var(--danger); border-color: var(--danger); }
 
 .sessions-filter-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; }
 .sessions-search {
@@ -18,7 +18,7 @@
 .sessions-new-btn { flex: 0 0 auto; min-height: 48px; margin: 0; }
 .sessions-filters, .sessions-new-kinds { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.8rem; }
 .sessions-chip {
-  min-height: 44px; margin: 0; padding: 0.5rem 0.8rem;
+  min-height: 36px; margin: 0; padding: 0.3rem 0.7rem; font-size: 0.8rem;
   color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 999px;
 }
 .sessions-chip.active { background: var(--mint); border-color: var(--ink-soft); font-weight: 600; }
@@ -39,12 +39,12 @@
   padding: 0.7rem 0; border-bottom: 1px solid var(--line);
 }
 .sessions-archived-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.sessions-archived-actions button { min-height: 44px; margin: 0; }
+.sessions-archived-actions button { min-height: 36px; margin: 0; }
 
 .sessions-view[data-view="detail"] { position: relative; }
 .sessions-detail-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.6rem; }
 .sessions-detail-title { flex: 1 1 10rem; }
-.sessions-back, .sessions-auth-back, .sessions-artifacts-btn { min-height: 44px; margin: 0; }
+.sessions-back, .sessions-auth-back, .sessions-artifacts-btn { min-height: 36px; margin: 0; padding: 0.3rem 0.7rem; font-size: 0.85rem; }
 .sessions-artifacts-btn { color: var(--ink-soft); }
 
 .sessions-progress { margin: 0.8rem 0; }
@@ -52,16 +52,16 @@
 .sessions-progress-track span { flex: 1 1 0; height: 0.5rem; border-radius: 999px; background: var(--line); }
 .sessions-progress-track span.done { background: var(--ink-soft); }
 .sessions-question-card {
-  padding: 0.9rem; margin-bottom: 0.8rem;
+  padding: 0.65rem; margin-bottom: 0.6rem;
   background: var(--card); border: 1px solid var(--line); border-radius: 0.9rem;
 }
 .sessions-question-count { color: var(--ink-soft); font-size: 0.85rem; }
 .sessions-question-card h3 { margin: 0.4rem 0 0.7rem; font-size: 1rem; }
 .sessions-options { display: flex; flex-direction: column; gap: 0.5rem; }
-.sessions-option { min-height: 48px; margin: 0; text-align: left; }
+.sessions-option { min-height: 40px; padding: 0.4rem 0.8rem; font-size: 0.9rem; margin: 0; text-align: left; }
 .sessions-option[aria-pressed="true"] { background: var(--mint); border-color: var(--ink-soft); font-weight: 600; }
 .sessions-question-input, .sessions-composer-input, .sessions-new-prompt {
-  width: 100%; min-height: 3.5rem; margin: 0.5rem 0; padding: 0.6rem 0.7rem;
+  width: 100%; min-height: 2.5rem; margin: 0.4rem 0; padding: 0.45rem 0.6rem;
   font: inherit; font-size: 16px; /* 16px：移动端聚焦不触发页面缩放 */
   color: var(--ink); background: #fff;
   border: 1px solid var(--line); border-radius: 0.6rem;
@@ -74,7 +74,7 @@
   padding: 0.5rem 0; border-bottom: 1px solid var(--line);
 }
 .sessions-answered-row > strong { flex: 1 1 10rem; font-weight: 500; }
-.sessions-answered-row button { min-height: 44px; margin: 0; }
+.sessions-answered-row button { min-height: 36px; margin: 0; }
 
 /* 详情页 flex 列：顶部固定、消息窗唯一滚动、输入栏常驻底部。高度由页面脚本按 visualViewport 精确设定，
    100dvh 减去外壳占位只作兜底。 */
@@ -111,7 +111,7 @@
 .sessions-message.user .sessions-bubble { background: #fff; border: 1px solid var(--line); }
 .sessions-image { max-width: 100%; height: auto; border-radius: 0.6rem; }
 .sessions-back-bottom {
-  flex: none; align-self: flex-end; min-height: 44px; margin: 0.3rem 0 0;
+  flex: none; align-self: flex-end; min-height: 36px; margin: 0.2rem 0 0; padding: 0.25rem 0.7rem; font-size: 0.8rem;
 }
 
 /* 输入栏：flex:none 常驻消息窗下方；详情视图已按软键盘后的可视高度定高，键盘弹出时被顶在键盘上方，
@@ -121,7 +121,7 @@
   padding: 0.5rem 0; background: var(--card);
 }
 .sessions-composer-input { flex: 1 1 12rem; margin: 0; }
-.sessions-mic, .sessions-send { flex: 0 0 auto; min-height: 48px; margin: 0; }
+.sessions-mic, .sessions-send { flex: 0 0 auto; min-height: 40px; margin: 0; padding: 0.4rem 0.8rem; font-size: 0.9rem; }
 
 .sessions-archive-transcript { margin: 0.8rem 0; }
 .sessions-archive-line {
@@ -157,8 +157,9 @@
   color: #fff; background: var(--danger, #c62828); border: 0; border-radius: 0 0.6rem 0.6rem 0; font-weight: 600;
 }
 .sessions-close-action:disabled { opacity: 0.6; }
-.sessions-design-actions, .sessions-detail-actions .sessions-design-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.4rem; }
-.sessions-design-btn { min-height: 44px; margin: 0; flex: 1 1 10rem; }
+/* density：授权双按钮单行小按钮（compact），可点区域保持 36px。 */
+.sessions-design-actions, .sessions-detail-actions .sessions-design-actions { display: flex; flex-wrap: nowrap; gap: 0.4rem; margin-top: 0.3rem; }
+.sessions-design-btn { min-height: 36px; margin: 0; padding: 0.3rem 0.5rem; flex: 1 1 0; min-width: 0; font-size: 0.8rem; line-height: 1.25; white-space: nowrap; border-radius: 0.55rem; }
 .sessions-detail-actions:empty { display: none; }
 
 .sessions-auth-plan-row { display: flex; gap: 0.5rem; margin: 0.6rem 0; }
