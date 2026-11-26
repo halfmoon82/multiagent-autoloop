@@ -322,6 +322,9 @@ test('浏览器：总览活跃环点节点膨出说明、详情跳 DAG 页；已
   });
   const rootA = mkRun('dagrun-live', projectA, 'plan-a', 'node-a', 'running');
   const rootB = mkRun('dagrun-dead', projectB, 'plan-b', 'node-b', 'done');
+  // /api/archive 从数据目录读运行记录（与网页「已归档的任务环」同源）。
+  mkdirSync(path.join(root, 'dag-runs'), { recursive: true });
+  writeFileSync(path.join(root, 'dag-runs', 'dagrun-dead.json'), JSON.stringify({ ...rootB, finishedAt: '2026-11-21T09:00:00+08:00' }));
   const sessionsFake = { async list() { return []; }, async listArchived() { return []; } };
   const deviceAuth = createDeviceStore({ file: path.join(root, 'device-auth.json') });
   const server = createConsoleServer({
@@ -352,23 +355,27 @@ test('浏览器：总览活跃环点节点膨出说明、详情跳 DAG 页；已
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
 
-  // 活跃环卡片渲染：SVG 扇区数 = 节点数，中心有总进度。
-  const ringCard = page.locator('.dagov-card[data-dagov-run="dagrun-live"]');
+  // 活跃环卡片（fix6 网页同款）：扇区数 = 节点数，中心总进度，弧排节点标签，进行中节点内圈指针。
+  const ringCard = page.locator('[data-ring-card="dag:dagrun-live"]');
   await ringCard.waitFor({ timeout: 6000 });
-  assert.equal(await ringCard.locator('.dagov-seg').count(), 1, '一个节点一个扇区');
-  assert.match(await ringCard.innerText(), /总进度/);
-  // 活跃节点带箭头（未完成节点）。
-  assert.equal(await ringCard.locator('polygon').count(), 1, '进行中节点的箭头标记');
+  assert.equal(await ringCard.locator('.ring-seg').count(), 1, '一个节点一个扇区');
+  assert.match(await ringCard.innerText(), /总进度 · 1 个节点/);
+  assert.equal(await ringCard.locator('.ring-label').count(), 1, '扇区内弧排节点标签');
+  assert.equal(await ringCard.locator('.ring-pointer').count(), 1, '进行中节点的内圈指针');
+  assert.match(await ringCard.innerText(), /并行 DAG/);
+  assert.match(await ringCard.locator('[data-chip="cost-today"]').innerText(), /^今日费用 /, '费用汇总条');
 
-  // 点节点 → 膨出节点卡：标题 + 状态（干嘛的摘要缺失时至少有标题与状态，不编造）。
-  await ringCard.locator('.dagov-seg').first().dispatchEvent('click'); // SVG path 的可见性判定不稳定，直接派发点击
-  const nodeCard = ringCard.locator('.dagov-node-card');
-  await nodeCard.waitFor({ timeout: 4000 });
-  assert.match(await nodeCard.innerText(), /node-a 标题/);
-  assert.match(await nodeCard.innerText(), /已完成|进行中|排队中|未知|开发中|待派发/);
+  // 点扇区 → 环下方节点详情（标题/状态/任务摘要/执行 Agent/模型/费用 Token）。
+  await ringCard.locator('.ring-seg').first().dispatchEvent('click'); // SVG 可见性判定不稳定，直接派发点击
+  const detail = ringCard.locator('[data-ring-detail="node-a"]');
+  await detail.waitFor({ timeout: 4000 });
+  const detailText = await detail.innerText();
+  assert.match(detailText, /node-a 标题/);
+  for (const label of ['状态', '节点内进度', '任务摘要', '执行 Agent', '模型', '费用 Token']) assert.match(detailText, new RegExp(label));
+  assert.match(await ringCard.locator('.ring-seg').first().getAttribute('class'), /selected/, '选中扇区膨出');
 
-  // 查看详情 → DAG 页选中该环与节点，节点契约可见。
-  await nodeCard.getByRole('button', { name: /查看详情/ }).click();
+  // 查看运行详情 → DAG 页选中该环与节点，节点契约可见。
+  await detail.getByRole('button', { name: /查看运行详情/ }).click();
   await page.waitForTimeout(500);
   assert.equal(await page.evaluate(() => document.querySelector('#app-main')?.dataset.activeTab), 'dag', '应切到 DAG 页');
   await page.waitForFunction(() => {
@@ -378,15 +385,20 @@ test('浏览器：总览活跃环点节点膨出说明、详情跳 DAG 页；已
   const dagText = await page.locator('#page-dag .dag-detail').innerText();
   assert.match(dagText, /node-a 输入/, 'DAG 页节点契约（输入）可见');
 
-  // 已完成 DAG 不在活跃环里，收进「已归档」折叠区。
+  // 已完成 DAG 不在活跃环里，收进「已归档的任务环」折叠区；展开后同款环。
   await page.evaluate(() => window.AutoloopNav.selectTab('core'));
-  const archived = page.locator('.dagov-archived');
+  const archived = page.locator('[data-archived-rings]');
   await archived.waitFor({ timeout: 4000 });
-  assert.match(await archived.locator('.dagov-archived-toggle').innerText(), /已归档（1）/);
-  assert.equal(await archived.locator('.dagov-archived-body .core-item').count(), 1, '归档区内一条（已完成 DAG）');
-  assert.equal(await archived.locator('.dagov-archived-body').isHidden(), true, '默认折叠');
-  await archived.locator('.dagov-archived-toggle').click();
-  assert.match(await archived.locator('.dagov-archived-body').innerText(), /dagrun-dead|proj-beta/);
+  assert.equal(await page.locator('[data-ring-card="dag:dagrun-dead"]').count(), 0, '已完成 DAG 不进活跃卡');
+  assert.equal((await archived.locator('[data-archived-count]').innerText()).trim(), '1');
+  assert.equal(await archived.locator('.pring-archived-body').isHidden(), true, '默认折叠');
+  await archived.locator('[data-archived-toggle]').click();
+  const row = archived.locator('[data-archived-ring]').first();
+  await row.waitFor({ timeout: 4000 });
+  assert.match(await row.innerText(), /plan-b/);
+  assert.equal(await row.locator('.ring-seg').count(), 1, '归档任务同款环');
+  await row.locator('.ring-seg').first().dispatchEvent('click');
+  await row.locator('[data-ring-detail="node-b"]').waitFor({ timeout: 4000 });
 });
 
 // fix4 回归（2026-11-25）：#316 重写总览时误删 #315 的串行链详情入口与无活跃链空态——
@@ -438,24 +450,33 @@ test('浏览器：总览串行链条目渲染详情入口与节点清单，活�
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
 
-  // 串行链条目在活跃区，带「串行链详情」入口（#316 误删的正是这个按钮）。
-  const row = page.locator('.core-item[data-project-run="alpha-serial.json"]');
-  await row.waitFor({ timeout: 6000 });
-  const toggle = row.locator('[data-chain-entry="alpha-serial.json"]');
-  await toggle.waitFor({ timeout: 4000 });
-  assert.match(await toggle.innerText(), /串行链详情/);
-  // 点开详情：整体进度 + 节点清单 + 当前环节（真实 API 的 current 是节点对象）。
-  await toggle.click();
-  const panel = row.locator('[data-chain-detail="alpha-serial.json"]');
+  // fix6：串行链与网页一样画成节点环；默认详情 = 当前节点，「查看运行详情」就地展开分组节点清单。
+  const card = page.locator('[data-ring-card="serial:alpha-serial.json"]');
+  await card.waitFor({ timeout: 6000 });
+  assert.match(await card.innerText(), /串行链/);
+  assert.equal(await card.locator('.ring-seg').count(), 2, '一个节点一个扇区');
+  // SVG 文本在页面内一次读完（atomic，避免重建间隙读到摘除节点）。
+  const ringText = await page.evaluate(() => {
+    const el = document.querySelector('[data-ring-card="serial:alpha-serial.json"]');
+    return { labels: [...el.querySelectorAll('.ring-label')].map(n => n.textContent), percent: el.querySelector('.pring-percent')?.textContent };
+  });
+  assert.deepEqual(ringText.labels, ['需求确认', '开发实现']);
+  assert.equal(ringText.percent, '65%');
+  const detail = card.locator('[data-ring-detail="n2"]');
+  await detail.waitFor({ timeout: 4000 });
+  assert.match(await detail.innerText(), /开发实现/, '当前节点必须默认选中（current 为节点对象也要认）');
+  await detail.getByRole('button', { name: /查看运行详情/ }).click();
+  const panel = card.locator('[data-ring-run-detail="alpha-serial.json"]');
   await page.waitForFunction(() => {
-    const el = document.querySelector('[data-chain-detail="alpha-serial.json"]');
+    const el = document.querySelector('[data-ring-run-detail="alpha-serial.json"]');
     return el && !el.hidden && el.textContent.includes('需求确认');
   }, null, { timeout: 4000 });
-  const detailText = await panel.innerText();
-  assert.match(detailText, /整体进度 65%/);
-  assert.match(detailText, /需求确认/);
-  assert.match(detailText, /开发实现/);
-  assert.match(detailText, /当前环节/, '当前节点必须标注（current 为节点对象也要认）');
-  // 有活跃链时不显示「暂无活跃串行链」空态。
-  assert.equal(await page.locator('[data-serial-note]').count(), 0, '有活跃串行链时不显示空态');
+  const panelText = await panel.innerText();
+  assert.match(panelText, /需求确认/);
+  assert.match(panelText, /当前 · 1 个节点/);
+  // 有活跃链时不显示空态。
+  assert.equal(await page.locator('[data-ring-empty]').count(), 0, '有活跃串行链时不显示空态');
+  // 点另一扇区切换详情。
+  await card.locator('.ring-seg').first().dispatchEvent('click');
+  await card.locator('[data-ring-detail="n1"]').waitFor({ timeout: 4000 });
 });

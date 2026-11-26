@@ -54,23 +54,56 @@
 .core-status { display: inline-flex; padding: 0.2rem 0.45rem; border-radius: 999px; background: var(--mint); color: var(--brand-ink); font-size: 0.66rem; }
 .core-action { min-height: 40px; border-radius: 0.65rem; font-size: 0.74rem; }
 
-/* 活跃 DAG 交互环（2026-11-25）：扇区=节点、活跃节点外缘箭头、点选膨出节点卡。 */
-.dagov-card { padding: 0.55rem 0; border-bottom: 1px solid var(--line, #e3e9e5); }
-.dagov-card:last-child { border-bottom: 0; }
-.dagov-head { display: flex; align-items: center; gap: 0.5rem; }
-.dagov-badge { padding: 0.05rem 0.45rem; border-radius: 999px; background: #e7f5ee; color: #0f3d2e; font-size: 0.74rem; }
-.dagov-meta { margin: 0.15rem 0 0.3rem; color: #5c6f66; font-size: 0.82rem; }
-.dagov-ring { display: block; width: min(78vw, 300px); margin: 0.1rem auto; }
-.dagov-seg { cursor: pointer; transition: opacity 0.12s; }
-.dagov-seg:hover { opacity: 0.82; }
-.dagov-percent { font-size: 20px; font-weight: 700; fill: #123527; }
-.dagov-sub { font-size: 9px; fill: #5c6f66; }
-.dagov-node-card { margin-top: 0.35rem; padding: 0.55rem 0.65rem; border: 1px solid #cfe0d6; border-radius: 0.7rem; background: #f4faf6; display: grid; gap: 0.25rem; }
-.dagov-node-summary { margin: 0; font-size: 0.85rem; color: #2c4438; }
-.dagov-archived { margin-top: 0.4rem; border-top: 1px dashed var(--line, #e3e9e5); padding-top: 0.35rem; }
-.dagov-archived-toggle { width: 100%; text-align: left; padding: 0.4rem 0.2rem; color: #5c6f66; font-size: 0.85rem; }
-.dagov-archived-body[hidden] { display: none; }
-.core-chain-detail { flex-basis: 100%; }
-.core-chain-detail[hidden] { display: none; }
-.core-item .arch-summary, .core-item .arch-created, .core-item .arch-usage { display: block; }
-.core-item .arch-usage { color: #5c6f66; }
+/* 项目任务进度环（fix6，2026-11-26）：与网页版 progress-view 同画法——节点扇区铺满整圈、光滑相接无分隔线，
+   内圈进度弧 + 进行中三角指针，点扇区膨出并切换下方详情。窄屏只缩放环尺寸、详情放在环下方。 */
+.pring-card { padding: 0.7rem 0; border-bottom: 1px solid var(--line, #e3e9e5); }
+.pring-card:last-child { border-bottom: 0; }
+.pring-head { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+.pring-title { font-size: 0.9rem; font-weight: 700; overflow-wrap: anywhere; }
+.pring-pct { margin-left: auto; font-size: 1.4rem; font-weight: 800; color: #0f3d2e; font-variant-numeric: tabular-nums; }
+.pring-badge { display: inline-flex; align-items: center; padding: 0.1rem 0.5rem; border-radius: 999px; background: #eef2f0; color: #58665f; font-size: 0.68rem; white-space: nowrap; }
+.pring-badge.good { background: #e4f3ee; color: #0c5c4b; }
+.pring-badge.warn { background: #fff3df; color: #a55b12; }
+.pring-sub, .pring-usage, .pring-note { margin: 0.2rem 0 0; color: var(--secondary, #68756f); font-size: 0.72rem; line-height: 1.5; overflow-wrap: anywhere; }
+.pring { display: flex; justify-content: center; margin: 0.35rem 0; }
+.pring-svg { width: min(82vw, 300px); height: auto; aspect-ratio: 1 / 1; display: block; overflow: visible; }
+.pring-percent { font-size: 30px; font-weight: 800; fill: #0f3d2e; }
+.pring-sub { fill: #6b7280; }
+.pring-svg .pring-sub { font-size: 11px; }
+.ring-seg { cursor: pointer; opacity: 0.94; transition: opacity 0.12s ease, filter 0.12s ease; -webkit-tap-highlight-color: transparent; }
+.ring-seg:hover, .ring-seg:focus-visible { opacity: 1; filter: brightness(1.06); }
+.ring-seg:focus-visible { outline: none; }
+.ring-seg.pending { opacity: 0.9; }
+.ring-seg.selected { opacity: 1; }
+.ring-inner-seg { stroke: #22362e; stroke-opacity: 0.1; pointer-events: none; }
+.ring-inner-fill { stroke: #22362e; stroke-opacity: 0.85; pointer-events: none; }
+.ring-inner-fill.pending { stroke-opacity: 0.3; }
+.ring-pointer { fill: #22362e; pointer-events: none; }
+.ring-label { pointer-events: none; letter-spacing: 0.02em; paint-order: stroke; }
+.ring-label.selected { font-weight: 700; }
+.pring-node { margin-top: 0.3rem; padding: 0.6rem 0.75rem; border: 1px solid #e5e7eb; border-radius: 0.75rem; display: grid; gap: 0.35rem; }
+.pring-node-head { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+.pring-node-head strong { font-size: 0.86rem; overflow-wrap: anywhere; }
+.pring-node-note { margin: 0; font-size: 0.64rem; color: var(--secondary, #68756f); }
+.pring-facts { display: grid; gap: 0.25rem; }
+.pring-fact { display: grid; grid-template-columns: 5.2rem minmax(0, 1fr); gap: 0.5rem; font-size: 0.74rem; line-height: 1.45; }
+.pring-fact-label { color: #374151; font-weight: 600; }
+.pring-fact-value { overflow-wrap: anywhere; }
+.pring-links { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+.pring-link { color: #16835c; font-size: 0.76rem; font-weight: 600; }
+.pring-run-detail { margin-top: 0.35rem; display: grid; gap: 0.35rem; font-size: 0.72rem; }
+.pring-run-detail[hidden] { display: none; }
+.pring-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.45rem; }
+.pring-chip { padding: 0.22rem 0.55rem; border-radius: 999px; background: #f3f4f6; color: #374151; font-size: 0.68rem; overflow-wrap: anywhere; }
+.pring-archived { margin-top: 0.5rem; border-top: 1px solid var(--line, #e3e9e5); padding-top: 0.35rem; }
+.pring-archived-toggle { width: 100%; display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; text-align: left; padding: 0.5rem 0.2rem; background: none; border: 0; color: inherit; }
+.pring-archived-toggle::before { content: '▸'; color: #68756f; font-size: 0.7rem; transition: transform 0.12s; }
+.pring-archived-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+.pring-archived-title { font-size: 0.8rem; font-weight: 650; }
+.pring-archived-sub { font-size: 0.68rem; color: #68756f; }
+.pring-archived-scope { font-size: 0.66rem; color: #0c5c4b; background: #e4f3ee; border-radius: 999px; padding: 0.1rem 0.5rem; }
+.pring-archived-body[hidden] { display: none; }
+.pring-archived-group-name { font-size: 0.68rem; color: #68756f; padding: 0.4rem 0 0.1rem; }
+.pring-archived-row { padding: 0.55rem 0; border-top: 1px dashed var(--line, #e3e9e5); }
+.pring-archived-row .pring-pct { font-size: 1rem; }
+.pring-archived-row .pring-svg { width: min(64vw, 240px); }

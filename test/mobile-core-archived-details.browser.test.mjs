@@ -62,12 +62,17 @@ test('浏览器：已归档区显示摘要、创建日期、用量（未上报�
   await page.locator('#unlock').click();
   await page.locator('#app-main').waitFor({ state: 'visible' });
 
-  const archived = page.locator('.dagov-archived');
+  // fix6：已归档任务收进「已归档的任务环」（与网页 archive-view 同口径），展开后每个任务同款环。
+  const archived = page.locator('[data-archived-rings]');
   await archived.waitFor({ timeout: 6000 });
-  await archived.locator('.dagov-archived-toggle').click();
-  const row = archived.locator('.dagov-archived-body .core-item').first();
-  assert.equal((await row.locator('[data-archive-summary]').innerText()).trim(), '归档摘要标题');
-  assert.match(await row.locator('[data-archive-created]').innerText(), /^创建于 2026-11-20$|^创建于 2026-11-19$|^创建日期未记录$/);
+  assert.equal((await archived.locator('[data-archived-count]').innerText()).trim(), '1');
+  assert.equal((await archived.locator('[data-archived-summary]').innerText()).trim(), '全部完成 1');
+  await archived.locator('[data-archived-toggle]').click();
+  const row = archived.locator('[data-archived-ring]').first();
+  await row.waitFor({ timeout: 4000 });
+  assert.match(await row.innerText(), /归档摘要标题/);
+  assert.match(await row.locator('[data-archive-times]').innerText(), /^创建 2026\/11\/(19|20) \d\d:\d\d · 归档 /);
   // 本测试不上报用量：如实标注，不编造 0。
-  assert.equal((await row.locator('[data-archive-usage]').innerText()).trim(), '用量未上报');
+  assert.equal((await row.locator('[data-archive-usage]').innerText()).trim(), '链计费 · 费用未上报 · Token 未上报', '与网页 archiveUsageText 同口径');
+  assert.equal(await row.locator('.ring-seg').count(), 1, '归档任务同款环：一个节点一个扇区');
 });
