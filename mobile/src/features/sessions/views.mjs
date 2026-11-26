@@ -222,7 +222,7 @@ export function applyCloseResult(sessionCollection, id, result = {}) {
   };
 }
 
-// 设计会话卡片的操作按钮：「确认计划·放行落盘」仅未放行时出现；不再提供「确认执行范围」入口（issue #355）。
+// 设计会话卡片的操作按钮：「确认计划·放行落盘」仅未放行时出现；旧的范围确认入口已随 issue #355 移除。
 export function designSessionActions(session = null) {
   if (!session || session.kind !== 'design') return [];
   const actions = [];
