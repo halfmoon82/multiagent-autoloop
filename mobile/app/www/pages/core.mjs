@@ -8,9 +8,6 @@ const loadViewModel = typeof window === 'undefined'
 const loadFilterModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/project-filter/index.mjs');
-const loadDagRingModel = typeof window === 'undefined'
-  ? () => Promise.resolve(null)
-  : () => import('../src/features/dag-ring/index.mjs');
 // 决策卡三内置操作的写客户端复用 sessions 的 createSessionsWrite（已登记 markHandled /
 // resolveCard / delegateCard 三个固定写路由），不另造一套写实现；按需加载，Node 下不装配 DOM。
 const loadCardWrite = typeof window === 'undefined'
@@ -30,116 +27,293 @@ const node = (tag, { className, text, attrs = {} } = {}, children = []) => {
   return element;
 };
 
-// 串行链详情（PR #315 交互；#316 重写总览时回归，本节点恢复）：toggle + 就地渲染的节点清单。
-// 抽成导出函数便于 Node 边界测试；页面与测试共用同一份渲染逻辑。
-export function buildChainDetail(item) {
-  const panel = node('div', { className: 'core-chain-detail', attrs: { 'data-chain-detail': item.runId ?? '', hidden: '' } });
-  const toggle = node('button', { type: 'button', className: 'core-action', attrs: { 'data-chain-entry': item.runId ?? '', 'aria-expanded': 'false' }, text: item.chainEntry.label });
+// ---------- 项目任务进度环（fix6 project-ring-web-parity，2026-11-26 主人定）----------
+// 与网页版 public/progress-view.mjs progressRing 同参数同画法：节点 = 连续扇区铺满整圈（光滑相接、无分隔线），
+// 节点名沿扇区中线切线方向写在色带内（按弧长截断，不越出扇区），内圈每节点一段进度弧，进行中节点叠三角指针，
+// 中心总进度% 与节点数；点扇区向外膨出并切换下方节点详情。窄屏只缩放环尺寸、详情放在环下方。
+const RING_NS = 'http://www.w3.org/2000/svg';
+const RING_SIZE = 280;
+const RING_RADIUS = 90;
+const RING_STROKE = 36;
+const RING_BULGE = 12;
+const RING_INNER_STROKE = 7;
+const RING_INNER_GAP = 4;
+const RING_ACTIVE_KINDS = new Set(['active', 'review', 'rework']);
+
+function svgNode(tag, attrs = {}) {
+  const element = document.createElementNS(RING_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, String(value));
+  return element;
+}
+
+function colorIsLight(color) {
+  const hsl = /^hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)$/.exec(String(color || ''));
+  if (hsl) return Number(hsl[3]) > 60;
+  const hex = /^#([0-9a-f]{6})$/i.exec(String(color || ''));
+  if (!hex) return true;
+  const value = parseInt(hex[1], 16);
+  const [r, g, b] = [(value >> 16) & 255, (value >> 8) & 255, value & 255].map(channel => {
+    const c = channel / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.42;
+}
+
+// 节点内进度 0..1：节点自报 percent 才算实测；否则回落状态完成度档（推导值，措辞区分，不冒充实测）。
+export function nodeInnerProgress(sector) {
+  if (sector?.status?.kind === 'done') return { value: 1, reported: Number.isFinite(sector?.percent) };
+  const percent = Number(sector?.percent);
+  if (Number.isFinite(percent) && percent > 0) return { value: Math.min(1, percent / 100), reported: true };
+  return { value: Math.min(1, Math.max(0, Number(sector?.completion) || 0)), reported: false };
+}
+const innerProgressText = inner => (inner.reported ? `节点内进度 ${Math.round(inner.value * 100)}%` : `完成度档 ${Math.round(inner.value * 100)}%`);
+
+// 节点环（扇区 = 节点）。view：{ key, title, percent, nodes[] }；onPick(nodeId) = 点扇区。
+export function buildProgressRing(view, { selectedId = '', onPick = null } = {}) {
+  const nodes = view.nodes || [];
+  const count = nodes.length;
+  const center = RING_SIZE / 2;
+  const radius = RING_RADIUS;
+  const wrap = node('div', { className: 'pring', attrs: { 'data-ring-segments': String(count), role: 'group', 'aria-label': `${view.title || ''} 节点环，共 ${count} 个节点，点击扇区切换详情` } });
+  const svg = svgNode('svg', { viewBox: `0 0 ${RING_SIZE} ${RING_SIZE}`, class: 'pring-svg' });
+  const segs = svgNode('g', { class: 'ring-segs' });
+  const innerTrack = svgNode('g', { class: 'ring-inner-track' });
+  const innerArcs = svgNode('g', { class: 'ring-inner-arcs' });
+  const pointers = svgNode('g', { class: 'ring-pointers' });
+  const labels = svgNode('g', { class: 'ring-labels' });
+  const circumference = 2 * Math.PI * radius;
+  const share = count ? circumference / count : 0;
+  const step = count ? 360 / count : 0;
+  const arcAt = radius + 6;
+  const labelFont = count > 8 ? 8 : 9;
+  const charWidth = labelFont + 0.3;
+  const arcChars = Math.floor(((2 * Math.PI * arcAt) / Math.max(count, 1) - 1.5) / charWidth);
+  const outerEdge = radius + RING_STROKE / 2 - labelFont / 2 - 1;
+  const radialChars = Math.floor((2 * Math.sqrt(Math.max(0, outerEdge ** 2 - arcAt ** 2))) / charWidth);
+  const fitChars = Math.max(2, Math.min(arcChars, radialChars));
+  const maxChars = count > 8 ? Math.min(4, fitChars) : fitChars;
+  // 节点标签：按扇区可容纳字数截断（不加省略号），完整标题在悬停提示与下方详情。
+  const shorten = value => [...String(value || '')].slice(0, maxChars).join('');
+  const innerRadius = radius - RING_STROKE / 2 - RING_INNER_GAP - RING_INNER_STROKE / 2;
+  const innerShare = count ? (2 * Math.PI * innerRadius) / count : 0;
+  const arc = (r, offset, length, width, cls) => svgNode('circle', {
+    cx: center, cy: center, r, fill: 'none', 'stroke-width': width,
+    'stroke-dasharray': `${Math.max(0, length)} ${Math.max(0, 2 * Math.PI * r - length)}`,
+    'stroke-dashoffset': -offset, transform: `rotate(-90 ${center} ${center})`, class: cls,
+  });
+  nodes.forEach((sector, index) => {
+    const selected = sector.id === selectedId;
+    // 选中扇区整块变厚：内沿不动，外沿向外长 RING_BULGE；半径变大后弧长按 r/radius 等比放大，起止角对齐。
+    const grow = selected ? RING_BULGE : 0;
+    const segRadius = radius + grow / 2;
+    const k = segRadius / radius;
+    const inner = nodeInnerProgress(sector);
+    const seg = arc(segRadius, index * share * k, share * k, RING_STROKE + grow, `ring-seg ${sector.status.kind}${selected ? ' selected' : ''}`);
+    seg.setAttribute('stroke', sector.color);
+    seg.setAttribute('data-ring-node', sector.id);
+    seg.setAttribute('role', 'button');
+    seg.setAttribute('tabindex', '0');
+    seg.setAttribute('aria-pressed', String(selected));
+    seg.setAttribute('aria-label', `${sector.title}，${sector.status.label}，${innerProgressText(inner)}${selected ? '，当前选中' : ''}`);
+    const tip = svgNode('title');
+    tip.textContent = `${sector.title} · ${sector.status.label} · ${innerProgressText(inner)}`;
+    seg.appendChild(tip);
+    if (onPick) {
+      const pick = event => {
+        if (event?.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+        event?.preventDefault?.(); event?.stopPropagation?.();
+        onPick(sector.id);
+      };
+      seg.addEventListener('click', pick);
+      seg.addEventListener('keydown', pick);
+    }
+    segs.appendChild(seg);
+    innerTrack.appendChild(arc(innerRadius, index * innerShare, innerShare, RING_INNER_STROKE, 'ring-inner-seg'));
+    innerArcs.appendChild(arc(innerRadius, index * innerShare, innerShare * inner.value, RING_INNER_STROKE, `ring-inner-fill ${sector.status.kind}`));
+    const mid = -90 + (index + 0.5) * step;
+    const rad = (mid * Math.PI) / 180;
+    if (RING_ACTIVE_KINDS.has(sector.status.kind)) {
+      const at = innerRadius - RING_INNER_STROKE / 2;
+      const p = (r, a) => `${center + r * Math.cos(a)} ${center + r * Math.sin(a)}`;
+      const pointer = svgNode('path', { d: `M ${p(at, rad)} L ${p(at - 5.5, rad - 4.5 / at)} L ${p(at - 5.5, rad + 4.5 / at)} Z`, class: 'ring-pointer' });
+      const pointerTip = svgNode('title');
+      pointerTip.textContent = `进行中：${sector.title}（${sector.status.label}）`;
+      pointer.appendChild(pointerTip);
+      pointers.appendChild(pointer);
+    }
+    const labelAt = selected ? arcAt + RING_BULGE / 2 : arcAt;
+    const x = center + labelAt * Math.cos(rad);
+    const y = center + labelAt * Math.sin(rad);
+    let rotation = mid + 90;
+    if (rotation > 90 && rotation < 270) rotation -= 180;
+    const light = colorIsLight(sector.color);
+    const label = svgNode('text', {
+      class: `ring-label${selected ? ' selected' : ''}`, x, y, transform: `rotate(${rotation} ${x} ${y})`,
+      'text-anchor': 'middle', 'dominant-baseline': 'middle', 'font-size': labelFont,
+      fill: light ? '#3f4d47' : '#ffffff', stroke: light ? '#ffffff' : '#1f2a26', 'stroke-opacity': light ? '0.6' : '0.35',
+      'stroke-width': '1.6', 'paint-order': 'stroke', 'data-ring-label': sector.id,
+    });
+    label.textContent = shorten(sector.title);
+    labels.appendChild(label);
+  });
+  const percent = svgNode('text', { x: center, y: center - 2, 'text-anchor': 'middle', class: 'pring-percent' });
+  percent.textContent = `${view.percent}%`;
+  const sub = svgNode('text', { x: center, y: center + 18, 'text-anchor': 'middle', class: 'pring-sub' });
+  sub.textContent = `总进度 · ${count} 个节点`;
+  svg.append(segs, innerTrack, innerArcs, pointers, labels, percent, sub);
+  wrap.appendChild(svg);
+  return wrap;
+}
+
+// 节点详情（与网页 overviewNodePanel 同字段）：标题+状态、波次/槽位/分支、节点内进度、任务摘要、
+// 执行 Agent、模型、费用 Token、查看 PR、查看运行详情。渲染失败就地重试，不拖垮整张卡。
+export function buildRingNodePanel(sector, view, { onRunDetail = null } = {}) {
+  const panel = node('div', { className: 'pring-node', attrs: { 'data-ring-detail': sector?.id || '' } });
   const fill = () => {
     panel.replaceChildren();
     try {
-      const detail = item.chainDetail;
-      if (detail.empty) { panel.appendChild(node('p', { className: 'hint', text: detail.reason })); return; }
-      panel.appendChild(node('p', { className: 'core-meta', text: `整体进度 ${detail.percent}%` }));
-      const list = node('ul', { className: 'core-list' });
-      for (const n of detail.nodes) {
-        const line = [n.title, n.isCurrent ? '当前环节' : n.status, `${n.percent}%`, n.summary].filter(Boolean).join(' · ');
-        list.appendChild(node('li', { attrs: { 'data-chain-node': n.id }, text: line }));
+      if (!sector) { panel.appendChild(node('p', { className: 'hint', text: '暂无节点。' })); return; }
+      const kind = sector.status.kind === 'done' ? 'good' : sector.status.kind === 'blocked' ? 'warn' : '';
+      panel.appendChild(node('div', { className: 'pring-node-head' }, [
+        node('strong', { text: sector.title }),
+        node('span', { className: `pring-badge ${kind}`.trim(), text: sector.status.label }),
+      ]));
+      panel.appendChild(node('p', { className: 'pring-node-note', text: `${view.segmentNote} · 点扇区切换节点` }));
+      const facts = node('div', { className: 'pring-facts' });
+      const fact = (label, value, key) => facts.appendChild(node('div', { className: 'pring-fact', attrs: { 'data-fact': key } }, [
+        node('span', { className: 'pring-fact-label', text: label }),
+        node('span', { className: 'pring-fact-value', text: value }),
+      ]));
+      fact('状态', `${sector.status.label}${sector.part ? ` · ${sector.part}` : ''}`, 'status');
+      if (Number.isFinite(sector.wave)) fact('波次', `第 ${sector.wave} 波`, 'wave');
+      if (sector.slot != null) fact('槽位', `dag-slot-${sector.slot}`, 'slot');
+      if (sector.branch) fact('分支', sector.branch, 'branch');
+      fact('节点内进度', Number.isFinite(sector.percent) ? `${sector.percent}%` : `${innerProgressText(nodeInnerProgress(sector))}（未上报实测，按状态推导）`, 'inner');
+      fact('任务摘要', sector.summary, 'summary');
+      fact('执行 Agent', sector.agent, 'agent');
+      fact('模型', sector.model, 'model');
+      fact('费用 Token', sector.usageText, 'usage');
+      panel.appendChild(facts);
+      const links = node('div', { className: 'pring-links' });
+      if (/^https:\/\//.test(String(sector.prUrl || ''))) {
+        links.appendChild(node('a', { className: 'pring-link', text: '查看 PR', attrs: { href: sector.prUrl, rel: 'noreferrer', target: '_blank' } }));
       }
-      panel.appendChild(list);
+      if (onRunDetail) {
+        const open = node('button', { className: 'core-action pring-run', text: '查看运行详情 →', attrs: { type: 'button', 'data-ring-run': view.runId || '', 'data-ring-run-node': sector.id } });
+        open.addEventListener('click', () => onRunDetail(sector));
+        links.appendChild(open);
+      }
+      if (links.children.length) panel.appendChild(links);
     } catch (error) {
-      const retry = node('button', { type: 'button', className: 'core-retry', attrs: { 'data-chain-retry': item.runId ?? '' }, text: '重试' });
+      panel.replaceChildren();
+      const retry = node('button', { className: 'core-retry', text: '重试', attrs: { type: 'button', 'data-ring-detail-retry': '' } });
       retry.addEventListener('click', fill);
-      panel.append(node('p', { className: 'hint', text: String(error?.message || '详情读取失败') }), retry);
+      panel.append(node('p', { className: 'hint', text: `节点详情加载失败：${error?.message || error}` }), retry);
     }
   };
-  toggle.addEventListener('click', () => {
-    const open = panel.hidden;
-    panel.hidden = !open;
-    toggle.setAttribute('aria-expanded', String(open));
-    if (open) fill();
-  });
-  return { toggle, panel };
+  fill();
+  return panel;
 }
 
-const DAGOV_NS = 'http://www.w3.org/2000/svg';
-const DAGOV_COLORS = { done: '#2f9e6e', active: '#e8a33d', blocked: '#d9534f', error: '#d9534f' };
-const dagovColor = kind => DAGOV_COLORS[kind] || '#9db3ab';
-function dagovArc(cx, cy, rOut, rIn, a0, a1) {
-  const rad = deg => (deg - 90) * Math.PI / 180;
-  const p = (r, a) => [cx + r * Math.cos(rad(a)), cy + r * Math.sin(rad(a))];
-  const [x0, y0] = p(rOut, a0); const [x1, y1] = p(rOut, a1);
-  const [x2, y2] = p(rIn, a1); const [x3, y3] = p(rIn, a0);
-  const large = a1 - a0 > 180 ? 1 : 0;
-  const svgPath = document.createElementNS(DAGOV_NS, 'path');
-  svgPath.setAttribute('d', `M ${x0} ${y0} A ${rOut} ${rOut} 0 ${large} 1 ${x1} ${y1} L ${x2} ${y2} A ${rIn} ${rIn} 0 ${large} 0 ${x3} ${y3} Z`);
-  return svgPath;
-}
-function dagovSvg(tag, attrs) {
-  const el = document.createElementNS(DAGOV_NS, tag);
-  for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value));
-  return el;
-}
-
-// 并行 DAG 环形卡片（#316）：模块级导出，种子数据可在 Node 下直接驱动点选/详情跳转。
-// selectedId=当前膨出节点；onSelect(nodeId|'')=点扇区；onDetail({taskId,runId,nodeId})=查看详情。
-export function buildDagRingCard(item, card, { selectedId = '', onSelect = () => {}, onDetail = () => {} } = {}) {
-  const wrap = node('div', { className: 'dagov-card', attrs: { 'data-dagov-run': card.runId } }, [
-    node('div', { className: 'dagov-head' }, [
-      node('strong', { text: card.projectLabel || item.projectLabel || '未识别项目' }),
-      node('span', { className: 'dagov-badge', text: '并行 DAG' }),
-    ]),
-    node('p', { className: 'dagov-meta', text: [card.planId, card.waveLabel, `${card.nodeCount} 个节点 · ${card.statusLabel}`].filter(Boolean).join(' · ') }),
-  ]);
-  const svg = dagovSvg('svg', { viewBox: '0 0 140 140', class: 'dagov-ring', role: 'img' });
-  const cx = 70; const cy = 70; const rIn = 34;
-  const n = card.nodes.length;
-  const gap = n > 1 ? 3 : 0;
-  const slice = (360 - gap * n) / n;
-  card.nodes.forEach((sector, index) => {
-    // 单节点特判：整环用 359.999°，起终点重合的 360° 路径画不出扇区（review P3-1 实测 boundingBox=0）。
-    const a0 = index * (slice + gap) + gap / 2;
-    const a1 = n === 1 ? a0 + 359.999 : a0 + slice;
-    const selected = sector.id === selectedId;
-    const inflated = selected ? 9 : 0;
-    const path = dagovArc(cx, cy, 52 + inflated, rIn, a0, a1);
-    path.setAttribute('fill', dagovColor(sector.statusKind));
-    path.setAttribute('class', 'dagov-seg');
-    path.setAttribute('data-node-id', sector.id);
-    path.addEventListener('click', () => {
-      onSelect(selected ? '' : sector.id);
-    });
-    svg.appendChild(path);
-    if (sector.statusKind !== 'done') {
-      const mid = (a0 + a1) / 2;
-      const rad = (mid - 90) * Math.PI / 180;
-      const tx = cx + (52 + inflated + 7) * Math.cos(rad);
-      const ty = cy + (52 + inflated + 7) * Math.sin(rad);
-      svg.appendChild(dagovSvg('polygon', { points: `${tx},${ty} ${tx - 5},${ty - 8} ${tx + 5},${ty - 8}`, fill: '#0f3d2e', transform: `rotate(${mid} ${tx} ${ty})` }));
-    }
-  });
-  const center = dagovSvg('text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'dagov-percent' });
-  center.textContent = `${card.percent}%`;
-  const sub = dagovSvg('text', { x: cx, y: cy + 14, 'text-anchor': 'middle', class: 'dagov-sub' });
-  sub.textContent = `总进度 · ${card.nodeCount} 节点`;
-  svg.appendChild(center); svg.appendChild(sub);
-  wrap.appendChild(svg);
-
-  const picked = card.nodes.find(sector => sector.id === selectedId);
-  if (picked) {
-    const nodeCard = node('div', { className: 'dagov-node-card', attrs: { 'data-node-card': picked.id } }, [
-      node('strong', { text: picked.title }),
-      node('span', { className: 'core-meta', text: [picked.statusLabel, picked.agent && `执行 ${picked.agent}`, picked.model].filter(Boolean).join(' · ') }),
-    ]);
-    if (picked.summary) nodeCard.appendChild(node('p', { className: 'dagov-node-summary', text: picked.summary }));
-    const detail = node('button', { type: 'button', className: 'core-action', text: '查看详情 →' });
-    detail.addEventListener('click', () => {
-      onDetail({ taskId: card.taskId, runId: card.runId, nodeId: picked.id });
-    });
-    nodeCard.appendChild(detail);
-    wrap.appendChild(nodeCard);
+// 串行链「查看运行详情」：就地展开按执行顺序分组的全部节点（网页为独立运行详情页，窄屏改为就地展开）。
+function buildSerialRunDetail(view) {
+  const panel = node('div', { className: 'pring-run-detail', attrs: { 'data-ring-run-detail': view.runId || '', hidden: '' } });
+  const groups = [['已完成', n => n.status.kind === 'done'], ['当前', n => n.status.kind !== 'done' && n.id === view.currentId], ['待开始', n => n.status.kind !== 'done' && n.id !== view.currentId]];
+  for (const [label, match] of groups) {
+    const list = view.nodes.filter(match);
+    if (!list.length) continue;
+    const group = node('div', { className: 'pring-run-group' }, [node('strong', { text: `${label} · ${list.length} 个节点` })]);
+    const ul = node('ul', { className: 'core-list' });
+    for (const n of list) ul.appendChild(node('li', { attrs: { 'data-ring-run-row': n.id }, text: [n.title, n.status.label, `${n.percent}%`, n.agent, n.model, n.usageText].join(' · ') }));
+    group.appendChild(ul);
+    panel.appendChild(group);
   }
+  return panel;
+}
+
+const chipsLine = (chips, className) => {
+  const line = node('div', { className: `pring-chips ${className}`.trim() });
+  for (const chip of chips || []) line.appendChild(node('span', { className: 'pring-chip', text: chip.text, attrs: { 'data-chip': chip.id } }));
+  return line;
+};
+
+// 一张项目进度卡：头（项目名 + 串行链/并行 DAG + 总进度%）→ 副标题 → 环 → 节点详情 → 费用汇总条。
+// selectedId 为空时回到默认节点（当前/进行中），与网页一致。
+export function buildProjectRingCard(card, { selectedId = '', defaultId = '', onPick = () => {}, onDagDetail = () => {} } = {}) {
+  const chosen = card.nodes.find(n => n.id === selectedId) || card.nodes.find(n => n.id === defaultId) || card.nodes[card.nodes.length - 1] || null;
+  const wrap = node('article', { className: 'pring-card', attrs: { 'data-ring-card': card.key, 'data-ring-kind': card.kind, 'data-ring-run-id': card.runId || '' } });
+  wrap.appendChild(node('div', { className: 'pring-head' }, [
+    node('strong', { className: 'pring-title', text: card.title }),
+    node('span', { className: `pring-badge ${card.kind === 'dag' ? 'good' : ''}`.trim(), text: card.badge }),
+    node('span', { className: 'pring-pct', text: `${card.percent}%` }),
+  ]));
+  wrap.appendChild(node('p', { className: 'pring-sub', text: card.subtitle }));
+  if (card.kind === 'dag') wrap.appendChild(node('p', { className: 'pring-usage', attrs: { 'data-ring-usage': '' }, text: card.usageText }));
+  if (card.emptyReason) wrap.appendChild(node('p', { className: 'hint', text: card.emptyReason }));
+  wrap.appendChild(buildProgressRing(card, { selectedId: chosen?.id || '', onPick }));
+  let runDetail = null;
+  const onRunDetail = card.kind === 'dag'
+    ? sector => onDagDetail({ taskId: card.taskId, runId: card.runId, nodeId: sector.id })
+    : () => {
+      runDetail.hidden = !runDetail.hidden;
+      if (runDetail.hidden) runDetail.setAttribute('hidden', ''); else runDetail.removeAttribute?.('hidden');
+    };
+  wrap.appendChild(buildRingNodePanel(chosen, card, { onRunDetail }));
+  if (card.kind === 'serial') { runDetail = buildSerialRunDetail(card); wrap.appendChild(runDetail); }
+  wrap.appendChild(chipsLine(card.chips, 'pring-counts'));
+  if (card.projectChips?.length) wrap.appendChild(chipsLine(card.projectChips, 'pring-project-usage'));
+  if (card.capacityNote) wrap.appendChild(node('p', { className: 'pring-note', text: card.capacityNote }));
   return wrap;
+}
+
+// 「已归档的任务环」：折叠区（标题 · 数量 · 全部完成 X · 已取消 Y），展开后按项目分组，每个任务同款环。
+export function buildArchivedRingSection(archived, { isOpen = false, onToggle = () => {}, selection = new Map(), onPick = () => {}, onRetry = null } = {}) {
+  const section = node('section', { className: 'pring-archived', attrs: { 'data-archived-rings': '' } });
+  if (archived.error) {
+    section.appendChild(node('p', { className: 'hint', attrs: { 'data-archive-error': '' }, text: archived.error }));
+    if (onRetry) {
+      const retry = node('button', { className: 'core-action', text: '重试', attrs: { type: 'button', 'data-archive-retry': '' } });
+      retry.addEventListener('click', onRetry);
+      section.appendChild(retry);
+    }
+  }
+  const toggle = node('button', { className: 'pring-archived-toggle', attrs: { type: 'button', 'aria-expanded': String(isOpen), 'data-archived-toggle': '' } }, [
+    node('span', { className: 'pring-archived-title', text: archived.title }),
+    node('span', { className: 'pring-badge', attrs: { 'data-archived-count': '' }, text: String(archived.count) }),
+    node('span', { className: 'pring-archived-sub', attrs: { 'data-archived-summary': '' }, text: archived.summary }),
+  ]);
+  if (archived.scope) toggle.appendChild(node('span', { className: 'pring-archived-scope', text: archived.scope }));
+  const body = node('div', { className: 'pring-archived-body', attrs: isOpen ? {} : { hidden: '' } });
+  if (!isOpen) body.hidden = true;
+  toggle.addEventListener('click', () => onToggle(!isOpen));
+  if (isOpen) {
+    if (archived.empty) body.appendChild(node('p', { className: 'hint', text: archived.empty }));
+    for (const group of archived.groups) {
+      const box = node('div', { className: 'pring-archived-group' });
+      if (group.name) box.appendChild(node('div', { className: 'pring-archived-group-name', text: group.name }));
+      for (const item of group.items) {
+        const picked = selection.get(item.key) || '';
+        const row = node('article', { className: 'pring-archived-row', attrs: { 'data-archived-ring': item.key } }, [
+          node('div', { className: 'pring-head' }, [
+            node('strong', { className: 'pring-title', text: item.title }),
+            node('span', { className: `pring-badge ${item.reason.kind}`.trim(), text: item.reason.label }),
+            node('span', { className: 'pring-pct', text: `${item.percent}%` }),
+          ]),
+          node('p', { className: 'pring-sub', text: item.source }),
+          node('p', { className: 'pring-sub', attrs: { 'data-archive-usage': '' }, text: item.usageText }),
+          node('p', { className: 'pring-sub', attrs: { 'data-archive-times': '' }, text: item.times }),
+        ]);
+        if (item.note) row.appendChild(node('p', { className: 'hint', text: item.note }));
+        row.appendChild(buildProgressRing(item, { selectedId: picked, onPick: id => onPick(item.key, id) }));
+        const sector = item.nodes.find(n => n.id === picked);
+        if (sector) row.appendChild(buildRingNodePanel(sector, item));
+        box.appendChild(row);
+      }
+      body.appendChild(box);
+    }
+  }
+  section.append(toggle, body);
+  return section;
 }
 
 function makeSection(container, key, title) {
@@ -187,10 +361,7 @@ export function mount(ctx) {
   if (typeof document === 'undefined') return;
   const modelPromise = loadViewModel();
   const filterPromise = loadFilterModel();
-  const dagRingPromise = loadDagRingModel();
   if (!modelPromise || !filterPromise) return;
-  let dagRingModel = null;
-  dagRingPromise.then(model => { dagRingModel = model; if (fullSnapshot && coreModel) renderCurrent(); });
 
   const drafts = new Map();
   const refs = {};
@@ -210,7 +381,7 @@ export function mount(ctx) {
 
   refs.usage = makeSection(overviewEl, 'usage', '今日用量');
   refs.metrics = makeSection(overviewEl, 'metrics', '任务概览');
-  refs.projects = makeSection(overviewEl, 'projects', '项目 DAG 进度');
+  refs.projects = makeSection(overviewEl, 'projects', '项目任务进度');
   refs.activity = makeSection(overviewEl, 'activity', '最近动态');
   refs.rules = makeSection(rulesEl, 'rules', '调度规则');
   refs.runs = makeSection(runsEl, 'runs', '执行轮次');
@@ -290,83 +461,42 @@ export function mount(ctx) {
     }
   }
 
-  // 项目 DAG 进度（2026-11-25 用户定交互）：活跃 DAG 直接渲染可点击的环形进度——
-  // 扇区=节点、活跃节点带箭头、点节点膨出显示「干嘛的」、查看详情跳 DAG 页对应节点；
-  // 已完成/已取消的收进「已归档」折叠区，展开才看。
-  const dagovSelection = new Map();
+  // 项目任务进度（fix6，2026-11-26 主人定）：与网页版同内容同形式——串行链与活跃并行 DAG 都是节点环，
+  // 点扇区切换下方节点详情，底部费用汇总条；已归档任务收进「已归档的任务环」，展开后同款环。
+  const ringSelection = new Map();
+  const archivedSelection = new Map();
+  let archivedOpen = false;
 
-  function renderProjects(collection) {
-    refs.projects.replaceChildren();
-    if (!collection || collection.empty) {
-      refs.projects.appendChild(node('p', { className: 'hint', text: collection?.reason || '暂无数据' }));
-      return;
-    }
-    const items = collection.items || [];
-    const active = items.filter(item => !item.archived);
-    const archived = items.filter(item => item.archived);
-    for (const item of active) {
-      const run = (fullSnapshot?.dagRuns || []).find(entry => String(entry?.mobileSummary?.runId ?? entry?.runId ?? '') === String(item.runId ?? ''));
-      const card = dagRingModel && run ? dagRingModel.buildActiveDagCard(run) : null;
-      if (card && item.dagEntry) refs.projects.appendChild(buildDagRingCard(item, card, {
-        selectedId: dagovSelection.get(card.runId) || '',
-        onSelect: id => { dagovSelection.set(card.runId, id); renderCurrent(); },
-        onDetail: detail => {
-          const select = ctx.hooks?.selectTab || window.AutoloopNav?.selectTab;
-          if (typeof select === 'function') select('dag');
-          window.dispatchEvent(new CustomEvent('autoloop:dag-pick', { detail }));
-        },
-      }));
-      else refs.projects.appendChild(renderProjectRow(item));
-    }
-    // 归档接口读取失败：就地提示并可重试，不编造归档详情。
-    if (archived.length && collection.archiveError) {
-      const retry = node('button', { type: 'button', className: 'core-action', attrs: { 'data-archive-retry': '' }, text: '重试' });
-      retry.addEventListener('click', () => { void reload(); });
-      refs.projects.appendChild(node('p', { className: 'hint', attrs: { 'data-archive-error': '' }, text: `归档详情读取失败：${collection.archiveError}` }));
-      refs.projects.appendChild(retry);
-    }
-    if (archived.length) {
-      const body = node('div', { className: 'dagov-archived-body', attrs: { hidden: '' } });
-      for (const item of archived) body.appendChild(renderProjectRow(item));
-      const toggle = node('button', { type: 'button', className: 'dagov-archived-toggle', text: `已归档（${archived.length}）· 展开查看` });
-      toggle.addEventListener('click', () => {
-        const open = body.hidden;
-        body.hidden = !open;
-        toggle.textContent = open ? `已归档（${archived.length}）· 收起` : `已归档（${archived.length}）· 展开查看`;
-      });
-      refs.projects.appendChild(node('div', { className: 'dagov-archived' }, [toggle, body]));
-    }
+  function openDagDetail(detail) {
+    const select = ctx.hooks?.selectTab || window.AutoloopNav?.selectTab;
+    if (typeof select === 'function') select('dag');
+    window.dispatchEvent(new CustomEvent('autoloop:dag-pick', { detail }));
   }
 
-  function renderProjectRow(item) {
-    const box = node('div', { className: 'core-item', attrs: { 'data-project-run': item.runId ?? '' } }, [
-      node('strong', { text: item.projectLabel || '未识别项目' }),
-      node('span', { className: 'core-meta', text: `${item.statusLabel || '状态未知'} · ${item.nodeCount} 个节点` }),
-    ]);
-    if (item.dagEntry) {
-      const open = node('button', { type: 'button', className: 'core-action', attrs: { 'data-dag-entry': item.runId ?? '' }, text: item.dagEntry.label });
-      open.addEventListener('click', () => {
-        const select = ctx.hooks?.selectTab || window.AutoloopNav?.selectTab;
-        if (typeof select === 'function') select(item.dagEntry.page);
-      });
-      box.appendChild(open);
+  function renderProjects(progress) {
+    refs.projects.replaceChildren();
+    if (!progress) {
+      refs.projects.appendChild(node('p', { className: 'hint', text: '正在读取项目任务进度…' }));
+      return;
     }
-    // 归档详情（与网页 /api/archive 同源）：创建日期、摘要、Token 与费用；缺失项由视图模型给默认文案。
-    if (item.archiveDetail) {
-      box.append(
-        node('span', { className: 'core-meta arch-summary', attrs: { 'data-archive-summary': '' }, text: item.archiveDetail.summary }),
-        node('span', { className: 'core-meta arch-created', attrs: { 'data-archive-created': '' }, text: item.archiveDetail.createdLabel }),
-        node('span', { className: 'core-meta arch-usage', attrs: { 'data-archive-usage': '' }, text: item.archiveDetail.usageLabel }),
-      );
+    if (progress.empty) refs.projects.appendChild(node('p', { className: 'hint', attrs: { 'data-ring-empty': '' }, text: progress.reason }));
+    for (const card of progress.cards) {
+      refs.projects.appendChild(buildProjectRingCard(card, {
+        selectedId: ringSelection.get(card.key) || '',
+        defaultId: card.defaultId || '',
+        onPick: id => { ringSelection.set(card.key, id); renderCurrent(); },
+        onDagDetail: openDagDetail,
+      }));
     }
-    // 串行链详情入口（#315 引入、#316 重写总览时误删，fix4 加回）：点击展开节点进度清单，
-    // 数据来自视图模型 chainDetail（真实串行链状态），失败可重试，不编造节点。
-    // 渲染逻辑统一复用导出的 buildChainDetail（页面与回归测试共用同一份），避免与 #324 内联实现重复。
-    if (item.chainEntry && item.chainDetail) {
-      const { toggle, panel } = buildChainDetail(item);
-      box.append(toggle, panel);
+    if (!progress.archived.hidden) {
+      refs.projects.appendChild(buildArchivedRingSection(progress.archived, {
+        isOpen: archivedOpen,
+        onToggle: open => { archivedOpen = open; renderCurrent(); },
+        selection: archivedSelection,
+        onPick: (key, id) => { archivedSelection.set(key, archivedSelection.get(key) === id ? '' : id); renderCurrent(); },
+        onRetry: () => { void reload(); },
+      }));
     }
-    return box;
   }
 
   function renderOverview(page) {
@@ -387,8 +517,8 @@ export function mount(ctx) {
       if (group.id === 'attention') box.appendChild(node('p', { className: 'hint', text: '调度方按契约自行处理，不升级给您' }));
       return box;
     });
-    renderProjects(page.projects);
-    if (page.serialNote) refs.projects.appendChild(node('p', { className: 'hint', attrs: { 'data-serial-note': '' }, text: page.serialNote }));
+    // 项目任务进度：串行链 + 活跃并行 DAG 同面板成环（fix6，与网页版同内容同口径）；视图模型未就绪时如实提示。
+    renderProjects(page.projectProgress);
     renderCollection(refs.activity, page.activity, item => node('div', { className: 'core-item' }, [
       node('strong', { text: item.title }),
       node('span', { className: 'core-meta', text: [item.statusLabel, item.at].filter(Boolean).join(' · ') }),
@@ -554,6 +684,7 @@ export function mount(ctx) {
       projects: byProject(fullSnapshot.projects || [], filter, item => item?.path || item?.id),
       dagRuns: byProject(fullSnapshot.dagRuns || [], filter),
       serial: fullSnapshot.serial ? { ...fullSnapshot.serial, chains: byProject(fullSnapshot.serial.chains || [], filter) } : fullSnapshot.serial,
+      archive: Array.isArray(fullSnapshot.archive) ? byProject(fullSnapshot.archive, filter) : fullSnapshot.archive,
     };
   }
 
@@ -562,7 +693,8 @@ export function mount(ctx) {
     // 已确认离开 open 的卡移出隐藏集合，集合不无限增长。
     const openIds = new Set((fullSnapshot.state?.cards || []).filter(card => card?.state === 'open').map(card => String(card.id)));
     for (const id of answeredIds) if (!openIds.has(id)) answeredIds.delete(id);
-    const pages = coreModel.buildPages(filteredSnapshot(), { hiddenIds: answeredIds });
+    const projectScope = activeFilter && !activeFilter.isAll ? String(activeFilter.selectedLabel || activeFilter.selectedId || '') : '';
+    const pages = coreModel.buildPages(filteredSnapshot(), { hiddenIds: answeredIds, projectScope });
     renderOverview(pages.overview);
     renderRules(pages.rules);
     renderRuns(pages.runs);
@@ -590,11 +722,17 @@ export function mount(ctx) {
         if (data && Array.isArray(data.archived)) archive = data.archived;
         else archiveError = '归档数据缺失，未读取到已归档任务';
       } catch (error) { archiveError = String(error?.message || error || '读取失败'); }
+      // 项目今日/累计用量（与网页 /api/project-usage 同源）：读取失败只在费用条如实标注。
+      let projectUsage = null;
+      try {
+        const data = await ctx.client.api('project-usage');
+        if (data && Array.isArray(data.projects)) projectUsage = data;
+      } catch { projectUsage = null; }
       fullSnapshot = {
         ...snapshot,
-        available: { ...snapshot.available, archive: archive !== null },
+        available: { ...snapshot.available, archive: archive !== null, 'project-usage': projectUsage !== null },
         errors: archiveError ? { ...snapshot.errors, archive: archiveError } : snapshot.errors,
-        archive,
+        archive, projectUsage,
       };
       renderCurrent();
       for (const banner of banners) banner.clear();

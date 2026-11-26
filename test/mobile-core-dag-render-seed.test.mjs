@@ -1,30 +1,16 @@
-// 回归（节点 dag-render-serial-parallel，2026-11-25）：串行链与并行 DAG 两条总览渲染路径的
-// 种子数据级验证——环形卡片扇区点选/膨出/详情跳转、视图模型到渲染的端到端、无环回退行。
+// 回归（节点 dag-render-serial-parallel，2026-11-25；fix6 project-ring-web-parity 2026-11-26 改写）：
+// 串行链与并行 DAG 两条总览渲染路径的种子数据级验证——扇区点选/膨出/详情跳转、视图模型到渲染端到端。
+// fix6 起两条路径共用同一个网页同款节点环（buildProjectRingCard）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { installFakeDom, byAttr, byClass, walk } from './mobile-dag-ring-fake-dom.test.mjs';
 
-function makeNode(tag) {
-  return {
-    tag, className: '', textContent: '', hidden: false, attrs: {}, children: [], handlers: {},
-    setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'hidden') this.hidden = true; if (k === 'class') this.className = String(v); },
-    addEventListener(t, h) { (this.handlers[t] ||= []).push(h); },
-    click() { for (const h of this.handlers.click || []) h(); },
-    appendChild(c) { this.children.push(c); return c; },
-    append(...c) { this.children.push(...c); },
-    replaceChildren(...c) { this.children = c; },
-  };
-}
-globalThis.document = { createElement: makeNode, createElementNS: (_ns, tag) => makeNode(tag) };
-const { buildDagRingCard, buildChainDetail } = await import('../mobile/app/www/pages/core.mjs');
-const { buildActiveDagCard, mobileDagSummaries } = await import('../mobile/src/features/dag-ring/index.mjs').then(async ring => ({
-  buildActiveDagCard: ring.buildActiveDagCard,
-  mobileDagSummaries: (await import('../src/dag-service.mjs')).mobileDagSummaries,
-}));
+installFakeDom();
+const { buildProjectRingCard } = await import('../mobile/app/www/pages/core.mjs');
+const { buildProjectProgress, buildDagRunRingView } = await import('../mobile/src/features/dag-ring/index.mjs');
+const { mobileDagSummaries } = await import('../src/dag-service.mjs');
 
-const walk = (el, out = []) => { out.push(el); for (const c of el.children || []) walk(c, out); return out; };
-const byAttr = (root, k) => walk(root).filter(el => el.attrs?.[k] !== undefined);
-
-function seedCard() {
+function seedRun() {
   const run = {
     runId: 'dagrun-seed', project: '/work/种子项目', planId: 'seed-plan', status: 'running',
     createdAt: '2026-11-25T09:00:00+08:00',
@@ -42,63 +28,60 @@ function seedCard() {
   ];
   const summary = mobileDagSummaries([run], nodeRuns)[0];
   summary.ring.nodes = summary.ring.nodes.map(n => ({ ...n, summary: `${n.id} 节点说明` }));
-  return buildActiveDagCard({ ...run, mobileSummary: summary });
+  return { ...run, mobileSummary: summary };
 }
+const segs = el => byClass(el, 'ring-seg');
+const segId = seg => seg.attrs['data-ring-node'];
 
-test('并行 DAG：每个节点一个可点扇区，点选回调带节点 id，再点同一扇区取消', () => {
-  const card = seedCard();
-  assert.ok(card);
+test('并行 DAG：每个节点一个可点扇区，点选回调带节点 id', () => {
+  const card = buildDagRunRingView(seedRun());
   const picks = [];
-  const wrap = buildDagRingCard({ projectLabel: '种子项目' }, card, { onSelect: id => picks.push(id) });
-  const segs = byAttr(wrap, 'data-node-id');
-  assert.deepEqual(segs.map(s => s.attrs['data-node-id']), card.nodes.map(n => n.id));
-  segs[1].click();
+  const wrap = buildProjectRingCard(card, { onPick: id => picks.push(id) });
+  assert.deepEqual(segs(wrap).map(segId), card.nodes.map(n => n.id));
+  segs(wrap)[1].click();
   assert.deepEqual(picks, [card.nodes[1].id]);
-  assert.equal(byAttr(wrap, 'data-node-card').length, 0, '未选中不显示节点卡');
 });
 
-test('并行 DAG：选中节点膨出并显示说明，查看详情回调带 taskId/runId/nodeId', () => {
-  const card = seedCard();
-  const target = card.nodes[1];
+test('并行 DAG：选中节点膨出并显示说明，查看运行详情回调带 taskId/runId/nodeId', () => {
+  const card = buildDagRunRingView(seedRun());
+  const target = card.nodes[0]; // 未选中时默认落到最后一个节点，目标取第一个
   const jumps = [];
-  const unselected = buildDagRingCard({}, card, {});
-  const selected = buildDagRingCard({}, card, { selectedId: target.id, onDetail: d => jumps.push(d) });
-  const arc = el => byAttr(el, 'data-node-id').find(s => s.attrs['data-node-id'] === target.id).attrs.d;
-  assert.notEqual(arc(selected), arc(unselected), '选中扇区外半径膨出');
-  const nodeCard = byAttr(selected, 'data-node-card')[0];
-  assert.equal(nodeCard.attrs['data-node-card'], target.id);
-  assert.ok(walk(nodeCard).some(el => el.textContent === `${target.id} 节点说明`), '说明来自节点 summary');
-  const detail = walk(nodeCard).find(el => el.textContent === '查看详情 →');
-  detail.click();
+  const unselected = buildProjectRingCard(card, {});
+  const selected = buildProjectRingCard(card, { selectedId: target.id, onDagDetail: d => jumps.push(d) });
+  const width = el => segs(el).find(s => segId(s) === target.id).attrs['stroke-width'];
+  assert.ok(Number(width(selected)) > Number(width(unselected)), '选中扇区外沿膨出');
+  const detail = byAttr(selected, 'data-ring-detail')[0];
+  assert.equal(detail.attrs['data-ring-detail'], target.id);
+  assert.ok(walk(detail).some(el => el.textContent === `${target.id} 节点说明`), '说明来自节点 summary');
+  walk(detail).find(el => el.textContent === '查看运行详情 →').click();
   assert.deepEqual(jumps, [{ taskId: card.taskId, runId: 'dagrun-seed', nodeId: target.id }]);
 });
 
-test('并行 DAG：单节点整环仍有可点击扇区（359.999° 特判）', () => {
-  const card = { ...seedCard(), nodes: [seedCard().nodes[0]], nodeCount: 1 };
-  const wrap = buildDagRingCard({}, card, {});
-  const segs = byAttr(wrap, 'data-node-id');
-  assert.equal(segs.length, 1);
-  assert.match(segs[0].attrs.d, /^M [\d.\-]+ [\d.\-]+ A/);
+test('并行 DAG：单节点整环仍有可点击扇区（整圈弧长）', () => {
+  const run = seedRun();
+  run.mobileSummary.ring.nodes = run.mobileSummary.ring.nodes.slice(0, 1);
+  const card = buildDagRunRingView(run);
+  const wrap = buildProjectRingCard(card, {});
+  assert.equal(segs(wrap).length, 1);
+  const seg = segs(wrap)[0];
+  const [len, gap] = seg.attrs['stroke-dasharray'].split(' ').map(Number);
+  assert.ok(Math.abs(len - 2 * Math.PI * Number(seg.attrs.r)) < 0.01 && gap < 0.01, '单节点占满整圈');
 });
 
-test('串行链：种子链经视图模型到渲染，入口稳定出现且点开见节点清单', async () => {
-  const { assembleSnapshot, buildOverview } = await import('../mobile/src/core/index.mjs');
-  const snap = assembleSnapshot({
-    state: { cards: [], runs: [] },
-    projects: { projects: [] },
-    rules: { rules: [], agents: [], sources: [], models: {}, mobileRules: [] },
-    'dag-runs': { runs: [] },
-    'serial-progress': { chains: [
+test('串行链：种子链经视图模型到渲染，扇区与节点一一对应，详情出现在环下方', () => {
+  const progress = buildProjectProgress({
+    available: { state: true, rules: true, 'dag-runs': true, 'serial-progress': true, archive: true },
+    errors: {}, state: { cards: [], runs: [], lines: [] }, rules: { rules: [] }, dagRuns: [], archive: [],
+    serial: { chains: [
       { sourceFile: 'seed-serial.json', project: '/work/串行项目', percent: 40, current: 'n2', nodes: [
         { id: 'n1', title: '第一步', status: 'done', percent: 100 },
         { id: 'n2', title: '第二步', status: 'in_progress', percent: 20 },
       ] },
     ] },
   });
-  const page = buildOverview(snap, { now: new Date('2026-11-25T12:00:00+08:00') });
-  const item = page.projects.items.find(i => i.runId === 'seed-serial.json');
-  assert.ok(item?.chainEntry && item.chainDetail, '串行链条目带详情入口');
-  const { toggle, panel } = buildChainDetail(item);
-  toggle.click();
-  assert.deepEqual(byAttr(panel, 'data-chain-node').map(l => l.attrs['data-chain-node']), ['n1', 'n2']);
+  const card = progress.cards.find(c => c.runId === 'seed-serial.json');
+  assert.ok(card, '串行链成环卡片');
+  const wrap = buildProjectRingCard(card, { defaultId: card.defaultId });
+  assert.deepEqual(segs(wrap).map(segId), ['n1', 'n2']);
+  assert.equal(byAttr(wrap, 'data-ring-detail')[0].attrs['data-ring-detail'], 'n2', '默认详情 = 当前节点');
 });

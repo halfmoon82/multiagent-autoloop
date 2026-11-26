@@ -7,6 +7,7 @@ import {
   billingText, projectName, scheduleLabel, ruleStatus, collection, titleOf, formatTokens,
   runTaskInfo, sameLocalDay, archiveUsageLabel, archiveCreatedLabel, ACTION_LABELS, OVERVIEW_GROUP_EMPTY,
 } from './contract.mjs';
+import { buildProjectProgress } from '../features/dag-ring/progress.mjs';
 
 const array = value => (Array.isArray(value) ? value : []);
 const object = value => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
@@ -46,7 +47,7 @@ function usageText(state, runs, available, error) {
 
 // 总览：四组计数与最近 5 条标题概要、待调度处理分组、项目 DAG 进度与最近动态。
 // 环形进度百分比由后续 dag-ring 节点提供，本节点不编造进度数字。
-export function buildOverview(snapshot, { now, hiddenIds } = {}) {
+export function buildOverview(snapshot, { now, hiddenIds, projectScope = '' } = {}) {
   const reference = now instanceof Date ? now : new Date(now ?? Date.now());
   const available = Boolean(snapshot?.available?.state);
   const error = snapshot?.errors?.state || null;
@@ -189,6 +190,8 @@ export function buildOverview(snapshot, { now, hiddenIds } = {}) {
     ready: available, error,
     openTodoCount: openCards.length,
     metrics, scheduler, usage: usageText(state, runs, available, error), projects, serialNote, activity,
+    // 项目任务进度（fix6）：与网页版同口径的环卡片（今日费用 / 链累计 / 创建于）+ 已归档的任务环。
+    projectProgress: buildProjectProgress(snapshot, { filter: projectScope }),
   });
 }
 
