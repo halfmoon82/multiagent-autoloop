@@ -1244,6 +1244,14 @@ export function mount(ctx) {
       if (!sessionModel || !questionModel) return;
       smodel = sessionModel;
       qmodel = questionModel;
+      // 统一「卡已答」源订阅（2026-11-26 review g3a1 P2）：会话详情已打开时在别处（待办）
+      // 办结的卡，登记瞬间就从当前卡组剔除并重渲染，不等整页重载——切回会话窗即已收起。
+      smodel.onLocallyAnsweredChange?.(() => {
+        if (state.view !== 'detail' || !state.session || !state.group) return;
+        const pruned = smodel.pruneQuestionGroup(state.group,
+          smodel.openCardsBySession(state.cards, state.session, qmodel?.cardsForSession).map(card => String(card.id)));
+        if (pruned !== state.group) { state.group = pruned; renderQuestion(); saveContext(); }
+      });
       reader = smodel.createSessionsReader({
         origin: ctx.client.origin,
         getToken: () => ctx.client.tokenStore.get(),
