@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix10-2026-11-26",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix10-baseline/refs/web-ring-baseline.png",
+      "sha256": "366ae83749c70281bda41c03e1ea038a816784c75005ac5c822fc8c45bdf9064"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix10-baseline/refs/ring-colors.html",
+      "sha256": "889eec55b29dc74b791014a57869351afca131ef4feafd332891a6febac33db6"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix10-baseline/verifiers/fix10-design.verify.mjs",
+      "sha256": "766c4154fdd5fe5b84f587f9b361d1bf2fd1b8d3983f591ab063d946bd2de393"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix10-baseline/verifiers/fix10-design-fallback.mjs",
+      "sha256": "f062a2fa5170bad88cff6831842ea8baf926ab732cf8dbc4dd24c7cb55a254a3"
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-26-nomoto-fix10-baseline/verifiers/fix10-design.verify.mjs",
+  "fallbackVerifierPath": "docs/design/2026-11-26-nomoto-fix10-baseline/verifiers/fix10-design-fallback.mjs",
+  "surfaces": [
+    {
+      "id": "project-ring",
+      "route": "#core",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "active-chain",
+        "archived"
+      ],
+      "interactions": [
+        "wave-colors"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-26-nomoto-fix10-baseline/refs/web-ring-baseline.png",
+        "docs/design/2026-11-26-nomoto-fix10-baseline/refs/ring-colors.html"
+      ]
+    }
+  ]
+}

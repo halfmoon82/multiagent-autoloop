@@ -1,0 +1,101 @@
+<!doctype html><html><head><title>fix6 设计稿 v2：项目进度环（网页版同款，可点击）</title><meta charset="utf-8"><style>
+body{margin:0;font:15px/1.5 -apple-system,"PingFang SC",sans-serif;background:#eef0f3;color:#1d2129}
+.wrap{width:402px;margin:0 auto;background:#fff;min-height:960px;padding-bottom:16px}
+.hd{padding:14px 16px;font-size:17px;font-weight:700}
+.lbl{margin:12px 14px 6px;font-size:13px;color:#16835c;font-weight:600}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#eef0f3;color:#4b5563;margin-left:6px}
+.row{display:flex;justify-content:space-between;align-items:center;margin:2px 16px}
+.pct{font-size:26px;font-weight:800;color:#0f3d2e}
+.ringbox{display:flex;justify-content:center}
+.meta{margin:4px 16px;font-size:12.5px;color:#6b7280}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 16px}
+.chip{font-size:11.5px;padding:4px 9px;border-radius:99px;background:#f3f4f6;color:#374151}
+.detail{margin:8px 14px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px}
+.detail .t{font-weight:700}.detail .s{font-size:12.5px;color:#6b7280;margin-top:3px}
+.kv{display:flex;gap:10px;margin:3px 16px;font-size:13px}.kv b{min-width:64px;font-weight:600;color:#374151}
+.lnk{margin:4px 16px;font-size:13px;color:#16835c;font-weight:600}
+.arch{margin:8px 14px;padding:10px 14px;border:1px dashed #d1d5db;border-radius:12px;font-size:13px;color:#4b5563}
+.ring-seg{cursor:pointer;opacity:.94;transition:opacity .12s}.ring-seg:hover{opacity:1}
+.sep{stroke:#fff;stroke-width:1.4;stroke-dasharray:3 3;pointer-events:none}
+</style></head><body>
+<div class="wrap"><div class="hd">项目任务进度（设计稿 v2 · 与网页版同一画法）</div>
+<div class="lbl">节点本身就是环：连续扇区铺满整圈、扇区光滑相接无分隔线；内圈每节点一段进度弧（轨道+按进度填充）；进行中节点内圈叠三角指针；点扇区向外膨出并切换详情</div>
+<div class="row"><div><b>health-service-core</b><span class="tag">串行链</span></div><div class="pct">78%</div></div>
+<div class="ringbox"><svg width="330" height="330" viewBox="0 0 280 280" id="ring"></svg></div>
+<div class="meta">状态 进行中 · 开发中 ｜ <span id="innertext">节点内进度 2%</span></div>
+<div class="chips"><span class="chip">等待重试 0</span><span class="chip">今日完成 0</span><span class="chip">待处理 0</span><span class="chip">今日费用 $27.39</span><span class="chip">链累计 $27.39 · 199M Token</span><span class="chip">创建于 2026/11/16 14:00</span></div>
+<div class="lbl">点扇区试交互（膨出 + 详情切换）：</div>
+<div class="detail" id="detail"></div>
+<div class="lnk">查看运行详情 →</div>
+<div class="kv"><b>执行 Agent</b><span id="kvAgent">Claude Code</span></div>
+<div class="kv"><b>模型</b><span id="kvModel">claude-sonnet-5-5</span></div>
+<div class="kv"><b>费用 Token</b><span id="kvCost">费用 $0.14 · Token 58,680（入 57,954 / 出 726）</span></div>
+<div class="lnk">查看 PR</div>
+<div class="lbl">已归档的任务环（同款环）</div>
+<div class="arch">已归档的任务环 13 · 全部完成 12 · 已取消 1 · 展开查看</div>
+</div>
+<script>
+// —— 与网页版 public/progress-view.mjs 同参数同画法（RING_* 常量一致）——
+const NS='http://www.w3.org/2000/svg', SIZE=280, CENTER=140, RADIUS=90, STROKE=36, BULGE=12, INNER_STROKE=7, INNER_GAP=4;
+const svg=document.getElementById('ring');
+const mk=(t,a)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;};
+// arc: 用 circle + dasharray 画弧（与网页版一致）
+function arc(r,offset,length,width,cls){const seg=mk('circle',{cx:CENTER,cy:CENTER,r:String(r),fill:'none','stroke-width':String(width)});seg.setAttribute('stroke-dasharray',`${Math.max(0,length)} ${Math.max(0,2*Math.PI*r-length)}`);seg.setAttribute('stroke-dashoffset',String(-offset));seg.setAttribute('transform',`rotate(-90 ${CENTER} ${CENTER})`);if(cls)seg.setAttribute('class',cls);return seg;}
+function hue(w){return [155,200,250,300,30,90][w%6];}
+function color(kind,wave){const L=kind==='done'?27:kind==='pending'?72:52;return `hsl(${hue(wave)},52%,${L}%)`;}
+// 18 个示意节点（弧长相等=均分整圈，节点铺满整环；真实实现按数据均分）
+const NAMES=['内存采样','cron 循环','环境变量','病人档案','租户端','病人端','D7-1','双模式','推送改造','验收回归','数据补齐','告警降噪','观测埋点','报告输出','文档同步','例会同步','归档演练','复盘'];
+const KINDS=[['active',0.02],['done',1],['done',1],['active',0.64],['pending',0.6],['pending',0.6],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['pending',0.98],['pending',0.2],['done',1],['pending',0]];
+const nodes=NAMES.map((title,i)=>({id:'n'+i,title,kind:KINDS[i][0],inner:KINDS[i][1],wave:0,color:color(KINDS[i][0],0)}));
+const sum=KINDS.reduce((a,k)=>a+k[1],0);
+const percent=Math.round(sum/nodes.length*100);
+const R_INNER=RADIUS-STROKE/2-INNER_GAP-INNER_STROKE/2;
+let selected=3; // 默认选中「病人档案」（当前活跃）
+function render(){
+ svg.replaceChildren();
+ const count=nodes.length, step=360/count;
+ const share=2*Math.PI*RADIUS/count, innerShareLen=2*Math.PI*R_INNER/count;
+ const gSeg=mk('g',{}),gTrack=mk('g',{}),gFill=mk('g',{}),gPtr=mk('g',{}),gSep=mk('g',{}),gLab=mk('g',{});svg.append(gTrack,gFill,gSeg,gSep,gLab,gPtr);
+ const sel=nodes[selected];
+ nodes.forEach((node,index)=>{
+  const isSel=index===selected, grow=isSel?BULGE:0;
+  const segR=RADIUS+grow/2, k=segR/RADIUS;
+  const seg=arc(segR,index*share*k,share*k,STROKE+grow,'ring-seg'+(isSel?' selected':''));
+  seg.setAttribute('stroke',node.color);seg.dataset.i=index;
+  seg.addEventListener('click',()=>{selected=index;render();});
+  gSeg.append(seg);
+  // 内圈：轨道 + 按节点内进度填充
+  const pad=innerShareLen*0.03;
+  gTrack.append(arc(R_INNER,index*innerShareLen+pad/2,innerShareLen-pad,INNER_STROKE,''));
+  const f=arc(R_INNER,index*innerShareLen+pad/2,(innerShareLen-pad)*node.inner,INNER_STROKE,'');
+  f.setAttribute('stroke',node.kind==='done'?'#0f3d2e':node.kind==='active'?'#4f8fb9':'#9ca3af');
+  gFill.append(f);
+  // 进行中节点：内圈三角指针
+  if(node.kind==='active'){
+   const mid=(-90+(index+0.5)*step)*Math.PI/180, pt=R_INNER-INNER_STROKE/2;
+   const d=`M ${CENTER+pt*Math.cos(mid)} ${CENTER+pt*Math.sin(mid)} L ${CENTER+(pt-5.5)*Math.cos(mid-4.5/pt)} ${CENTER+(pt-5.5)*Math.sin(mid-4.5/pt)} L ${CENTER+(pt-5.5)*Math.cos(mid+4.5/pt)} ${CENTER+(pt-5.5)*Math.sin(mid+4.5/pt)} Z`;
+   gPtr.append(mk('path',{d,fill:'#1f2937'}));
+  }
+  // 节点名：沿扇区中线切线方向，左半圈翻转
+  const midA=-90+(index+0.5)*step, rad=midA*Math.PI/180, labelR=RADIUS+(isSel?BULGE/2:0);
+  const x=CENTER+labelR*Math.cos(rad), y=CENTER+labelR*Math.sin(rad);
+  // 标签严格不超出扇区：可容纳字数 = (扇区弧长 - 两侧留白) / 字宽，超出截断
+  const FS=9.5, arcLen=2*Math.PI*labelR/count, fitChars=Math.max(1,Math.floor((arcLen-6)/FS));
+  const t=mk('text',{x,y,'font-size':String(FS),'text-anchor':'middle',fill:'#fff','pointer-events':'none'});
+  const flip=midA>90&&midA<270;
+  t.setAttribute('transform',`rotate(${flip?midA+90:midA-90} ${x} ${y})${flip?' scale(-1,-1)':''}`);
+  t.textContent=node.title.length>fitChars?node.title.slice(0,fitChars):node.title;gLab.append(t);
+ });
+ // 中心
+ const c1=mk('text',{x:CENTER,y:CENTER-2,'text-anchor':'middle','font-size':'30','font-weight':'800',fill:'#0f3d2e'});c1.textContent=percent+'%';
+ const c2=mk('text',{x:CENTER,y:CENTER+16,'text-anchor':'middle','font-size':'11',fill:'#6b7280'});c2.textContent=`总进度 · ${count} 个节点`;
+ svg.append(c1,c2);
+ // 详情
+ const stTxt=sel.kind==='done'?'完成':sel.kind==='active'?'进行中':'待开始';
+ const sums={"内存采样": "内存采样已从 11 月 16 日 17:24 开始自动记录，需满 14 天才能出结论，预计 11 月 30 日 17:24 后出具判定。", "cron 循环": "定时任务多租户改造已通过复审并合并。", "环境变量": "环境变量注入与回读已自测通过。", "病人档案": "病人档案聚合接口联调中，为租户端/病人端的前置依赖。", "租户端": "租户端展示适配，依赖病人档案接口。", "病人端": "病人端展示适配。"};
+ document.getElementById('detail').innerHTML=`<div class="t">${sel.title}（示意） <span class="tag">${stTxt}</span></div><div class="s">任务摘要：${sums[sel.title]||'示意节点。'}</div><div class="s">执行 Agent：${sel.kind==='pending'?'未派发':'Claude Code'} ｜ 模型：${sel.kind==='pending'?'未上报':'claude-sonnet-5-5'}</div><div class="s">费用 Token：${sel.kind==='pending'?'未上报':'费用 $0.14 · Token 58,680（入 57,954 / 出 726）'}</div>`;
+ document.getElementById('innertext').textContent=sel.kind==='done'?'完成':(sel.kind==='active'?`节点内进度 ${Math.round(sel.inner*100)}%`:'完成度档 0%');
+}
+render();
+</script>
+</body></html>

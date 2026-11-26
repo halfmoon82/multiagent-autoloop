@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "designDigest": "ba9a511e99897269386a71a0e41eb21bb5e854395ee3077c2a2a57b250b777d4",
+  "confirmedAt": "2026-11-26",
+  "evidence": "调度会话 ec59a992 内主人 2026-11-26 晚报告颜色回归（issue #356）：要求恢复按波次定色。"
+}

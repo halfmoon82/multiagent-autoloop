@@ -1,0 +1,42 @@
+{
+  "plan_id": "2026-11-26-nomoto-app-fix10",
+  "title": "NoMoTo App fix10：DAG 环颜色回归修复——所有环路径统一按波次定色",
+  "design": {
+    "manifestPath": "docs/design/2026-11-26-nomoto-fix10-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-26-nomoto-fix10-baseline/design-approval.json"
+  },
+  "nodes": [
+    {
+      "id": "ring-wave-colors-restore",
+      "title": "恢复 DAG 环按波次定色：串行/归档路径弃用绿色状态色板",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "主人 2026-11-26 晚：总览所有 DAG 环节点颜色全变绿，归档完成的并行 DAG 环之前按波次定色（多彩）现在也全绿（issue #356）。根因已定位：fix6 移植环时串行与归档路径误用 SERIAL_COLORS 绿色系状态色板，覆盖了 segmentColor(kind, wave) 的按波次定色。",
+        "output": "所有环路径统一 segmentColor(kind, wave)=hsl(waveHue(wave),52%,72-45×完成度)：串行链 wave=null→绿系（与网页版一致）；归档/活跃并行 DAG→按波次多彩；完成度驱动明度；SERIAL_COLORS 色板移除。",
+        "error_behavior": "无 wave 数据时按网页口径回落绿系，不报错；快照对比失败按偏差返工。",
+        "acceptance_example": "与网页版同数据快照对比：归档并行 DAG 环扇区色相按波次各异、串行链与网页一致；设计验证器核对 segmentColor 调用与 SERIAL_COLORS 移除。",
+        "files": [
+          "mobile/src/features/dag-ring/progress.mjs",
+          "mobile/app/www/pages/core.mjs",
+          "test/mobile-dag-ring*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "project-ring"
+          ],
+          "states": [
+            "active-chain",
+            "archived"
+          ],
+          "interactions": [
+            "wave-colors"
+          ]
+        }
+      }
+    }
+  ]
+}
