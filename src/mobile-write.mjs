@@ -113,6 +113,20 @@ const SAFE_ERRORS = Object.freeze({
 class WriteError extends Error { constructor(status, message) { super(message || SAFE_ERRORS[status] || '操作暂时不可用，请稍后重试'); this.status = status; } }
 const fail = (status, message) => { throw new WriteError(status, message); };
 
+// 办结幂等（card-two-places，2026-11-26 晨）：同一张卡在会话窗与待办两处都点办结时，
+// 先到的写已结案，后到的写 Hub 回 409；「已处理」语义就是办结，这不是失败，按成功收口，
+// 让另一处也本地收起、不再永久残留。非 409（Hub 不可用、跨站、未绑定等）仍是真失败，
+// 报错并保留卡片可重试。卡已从 Hub 状态消失同样视为办结。
+const alreadyHandled = error => (error instanceof HubError || error instanceof WriteError) && error.status === 409;
+function idempotentCardResponse(res, id, extra = {}) {
+  jsonResponse(res, 200, { ok: true, idempotent: true, state: 'decided', id, ...extra });
+}
+// Hub 409 保留 409 状态码（网页/旧客户端契约不变），但响应体显式标 idempotent：
+// 新客户端据此静默视为办结、本地收起，不再把「已处理」的报错永久留在界面上。
+function conflictCardResponse(res, id) {
+  jsonResponse(res, 409, { error: SAFE_ERRORS[409], idempotent: true, state: 'decided', id });
+}
+
 function parseId(text) {
   if (!/^[1-9][0-9]*$/.test(text)) fail(404);
   const id = Number(text);
@@ -183,7 +197,11 @@ async function cardWrite(route, req, res, url, ctx, body) {
   let result;
   try {
     result = await hubRequest(config, `/v1/cards/${cardId}/answer`, { method: 'POST', body: { ...payload, sourceDeviceId: device.id } });
-  } catch (error) { auditFailure(ctx, req, auditAction, { cardId: String(cardId) }); throw error; }
+  } catch (error) {
+    // 另一处已办结：保留 409 状态，但响应体标 idempotent，客户端据此静默收起、不报错残留。
+    if (alreadyHandled(error)) { audit(ctx, req, auditAction, { cardId: String(cardId) }); conflictCardResponse(res, cardId); return; }
+    auditFailure(ctx, req, auditAction, { cardId: String(cardId) }); throw error;
+  }
   audit(ctx, req, auditAction, { cardId: String(cardId) });
   // 唤醒调度会话：与网页 answer 同一会话管理器与判定，失败不影响卡片已结案。
   let schedulingWake = 'skipped';
@@ -205,7 +223,8 @@ async function cardResolveRoute(req, res, url, route, ctx, body) {
   const cardId = parseId(url.pathname.match(route.pattern)[1]);
   const state = await hubRequest(config, '/v1/state');
   const card = (state?.cards || []).find(item => Number(item?.id) === cardId);
-  if (!card) fail(404);
+  // 卡已不在 Hub 状态里 = 已办结，按幂等成功收口（另一处已处理时点「已处理」不再残留）。
+  if (!card) { idempotentCardResponse(res, cardId); return; }
   if (card.state !== 'open') {
     jsonResponse(res, 200, { id: card.id, state: card.state, idempotent: true });
     return;
@@ -215,7 +234,11 @@ async function cardResolveRoute(req, res, url, route, ctx, body) {
   let result;
   try {
     result = await hubRequest(config, `/v1/cards/${cardId}/resolve`, { method: 'POST', body: { reason } });
-  } catch (error) { auditFailure(ctx, req, 'card.resolve', fields); throw error; }
+  } catch (error) {
+    // 另一处已办结：保留 409 状态，但响应体标 idempotent，客户端静默收起并给轻提示。
+    if (alreadyHandled(error)) { audit(ctx, req, 'card.resolve', fields); conflictCardResponse(res, cardId); return; }
+    auditFailure(ctx, req, 'card.resolve', fields); throw error;
+  }
   audit(ctx, req, 'card.resolve', fields);
   jsonResponse(res, 200, { ...result, sourceDeviceId: device.id });
 }
