@@ -45,7 +45,7 @@ function hue(w){return [155,200,250,300,30,90][w%6];}
 function color(kind,wave){const L=kind==='done'?27:kind==='pending'?72:52;return `hsl(${hue(wave)},52%,${L}%)`;}
 // 18 个示意节点（弧长相等=均分整圈，节点铺满整环；真实实现按数据均分）
 const NAMES=['内存采样','cron 循环','环境变量','病人档案','租户端','病人端','D7-1','双模式','推送改造','验收回归','数据补齐','告警降噪','观测埋点','报告输出','文档同步','例会同步','归档演练','复盘'];
-const KINDS=[['active',0.02],['done',1],['done',1],['active',0.64],['pending',0.6],['pending',0.6],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['pending',0.6],['pending',0.58],['pending',0],['done',1],['pending',0]];
+const KINDS=[['active',0.02],['done',1],['done',1],['active',0.64],['pending',0.6],['pending',0.6],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['pending',0.98],['pending',0.2],['done',1],['pending',0]];
 const nodes=NAMES.map((title,i)=>({id:'n'+i,title,kind:KINDS[i][0],inner:KINDS[i][1],wave:0,color:color(KINDS[i][0],0)}));
 const sum=KINDS.reduce((a,k)=>a+k[1],0);
 const percent=Math.round(sum/nodes.length*100);
