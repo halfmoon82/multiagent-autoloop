@@ -1,0 +1,44 @@
+{
+  "plan_id": "2026-11-26-nomoto-app-fix7",
+  "title": "NoMoTo App fix7：下拉刷新滚动守卫（会话页上滑浏览历史不误触）",
+  "design": {
+    "manifestPath": "docs/design/2026-11-26-nomoto-fix7-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-26-nomoto-fix7-baseline/design-approval.json"
+  },
+  "nodes": [
+    {
+      "id": "pull-refresh-scroll-guard",
+      "title": "下拉刷新滚动守卫：仅到顶下拉触发，会话历史滚动不误触",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "主人 2026-11-26 下午验收 fix6 包反馈（卡片 174）：下拉刷新很灵敏，但在会话页往上拉浏览历史消息也会触发刷新，这是 bug（issue #349）。",
+        "output": "刷新只在：①滚动容器已到顶（scrollTop===0 或内容不溢出）、②手势明确向下、③非惯性滚动时触发；会话消息流向上浏览历史、长列表滚动浏览不得误触；已到顶下拉与版本自动重载不受影响；其它 tab 行为不变。",
+        "error_behavior": "守卫判断异常时宁可不触发也不误触；手势冲突回归（折叠卡片/左滑/会话滚动）不受影响。",
+        "acceptance_example": "emulator-smoke：会话页上滑浏览历史不触发刷新；到顶下拉触发；列表中部起拉不误触；浏览器回归滚动守卫。",
+        "files": [
+          "mobile/app/www/app.mjs",
+          "mobile/app/www/shell.mjs",
+          "mobile/app/scripts/emulator-smoke.mjs",
+          "test/mobile-app-refresh*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "app-refresh"
+          ],
+          "states": [
+            "idle",
+            "refreshing"
+          ],
+          "interactions": [
+            "scroll-guard",
+            "history-scroll-safe"
+          ]
+        }
+      }
+    }
+  ]
+}

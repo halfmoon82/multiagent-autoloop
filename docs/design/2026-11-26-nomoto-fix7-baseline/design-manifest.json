@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix7-2026-11-26",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix7-baseline/refs/app-refresh.html",
+      "sha256": "d386d3145942158acdc181fe92ec5a2c122e2a23436606c586da70449ac2cfeb"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix7-baseline/verifiers/fix7-design.verify.mjs",
+      "sha256": "d195e2f69e0d2a2c3c78bd9fad2c12ad0dd3e7af8e6e55875dae04420f06b78a"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix7-baseline/verifiers/fix7-design-fallback.mjs",
+      "sha256": "b5a19ef3346653df5753c4d938f5c528f619dfce53a140f5037f37a4235a8c04"
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-26-nomoto-fix7-baseline/verifiers/fix7-design.verify.mjs",
+  "fallbackVerifierPath": "docs/design/2026-11-26-nomoto-fix7-baseline/verifiers/fix7-design-fallback.mjs",
+  "surfaces": [
+    {
+      "id": "app-refresh",
+      "route": "#app",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "idle",
+        "refreshing"
+      ],
+      "interactions": [
+        "scroll-guard",
+        "history-scroll-safe"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-26-nomoto-fix7-baseline/refs/app-refresh.html"
+      ]
+    }
+  ]
+}
