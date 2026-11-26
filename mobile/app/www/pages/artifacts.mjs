@@ -301,7 +301,11 @@ function setup(ctx, doc, win, root, F) {
           previewBox = el(doc, 'div', 'artifacts-preview');
           previewBox.hidden = true;
           // 正文只用 textContent 写入，不拼接不可信 HTML、不建 iframe。
-          previewBox.appendChild(el(doc, 'pre', 'artifacts-preview-text'));
+          const textNode = el(doc, 'pre', 'artifacts-preview-text');
+          // 审阅返工 P2：默认 <pre> 不换行，外层 .content 又裁横向溢出，手机上长行读不全。
+          // 样式就近写在节点上（artifacts.css 不在本节点写域）：换行、超长词断行、限高纵向滚动。
+          textNode.setAttribute('style', 'white-space: pre-wrap; overflow-wrap: anywhere; max-height: 62vh; overflow-y: auto;');
+          previewBox.appendChild(textNode);
           reader.appendChild(previewBox);
         }
       } else if (plan.selected.previewKind === 'unsupported') {
