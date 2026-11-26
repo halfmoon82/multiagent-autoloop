@@ -194,3 +194,21 @@ test('卡已从 Hub 状态消失（valid id 但查无此卡）按办结幂等收
   const invalid = await ctx.post('not-a-number', 'resolve', { reason: '已处理' });
   assert.equal(invalid.status, 404);
 });
+
+// ---------- 待办页写客户端（core/write.mjs）：与会话窗同一状态源 ----------
+test('待办页 createCoreWrite.answerCard：成功与幂等 409 都登记统一已答源，真失败不登记', async () => {
+  const { createCoreWrite } = await import('../mobile/src/core/write.mjs');
+  resetLocallyAnswered();
+  const mk = res => createCoreWrite({ ...fakeClient(), api: async () => ({}) }, { fetchImpl: async () => res });
+  const ok = await mk({ ok: true, status: 200, json: async () => ({ id: 31 }) }).answerCard(31, { choice: 0 });
+  assert.equal(ok.id, 31);
+  assert.equal(isCardAnsweredLocal(31), true);
+  const idem = await mk({ ok: false, status: 409, json: async () => ({ error: 'x', idempotent: true }) }).answerCard(32, { choice: 1 });
+  assert.equal(idem.ok, true);
+  assert.equal(idem.idempotent, true);
+  assert.equal(isCardAnsweredLocal(32), true, '待办页 409 幂等收起并与会话窗同源');
+  await assert.rejects(() => mk({ ok: false, status: 409, json: async () => ({ error: '事项已失效' }) }).answerCard(33, { choice: 0 }), /事项已失效/);
+  await assert.rejects(() => mk({ ok: false, status: 502, json: async () => ({ error: '不可用' }) }).answerCard(34, { choice: 0 }), /不可用/);
+  assert.equal(isCardAnsweredLocal(33) || isCardAnsweredLocal(34), false);
+  resetLocallyAnswered();
+});
