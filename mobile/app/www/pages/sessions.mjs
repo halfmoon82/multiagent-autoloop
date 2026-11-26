@@ -161,6 +161,8 @@ export function mount(ctx) {
   const pendingStrip = node('button', { type: 'button', className: 'sessions-pending-strip', attrs: { hidden: '' } });
   pendingStrip.addEventListener('click', () => { questionBox.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
   const questionBox = node('div', { className: 'sessions-question' });
+  // 另一处已办结（幂等成功）的轻提示：独立于 questionBox（卡组清空时它会隐藏）。
+  const cardNoticeEl = node('p', { className: 'hint', attrs: { role: 'status', 'data-card-handled-notice': '', hidden: '' } });
   // 消息区：详情页 flex 列中唯一的滚动区（flex:1; min-height:0; overflow:auto），顶部与输入栏不随消息流滚走。
   const messageWindow = node('div', { className: 'sessions-message-window' });
   const backBottom = node('button', { type: 'button', className: 'sessions-back-bottom', text: '回到底部 ↓', attrs: { hidden: '' } });
@@ -190,7 +192,7 @@ export function mount(ctx) {
   const queuePreview = node('div', { className: 'sessions-queue-preview', attrs: { hidden: '' } });
   const detailActions = node('div', { className: 'sessions-detail-actions' });
   const detailTop = node('div', { className: 'sessions-detail-top' }, [
-    detailHero, detailActions, detailContext, sessionTools, infoPanel, queuePanel, pendingStrip,
+    detailHero, detailActions, detailContext, sessionTools, infoPanel, queuePanel, pendingStrip, cardNoticeEl,
   ]);
   const detailView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'detail', hidden: '' } }, [
     detailTop, messageWindow, backBottom, queuePreview, attachmentInput, attachmentList, composerRow,
@@ -908,7 +910,10 @@ export function mount(ctx) {
     const button = questionBox.querySelector('.sessions-question-submit');
     if (button) button.disabled = true;
     try {
-      await write.answerCard(active.id, payload);
+      const answerResult = await write.answerCard(active.id, payload);
+      const handledNotice = smodel?.buildCardAnsweredNotice?.(answerResult, active);
+      cardNoticeEl.textContent = handledNotice ? handledNotice.text : '';
+      cardNoticeEl.hidden = !handledNotice;
       // 回答链路闭环（fix4）：state.cards 是重建待回答组的唯一来源，回答成功后必须本地同步为已答，
       // 否则切到别的会话/重建分组时已答卡片又以未答形式复活。
       if (qmodel.markCardAnswered) state.cards = qmodel.markCardAnswered(state.cards, active.id, payload);

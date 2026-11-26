@@ -406,12 +406,22 @@ export function mount(ctx) {
   // 本机刚回答成功的卡：Hub 状态重读前也不再显示（失败不进此集合，卡与选项原样保留）。
   const answeredIds = new Set();
 
+  // 另一处已办结（幂等成功）时给轻提示；真成功无提示，真失败走各自的错误分支。
+  async function showHandledNotice(result, item) {
+    const model = await loadCardWrite().catch(() => null);
+    const notice = model?.buildCardAnsweredNotice?.(result, item);
+    if (!notice) return;
+    quickNotice.textContent = notice.text;
+    quickNotice.hidden = false;
+  }
+
   async function answer(item, payload, submit, errorNode) {
     submit.disabled = true;
     errorNode.hidden = true;
     try {
-      await write.answerCard(item.id, payload);
+      const result = await write.answerCard(item.id, payload);
       drafts.delete(item.id);
+      await showHandledNotice(result, item);
       // 回答成功即隐藏该卡并同步角标，不等重读往返；重读到 Hub 已结案后自然不再出现。
       answeredIds.add(String(item.id));
       renderCurrent();
@@ -432,8 +442,9 @@ export function mount(ctx) {
     try {
       const client = await getCardWrite();
       if (!client || typeof client[action.method] !== 'function') throw new Error('操作通道不可用，请刷新后重试');
-      await client[action.method](item.id);
+      const result = await client[action.method](item.id);
       drafts.delete(item.id);
+      if (action.id !== 'delegate-return') await showHandledNotice(result, item);
       answeredIds.add(String(item.id));
       if (action.id === 'delegate-return') {
         quickNotice.textContent = `${item.title ? `${item.title}：` : ''}已退回调度，等待代理结论`;
