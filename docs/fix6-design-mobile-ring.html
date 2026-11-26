@@ -19,7 +19,7 @@ body{margin:0;font:15px/1.5 -apple-system,"PingFang SC",sans-serif;background:#e
 .sep{stroke:#fff;stroke-width:1.4;stroke-dasharray:3 3;pointer-events:none}
 </style></head><body>
 <div class="wrap"><div class="hd">项目任务进度（设计稿 v2 · 与网页版同一画法）</div>
-<div class="lbl">节点本身就是环：连续扇区铺满整圈、节点间虚线分隔；内圈每节点一段进度弧（轨道+按进度填充）；进行中节点内圈叠三角指针；点扇区向外膨出并切换详情</div>
+<div class="lbl">节点本身就是环：连续扇区铺满整圈、扇区光滑相接无分隔线；内圈每节点一段进度弧（轨道+按进度填充）；进行中节点内圈叠三角指针；点扇区向外膨出并切换详情</div>
 <div class="row"><div><b>health-service-core</b><span class="tag">串行链</span></div><div class="pct">78%</div></div>
 <div class="ringbox"><svg width="330" height="330" viewBox="0 0 280 280" id="ring"></svg></div>
 <div class="meta">状态 进行中 · 开发中 ｜ <span id="innertext">节点内进度 2%</span></div>
@@ -76,16 +76,15 @@ function render(){
    const d=`M ${CENTER+pt*Math.cos(mid)} ${CENTER+pt*Math.sin(mid)} L ${CENTER+(pt-5.5)*Math.cos(mid-4.5/pt)} ${CENTER+(pt-5.5)*Math.sin(mid-4.5/pt)} L ${CENTER+(pt-5.5)*Math.cos(mid+4.5/pt)} ${CENTER+(pt-5.5)*Math.sin(mid+4.5/pt)} Z`;
    gPtr.append(mk('path',{d,fill:'#1f2937'}));
   }
-  // 节点间虚线分隔
-  if(index>0){const a=(-90+index*step)*Math.PI/180;const r0=RADIUS-STROKE/2,r1=RADIUS+STROKE/2+(isSel||index-1===selected?BULGE:0);
-   gSep.append(mk('line',{x1:CENTER+r0*Math.cos(a),y1:CENTER+r0*Math.sin(a),x2:CENTER+r1*Math.cos(a),y2:CENTER+r1*Math.sin(a),class:'sep'}));}
   // 节点名：沿扇区中线切线方向，左半圈翻转
-  const midA=-90+(index+0.5)*step, rad=midA*Math.PI/180, labelR=RADIUS+4+(isSel?BULGE/2:0);
+  const midA=-90+(index+0.5)*step, rad=midA*Math.PI/180, labelR=RADIUS+(isSel?BULGE/2:0);
   const x=CENTER+labelR*Math.cos(rad), y=CENTER+labelR*Math.sin(rad);
-  const t=mk('text',{x,y,'font-size':'10.5','text-anchor':'middle',fill:'#fff','pointer-events':'none'});
+  // 标签严格不超出扇区：可容纳字数 = (扇区弧长 - 两侧留白) / 字宽，超出截断
+  const FS=9.5, arcLen=2*Math.PI*labelR/count, fitChars=Math.max(1,Math.floor((arcLen-6)/FS));
+  const t=mk('text',{x,y,'font-size':String(FS),'text-anchor':'middle',fill:'#fff','pointer-events':'none'});
   const flip=midA>90&&midA<270;
   t.setAttribute('transform',`rotate(${flip?midA+90:midA-90} ${x} ${y})${flip?' scale(-1,-1)':''}`);
-  t.textContent=node.title.slice(0,4);gLab.append(t);
+  t.textContent=node.title.length>fitChars?node.title.slice(0,fitChars):node.title;gLab.append(t);
  });
  // 中心
  const c1=mk('text',{x:CENTER,y:CENTER-2,'text-anchor':'middle','font-size':'30','font-weight':'800',fill:'#0f3d2e'});c1.textContent=percent+'%';
