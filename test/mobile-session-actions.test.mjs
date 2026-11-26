@@ -64,12 +64,13 @@ test('关闭结果收口：成功才移除该行；失败保留原状并带原�
   assert.equal(failed.items[1].closeError, undefined);
 });
 
-test('设计会话按钮显隐：仅设计会话；已放行不再出示「放行落盘」；「确认执行范围」恒有', () => {
+test('设计会话按钮显隐：仅设计会话；只有「放行落盘」一颗授权按钮，已放行后为空（issue #355）', () => {
   assert.deepEqual(designSessionActions({ kind: 'normal' }), []);
   assert.deepEqual(designSessionActions(null), []);
-  assert.deepEqual(designSessionActions({ kind: 'design', planApproved: false }).map(item => item.id), ['approve-plan', 'design-authorize']);
-  assert.deepEqual(designSessionActions({ kind: 'design', planApproved: true }).map(item => item.id), ['design-authorize']);
+  assert.deepEqual(designSessionActions({ kind: 'design', planApproved: false }).map(item => item.id), ['approve-plan']);
+  assert.deepEqual(designSessionActions({ kind: 'design', planApproved: true }), []);
   assert.equal(designSessionActions({ kind: 'design' })[0].label, '确认计划 · 放行落盘');
+  assert.ok(!JSON.stringify(designSessionActions({ kind: 'design' })).includes('确认执行范围'));
 });
 
 test('授权视图：逐条出示；未勾选/缺 planDigest/提交中/已创建一律不可提交', () => {
