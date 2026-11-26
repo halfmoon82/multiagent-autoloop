@@ -356,7 +356,8 @@ function boot() {
   }).catch(() => {});
 
   // ---- App 刷新机制（pullRefresh / versionCheck）----
-  // 下拉刷新：只在根 Tab、内容滚到顶部时接管纵向手势；横向由 tab-swipe 与会话行左滑关闭处理，互不拦截。
+  // 下拉刷新：任意位置起拉——未到顶时先把列表滚到顶，到顶后继续下拉产生 overscroll 才接管；
+  // 横向由 tab-swipe 与会话行左滑关闭处理，互不拦截。
   const ptrIndicator = document.createElement('div');
   ptrIndicator.id = 'pull-refresh-indicator';
   ptrIndicator.className = 'pull-refresh-indicator';
@@ -369,6 +370,7 @@ function boot() {
   ptrText.id = 'pull-refresh-label';
   ptrIndicator.append(ptrIcon, ptrText);
   ptrIndicator.hidden = true;
+  ptrIndicator.dataset.state = 'idle';
   if (content) content.insertBefore(ptrIndicator, content.firstChild);
 
   const isAtTop = () => {
@@ -378,18 +380,20 @@ function boot() {
   };
   const ptrShow = (distance, ready, refreshing, text) => {
     ptrIndicator.hidden = false;
+    ptrIndicator.dataset.state = refreshing ? 'refreshing' : 'idle';
     ptrText.textContent = text;
     ptrIndicator.classList.add('ptr-visible');
     ptrIndicator.classList.toggle('ptr-ready', Boolean(ready));
     ptrIndicator.classList.toggle('ptr-refreshing', Boolean(refreshing));
-    // 跟手阶段去掉过渡，避免每帧 pointermove 都被 180ms 动画拖慢；刷新态恢复过渡。
+    // 跟手阶段去掉过渡，避免每帧 move 都被 180ms 动画拖慢；刷新态恢复过渡。
     ptrIndicator.style.transition = refreshing ? '' : 'none';
     ptrIndicator.style.transform = refreshing
       ? 'translateY(0)'
-      : `translateY(${Math.max(-48, Math.min(distance, 48) - 48)}px)`;
+      : `translateY(${Math.max(-40, Math.min(distance, 40) - 40)}px)`;
   };
   const ptrHide = () => {
     ptrIndicator.hidden = true;
+    ptrIndicator.dataset.state = 'idle';
     ptrIndicator.classList.remove('ptr-visible', 'ptr-ready', 'ptr-refreshing');
     ptrIndicator.style.transition = '';
     ptrIndicator.style.transform = '';
@@ -416,67 +420,102 @@ function boot() {
   };
 
   const pull = createPullRefreshGesture();
-  const usePtr = typeof window.PointerEvent === 'function';
   const ptrTime = e => (typeof e.timeStamp === 'number' ? e.timeStamp : Date.now());
-  const ptrIdOf = e => (usePtr ? e.pointerId : 'touch');
+  // 真机有 TouchEvent 时走非被动 touch 路径：只有它能在到顶下拉时 preventDefault 挡住原生 overscroll。
+  // 否则 WebView 会在 pointermove 途中发 pointercancel，手势被吃掉、指示器一闪即没（真机不可见的根因）。
+  // pointer 路径保留给鼠标/笔与无 TouchEvent 的旧 WebView。
+  const useTouch = typeof window.TouchEvent === 'function'
+    && (typeof navigator !== 'undefined' && (navigator.maxTouchPoints > 0 || 'ontouchstart' in window));
   const ptrPoint = e => {
-    if (usePtr) return { x: e.clientX, y: e.clientY };
-    const list = e.touches?.length ? e.touches : (e.changedTouches?.length ? e.changedTouches : null);
-    return list?.length ? { x: list[0].clientX, y: list[0].clientY } : null;
+    if (e.touches?.length) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    if (e.changedTouches?.length) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+    return { x: e.clientX, y: e.clientY };
   };
-  let ptrActiveId = null;
-  let ptrDragging = false;
-  const onPtrDown = e => {
-    if (ptrActiveId !== null || !state.canShowMain() || stack.depth > 0) return;
-    if (usePtr && e.pointerType === 'mouse' && e.button !== 0) return;
-    if (!usePtr && e.touches && e.touches.length > 1) return;
+  const ptrBegin = e => {
+    if (!state.canShowMain() || stack.depth > 0) return false;
+    if (e.touches && e.touches.length > 1) return false;
     const p = ptrPoint(e);
-    if (!p || e.target?.closest?.('input, textarea, [contenteditable="true"]')) return;
-    if (!pull.start({ x: p.x, y: p.y, t: ptrTime(e), atTop: isAtTop() })) return;
-    ptrActiveId = ptrIdOf(e);
+    if (!p || e.target?.closest?.('input, textarea, [contenteditable="true"], .card-expand, .card-expand-retry')) return false;
+    // 不在顶部也先接管：move 会实时重测 atTop，到顶后把滚动量重设掉。
+    return pull.start({ x: p.x, y: p.y, t: ptrTime(e), atTop: isAtTop() });
   };
-  const onPtrMove = e => {
-    if (ptrActiveId === null || ptrIdOf(e) !== ptrActiveId) return;
+  const ptrPullLabel = () => PULL_REFRESH_TAB_LABELS[activeTab] || '当前页';
+  let ptrDragging = false;
+  let touchActive = false;
+  const onTouchDown = e => {
+    if (touchActive) return;
+    if (ptrBegin(e)) touchActive = true;
+  };
+  const onTouchMove = e => {
+    if (!touchActive) return;
     const p = ptrPoint(e);
     if (!p) return;
-    const r = pull.move({ x: p.x, y: p.y });
+    const r = pull.move({ x: p.x, y: p.y, atTop: isAtTop() });
+    if (!r.pulling) return; // 未到顶：不阻止默认，列表照常滚动（触发失败不阻塞滚动）
+    ptrDragging = true;
+    if (e.cancelable !== false) e.preventDefault(); // 到顶下拉：挡住原生 overscroll / pointercancel
+    ptrShow(r.distance, r.ready, false, r.ready ? `松开立即刷新${ptrPullLabel()}` : `下拉刷新${ptrPullLabel()}`);
+  };
+  const onTouchEnd = e => {
+    if (!touchActive) return;
+    touchActive = false;
+    const r = pull.end({});
+    const wasDragging = ptrDragging;
+    ptrDragging = false;
+    if (wasDragging && e.cancelable !== false) e.preventDefault(); // 拖拽后不当成点击
+    if (r.fired) void refreshActiveTab();
+    else ptrHide();
+  };
+  const onTouchCancel = () => {
+    if (!touchActive) return;
+    touchActive = false;
+    ptrDragging = false;
+    pull.cancel();
+    ptrHide();
+  };
+  let pointerActiveId = null;
+  const onPtrDown = e => {
+    if (useTouch && e.pointerType === 'touch') return; // 真机 touch 交给上面的非被动监听
+    if (pointerActiveId !== null) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (ptrBegin(e)) pointerActiveId = e.pointerId;
+  };
+  const onPtrMove = e => {
+    if (pointerActiveId === null || e.pointerId !== pointerActiveId) return;
+    const p = ptrPoint(e);
+    if (!p) return;
+    const r = pull.move({ x: p.x, y: p.y, atTop: isAtTop() });
     if (!r.pulling) return;
     ptrDragging = true;
-    const label = PULL_REFRESH_TAB_LABELS[activeTab] || '当前页';
-    ptrShow(r.distance, r.ready, false, r.ready ? `松开立即刷新${label}` : `下拉刷新${label}`);
-    // 旧 WebView：仅纵向拖拽且已到顶时阻止原生回弹；横向与页内滚动照常。
-    if (!usePtr && e.cancelable !== false) e.preventDefault();
+    ptrShow(r.distance, r.ready, false, r.ready ? `松开立即刷新${ptrPullLabel()}` : `下拉刷新${ptrPullLabel()}`);
   };
   const onPtrUp = e => {
-    if (ptrActiveId === null || ptrIdOf(e) !== ptrActiveId) return;
-    const p = ptrPoint(e);
-    const r = pull.end(p ? { x: p.x, y: p.y } : {});
+    if (pointerActiveId === null || e.pointerId !== pointerActiveId) return;
+    const r = pull.end({});
     const wasDragging = ptrDragging;
-    ptrActiveId = null;
+    pointerActiveId = null;
     ptrDragging = false;
-    if (!usePtr && wasDragging && e.cancelable !== false) e.preventDefault();
+    if (wasDragging && e.cancelable !== false) e.preventDefault();
     if (r.fired) void refreshActiveTab();
     else ptrHide();
   };
   const onPtrCancel = e => {
-    if (ptrActiveId === null || ptrIdOf(e) !== ptrActiveId) return;
-    ptrActiveId = null;
+    if (pointerActiveId === null || e.pointerId !== pointerActiveId) return;
+    pointerActiveId = null;
     ptrDragging = false;
     pull.cancel();
     ptrHide();
   };
   if (content) {
-    if (usePtr) {
-      content.addEventListener('pointerdown', onPtrDown);
-      content.addEventListener('pointermove', onPtrMove);
-      content.addEventListener('pointerup', onPtrUp);
-      content.addEventListener('pointercancel', onPtrCancel);
-    } else {
-      content.addEventListener('touchstart', onPtrDown, { passive: false });
-      content.addEventListener('touchmove', onPtrMove, { passive: false });
-      content.addEventListener('touchend', onPtrUp, { passive: false });
-      content.addEventListener('touchcancel', onPtrCancel, { passive: false });
-    }
+    // 非被动 touch 监听是真机可用的关键；pointer 监听服务鼠标/笔与旧 WebView。
+    content.addEventListener('touchstart', onTouchDown, { passive: false });
+    content.addEventListener('touchmove', onTouchMove, { passive: false });
+    content.addEventListener('touchend', onTouchEnd, { passive: false });
+    content.addEventListener('touchcancel', onTouchCancel, { passive: false });
+    content.addEventListener('pointerdown', onPtrDown);
+    content.addEventListener('pointermove', onPtrMove);
+    content.addEventListener('pointerup', onPtrUp);
+    content.addEventListener('pointercancel', onPtrCancel);
   }
 
   // 界面版本自检：入口 no-store + ?v= 内容 hash；回前台/定时轻量探测，变化即整页重载拿新界面。
