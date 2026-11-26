@@ -343,3 +343,23 @@ test('integration：纯后端创建与审阅保持零设计设施影响', async 
   assert.equal(s.ctl.snapshot().nodes.backend.designEvidenceState, 'not-required');
   assert.doesNotMatch(s.hub.last('backend').prompt, /设计基线|设计合同/);
 });
+
+test('fault-injection：UI 节点计划缺少 design 块在创建前拒绝（DESIGN_BASELINE_MISSING），预检如实标红且不留 run', async () => {
+  const fixture = makeProject();
+  const plan = { plan_id: PLAN_ID, title: 'ui without design block', nodes: [
+    { id: 'ui', depends_on: [], status: 'pending', contract: contract('src/App.js', uiDesign(['overview'])) },
+    { id: 'server', depends_on: [], status: 'pending', contract: contract('src/server.ts') },
+  ] };
+  writePlan(fixture, plan);
+  const harness = serviceHarness(fixture);
+  const pre = harness.service.preflight(fixture.root, PLAN_ID);
+  assert.equal(pre.source, 'native');
+  const designCheck = pre.checks.find(item => item.id === 'design-baseline');
+  assert.ok(designCheck, '预检必须包含 design-baseline 检查项');
+  assert.equal(designCheck.ok, false);
+  await assert.rejects(harness.create, error => {
+    assert.equal(error.code, 'DESIGN_BASELINE_MISSING', String(error));
+    return true;
+  });
+  assert.equal(harness.store.listRuns().length, 0, 'DESIGN_BASELINE_MISSING 后不得留下可派发 run');
+});

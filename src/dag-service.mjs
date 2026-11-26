@@ -273,7 +273,21 @@ export function createDagService({ root, store: injected, storeDirectory, hubEvi
           loadNativePlan({ projectRoot: project, planId: id });
           checks.push({ id: 'plan-source', label: '计划来源', ok: true, message: `原生计划 docs/dag-plans/${id}.json：走审批与派发，不依赖 vibe 规划环境` });
           return { project, planId: id, source: 'native', checks };
-        } catch { /* 原生计划不可用：按兼容路径检查 vibe */ }
+        } catch (error) {
+          // 原生计划存在但设计门禁未通过（如 UI 节点缺 design 块）时如实标红并留在原生路径；
+          // 不能吞掉错误回退 vibe 路径——否则用户看到的是「规划环境未初始化」等与真实原因无关的报错。
+          const code = error?.code ? String(error.code) : '';
+          if (error?.name === 'DesignCoverageError' || code.startsWith('DESIGN_')) {
+            checks.push({
+              id: code === 'DESIGN_BASELINE_MISSING' ? 'design-baseline' : 'plan-source',
+              label: code === 'DESIGN_BASELINE_MISSING' ? 'UI 计划设计基线' : '计划来源',
+              ok: false,
+              message: `原生计划存在但设计门禁未通过（${code || 'DESIGN'}）：${error.message}`,
+            });
+            return { project, planId: id, source: 'native', checks };
+          }
+          /* 原生计划不存在或格式不可用：按兼容路径检查 vibe */
+        }
       }
       const init = checkInitialization({ projectRoot: project });
       checks.push({ id: 'initialized', label: '规划环境已初始化', ok: init.ok, message: init.ok ? '.vibe/state.json 存在' : init.error.message });
