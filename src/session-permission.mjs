@@ -158,9 +158,18 @@ export function decideByKind({ kind, params, known, workspace, writableDir }) {
   const command = toolKind === 'execute' ? commandOf(call).slice(0, 400) : '';
   const base = { toolKind, title: text(call.title).slice(0, 200), command, paths };
   const allowOnce = (params?.options || []).find(option => option?.kind === 'allow_once');
-  const result = verdict => ({ ...base, ...verdict, optionId: verdict.allow ? allowOnce.optionId : null });
-  if (!allowOnce) return result(deny('请求没有 allow_once 选项（不选 allow_always）'));
-  if (kind === 'design') return result(deny('设计会话只读：权限请求一律取消'));
+  // 拒绝路径优先选 reject_once（没有再选 reject_always）：ACP 协议没有「拒绝」outcome，
+  // 若不选 reject 就只能回 cancelled——而 cancelled 的协议语义是「用户打断了本轮」，
+  // 上游 agent 会把它误报成主人取消（2026-11-26 设计会话假「取消」事故）。
+  const rejectOnce = (params?.options || []).find(option => option?.kind === 'reject_once')
+    || (params?.options || []).find(option => option?.kind === 'reject_always');
+  const result = verdict => {
+    // 批准路径必须有 allow_once 才回 selected；缺失即 fail closed（走拒绝路径，绝不回裸 selected）。
+    if (verdict.allow && !allowOnce) verdict = deny('批准路径没有 allow_once 选项（不选 allow_always）');
+    return { ...base, ...verdict, optionId: verdict.allow ? allowOnce.optionId : (rejectOnce?.optionId ?? null) };
+  };
+  if (!allowOnce && !rejectOnce) return result(deny('请求没有 allow_once/reject_once 选项（不选 allow_always）'));
+  if (kind === 'design') return result(deny('设计会话只读：权限请求一律拒绝（策略拒绝，非主人取消）'));
 
   // 标题可被工具自报：带 command 的请求是 shell 执行，不论标题怎么写都必须落入 execute 分析，不能按 MCP 放行。
   const rawInput = call.rawInput ?? call.input;

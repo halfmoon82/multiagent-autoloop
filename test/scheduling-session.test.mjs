@@ -23,7 +23,7 @@ function fakeAdapter({ askPermission = false, failInitialize = false, stderrByte
   };
   const respond = (request, result) => stdout.write(jsonLine({ jsonrpc: '2.0', id: request.id, result }));
   const requestPermission = () => {
-    const request = { jsonrpc: '2.0', id: 'permission-1', method: 'session/request_permission', params: { sessionId: 'fake-session', toolCall: { toolCallId: 'call-1', kind: 'generic', status: 'pending' }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }] } };
+    const request = { jsonrpc: '2.0', id: 'permission-1', method: 'session/request_permission', params: { sessionId: 'fake-session', toolCall: { toolCallId: 'call-1', kind: 'generic', status: 'pending' }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }, { optionId: 'deny', name: '拒绝', kind: 'reject_once' }] } };
     stdout.write(jsonLine(request));
   };
   stdin.on('data', chunk => {
@@ -198,7 +198,7 @@ test('auto-approves file edits inside the writable scripts dir and cancels every
   await manager.start({ prompt: '读取状态', project: 'owner-alpha/demo' });
   await waitFor(() => fake.requests.some(message => message.id === 'permission-1' && message.result));
   const denied = fake.requests.find(message => message.id === 'permission-1' && message.result);
-  assert.equal(denied?.result.outcome.outcome, 'cancelled', 'permission without a known writable scope must be denied');
+  assert.deepEqual(denied?.result.outcome, { outcome: 'selected', optionId: 'deny' }, 'permission without a known writable scope must be denied via the reject option');
   await manager.close(manager.list()[0].id);
 
   // 手动构造带 locations 的编辑请求
@@ -228,36 +228,36 @@ test('auto-approves file edits inside the writable scripts dir and cancels every
   const manager2 = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => proc, writableDir });
   await manager2.start({ project: 'owner-alpha/demo' });
   const perm = { jsonrpc: '2.0', id: 'perm-in', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't1', kind: 'edit', status: 'pending', locations: [{ path: path.join(writableDir, 'scan.mjs') }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }, { optionId: 'deny', name: '拒绝', kind: 'reject_once' }] } };
-  const permOut = { jsonrpc: '2.0', id: 'perm-out', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't2', kind: 'edit', status: 'pending', locations: [{ path: '/etc/crontab' }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }] } };
-  const permTraverse = { jsonrpc: '2.0', id: 'perm-tr', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't3', kind: 'edit', status: 'pending', locations: [{ path: path.join(writableDir, '..', 'escape.mjs') }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }] } };
-  const permExec = { jsonrpc: '2.0', id: 'perm-ex', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't4', kind: 'execute', status: 'pending' }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }] } };
+  const permOut = { jsonrpc: '2.0', id: 'perm-out', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't2', kind: 'edit', status: 'pending', locations: [{ path: '/etc/crontab' }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }, { optionId: 'deny', name: '拒绝', kind: 'reject_once' }] } };
+  const permTraverse = { jsonrpc: '2.0', id: 'perm-tr', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't3', kind: 'edit', status: 'pending', locations: [{ path: path.join(writableDir, '..', 'escape.mjs') }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }, { optionId: 'deny', name: '拒绝', kind: 'reject_once' }] } };
+  const permExec = { jsonrpc: '2.0', id: 'perm-ex', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't4', kind: 'execute', status: 'pending' }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }, { optionId: 'deny', name: '拒绝', kind: 'reject_once' }] } };
   const permAlways = { jsonrpc: '2.0', id: 'perm-al', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't5', kind: 'edit', status: 'pending', locations: [{ path: path.join(writableDir, 'scan.mjs') }] }, options: [{ optionId: 'allow-always', name: '总是允许', kind: 'allow_always' }] } };
   const { symlinkSync } = await import('node:fs');
   const outsideFile = path.join(path.dirname(writableDir), 'outside-secret.txt');
   const linkPath = path.join(writableDir, 'linked-secret.txt');
   symlinkSync(outsideFile, linkPath);
-  const permSymlink = { jsonrpc: '2.0', id: 'perm-sy', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't6', kind: 'edit', status: 'pending', locations: [{ path: linkPath }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }] } };
+  const permSymlink = { jsonrpc: '2.0', id: 'perm-sy', method: 'session/request_permission', params: { sessionId: 's-perm', toolCall: { toolCallId: 't6', kind: 'edit', status: 'pending', locations: [{ path: linkPath }] }, options: [{ optionId: 'allow', name: '允许', kind: 'allow_once' }, { optionId: 'deny', name: '拒绝', kind: 'reject_once' }] } };
   stdout.write(jsonLine(perm)); stdout.write(jsonLine(permOut)); stdout.write(jsonLine(permTraverse)); stdout.write(jsonLine(permExec)); stdout.write(jsonLine(permAlways)); stdout.write(jsonLine(permSymlink));
   await waitFor(() => requests.filter(r => typeof r.id === 'string' && r.id.startsWith('perm-') && r.result).length >= 6, 1000);
   const byId = id => requests.find(r => r.id === id && r.result);
   assert.ok(byId('perm-in') && byId('perm-out') && byId('perm-tr') && byId('perm-ex'), 'all four permission responses received');
   assert.equal(byId('perm-in').result.outcome.outcome, 'selected', 'edit inside writable dir must be approved');
-  assert.equal(byId('perm-out').result.outcome.outcome, 'cancelled', 'edit outside writable dir must be cancelled');
-  assert.equal(byId('perm-tr').result.outcome.outcome, 'cancelled', 'path traversal must be cancelled');
-  assert.equal(byId('perm-ex').result.outcome.outcome, 'cancelled', 'shell execution must stay cancelled');
-  assert.equal(byId('perm-al').result.outcome.outcome, 'cancelled', 'allow_always options must never be selected');
-  assert.equal(byId('perm-sy').result.outcome.outcome, 'cancelled', 'symlinks pointing outside the writable dir must be cancelled');
+  assert.deepEqual(byId('perm-out').result.outcome, { outcome: 'selected', optionId: 'deny' }, 'edit outside writable dir must be rejected via the reject option');
+  assert.deepEqual(byId('perm-tr').result.outcome, { outcome: 'selected', optionId: 'deny' }, 'path traversal must be rejected via the reject option');
+  assert.deepEqual(byId('perm-ex').result.outcome, { outcome: 'selected', optionId: 'deny' }, 'shell execution must be rejected via the reject option');
+  assert.equal(byId('perm-al').result.outcome.outcome, 'cancelled', 'allow_always-only request (no reject option) falls back to cancelled and must never be approved');
+  assert.deepEqual(byId('perm-sy').result.outcome, { outcome: 'selected', optionId: 'deny' }, 'symlinks pointing outside the writable dir must be rejected via the reject option');
   await manager2.close(manager2.list()[0].id);
   mkdirSync(path.join(writableDir, 'sub'), { recursive: true });
 });
 
-test('cancels ACP permission requests instead of approving them from the console', async () => {
+test('rejects ACP permission requests via the reject option instead of approving them or faking a user cancel', async () => {
   const fake = fakeAdapter({ askPermission: true });
   const manager = new SchedulingSessionManager({ hubScheduling: false, cwd: '/workspace/control-plane', adapterPath: '/fixed/codex-acp.js', spawnFn: () => fake.process });
   const started = await manager.start({ prompt: '读取调度状态', project: 'owner-alpha/demo' });
   await waitFor(() => fake.requests.some(message => message.id === 'permission-1' && message.result));
   const permissionResponse = fake.requests.find(message => message.id === 'permission-1' && message.result);
-  assert.equal(permissionResponse?.result.outcome.outcome, 'cancelled');
+  assert.deepEqual(permissionResponse?.result.outcome, { outcome: 'selected', optionId: 'deny' });
   await waitFor(() => manager.list().find(session => session.id === started.id)?.status === 'idle');
   const listed = manager.list().find(session => session.id === started.id);
   assert.equal(listed.status, 'idle');

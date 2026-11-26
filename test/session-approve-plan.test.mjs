@@ -44,14 +44,14 @@ test('design: after approvePlan, writes inside the workspace are allowed like a 
   const m = managerFor(e, fake);
   const started = await m.start({ kind: 'design', project: e.project, prompt: '开始' });
   await waitFor(() => Object.keys(fake.outcomes).length >= 2);
-  assert.equal(fake.outcomes['perm-0'].outcome, 'cancelled', '放行前工作区内编辑也被拒');
-  assert.equal(fake.outcomes['perm-1'].outcome, 'cancelled');
+  assert.deepEqual(fake.outcomes['perm-0'], { outcome: 'selected', optionId: 'deny' }, '放行前工作区内编辑也被拒（显式拒绝，不伪装成主人取消）');
+  assert.deepEqual(fake.outcomes['perm-1'], { outcome: 'selected', optionId: 'deny' });
 
   await m.approvePlan(started.id);
   await m.send(started.id, '现在落盘');
   await waitFor(() => fake.outcomes['perm-0']?.outcome === 'selected');
   assert.equal(fake.outcomes['perm-0'].outcome, 'selected', '放行后工作区内编辑获批');
-  assert.equal(fake.outcomes['perm-1'].outcome, 'cancelled', '放行后工作区外仍被拒');
+  assert.deepEqual(fake.outcomes['perm-1'], { outcome: 'selected', optionId: 'deny' }, '放行后工作区外仍被拒');
   m.dispose();
 });
 
@@ -74,7 +74,7 @@ test('design: approvePlan fails closed when collaboration_mode cannot be switche
   const m2 = managerFor(e, deniedFake);
   const s2 = await m2.start({ kind: 'design', project: e.project, prompt: '设计' });
   await waitFor(() => Object.keys(deniedFake.outcomes).length >= 1);
-  assert.equal(deniedFake.outcomes['perm-0'].outcome, 'cancelled');
+  assert.deepEqual(deniedFake.outcomes['perm-0'], { outcome: 'selected', optionId: 'deny' });
   m2.dispose();
 });
 

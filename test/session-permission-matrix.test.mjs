@@ -34,40 +34,42 @@ async function runKind(kind, permissions, { updates = [], extra = {} } = {}) {
 
 // ---- 事故复现：调度/设计会话请求 shell 与被禁写入必须被拒并留痕 ----
 for (const kind of ['scheduling', 'design']) {
-  test(`${kind}: shell execution is cancelled and audited`, async () => {
+  test(`${kind}: shell execution is rejected via reject_once (never reported as user-cancelled) and audited`, async () => {
     const r = await runKind(kind, [exec('git status'), exec('gh pr merge 12 --squash'), exec('git push origin main')]);
-    for (const i of [0, 1, 2]) assert.equal(r.out(i).outcome, 'cancelled');
+    for (const i of [0, 1, 2]) assert.deepEqual(r.out(i), { outcome: 'selected', optionId: 'deny' });
     assert.equal(r.audit.length, 3);
     assert.ok(r.audit.every(item => item.decision === 'denied' && item.kind === kind && item.toolKind === 'execute' && item.at));
   });
-  test(`${kind}: network/fetch and allow_always-only requests are cancelled`, async () => {
+  test(`${kind}: network/fetch is rejected via reject_once; allow_always-only requests fall back to cancelled`, async () => {
     const r = await runKind(kind, [fetchReq, { toolCall: { toolCallId: 'a', kind: 'other', status: 'pending' }, options: ALLOW_ALWAYS_ONLY }]);
-    assert.equal(r.out(0).outcome, 'cancelled'); assert.equal(r.out(1).outcome, 'cancelled');
+    assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' });
+    assert.equal(r.out(1).outcome, 'cancelled', 'no reject option offered → fail-closed fallback');
   });
 }
 test('scheduling: edits inside the project workspace are cancelled, edits in AGENT_AUTOLOOP_HOME/scripts are approved once', async () => {
   const r = await runKind('scheduling', e => [edit(path.join(e.project, 'a.txt')), edit(path.join(e.scripts, 'scan.mjs')), edit(path.join(e.scripts, '..', 'rules.json')), edit(e.outside)]);
-  assert.equal(r.out(0).outcome, 'cancelled', 'project code write must be denied for scheduling');
+  assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' }, 'project code write must be denied for scheduling');
   assert.deepEqual(r.out(1), { outcome: 'selected', optionId: 'allow' });
-  assert.equal(r.out(2).outcome, 'cancelled', 'traversal out of scripts');
-  assert.equal(r.out(3).outcome, 'cancelled');
+  assert.deepEqual(r.out(2), { outcome: 'selected', optionId: 'deny' }, 'traversal out of scripts');
+  assert.deepEqual(r.out(3), { outcome: 'selected', optionId: 'deny' });
   assert.deepEqual(r.audit.map(item => item.decision), ['denied', 'allowed', 'denied', 'denied']);
 });
-test('design: even edits inside scripts are cancelled', async () => {
+test('design: even edits inside scripts are rejected via reject_once', async () => {
   const r = await runKind('design', e => [edit(path.join(e.scripts, 'scan.mjs'))]);
-  assert.equal(r.out(0).outcome, 'cancelled');
+  assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' });
+  assert.match(r.audit[0].reason, /设计会话只读/);
 });
 test('scheduling: Hub controlled-write MCP tools are approved, unknown MCP tools and standalone elicitations are cancelled', async () => {
   const r = await runKind('scheduling', [mcpApproval('m1'), mcpApproval('m2'), mcpApproval('m3'), mcpApproval('m4'), { toolCall: { toolCallId: 'standalone', kind: 'execute', status: 'pending', title: 'MCP tool call approval', input: { serverName: 'autoloop-hub' } }, options: ALLOW_ONCE }], {
     updates: [mcpStart('m1', 'run_rule'), mcpStart('m2', 'pause_rule'), mcpStart('m3', 'resume_rule'), { ...mcpStart('m4', 'merge_pr'), title: 'mcp.autoloop-hub.merge_pr' }],
   });
   assert.deepEqual([0, 1, 2].map(i => r.out(i).outcome), ['selected', 'selected', 'selected']);
-  assert.equal(r.out(3).outcome, 'cancelled');
-  assert.equal(r.out(4).outcome, 'cancelled');
+  assert.deepEqual(r.out(3), { outcome: 'selected', optionId: 'deny' });
+  assert.deepEqual(r.out(4), { outcome: 'selected', optionId: 'deny' });
 });
-test('scheduling: a foreign MCP server tool named like a hub tool is cancelled', async () => {
+test('scheduling: a foreign MCP server tool named like a hub tool is rejected via reject_once', async () => {
   const r = await runKind('scheduling', [mcpApproval('m1')], { updates: [{ ...mcpStart('m1', 'run_rule'), title: 'mcp.evil-server.run_rule' }] });
-  assert.equal(r.out(0).outcome, 'cancelled');
+  assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' });
 });
 
 // ---- 普通会话：workspace 内写 + shell + 网络获批 ----
@@ -82,7 +84,7 @@ test('normal: writes outside the workspace, traversal and symlink escapes are ca
     const link = path.join(e.project, 'link.txt'); symlinkSync(path.dirname(e.root), link);
     return [edit(e.outside), edit(path.join(e.project, '..', 'escape.txt')), edit('/etc/crontab'), edit(link), edit(path.join(e.home, 'rules.json')), { toolCall: { toolCallId: 'noloc', kind: 'edit', status: 'pending' }, options: ALLOW_ONCE }];
   });
-  for (const i of [0, 1, 2, 3, 4, 5]) assert.equal(r.out(i).outcome, 'cancelled', `request ${i}`);
+  for (const i of [0, 1, 2, 3, 4, 5]) assert.deepEqual(r.out(i), { outcome: 'selected', optionId: 'deny' }, `request ${i}`);
 });
 test('normal: pushes to protected branches, force/delete pushes and ambiguous pushes are cancelled', async () => {
   const r = await runKind('normal', [
@@ -91,7 +93,7 @@ test('normal: pushes to protected branches, force/delete pushes and ambiguous pu
     exec('git push origin HEAD'), exec('cd p && git status; git -C /tmp/p push origin main'), exec('bash -c "git add . && git push origin main"'),
     exec('git push --force-with-lease origin feat/x'), exec('git push --mirror origin'),
   ]);
-  for (let i = 0; i < 13; i++) assert.equal(r.out(i).outcome, 'cancelled', `request ${i}`);
+  for (let i = 0; i < 13; i++) assert.deepEqual(r.out(i), { outcome: 'selected', optionId: 'deny' }, `request ${i}`);
 });
 test('normal: feature/fix/hotfix branch push, commits and PR create/merge (authorized by the user) are approved', async () => {
   const r = await runKind('normal', [
@@ -103,18 +105,18 @@ test('normal: feature/fix/hotfix branch push, commits and PR create/merge (autho
 });
 test('normal: a shell cwd outside the project workspace is cancelled', async () => {
   const r = await runKind('normal', e => [{ toolCall: { toolCallId: 'c1', kind: 'execute', status: 'pending', rawInput: { command: 'ls', cwd: path.dirname(e.root) } }, options: ALLOW_ONCE }, { toolCall: { toolCallId: 'c2', kind: 'execute', status: 'pending', rawInput: { command: 'ls', cwd: path.join(e.project, 'sub') } }, options: ALLOW_ONCE }]);
-  assert.equal(r.out(0).outcome, 'cancelled'); assert.equal(r.out(1).outcome, 'selected');
+  assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' }); assert.equal(r.out(1).outcome, 'selected');
   assert.match(r.audit[0].reason, /工作目录越出项目工作区/, 'must be denied for the cwd, not for an unrelated fail-closed reason');
 });
 test('started commands whose approval request omits kind/command are judged from the earlier tool_call update', async () => {
   const startCmd = (id, command) => ({ sessionUpdate: 'tool_call', toolCallId: id, kind: 'execute', title: command, rawInput: { command }, status: 'pending' });
   const bare = id => ({ toolCall: { toolCallId: id, status: 'pending' }, options: ALLOW_ONCE });
   const r = await runKind('normal', [bare('s1'), bare('s2')], { updates: [startCmd('s1', 'git push origin main'), startCmd('s2', 'npm test')] });
-  assert.equal(r.out(0).outcome, 'cancelled'); assert.equal(r.out(1).outcome, 'selected');
+  assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' }); assert.equal(r.out(1).outcome, 'selected');
   const sched = await runKind('scheduling', [bare('s1')], { updates: [startCmd('s1', 'npm test')] });
-  assert.equal(sched.out(0).outcome, 'cancelled');
+  assert.deepEqual(sched.out(0), { outcome: 'selected', optionId: 'deny' });
   const unknown = await runKind('normal', [bare('never-seen')]);
-  assert.equal(unknown.out(0).outcome, 'cancelled', 'a request that cannot be classified must fail closed');
+  assert.deepEqual(unknown.out(0), { outcome: 'selected', optionId: 'deny' }, 'a request that cannot be classified must fail closed (as an explicit reject, not a fake cancel)');
 });
 
 // ---- 沙箱模式机械化：调度=read-only，普通=workspace-write，失败即拒绝创建 ----
@@ -175,10 +177,38 @@ test('normal session delivers branch discipline as a separate prompt block while
 const spoof = command => ({ toolCall: { toolCallId: `s-${command}`, kind: 'execute', status: 'pending', title: 'mcp.autoloop-hub.run_rule', rawInput: { command } }, options: ALLOW_ONCE });
 test('scheduling: execute carrying a command is denied even with an mcp.autoloop-hub title', async () => {
   const r = await runKind('scheduling', [spoof('rm -rf /tmp/victim'), spoof('git push origin main')]);
-  for (const i of [0, 1]) assert.equal(r.out(i).outcome, 'cancelled');
+  for (const i of [0, 1]) assert.deepEqual(r.out(i), { outcome: 'selected', optionId: 'deny' });
 });
 test('normal: execute with an mcp title still goes through command analysis', async () => {
   const r = await runKind('normal', [spoof('git push origin main'), spoof('git status')]);
-  assert.equal(r.out(0).outcome, 'cancelled');
+  assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' });
   assert.notEqual(r.out(1).outcome, 'cancelled');
+});
+
+// ---- 2026-11-26 事故回归：策略拒绝不得伪装成「主人取消」 ----
+// ACP 协议里 cancelled 的唯一语义是「用户在应答前打断了本轮」（session/cancel）。
+// 权限层以前把策略拒绝一律回 cancelled，上游 agent 于是向主人谎称「你取消了授权弹窗」，
+// 设计会话与普通会话的推送/登记被这种假「取消」阻塞。拒绝必须显式选择 reject 选项。
+test('regression: policy denial selects reject_once instead of reporting a user cancellation', async () => {
+  const r = await runKind('normal', [exec('git push origin main')]);
+  assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' }, 'denial must surface as an explicit rejection, not as a user cancel');
+  assert.equal(r.audit[0].decision, 'denied');
+  assert.match(r.audit[0].reason, /main|受保护|分支/);
+});
+test('regression: a request offering no reject option falls back to cancelled (fail closed)', async () => {
+  const r = await runKind('normal', [{ toolCall: { toolCallId: 'nr', kind: 'execute', status: 'pending', title: 'git push origin main', rawInput: { command: 'git push origin main' } }, options: ALLOW_ALWAYS_ONLY }]);
+  assert.equal(r.out(0).outcome, 'cancelled', 'malformed request without a reject option keeps the fail-closed fallback');
+  assert.equal(r.audit[0].decision, 'denied');
+});
+
+// reject-only 选项集（无 allow_once）：只读请求也不能回裸 selected，必须 fail closed 到拒绝路径
+test('regression: a reject-only option set never yields a bare selected approval', async () => {
+  const rejectOnly = [{ optionId: 'no', name: '拒绝', kind: 'reject_once' }];
+  const r = await runKind('normal', [
+    { toolCall: { toolCallId: 'ro-read', kind: 'read', status: 'pending' }, options: rejectOnly },
+    { toolCall: { toolCallId: 'ro-edit', kind: 'edit', status: 'pending', locations: ['/x'] }, options: rejectOnly },
+  ]);
+  assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'no' }, 'read without an allow_once option must fail closed as an explicit reject');
+  assert.deepEqual(r.out(1), { outcome: 'selected', optionId: 'no' });
+  assert.ok(r.audit.every(item => item.decision === 'denied'));
 });

@@ -1021,7 +1021,12 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
       decision = { allow: false, reason: `裁定异常：${safeMessage(error)}`, optionId: null, toolKind: null, command: '', paths: [], title: '' };
     }
     this.#auditPermission(record, params, decision);
-    return decision.allow ? { outcome: 'selected', optionId: decision.optionId } : { outcome: 'cancelled' };
+    if (decision.allow) return { outcome: 'selected', optionId: decision.optionId };
+    // 策略拒绝必须显式选择 reject 选项（decideByKind 已解析 optionId），让上游收到明确拒绝；
+    // 只有请求方未提供任何 reject 选项（病态请求）时才回 cancelled 兜底——cancelled 的协议语义是
+    // 「用户打断了本轮」，随便回会把拒绝伪装成主人取消（2026-11-26 事故，设计/普通会话同此路径）。
+    if (decision.optionId) return { outcome: 'selected', optionId: decision.optionId };
+    return { outcome: 'cancelled' };
   }
 
   #auditPermission(record, params, decision) {
