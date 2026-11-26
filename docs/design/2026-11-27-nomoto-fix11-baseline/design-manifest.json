@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix11-2026-11-27",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-27-nomoto-fix11-baseline/refs/md-preview.html",
+      "sha256": "d43db6ef35ec7a25926c4cfaa31ef1db018abcd72b4dd3c0a1a5f065e84dd237"
+    },
+    {
+      "path": "docs/design/2026-11-27-nomoto-fix11-baseline/verifiers/fix11-design.verify.mjs",
+      "sha256": "8a1caea13ce66efd3623b9315f27a9034f4ad4c377e57ab1aa9ea21cc36b484a"
+    },
+    {
+      "path": "docs/design/2026-11-27-nomoto-fix11-baseline/verifiers/fix11-design-fallback.mjs",
+      "sha256": "276076b45825afad7deec4b0f0941c1599ec9bf593f49e04426591f6642f3ec1"
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-27-nomoto-fix11-baseline/verifiers/fix11-design.verify.mjs",
+  "fallbackVerifierPath": "docs/design/2026-11-27-nomoto-fix11-baseline/verifiers/fix11-design-fallback.mjs",
+  "surfaces": [
+    {
+      "id": "artifact-viewer",
+      "route": "#artifacts",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "doc",
+        "unsupported"
+      ],
+      "interactions": [
+        "md-online-preview",
+        "pdf-word-honest-note"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-27-nomoto-fix11-baseline/refs/md-preview.html"
+      ]
+    }
+  ]
+}

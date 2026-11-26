@@ -1,0 +1,43 @@
+{
+  "plan_id": "2026-11-27-nomoto-app-fix11",
+  "title": "NoMoTo App fix11：产物文档在线预览——md 在线可读，pdf/word 如实提示",
+  "design": {
+    "manifestPath": "docs/design/2026-11-27-nomoto-fix11-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-27-nomoto-fix11-baseline/design-approval.json"
+  },
+  "nodes": [
+    {
+      "id": "artifact-doc-preview",
+      "title": "产物文档在线预览：md/文本类在线可读，pdf/word 如实提示保留下载",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "主人 2026-11-27 反馈（issue #360）：产物 MD 文件（可能含 PDF/Word）原来可点击预览，现在只能下载。现状核实：阅读页只有 .html 有预览、图片有在线查看，.md 只有下载按钮；主人此前明确要求所有产物都能预览。",
+        "output": "1) md/markdown/txt 等文本类产物：阅读页「在线预览」按纯文本安全渲染（textContent，不拼接不可信 HTML），复用只读文件路由取内容，不下载；2) pdf/word 等无法在线渲染的格式：给「暂不支持在线预览，请下载后查看」如实提示，下载按钮保留；3) html/图片预览与下载反馈不回归。",
+        "error_behavior": "内容超封顶给明确提示与下载备选；加载失败就地重试；渲染异常不拖垮阅读页。",
+        "acceptance_example": "单测覆盖 md 预览渲染与不支持格式提示；模拟器 smoke：点 md 产物→在线可读；html/图片预览回归。",
+        "files": [
+          "mobile/src/features/artifacts/page.mjs",
+          "mobile/app/www/pages/artifacts.mjs",
+          "test/mobile-artifacts*.test.mjs"
+        ],
+        "design": {
+          "surfaceIds": [
+            "artifact-viewer"
+          ],
+          "states": [
+            "doc",
+            "unsupported"
+          ],
+          "interactions": [
+            "md-online-preview",
+            "pdf-word-honest-note"
+          ]
+        }
+      }
+    }
+  ]
+}
