@@ -822,6 +822,30 @@ test('mount md 产物：点「在线预览」走只读文件路由，纯文本�
   assert.equal(collect(root).some(node => node.tag === 'script' || node.tag === 'iframe'), false, '不建 iframe、不注入脚本');
 });
 
+// 审阅返工 P2（PR #361）：预览 <pre> 无换行/滚动样式，手机上长行被 .content 的 overflow-x:clip 截掉。
+// CSS 文件不在本节点写域，样式就近写在预览节点上；本断言守长行换行、超长词断行、限高纵向滚动。
+test('mount md 纯文本预览：长行换行、超长词断行、限高可滚动，避免手机横向截断', async () => {
+  const doc = fakeDoc();
+  const root = doc.add('page-artifacts');
+  const win = { innerWidth: 390, location: { origin: 'https://auto.example' }, addEventListener() {}, removeEventListener() {} };
+  const ctx = {
+    client: { sessionArtifactFile: async () => ({ content: `# 标题\n${'A'.repeat(2000)}\n结尾` }) },
+    state: {},
+    hooks: { artifacts: () => [docArtifacts()[0]], download() { return Promise.resolve({ started: true }); } },
+  };
+  mountArtifactsPage(ctx, { doc, win, feature: artifactsFeature });
+  buttonsNamed(root, 'plan.md')[0].click();
+  buttonsNamed(root, '在线预览')[0].click();
+  await new Promise(r => setTimeout(r, 10));
+  const textNode = collect(root).find(node => String(node.getAttribute('class') || '').includes('artifacts-preview-text'));
+  assert.ok(textNode, '纯文本预览节点存在');
+  const style = String(textNode.getAttribute('style') || '');
+  assert.match(style, /white-space\s*:\s*pre-wrap/, '保留换行同时长行自动换行');
+  assert.match(style, /overflow-wrap\s*:\s*anywhere/, '超长不可断词也断行，不被横向裁掉');
+  assert.match(style, /max-height\s*:/, '长文限高');
+  assert.match(style, /overflow-y\s*:\s*auto/, '超出限高纵向滚动');
+});
+
 test('mount pdf/word：如实「暂不支持在线预览，请下载后查看」，保留下载且不提供在线预览', () => {
   const doc = fakeDoc();
   const root = doc.add('page-artifacts');

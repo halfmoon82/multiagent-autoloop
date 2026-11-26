@@ -136,6 +136,44 @@ test('md 产物点「在线预览」：真实 Chromium 中走只读文件路由�
   assert.match(await page.locator('.artifacts-download').innerText(), /下载 plan\.md/, '下载按钮保留');
 });
 
+test('md 长行预览在 390px 手机上换行、限高可滚动（审阅返工 P2 真机样式回归）', { skip }, async t => {
+  const page = await boot(t, {
+    artifacts: [{ id: 's1:docs/long.md', name: 'long.md', path: 'docs/long.md', sessionId: 's1', taskLabel: '核心任务', sizeText: '4KB', kindLabel: 'MD' }],
+    artifactFile: { name: 'long.md', path: 'docs/long.md', content: `# 长行\n${'A'.repeat(4000)}\n结尾` },
+  });
+  await page.evaluate(() => {
+    window.AutoloopConsoleBase = 'https://auto.example';
+    window.__mod.mount(window.__ctx, { feature: window.__F });
+  });
+  await page.waitForSelector('.artifacts-row');
+  await page.locator('.artifacts-row').click();
+  await page.locator('.artifacts-preview-toggle').click();
+  await page.waitForFunction(() => {
+    const node = document.querySelector('.artifacts-preview-text');
+    return node && !node.closest('.artifacts-preview').hidden && node.textContent.includes('长行');
+  }, null, { timeout: 3000 });
+  const layout = await page.evaluate(() => {
+    const node = document.querySelector('.artifacts-preview-text');
+    const cs = getComputedStyle(node);
+    return {
+      whiteSpace: cs.whiteSpace,
+      overflowWrap: cs.overflowWrap || cs.wordWrap,
+      overflowY: cs.overflowY,
+      maxHeight: cs.maxHeight,
+      scrollWidth: node.scrollWidth,
+      clientWidth: node.clientWidth,
+      scrollHeight: node.scrollHeight,
+      clientHeight: node.clientHeight,
+    };
+  });
+  assert.equal(layout.whiteSpace, 'pre-wrap', '长行换行，不靠横向滚动才能读全');
+  assert.equal(layout.overflowWrap, 'anywhere', '超长不可断词也能断行');
+  assert.equal(layout.overflowY, 'auto', '超限时纵向滚动');
+  assert.notEqual(layout.maxHeight, 'none', '正文限高，不把阅读页撑到无限长');
+  assert.ok(layout.scrollWidth <= layout.clientWidth + 1, `4000 字符长行不横向溢出（${layout.scrollWidth} > ${layout.clientWidth}）`);
+  assert.ok(layout.scrollHeight > layout.clientHeight, '长文可纵向滚动读完');
+});
+
 test('pdf/word 产物在真实 Chromium 中如实提示暂不支持，保留下载', { skip }, async t => {
   const page = await boot(t, {
     artifacts: [{ id: 's1:out/手册.pdf', name: '手册.pdf', path: 'out/手册.pdf', sessionId: 's1', taskLabel: '核心任务', sizeText: '2KB', kindLabel: 'PDF' }],
