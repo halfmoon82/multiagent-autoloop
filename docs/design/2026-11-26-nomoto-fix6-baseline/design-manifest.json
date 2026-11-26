@@ -8,7 +8,7 @@
     },
     {
       "path": "docs/design/2026-11-26-nomoto-fix6-baseline/refs/mobile-ring-target.html",
-      "sha256": "3fdaf2b006f22c9ee8d7d83b450cb8133e684388ae638e7e44ebd5a7cb5002ae"
+      "sha256": "efbb6e909e7ec2100bb3e52d27674e3d45d34ac50fb7947ecdf8e37682250aef"
     },
     {
       "path": "docs/design/2026-11-26-nomoto-fix6-baseline/verifiers/fix6-design.verify.mjs",

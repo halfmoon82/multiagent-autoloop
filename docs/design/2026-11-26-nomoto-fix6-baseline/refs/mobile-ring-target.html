@@ -45,15 +45,16 @@ function hue(w){return [155,200,250,300,30,90][w%6];}
 function color(kind,wave){const L=kind==='done'?27:kind==='pending'?72:52;return `hsl(${hue(wave)},52%,${L}%)`;}
 // 18 个示意节点（弧长相等=均分整圈，节点铺满整环；真实实现按数据均分）
 const NAMES=['内存采样','cron 循环','环境变量','病人档案','租户端','病人端','D7-1','双模式','推送改造','验收回归','数据补齐','告警降噪','观测埋点','报告输出','文档同步','例会同步','归档演练','复盘'];
-const KINDS=[['active',0.02],['done',1],['done',1],['active',0.64],['pending',0],['pending',0],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['pending',0],['pending',0],['pending',0],['done',1],['pending',0]];
+const KINDS=[['active',0.02],['done',1],['done',1],['active',0.64],['pending',0.6],['pending',0.6],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['done',1],['pending',0.6],['pending',0.58],['pending',0],['done',1],['pending',0]];
 const nodes=NAMES.map((title,i)=>({id:'n'+i,title,kind:KINDS[i][0],inner:KINDS[i][1],wave:0,color:color(KINDS[i][0],0)}));
-const sum=[0.02,1,1,0.64,0,0,1,1,1,1,1,1,1,0,0,0,1,0].reduce((a,b)=>a+b,0);
+const sum=KINDS.reduce((a,k)=>a+k[1],0);
 const percent=Math.round(sum/nodes.length*100);
 const R_INNER=RADIUS-STROKE/2-INNER_GAP-INNER_STROKE/2;
 let selected=3; // 默认选中「病人档案」（当前活跃）
 function render(){
  svg.replaceChildren();
- const count=nodes.length, share=2*Math.PI/count, step=360/count;
+ const count=nodes.length, step=360/count;
+ const share=2*Math.PI*RADIUS/count, innerShareLen=2*Math.PI*R_INNER/count;
  const gSeg=mk('g',{}),gTrack=mk('g',{}),gFill=mk('g',{}),gPtr=mk('g',{}),gSep=mk('g',{}),gLab=mk('g',{});svg.append(gTrack,gFill,gSeg,gSep,gLab,gPtr);
  const sel=nodes[selected];
  nodes.forEach((node,index)=>{
@@ -64,9 +65,9 @@ function render(){
   seg.addEventListener('click',()=>{selected=index;render();});
   gSeg.append(seg);
   // 内圈：轨道 + 按节点内进度填充
-  const innerShare=share-0.06;
-  gTrack.append(arc(R_INNER,index*innerShare,innerShare,INNER_STROKE,''));
-  const f=arc(R_INNER,index*innerShare,innerShare*node.inner,INNER_STROKE,'');
+  const pad=innerShareLen*0.03;
+  gTrack.append(arc(R_INNER,index*innerShareLen+pad/2,innerShareLen-pad,INNER_STROKE,''));
+  const f=arc(R_INNER,index*innerShareLen+pad/2,(innerShareLen-pad)*node.inner,INNER_STROKE,'');
   f.setAttribute('stroke',node.kind==='done'?'#0f3d2e':node.kind==='active'?'#4f8fb9':'#9ca3af');
   gFill.append(f);
   // 进行中节点：内圈三角指针
@@ -92,7 +93,7 @@ function render(){
  svg.append(c1,c2);
  // 详情
  const stTxt=sel.kind==='done'?'完成':sel.kind==='active'?'进行中':'待开始';
- const sums={内存采样:'内存采样已从 11 月 16 日 17:24 开始自动记录，需满 14 天才能出结论，预计 11 月 30 日 17:24 后出具判定。',cron 循环:'定时任务多租户改造已通过复审并合并。',环境变量:'环境变量注入与回读已自测通过。',病人档案:'病人档案聚合接口联调中，为租户端/病人端的前置依赖。',租户端:'租户端展示适配，依赖病人档案接口。',病人端:'病人端展示适配。'};
+ const sums={"内存采样": "内存采样已从 11 月 16 日 17:24 开始自动记录，需满 14 天才能出结论，预计 11 月 30 日 17:24 后出具判定。", "cron 循环": "定时任务多租户改造已通过复审并合并。", "环境变量": "环境变量注入与回读已自测通过。", "病人档案": "病人档案聚合接口联调中，为租户端/病人端的前置依赖。", "租户端": "租户端展示适配，依赖病人档案接口。", "病人端": "病人端展示适配。"};
  document.getElementById('detail').innerHTML=`<div class="t">${sel.title}（示意） <span class="tag">${stTxt}</span></div><div class="s">任务摘要：${sums[sel.title]||'示意节点。'}</div><div class="s">执行 Agent：${sel.kind==='pending'?'未派发':'Claude Code'} ｜ 模型：${sel.kind==='pending'?'未上报':'claude-sonnet-5-5'}</div><div class="s">费用 Token：${sel.kind==='pending'?'未上报':'费用 $0.14 · Token 58,680（入 57,954 / 出 726）'}</div>`;
  document.getElementById('innertext').textContent=sel.kind==='done'?'完成':(sel.kind==='active'?`节点内进度 ${Math.round(sel.inner*100)}%`:'完成度档 0%');
 }
