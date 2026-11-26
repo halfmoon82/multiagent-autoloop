@@ -29,11 +29,24 @@ const TABS = [['core', '总览'], ['rules', '规则'], ['rounds', '轮次'], ['t
 
 export const EXIT = { pass: 0, fail: 1, notRun: 3 };
 
-// 下拉刷新冒烟：核心 Tab 都在内容顶部；y 从 22% 拉到 62% 越过 56px 阈值且保持足够时长。
+// 下拉刷新冒烟：覆盖核心 Tab 的「列表中部起拉 → 顶部 overscroll → 指示器 → 数据重载」。
 export const PULL_REFRESH_SMOKE_TABS = Object.freeze([['core', '总览'], ['rules', '规则'], ['rounds', '轮次'], ['todos', '待办'], ['sessions', '会话']]);
 
 /** 生成 adb swipe 参数（x 取屏幕中线，y 按比例）；尺寸非法返回 null 由调用方标未执行。 */
 export function pullSwipeArgs(width, height, { fromY = 0.22, toY = 0.62, durationMs = 500 } = {}) {
+  const w = Number(width); const h = Number(height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  return ['shell', 'input', 'swipe',
+    String(Math.round(w / 2)), String(Math.round(h * fromY)),
+    String(Math.round(w / 2)), String(Math.round(h * toY)),
+    String(durationMs)];
+}
+
+/**
+ * 真机连续下拉手势：从列表中部（避开顶缘）起拉，一次滑动先靠原生滚动回到顶部，
+ * 再继续下拉形成 overscroll。长时长确保浏览器收到完整 touchmove 序列。
+ */
+export function pullFromListArgs(width, height, { fromY = 0.45, toY = 0.95, durationMs = 600 } = {}) {
   const w = Number(width); const h = Number(height);
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
   return ['shell', 'input', 'swipe',
@@ -269,20 +282,30 @@ function main() {
       pause(1);
       waitFor(serialA, '收起', 8000);
     }],
+    ['列表滚动不误触下拉刷新', () => {
+      tap(serialA, waitFor(serialA, '总览'));
+      pause(1);
+      const size = /(\d+)x(\d+)/.exec(sh(serialA, 'wm size'));
+      const w = Number(size?.[1]); const h = Number(size?.[2]);
+      if (!w || !h) throw new StepFailure('读不到屏幕尺寸，无法判定滚动误触');
+      // 普通向上滑动只滚动列表，不应误触发下拉刷新。
+      adb(serialA, ['shell', 'input', 'swipe',
+        String(Math.round(w / 2)), String(Math.round(h * 0.8)),
+        String(Math.round(w / 2)), String(Math.round(h * 0.3)), '250']);
+      pause(1);
+      if (/正在刷新/.test(dump(serialA))) throw new StepFailure('普通列表滚动误触发了下拉刷新');
+    }],
     ...PULL_REFRESH_SMOKE_TABS.map(([, label]) => [`下拉刷新：${label}`, () => {
       tap(serialA, waitFor(serialA, label));
       pause(1);
       const size = /(\d+)x(\d+)/.exec(sh(serialA, 'wm size'));
-      const args = pullSwipeArgs(size?.[1], size?.[2]);
+      const args = pullFromListArgs(size?.[1], size?.[2]);
       if (!args) throw new StepFailure('读不到屏幕尺寸，无法下拉');
-      // 先回到内容顶部再下拉，落在纵向区间，不与卡片滚动/左滑关闭抢手势。
-      adb(serialA, ['shell', 'input', 'swipe',
-        String(Math.round(Number(size[1]) / 2)), String(Math.round(Number(size[2]) * 0.5)),
-        String(Math.round(Number(size[1]) / 2)), String(Math.round(Number(size[2]) * 0.95)), '120']);
+      // 一次连续手势：列表中部起拉 → 原生滚动回顶 → overscroll 越过阈值 → 指示器 → 数据重载。
       adb(serialA, args);
       const refreshing = waitFor(serialA, '正在刷新', 6000);
       screenshot(serialA, `pull-refresh-${label}`);
-      return { reason: `下拉出现刷新指示（约 ${refreshing.x},${refreshing.y}）` };
+      return { reason: `列表中部起拉→顶部 overscroll 出现刷新指示（约 ${refreshing.x},${refreshing.y}）` };
     }]),
     ['安装版界面版本变化如实提示更新', () => {
       const turn = process.env.AUTOLOOP_SMOKE_VERSION_TURN || '';

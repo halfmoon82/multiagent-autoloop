@@ -119,23 +119,29 @@ button:disabled { opacity: 0.6; cursor: default; }
   flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: clip;
   overscroll-behavior: contain; scrollbar-width: thin;
 }
-/* 下拉刷新指示：仅在内容顶部出现，跟手位移由 app.mjs 写 transform；pointer-events:none 不抢点击与手势。 */
+/* 下拉刷新指示：跟手从内容顶缘滑入；idle（下拉中/待松手）与 refreshing 两态都有高对比底色与阴影，真机上清晰可见。
+   pointer-events:none 不抢点击与手势；状态由 app.mjs 写 data-state，与冻结设计稿的绿色语义保持一致。 */
 .pull-refresh-indicator {
   position: absolute; z-index: 6; top: 0; left: 0; right: 0;
-  display: flex; align-items: center; justify-content: center; gap: 0.4rem;
-  min-height: 2.4rem; padding: 0.35rem 0.6rem;
-  background: rgba(236, 252, 244, 0.97); color: #16835c;
-  border-bottom: 1px solid var(--line, #e3e8e5);
-  font-size: 0.8rem; font-weight: 650; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; gap: 0.45rem;
+  min-height: 2.7rem; padding: 0.45rem 0.7rem;
+  background: #e6f7ef; color: #0f6849;
+  border-bottom: 2px solid #16835c;
+  box-shadow: 0 2px 10px rgba(15, 104, 73, 0.22);
+  font-size: 0.86rem; font-weight: 700; pointer-events: none;
   transition: transform 180ms ease-out;
 }
 .pull-refresh-indicator[hidden] { display: none; }
-.pull-refresh-indicator .ptr-icon { display: inline-block; font-size: 1rem; line-height: 1; transition: transform 150ms ease-out; }
+.pull-refresh-indicator[data-state="refreshing"] { background: #d3f0e2; border-bottom-color: #0f6849; }
+.pull-refresh-indicator.ptr-ready { background: #c8ecd9; border-bottom-color: #0a4e36; }
+.pull-refresh-indicator .ptr-icon { display: inline-block; font-size: 1.15rem; line-height: 1; transition: transform 150ms ease-out; }
 .pull-refresh-indicator.ptr-ready .ptr-icon { transform: rotate(180deg); }
 .pull-refresh-indicator.ptr-refreshing .ptr-icon { animation: ptr-spin 900ms linear infinite; }
 @keyframes ptr-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .pull-refresh-indicator, .pull-refresh-indicator .ptr-icon { transition: none; animation: none; }
+  /* 降级后不转圈，但文案与底色仍能区分 refreshing 态。 */
+  .pull-refresh-indicator.ptr-refreshing .ptr-icon { transform: none; }
 }
 .tab-bar {
   flex: none; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));

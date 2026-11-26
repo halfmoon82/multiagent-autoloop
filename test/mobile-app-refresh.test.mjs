@@ -20,7 +20,7 @@ import {
   REFRESH_TAB_KEY, REFRESH_VERSION_KEY,
   PULL_REFRESH_THRESHOLD_PX,
 } from '../mobile/app/www/shell.mjs';
-import { pullSwipeArgs } from '../mobile/app/scripts/emulator-smoke.mjs';
+import { pullSwipeArgs, pullFromListArgs } from '../mobile/app/scripts/emulator-smoke.mjs';
 import { createConsoleServer } from '../src/server.mjs';
 import { createDeviceStore } from '../src/device-auth.mjs';
 import { fakeHub, json, listen, close } from './helpers.mjs';
@@ -42,9 +42,10 @@ test('下拉手势：顶部纵向越过阈值才触发，松开回弹不触发',
   assert.equal(g.end({ x: 150, y: 40 + PULL_REFRESH_THRESHOLD_PX + 10 }).fired, true);
 });
 
-test('下拉手势：未到顶、横向滑、上滑、多指与取消都不触发', () => {
+test('下拉手势：未到顶时接管手势但不触发，滚动交还浏览器', () => {
   const notTop = createPullRefreshGesture();
-  assert.equal(notTop.start({ x: 100, y: 100, atTop: false }), false);
+  assert.equal(notTop.start({ x: 100, y: 100, atTop: false }), true);
+  assert.deepEqual(notTop.move({ x: 100, y: 300, atTop: false }), { pulling: false, distance: 0, ready: false });
   assert.equal(notTop.end({ x: 100, y: 300 }).fired, false);
 
   const horiz = createPullRefreshGesture();
@@ -74,6 +75,33 @@ test('下拉手势：距离设上限，回弹后不残留 active', () => {
   assert.equal(r.fired, true);
   assert.equal(r.distance, 72);
   assert.equal(g.active(), false);
+});
+
+// 真机可用性：用户常在列表中部起拉，先靠原生滚动回到顶部，再继续下拉触发 overscroll。
+// 手势必须在同一次按下中生效，overscroll 距离从「刚到顶」那一刻重新计，不能把前面的滚动量算成下拉。
+test('下拉手势：列表中部起拉，滚到顶部后继续下拉才触发；仅回到顶部不误触', () => {
+  const g = createPullRefreshGesture({ thresholdPx: 56 });
+  assert.equal(g.start({ x: 150, y: 600, t: 0, atTop: false }), true);
+  // 手指下移 300px 把列表滚到顶；此时仍只是滚动，不该出现 pulling。
+  assert.deepEqual(g.move({ x: 150, y: 900, atTop: true }), { pulling: false, distance: 0, ready: false });
+  assert.equal(g.end({ x: 150, y: 900 }).fired, false, '只滚到顶就松手不能刷新');
+
+  const pull = createPullRefreshGesture({ thresholdPx: 56 });
+  pull.start({ x: 150, y: 600, t: 0, atTop: false });
+  pull.move({ x: 150, y: 900, atTop: true }); // 到顶，重设基准
+  const r = pull.move({ x: 150, y: 970, atTop: true }); // 真正 overscroll 70px
+  assert.equal(r.pulling, true);
+  assert.equal(r.ready, true);
+  assert.equal(r.distance, 70, '距离必须从到顶那一刻算起');
+  assert.equal(pull.end({ x: 150, y: 970 }).fired, true);
+});
+
+test('下拉手势：到顶后横向仍是 tab-swipe / 左滑的，不被下拉抢走', () => {
+  const g = createPullRefreshGesture();
+  assert.equal(g.start({ x: 100, y: 100, atTop: true }), true);
+  g.move({ x: 180, y: 140, atTop: true }); // 主轴锁为横向
+  assert.equal(g.move({ x: 180, y: 260, atTop: true }).pulling, false);
+  assert.equal(g.end({ x: 180, y: 260 }).fired, false);
 });
 
 // ---------------------------------------------------------------------------
@@ -209,9 +237,30 @@ test('设计合同标记：app.mjs 命中 pull-refresh / version-reload 的 veri
   }
 });
 
+test('真机接线：touchmove 非被动且只在到顶下拉时阻止原生 overscroll', () => {
+  const app = read('mobile/app/www/app.mjs');
+  assert.match(app, /addEventListener\(['"]touchmove['"][^)]*passive:\s*false/, '必须用非被动 touchmove 才能阻止原生回弹');
+  assert.match(app, /pull\.move\(\{[^}]*atTop/, '每次移动都要重新判定是否到顶');
+  assert.match(app, /e\.preventDefault\(\)/, '到顶下拉需阻止原生 overscroll，避免 pointercancel 吃掉手势');
+  // 未到顶时只滚动不阻止：preventDefault 必须跟在 pulling 判定之后（由浏览器回归覆盖实际行为）。
+  const css = read('mobile/app/www/styles.css');
+  assert.match(css, /ptr-idle|ptr-ready/, 'idle 态需有可见样式');
+  assert.match(css, /ptr-refreshing/, 'refreshing 态需有可见样式');
+  assert.match(css, /prefers-reduced-motion/, 'reduced-motion 降级保留');
+  const smoke = read('mobile/app/scripts/emulator-smoke.mjs');
+  assert.match(smoke, /overscroll|顶部/, '冒烟步骤需覆盖到顶 overscroll');
+});
+
 test('模拟器 swipe 参数：按屏幕宽高生成下拉坐标', () => {
   assert.deepEqual(pullSwipeArgs(400, 800), ['shell', 'input', 'swipe', '200', '176', '200', '496', '500']);
   assert.equal(pullSwipeArgs(0, 800), null);
+});
+
+test('真机手势参数：列表中部起拉到接近底缘，一次连续滑动覆盖到顶 overscroll', () => {
+  // 402x874 屏幕：起点约 393px（列表中部，非顶缘），终点约 830px，跨度远大于 56px 阈值。
+  assert.deepEqual(pullFromListArgs(402, 874), ['shell', 'input', 'swipe', '201', '393', '201', '830', '600']);
+  assert.equal(pullFromListArgs(0, 874), null);
+  assert.equal(pullFromListArgs(402, 0), null);
 });
 
 // ---------------------------------------------------------------------------
@@ -260,24 +309,58 @@ test('浏览器：下拉刷新出现指示并触发重载；界面版本变化�
   await page.locator('#app-main').waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.getElementById('connection-status')?.getAttribute('aria-label')?.includes('已安全连接'));
 
-  // 切到「规则」Tab，验证下拉只在该根页生效并出现刷新指示。
+  // 切到「规则」Tab，用真实 TouchEvent 覆盖真机手势路径（不是只跑 PointerEvent）。
   await page.evaluate(() => window.AutoloopNav.selectTab('rules'));
   await page.waitForFunction(() => document.getElementById('app-main')?.dataset.activeTab === 'rules');
-  await page.evaluate(() => { document.querySelector('.content').scrollTop = 0; });
+  // 造一个可滚动的内容区，模拟“列表不在顶部”的真实场景。
   await page.evaluate(() => {
     const surface = document.querySelector('.content');
-    const fire = (type, y) => surface.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 7, pointerType: 'touch', clientX: 180, clientY: y }));
-    fire('pointerdown', 120);
-    fire('pointermove', 140);
-    fire('pointermove', 200);
-    fire('pointerup', 200);
+    Object.defineProperty(surface, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(surface, 'clientHeight', { configurable: true, get: () => 800 });
+    // scrollTop 真属性会被实际布局钳制，这里用可控假值模拟列表滚动位置。
+    let top = 300;
+    Object.defineProperty(surface, 'scrollTop', { configurable: true, get: () => top, set: v => { top = v; } });
+    window.__fireTouch = (type, y) => {
+      const t = new Touch({ identifier: 7, target: surface, clientX: 180, clientY: y });
+      const ending = type === 'touchend' || type === 'touchcancel';
+      surface.dispatchEvent(new TouchEvent(type, {
+        bubbles: true, cancelable: true,
+        touches: ending ? [] : [t], targetTouches: ending ? [] : [t], changedTouches: [t],
+      }));
+    };
   });
+
+  // 未到顶的下拉只滚动，不出现刷新指示（浏览器回归“滚动不误触”）。
+  await page.evaluate(() => {
+    window.__fireTouch('touchstart', 400);
+    window.__fireTouch('touchmove', 470);
+    window.__fireTouch('touchmove', 520);
+    window.__fireTouch('touchend', 520);
+  });
+  assert.equal(await page.evaluate(() => document.getElementById('pull-refresh-indicator')?.hidden), true, '列表未到顶的下拉不应触发刷新');
+
+  // 列表中部起拉 → 原生滚动回到顶部 → 继续 overscroll 越过阈值 → 指示器出现 → 松手刷新。
+  await page.evaluate(async () => {
+    const surface = document.querySelector('.content');
+    surface.scrollTop = 300;
+    window.__fireTouch('touchstart', 400);
+    surface.scrollTop = 0; // 手势中途滚到顶
+    window.__fireTouch('touchmove', 700); // 到顶，重设基准
+    window.__fireTouch('touchmove', 780); // overscroll 80px，越过阈值
+  });
+  await page.waitForFunction(() => {
+    const el = document.getElementById('pull-refresh-indicator');
+    return el && !el.hidden && /松开立即刷新规则/.test(el.textContent);
+  }, null, { timeout: 3000 });
+  assert.equal(await page.locator('#pull-refresh-indicator').getAttribute('data-state'), 'idle', '下拉未松手时应是 idle 态');
+  await page.evaluate(() => window.__fireTouch('touchend', 780));
   await page.waitForFunction(() => {
     const el = document.getElementById('pull-refresh-indicator');
     return el && !el.hidden && el.textContent.includes('正在刷新');
   }, null, { timeout: 3000 });
   const indicatorText = await page.locator('#pull-refresh-indicator').textContent();
   assert.match(indicatorText, /正在刷新规则/);
+  assert.equal(await page.locator('#pull-refresh-indicator').getAttribute('data-state'), 'refreshing');
   await page.waitForFunction(() => document.getElementById('pull-refresh-indicator')?.hidden === true, null, { timeout: 5000 });
 
   // 手势共存：下拉刷新之后横向滑动仍由 tab-swipe 切页，纵向与横向两套手势互不拦截。

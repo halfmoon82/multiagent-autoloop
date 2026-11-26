@@ -616,8 +616,13 @@ const finite = value => typeof value === 'number' && Number.isFinite(value);
 
 /**
  * 下拉刷新手势状态机：start → move* → end/cancel。
- * 只在内容滚到顶部且主轴判定为纵向向下时才 pulling；横向一旦锁定就不再抢手势，
- * 保证与 tab 滑动切页、会话行左滑关闭、折叠卡片点击互不冲突。
+ *
+ * 真机可用性：用户常在列表中部起拉，先靠原生滚动回到顶部，再继续下拉才产生 overscroll。
+ * 因此 start 只要求坐标合法、不必已在顶部；atTop 每次 move 重新传入（由 DOM 实时测量）。
+ * 当「从未到顶 → 刚到顶」且主轴已锁为纵向向下时，把基准点重设到当前触点：前面的滚动量
+ * 不计入下拉距离，既不误触，也保证越阈判定与跟手指示器从 overscroll 起点开始。
+ * 横向一旦锁定就不再抢手势；未到顶时返回 pulling:false，调用方据此把滚动交还浏览器。
+ * 这些都保证与 tab 滑动切页、会话行左滑关闭、折叠卡片点击互不冲突。
  */
 export function createPullRefreshGesture({
   thresholdPx = PULL_REFRESH_THRESHOLD_PX,
@@ -625,21 +630,34 @@ export function createPullRefreshGesture({
   axisLockPx = PULL_REFRESH_AXIS_LOCK_PX,
 } = {}) {
   let session = null;
+  const idle = () => ({ pulling: false, distance: 0, ready: false });
   return {
     active: () => Boolean(session),
     start({ x, y, t, atTop = true, enabled = true } = {}) {
-      if (!enabled || !atTop || !finite(x) || !finite(y)) { session = null; return false; }
-      session = { x, y, t: finite(t) ? t : 0, dx: 0, dy: 0, axis: null };
+      if (!enabled || !finite(x) || !finite(y)) { session = null; return false; }
+      // 未在顶部也先接管：接下来的 move 会实时判定到顶，再把滚动量重设掉。
+      session = { x, y, t: finite(t) ? t : 0, dx: 0, dy: 0, axis: null, atTop: Boolean(atTop), armed: !atTop };
       return true;
     },
-    move({ x, y } = {}) {
-      if (!session) return { pulling: false, distance: 0, ready: false };
+    move({ x, y, atTop } = {}) {
+      if (!session) return idle();
       if (finite(x)) session.dx = x - session.x;
       if (finite(y)) session.dy = y - session.y;
+      const top = typeof atTop === 'boolean' ? atTop : session.atTop;
       if (!session.axis && Math.max(Math.abs(session.dx), Math.abs(session.dy)) >= axisLockPx) {
         session.axis = Math.abs(session.dy) > Math.abs(session.dx) ? 'y' : 'x';
       }
-      if (session.axis !== 'y' || session.dy <= 0) return { pulling: false, distance: 0, ready: false };
+      // 滚动到顶的那一刻重设基准：overscroll 距离从此处算，避免把列表滚动量算成下拉。
+      if (session.armed && top && session.axis === 'y' && session.dy > 0) {
+        if (finite(x)) session.x = x;
+        if (finite(y)) session.y = y;
+        session.dx = 0;
+        session.dy = 0;
+        session.armed = false;
+      }
+      session.atTop = top;
+      // 未到顶（仍在滚动）、主轴横向、向上滑都不接管，滚动/切页照常。
+      if (!top || session.axis !== 'y' || session.dy <= 0) return idle();
       return {
         pulling: true,
         distance: Math.min(session.dy, maxPullPx),
@@ -652,7 +670,7 @@ export function createPullRefreshGesture({
       session = null;
       if (finite(x)) s.dx = x - s.x;
       if (finite(y)) s.dy = y - s.y;
-      const fired = s.axis === 'y' && s.dy >= thresholdPx;
+      const fired = s.atTop && s.axis === 'y' && s.dy >= thresholdPx;
       return { fired, distance: fired ? Math.min(s.dy, maxPullPx) : 0 };
     },
     cancel() {
