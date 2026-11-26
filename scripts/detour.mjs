@@ -25,14 +25,37 @@ function args() {
   return options;
 }
 
+// 拒答/限额信号：有的 CLI（实测 codebuddy/ACP）被拒时把「429 额度已用尽」打到输出但退出码仍是 0，
+// 只看退出码会把永久拒答误判为已恢复（2026-11-24/25 事故：绕行被自动回归后真实派发再次 refusal）。
+export const PROBE_REFUSAL_RE = /额度已用尽|余额不足|refusal|rate\s?limit|too many requests|quota[_\s-]?(exhausted|balance)|bizCode=14018|httpStatus=429/i;
+const PROBE_OUTPUT_CAP = 65536;
+
+/** 收集输出到封顶缓冲（data 事件本身就在排水，不会堵管道），超帽后丢弃内容只计数。 */
+function cappedCollector() {
+  const state = { text: '', over: false };
+  state.push = (chunk) => {
+    if (state.over) return;
+    state.text += chunk.toString('utf8');
+    if (state.text.length > PROBE_OUTPUT_CAP) { state.over = true; state.text = state.text.slice(0, PROBE_OUTPUT_CAP); }
+  };
+  return state;
+}
+
 export function runProbe(command, timeoutMs) {
   return new Promise((resolve) => {
-    // 输出不消费，管道会被大输出堵死；探测只看退出码。
-    const child = spawn(command[0], command.slice(1), { stdio: ['ignore', 'ignore', 'ignore'] });
+    // 退出码 + 输出双闸：退出码非 0 或输出含拒答信号都视为未恢复。
+    const child = spawn(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+    const collectOut = cappedCollector(); const collectErr = cappedCollector();
+    child.stdout.on('data', collectOut.push);
+    child.stderr.on('data', collectErr.push);
     let settled = false;
-    const timer = setTimeout(() => { if (!settled) { settled = true; child.kill('SIGKILL'); resolve(false); } }, timeoutMs);
-    child.on('error', () => { if (!settled) { settled = true; clearTimeout(timer); resolve(false); } });
-    child.on('exit', (code, signal) => { if (!settled) { settled = true; clearTimeout(timer); resolve(code === 0 && !signal); } });
+    const finish = (ok) => { if (!settled) { settled = true; clearTimeout(timer); resolve(ok); } };
+    const timer = setTimeout(() => { child.kill('SIGKILL'); finish(false); }, timeoutMs);
+    child.on('error', () => finish(false));
+    child.on('exit', (code, signal) => {
+      const refused = PROBE_REFUSAL_RE.test(collectOut.text) || PROBE_REFUSAL_RE.test(collectErr.text);
+      finish(code === 0 && !signal && !refused);
+    });
   });
 }
 

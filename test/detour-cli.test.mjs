@@ -99,6 +99,19 @@ test('verify-all exits 1 when a due probe fails but keeps the detour', () => {
   assert.deepEqual(rulesTo(root), ['claude', 'claude']);
 });
 
+// 2026-11-24/25 事故回归：codebuddy/ACP 被拒时把「429 额度已用尽」打到输出但退出码仍是 0，
+// 只看退出码会把永久拒答误判为已恢复，绕行被自动回归后真实派发再次 refusal。
+test('verify-all treats exit-0 refusal output as a failed probe', () => {
+  const root = fixture();
+  const refusalExit0 = '["' + process.execPath + '", "-e", "console.log(String.fromCharCode(39069,24230,24050,29992,23613)); process.exit(0)"]';
+  record(root, refusalExit0);
+  clearCooldown(root);
+  const result = run(root, 'verify-all');
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /未通过，继续绕行/);
+  assert.deepEqual(rulesTo(root), ['claude', 'claude']);
+});
+
 test('verify-all exits 0 with a clear message when nothing is due', () => {
   const root = fixture();
   const result = run(root, 'verify-all');
