@@ -405,6 +405,14 @@ export function mount(ctx) {
   todosEl.appendChild(quickNotice);
   // 本机刚回答成功的卡：Hub 状态重读前也不再显示（失败不进此集合，卡与选项原样保留）。
   const answeredIds = new Set();
+  // 统一「卡已答」状态源（sessions 功能模块，2026-11-26 review P2-1）：
+  // 在会话窗办结的卡，待办列表与角标同源收起；状态源变化时立即重渲染，不等切页或下拉刷新。
+  let answeredSource = null;
+  void loadCardWrite().then(model => {
+    if (!model || typeof model.onLocallyAnsweredChange !== 'function') return;
+    answeredSource = model;
+    model.onLocallyAnsweredChange(() => renderCurrent());
+  }).catch(() => null);
 
   // 另一处已办结（幂等成功）时给轻提示；真成功无提示，真失败走各自的错误分支。
   async function showHandledNotice(result, item) {
@@ -705,7 +713,10 @@ export function mount(ctx) {
     const openIds = new Set((fullSnapshot.state?.cards || []).filter(card => card?.state === 'open').map(card => String(card.id)));
     for (const id of answeredIds) if (!openIds.has(id)) answeredIds.delete(id);
     const projectScope = activeFilter && !activeFilter.isAll ? String(activeFilter.selectedLabel || activeFilter.selectedId || '') : '';
-    const pages = coreModel.buildPages(filteredSnapshot(), { hiddenIds: answeredIds, projectScope });
+    // 隐藏集合 = 本页刚答的卡 ∪ 统一状态源里所有本机已办结的卡（含会话窗答的），角标计数同源。
+    const hiddenIds = new Set(answeredIds);
+    for (const id of answeredSource?.locallyAnsweredIds?.() || []) hiddenIds.add(String(id));
+    const pages = coreModel.buildPages(filteredSnapshot(), { hiddenIds, projectScope });
     renderOverview(pages.overview);
     renderRules(pages.rules);
     renderRuns(pages.runs);

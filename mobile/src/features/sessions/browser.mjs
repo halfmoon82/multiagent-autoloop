@@ -27,11 +27,26 @@ export function markCardAnsweredLocal(id, payload = {}) {
       : { text: String(payload?.text ?? '') },
     at: Date.now(),
   });
+  notifyLocallyAnswered(key);
   return true;
 }
 export function isCardAnsweredLocal(id) { return locallyAnsweredCards.has(cardKey(id)); }
 export function locallyAnsweredIds() { return [...locallyAnsweredCards.keys()]; }
 export function resetLocallyAnswered() { locallyAnsweredCards.clear(); }
+
+// 状态源变化订阅（2026-11-26 review P2-1）：任一处办结登记后立刻通知订阅方
+// （待办页据此重渲染收起该卡并同步角标），不等切页重载或下拉刷新。
+const answeredListeners = new Set();
+export function onLocallyAnsweredChange(listener) {
+  if (typeof listener !== 'function') return () => {};
+  answeredListeners.add(listener);
+  return () => answeredListeners.delete(listener);
+}
+function notifyLocallyAnswered(key) {
+  for (const listener of answeredListeners) {
+    try { listener(key); } catch { /* 单个监听器异常不影响登记与其他监听器 */ }
+  }
+}
 
 // 与 fix4 的 markCardAnswered 合并为同一入口：既产出标记已答的卡片副本，又登记统一状态源。
 // 不改原数组，与 cardsToQuestionGroup 的 HANDLED_STATES 过滤衔接。

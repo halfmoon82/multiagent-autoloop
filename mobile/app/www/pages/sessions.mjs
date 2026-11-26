@@ -568,7 +568,11 @@ export function mount(ctx) {
     state.follow = true;
     // 决策卡按会话归属过滤（fix4）：有 lane 的卡只进 lane 对应会话，无 lane 的卡按项目归属；
     // 不再只按项目过滤，别的会话的卡不会串进来。
-    const cards = qmodel?.cardsForSession ? qmodel.cardsForSession(state.cards, session) : [];
+    // 经统一「卡已答」源过滤（openCardsBySession）：在待办/别处刚办结的卡，Hub 状态还没翻过去时
+    // 重新打开会话也不再出现（2026-11-26 review P2-1 同根因：主路径原先只按 lane/项目过滤）。
+    const cards = smodel?.openCardsBySession
+      ? smodel.openCardsBySession(state.cards, session, qmodel?.cardsForSession)
+      : (qmodel?.cardsForSession ? qmodel.cardsForSession(state.cards, session) : []);
     state.group = qmodel ? qmodel.cardsToQuestionGroup(cards, { id: 'session-cards', sessionId: session.id }) : null;
     if (qmodel && state.savedGroup && state.savedSessionId === session.id) {
       // 恢复的草稿组里已在别处回答/结案的卡要剔除，不复活残留卡。

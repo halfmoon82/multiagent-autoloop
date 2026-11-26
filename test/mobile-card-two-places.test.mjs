@@ -12,6 +12,7 @@ import path from 'node:path';
 import {
   createSessionsWrite, openCardsBySession, pruneQuestionGroup,
   markCardAnswered, markCardAnsweredLocal, isCardAnsweredLocal, locallyAnsweredIds, resetLocallyAnswered,
+  onLocallyAnsweredChange,
 } from '../mobile/src/features/sessions/browser.mjs';
 import { buildCardAnsweredNotice } from '../mobile/src/features/sessions/views.mjs';
 import { cardsForSession, cardsToQuestionGroup } from '../mobile/src/features/question-group/index.mjs';
@@ -25,6 +26,21 @@ const openCard = (id, extra = {}) => ({
   project: '/work/p', lane: 'scheduling:sess-a', createdAt: '2026-11-26T08:00:00Z', ...extra,
 });
 const sessionA = { id: 'sess-a', project: '/work/p', hubSubject: 'scheduling:sess-a' };
+
+test('统一状态源变化订阅：登记即通知、可退订、单个监听器异常不影响他人（review P2-1）', () => {
+  resetLocallyAnswered();
+  const seen = [];
+  const offBroken = onLocallyAnsweredChange(() => { throw new Error('监听器自身异常'); });
+  const off = onLocallyAnsweredChange(id => seen.push(id));
+  assert.equal(onLocallyAnsweredChange(null)(), undefined, '非函数入参返回空退订不抛错');
+  markCardAnsweredLocal(91, { choice: 0 });
+  assert.deepEqual(seen, ['91'], '登记统一状态源即通知订阅方（待办页据此重渲染）');
+  off();
+  offBroken();
+  markCardAnsweredLocal(92, { text: '好' });
+  assert.deepEqual(seen, ['91'], '退订后不再通知');
+  resetLocallyAnswered();
+});
 
 test('统一「卡已答」状态源：待办回答后会话卡归属过滤同步收起该卡', () => {
   resetLocallyAnswered();
