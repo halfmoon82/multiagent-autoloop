@@ -4,7 +4,7 @@
 // 并额外要求 x-device-token（由 server 的 requireMobileDevice 验证后传入 ctx.device）。
 // 自包含响应助手与同步 handleMobileWrite 签名，避免改动 server.mjs 或与它形成循环依赖。
 
-import { createReadStream } from 'node:fs';
+import { createReadStream, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { hubRequest, HubError } from './hub.mjs';
@@ -33,6 +33,35 @@ function securityHeaders() {
 function jsonResponse(res, status, value) {
   res.writeHead(status, { ...securityHeaders(), 'content-type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(value));
+}
+
+// artifact-image-preview：移动端产物页只额外列可在线查看的图片（png/jpg/jpeg/webp/gif）。
+// 其余 DOWNLOAD_EXTENSIONS（apk/zip/pdf 等）仍只走桌面下载，不进手机列表。
+// 文档沿用 500KB 口径；图片按需放宽到 5MB，超封顶标注 overCap 并保留下载备选。
+const MOBILE_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+const MOBILE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const MOBILE_IMAGE_MIME = Object.freeze({
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif',
+});
+const DOC_EXTENSIONS = new Set(['.md', '.markdown', '.html', '.htm']);
+const num = (value, fallback = 0) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+function mobileImageExt(name) {
+  const ext = path.extname(String(name || '')).toLowerCase();
+  return MOBILE_IMAGE_EXTENSIONS.has(ext) ? ext : null;
+}
+function isDocArtifact(name) {
+  return DOC_EXTENSIONS.has(path.extname(String(name || '')).toLowerCase());
+}
+function withImageMeta(artifact, sessionId, task) {
+  const ext = mobileImageExt(artifact?.name || artifact?.path);
+  if (!ext) return artifact;
+  return {
+    ...artifact, kind: 'image', mimeType: MOBILE_IMAGE_MIME[ext],
+    overCap: num(artifact?.size) > MOBILE_IMAGE_MAX_BYTES,
+    ...(sessionId == null ? {} : { sessionId: String(sessionId) }),
+    ...(task == null ? {} : { task: String(task) }),
+  };
 }
 
 // 路由表：method + 路径模式 + 稳定 key。后续节点按 key 覆盖实现，不改这张表。
@@ -336,28 +365,65 @@ async function previewTicketRoute(res, url, route, ctx) {
 // 全局产物聚合：跨会话汇总，与网页同一份扫描逻辑（src/artifacts.mjs），按时间倒序并封顶。
 async function artifactsRoute(res, ctx) {
   const sessions = await ctx.config.schedulingSessions.list();
-  // list() 返回对外视图（cwd/createdAt/prompt），聚合函数契约是内部形态 { id, task, cwd, startedAt }：
+  const views = Array.isArray(sessions) ? sessions : [];
+  const taskOf = view => String(view?.prompt || '').split('\n')[0].trim().slice(0, 40);
+  // 文档：list() 返回对外视图（cwd/createdAt/prompt），聚合函数契约是内部形态 { id, task, cwd, startedAt }：
   // 必须映射并用 createdAt 作 startedAt，否则 since=null 会把仓库历史文档全部当本会话产物（P1 修复）。
-  const files = listSessionArtifacts((Array.isArray(sessions) ? sessions : []).map(view => ({
+  const docs = listSessionArtifacts(views.map(view => ({
     id: view?.id,
     cwd: view?.cwd,
     startedAt: view?.createdAt || null,
-    task: String(view?.prompt || '').split('\n')[0].trim().slice(0, 40),
+    task: taskOf(view),
   })));
+  // 图片：会话方法已按 includeFiles 列出二进制；这里只取图片类并标注 MIME/封顶，
+  // 不把 apk/zip/pdf 等只下载交付物带进手机列表。
+  const images = [];
+  for (const view of views) {
+    try {
+      const found = await ctx.config.schedulingSessions.listSessionArtifacts(view?.id);
+      for (const artifact of Array.isArray(found) ? found : []) {
+        if (!mobileImageExt(artifact?.name || artifact?.path)) continue;
+        images.push(withImageMeta(artifact, view?.id, taskOf(view)));
+      }
+    } catch { /* 单个会话不可读不影响全局聚合 */ }
+  }
+  const files = [...docs, ...images]
+    .sort((a, b) => String(b?.at || '').localeCompare(String(a?.at || ''))
+      || String(a?.path || '').localeCompare(String(b?.path || ''))
+      || String(a?.sessionId || '').localeCompare(String(b?.sessionId || '')))
+    .slice(0, 50);
   jsonResponse(res, 200, { device: ctx.device, files });
 }
 
-// 会话产物列表：与网页 /api/scheduling-sessions/:id/artifacts 同一 listSessionArtifacts。
+// 会话产物列表：文档与图片同源；其余二进制交付物仍只走桌面下载，不在手机列表露出。
 async function sessionArtifactsRoute(res, url, route, ctx) {
   const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
-  const files = await ctx.config.schedulingSessions.listSessionArtifacts(id);
+  const found = await ctx.config.schedulingSessions.listSessionArtifacts(id);
+  const files = (Array.isArray(found) ? found : [])
+    .filter(artifact => mobileImageExt(artifact?.name || artifact?.path) || isDocArtifact(artifact?.name || artifact?.path))
+    .map(artifact => withImageMeta(artifact));
   jsonResponse(res, 200, { device: ctx.device, files });
 }
 
-// 产物文件内容：与网页 /file 同一 readSessionArtifact（服务端已做路径白名单与大小封顶）。
+// 产物文件内容：文档与网页 /file 同一 readSessionArtifact（路径白名单与 500KB 封顶）。
+// 图片：复用下载路由的越界/符号链接校验，按 5MB 封顶，返回 base64 供 WebView 就地 data URL 在线查看；
+// 超出 5MB 明确拒绝并给下载备选，绝不退化成静默下载或普通跳转链接。
 async function sessionArtifactFileRoute(res, url, route, ctx) {
   const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
   const requested = String(url.searchParams.get('path') || '');
+  const ext = mobileImageExt(requested);
+  if (ext) {
+    const file = await ctx.config.schedulingSessions.resolveSessionDownload(id, requested);
+    if (num(file?.size) > MOBILE_IMAGE_MAX_BYTES) {
+      return jsonResponse(res, 413, { error: '图片超过 5MB，无法在线预览，请下载查看', overCap: true, download: true });
+    }
+    const bytes = readFileSync(file.real);
+    return jsonResponse(res, 200, {
+      device: ctx.device, sessionId: id, path: requested, name: file.name,
+      size: file.size, mimeType: MOBILE_IMAGE_MIME[ext], kind: 'image',
+      content: bytes.toString('base64'),
+    });
+  }
   const file = await ctx.config.schedulingSessions.readSessionArtifact(id, requested);
   jsonResponse(res, 200, { device: ctx.device, ...file });
 }

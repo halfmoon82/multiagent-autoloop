@@ -22,8 +22,10 @@ import {
   buildArtifactBrowserBinding,
 } from '../mobile/src/features/artifacts/index.mjs';
 import {
-  listSessionArtifacts, readSessionArtifact, readableArtifactError,
+  listSessionArtifacts, readSessionArtifact, readableArtifactError, resolveDownload,
 } from '../src/artifacts.mjs';
+import * as artifactPageModule from '../mobile/src/features/artifacts/page.mjs';
+import { handleMobileWrite } from '../src/mobile-write.mjs';
 import {
   createQuestionGroup, setDraft, setScrollTop, snapshotGroup, restoreGroup,
   buildQuestionGroupBinding,
@@ -584,4 +586,163 @@ test('downloadFeedback 三态文案：开始/成功/失败（令牌缺失引导�
   const nt = downloadFeedback('failure', { name: 'a.md', reason: 'AUTOLOOP_DOWNLOAD_NO_TOKEN' });
   assert.equal(nt.rebind, true);
   assert.equal(nt.retry, false);
+});
+
+// ---------------------------------------------------------------------------
+// artifact-image-preview（2026-11-26）：图片类产物入列表、行内在线查看、封顶提示与下载备选。
+// ---------------------------------------------------------------------------
+function imageArtifacts() {
+  return [
+    { id: 'img1', path: 'out/图.png', name: '图.png', size: 2048, sessionId: 's1', task: 't' },
+    { id: 'img2', path: 'out/大图.jpg', name: '大图.jpg', size: 6 * 1024 * 1024, sessionId: 's1', task: 't' },
+    { id: 'a1', path: 'docs/dashboard.html', name: 'dashboard.html', size: 512, sessionId: 's1', task: 't' },
+    { id: 'a2', path: 'docs/plan.md', name: 'plan.md', size: 128, sessionId: 's1', task: 't' },
+  ];
+}
+
+test('artifactPagePlan 标注图片类产物：在线查看、MIME 与 5MB 封顶，HTML 预览不变', () => {
+  const { artifactImageMime, ARTIFACT_IMAGE_MAX_BYTES } = artifactPageModule;
+  assert.equal(ARTIFACT_IMAGE_MAX_BYTES, 5 * 1024 * 1024);
+  for (const [ext, mime] of [['.png', 'image/png'], ['.JPG', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.webp', 'image/webp'], ['.gif', 'image/gif']]) {
+    assert.equal(artifactImageMime(ext), mime, ext);
+  }
+  assert.equal(artifactImageMime('.md'), null, '非图片不返回 MIME');
+
+  const b = createArtifactBrowser({ artifacts: imageArtifacts() });
+  const plan = artifactPagePlan(b);
+  const byId = Object.fromEntries(plan.artifacts.map(row => [row.id, row]));
+  assert.equal(byId.img1.previewKind, 'image');
+  assert.equal(byId.img1.imageMime, 'image/png');
+  assert.equal(byId.img1.imageOverCap, false);
+  assert.equal(byId.img2.previewKind, 'image');
+  assert.equal(byId.img2.imageOverCap, true, '超 5MB 图片标注封顶，给提示与下载备选');
+  assert.equal(byId.a1.previewKind, 'html', 'HTML 预览保持不变');
+  assert.equal(byId.a2.previewKind, null, 'Markdown 仍无预览');
+
+  const opened = artifactPagePlan(openArtifactReader(b, 'img1').browser);
+  assert.equal(opened.selected.previewKind, 'image');
+  assert.equal(opened.download.name, '图.png', '下载按钮仍保留给确实需要落盘的场景');
+});
+
+test('mount 图片产物：行内在线查看走只读文件路由，data URL 就地渲染，不触发下载', async () => {
+  const doc = fakeDoc();
+  const root = doc.add('page-artifacts');
+  const win = { innerWidth: 390, location: { origin: 'https://auto.example' }, addEventListener() {}, removeEventListener() {} };
+  const fileCalls = [];
+  const downloadCalls = [];
+  const ctx = {
+    client: {
+      sessionArtifactFile: async (sid, p) => {
+        fileCalls.push([sid, p]);
+        return { mimeType: 'image/png', content: 'iVBORw0KGgo=', name: '图.png', size: 10, kind: 'image' };
+      },
+    },
+    state: {},
+    hooks: {
+      artifacts: () => [imageArtifacts()[0]],
+      download() { downloadCalls.push(1); return Promise.resolve({ started: true }); },
+    },
+  };
+  const artifacts = [imageArtifacts()[0]];
+  mountArtifactsPage(ctx, { doc, win, feature: artifactsFeature });
+  buttonsNamed(root, '图.png')[0].click();
+  const previewBtn = buttonsNamed(root, '在线查看')[0];
+  assert.ok(previewBtn, '图片产物有行内在线查看按钮（image-preview）');
+  assert.match(elText(root), /下载 图\.png/, '下载按钮保留');
+  previewBtn.click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(fileCalls, [['s1', 'out/图.png']], '在线查看复用只读文件路由，不经原生下载桥');
+  assert.equal(downloadCalls.length, 0, '在线查看不触发下载');
+  const img = collect(root).find(node => node.tag === 'img');
+  assert.ok(img, '图片就地以 img 渲染');
+  assert.equal(img.getAttribute('src'), 'data:image/png;base64,iVBORw0KGgo=', 'data URL 不落盘、不下载');
+  assert.equal(collect(root).some(node => node.tag === 'iframe'), false, '图片预览不走 HTML iframe');
+});
+
+test('mount 图片超封顶给明确提示与下载备选；加载失败就地重试', async () => {
+  const doc = fakeDoc();
+  const root = doc.add('page-artifacts');
+  const win = { innerWidth: 390, location: { origin: 'https://auto.example' }, addEventListener() {}, removeEventListener() {} };
+  const big = imageArtifacts()[1];
+  const normal = imageArtifacts()[0];
+  const ctx = {
+    client: { sessionArtifactFile: async () => { throw new Error('no token'); } },
+    state: {},
+    hooks: {
+      artifacts: () => [big, normal],
+      download() { return Promise.resolve({ started: true }); },
+    },
+  };
+  mountArtifactsPage(ctx, { doc, win, feature: artifactsFeature });
+  buttonsNamed(root, '大图.jpg')[0].click();
+  assert.match(elText(root), /超过 5MB/, '超封顶明确提示');
+  assert.equal(buttonsNamed(root, '在线查看').length, 0, '超封顶不提供在线查看');
+  assert.ok(buttonsNamed(root, '下载').length, '超封顶给下载备选');
+
+  buttonsNamed(root, '返回列表')[0].click();
+  buttonsNamed(root, '图.png')[0].click();
+  buttonsNamed(root, '在线查看')[0].click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.match(elText(root), /预览加载失败/, '加载失败就地提示');
+  assert.ok(buttonsNamed(root, '重试').length, '失败就地重试');
+  buttonsNamed(root, '重试')[0].click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.ok(buttonsNamed(root, '重试').length, '重试后原状态仍在，可再次重试');
+});
+
+test('移动端产物服务：列表返回图片类产物、图片只读文件路由、超封顶给下载备选', async () => {
+  const ws = mkdtempSync(path.join(tmpdir(), 'mobile-images-'));
+  const bytes = Buffer.from('89504e470d0a1a0a', 'hex');
+  const imgDir = path.join(ws, 'out');
+  mkdirSync(imgDir, { recursive: true });
+  writeFileSync(path.join(imgDir, '图.png'), bytes);
+  writeFileSync(path.join(imgDir, '大图.jpg'), Buffer.alloc(6 * 1024 * 1024, 1));
+  writeFileSync(path.join(imgDir, 'app.apk'), 'apk');
+  writeFileSync(path.join(ws, 'docs.md'), '# 文档');
+
+  const sessions = {
+    async list() { return [{ id: 's1', cwd: ws, createdAt: new Date(Date.now() - 3600000).toISOString(), prompt: '任务\n细节' }]; },
+    async listSessionArtifacts(id) {
+      assert.equal(id, 's1');
+      const at = new Date().toISOString();
+      return [
+        { path: 'out/图.png', name: '图.png', size: bytes.length, at, kind: 'file' },
+        { path: 'out/大图.jpg', name: '大图.jpg', size: 6 * 1024 * 1024, at, kind: 'file' },
+        { path: 'out/app.apk', name: 'app.apk', size: 3, at, kind: 'file' },
+        { path: 'docs.md', name: 'docs.md', size: 6, at, kind: 'doc' },
+      ];
+    },
+    async resolveSessionDownload(id, rel) { return resolveDownload(ws, rel); },
+    async readSessionArtifact(id, rel) { return { path: rel, name: String(rel).split('/').pop(), content: '# x' }; },
+  };
+  const ctx = { config: { schedulingSessions: sessions }, device: { id: 'dev' } };
+  const req = { method: 'GET', headers: { origin: 'https://auto.example', host: 'auto.example', 'x-console-request': '1', 'x-device-token': 'dev' } };
+  async function call(path) {
+    const res = {
+      status: null, body: null,
+      writeHead(status, headers) { this.status = status; this.headers = headers; },
+      end(body) { this.body = body; },
+    };
+    const url = new URL('https://auto.example' + path);
+    assert.equal(handleMobileWrite(req, res, url, ctx), true, path);
+    await new Promise(r => setTimeout(r, 0));
+    return { status: res.status, data: JSON.parse(String(res.body)) };
+  }
+
+  const global = await call('/api/mobile/artifacts');
+  assert.equal(global.status, 200);
+  assert.ok(global.data.files.some(f => f.name === '图.png' && f.kind === 'image' && f.mimeType === 'image/png'), '全局列表含图片并标注 MIME');
+  assert.ok(!global.data.files.some(f => f.name === 'app.apk'), '非图片二进制不进移动端产物列表');
+  assert.equal(global.data.files.find(f => f.name === '大图.jpg').overCap, true, '超 5MB 图片标注封顶');
+  const session = await call('/api/mobile/sessions/s1/artifacts');
+  assert.ok(session.data.files.some(f => f.name === '图.png' && f.kind === 'image'), '会话列表同样返回图片');
+  const file = await call('/api/mobile/sessions/s1/file?path=' + encodeURIComponent('out/图.png'));
+  assert.equal(file.status, 200);
+  assert.equal(file.data.kind, 'image');
+  assert.equal(file.data.mimeType, 'image/png');
+  assert.equal(Buffer.from(file.data.content, 'base64').toString('hex'), bytes.toString('hex'), '只读路由返回可在线查看的图片字节');
+  const over = await call('/api/mobile/sessions/s1/file?path=' + encodeURIComponent('out/大图.jpg'));
+  assert.equal(over.status, 413, '超封顶图片明确拒绝');
+  assert.match(over.data.error, /5MB|下载/);
+  assert.equal(over.data.download, true, '给下载备选');
 });
