@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix8-2026-11-26",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix8-baseline/refs/compact-ui.html",
+      "sha256": "bc26d3438fd0124e4859f5665302dbb6e67f602b5f48abd6b78f00325458dcfe"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix8-baseline/verifiers/fix8-design.verify.mjs",
+      "sha256": "63ddd6e44f8135965eef819a736e00bca3bb3f909d79c9a6bbf90d09dce800a4"
+    },
+    {
+      "path": "docs/design/2026-11-26-nomoto-fix8-baseline/verifiers/fix8-design-fallback.mjs",
+      "sha256": "6b5b932354d55aa90a0e7d7710b665d0b584b4ac4c03b5d77dd4b1d9f830c6f8"
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-26-nomoto-fix8-baseline/verifiers/fix8-design.verify.mjs",
+  "fallbackVerifierPath": "docs/design/2026-11-26-nomoto-fix8-baseline/verifiers/fix8-design-fallback.mjs",
+  "surfaces": [
+    {
+      "id": "compact-ui",
+      "route": "#sessions",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "default"
+      ],
+      "interactions": [
+        "auth-btns-compact",
+        "density-audit"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-26-nomoto-fix8-baseline/refs/compact-ui.html"
+      ]
+    }
+  ]
+}

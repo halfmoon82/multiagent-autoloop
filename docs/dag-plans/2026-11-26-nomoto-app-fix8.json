@@ -1,0 +1,45 @@
+{
+  "plan_id": "2026-11-26-nomoto-app-fix8",
+  "title": "NoMoTo App fix8：紧凑化——会话页授权双按钮缩小 + 全局 oversized 元素排查降高",
+  "design": {
+    "manifestPath": "docs/design/2026-11-26-nomoto-fix8-baseline/design-manifest.json",
+    "approvalPath": "docs/design/2026-11-26-nomoto-fix8-baseline/design-approval.json"
+  },
+  "nodes": [
+    {
+      "id": "compact-ui-density",
+      "title": "紧凑化：会话页授权按钮缩为单行小按钮，全局 oversized 元素排查降高",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "主人 2026-11-26 晚真机截图反馈：会话页「确认计划·放行落盘」「确认执行范围→」两颗按钮太大占太多位置，手机屏幕很小不要让任何东西占这么大位置；要求整体检查其他 oversized 元素，尤其会话页（屏幕最珍贵）。",
+        "output": "1) 会话页授权双按钮改为单行小按钮（高度约为现状 1/3，可点区域≥36px，文字不截断）；2) 按设计稿排查清单逐项紧凑化：会话页（项目上下文条/返回底部浮标/工具栏/输入框默认单行）、决策卡操作行内小按钮化、总览费用 chips、规则/轮次/待办卡片内边距与字号降档、管理后台行高；3) 原则：小屏优先、可点区域≥36px、信息密度向网页版靠拢但不误触。",
+        "error_behavior": "紧凑后不得出现文字截断溢出、横向滚动或误触；可点区域不达标回退。",
+        "acceptance_example": "浏览器回归：会话页授权按钮高度≤现状1/3 且可点；各页无横向滚动；设计验证器核对紧凑标记。",
+        "files": [
+          "mobile/src/features/sessions/views.mjs",
+          "mobile/app/www/pages/sessions.mjs",
+          "mobile/app/www/pages/sessions.css",
+          "mobile/app/www/styles.css",
+          "mobile/src/core/pages.mjs",
+          "test/（紧凑化回归）"
+        ],
+        "design": {
+          "surfaceIds": [
+            "compact-ui"
+          ],
+          "states": [
+            "default"
+          ],
+          "interactions": [
+            "auth-btns-compact",
+            "density-audit"
+          ]
+        }
+      }
+    }
+  ]
+}

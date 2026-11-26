@@ -1,0 +1,38 @@
+<!doctype html><html><head><title>fix8 设计稿：紧凑化（会话页授权按钮 + 全局 oversized 排查）</title><meta charset="utf-8"><style>
+body{margin:0;font:15px/1.5 -apple-system,"PingFang SC",sans-serif;background:#eef0f3;color:#1d2129}
+.wrap{width:402px;margin:0 auto;background:#fff;min-height:900px;padding-bottom:16px}
+.hd{padding:12px 16px;font-size:17px;font-weight:700}
+.lbl{margin:12px 14px 6px;font-size:13px;color:#16835c;font-weight:600}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#eef0f3;color:#4b5563;margin-left:6px}
+.meta{margin:0 16px;font-size:12.5px;color:#6b7280}
+/* 现状（对照） */
+.before .bigbtn{display:flex;gap:10px;margin:8px 16px}
+.before .bigbtn .b{flex:1;padding:26px 12px;border-radius:14px;font-size:17px;font-weight:700;text-align:center}
+.b1{background:#0f3d2e;color:#fff}.b2{background:#fff;color:#0f3d2e;border:2px solid #0f3d2e}
+/* 目标（紧凑） */
+.after .rowbtns{display:flex;gap:8px;margin:4px 16px}
+.after .rowbtns .b{flex:1;padding:7px 10px;border-radius:9px;font-size:13px;font-weight:600;text-align:center;line-height:1.25}
+.after .rowbtns .b1{padding:7px 10px}
+.after .subchip{display:inline-block;margin:4px 16px 0;font-size:12px;padding:4px 10px;border-radius:99px;background:#f3f4f6;color:#374151}
+.list{margin:8px 14px;padding:0 14px;border:1px solid #e5e7eb;border-radius:12px}
+.list li{font-size:13px;color:#374151;margin:7px 0}
+.dim{color:#9ca3af}
+</style></head><body>
+<div class="wrap"><div class="hd">紧凑化设计稿（手机屏幕珍贵原则）</div>
+<div class="lbl">对照：现状——两颗授权按钮又高又大，挤掉近一屏正文</div>
+<div class="before"><div class="rowbtns bigbtn"><div class="b b1">确认计划 · 放行落盘</div><div class="b b2">确认执行范围 →</div></div></div>
+<div class="lbl">目标：改为单行小按钮（高约现状 1/3），仅设计会话出现；点按区域保持 36px 以上可点</div>
+<div class="after"><div class="rowbtns"><div class="b b1">确认计划·放行落盘</div><div class="b b2">确认执行范围 →</div></div>
+<span class="subchip">项目 auto调度 · 会话上下文</span></div>
+<div class="lbl">整体排查清单（worker 按此逐项核对并紧凑化，手机端优先）</div>
+<ul class="list">
+<li>会话页：授权双按钮（本稿主角）、「项目上下文」条、返回底部浮标——全部降高降字号</li>
+<li>会话页：语音/附件/发送工具栏高度压缩，输入框默认单行</li>
+<li>决策卡：选项按钮与「已处理/结案/退回调度」行内小按钮化，不再整块</li>
+<li>总览：进度环下方费用条 chips 缩小间距与字号</li>
+<li>规则/轮次/待办：卡片内边距与标题字号降一档</li>
+<li>管理后台：表格行高压缩</li>
+<li class="dim">原则：小屏优先、可点区域 ≥36px、信息密度向网页版靠拢但不挤到误触</li>
+</ul>
+<div class="lbl">交互验收：紧凑后全部按钮仍可点、文字不截断溢出、无横向滚动</div>
+</div></body></html>
