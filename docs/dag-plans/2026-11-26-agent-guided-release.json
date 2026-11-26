@@ -1,0 +1,144 @@
+{
+  "plan_id": "2026-11-26-agent-guided-release",
+  "title": "产品化发布：Agent 引导的两阶段自助安装（本地控制台 → 自有域名公网 + APK）",
+  "nodes": [
+    {
+      "id": "doctor-cli",
+      "title": "doctor 自检脚本：--phase local|public 环境/配置逐项检查与机器可读输出",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "PRD docs/2026-11-26-agent-guided-release-prd.md 成功标准 1/3/4；spec §3.1。playbook 每步自验依赖本脚本。",
+        "output": "node scripts/doctor.mjs --phase local|public [--json]：local 检查 Node>=24、AGENT_AUTOLOOP_HOME 布局（config.json/rules.json/app/bin/agent-autoloop.ts，缺内核输出上游 GitHub 地址与获取指引）、控制台可达、rules 草稿校验；public 追加 publicHost 合法、cloudflared 隧道配置存在、https://<publicHost> 可达、未带 Access 凭证请求被拦截（不返回任何控制台数据）、移动端 API 在设备令牌下可用。逐项 id/status/detail，退出码 0/1，只读可重复。",
+        "error_behavior": "任何一项失败给出修复路径提示并以退出码 1 结束；探测网络失败按失败项报告不崩溃；不修改被检对象。",
+        "acceptance_example": "test/doctor.test.mjs 用临时目录与假服务覆盖各检查项通过与失败、缺内核时输出 GitHub 指引、--json 结构稳定、连跑两次结果一致。",
+        "files": [
+          "src/doctor.mjs",
+          "scripts/doctor.mjs",
+          "test/doctor.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "secret-write",
+      "title": "secret-write 交互式隐藏输入凭据写入：0600 原子落盘、不进聊天/日志/history",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "PRD 成功标准 5 与 decision #2（user_confirmed）；spec §3.2。",
+        "output": "node scripts/secret-write.mjs <key>：key 走允许列表（owner、cloudflare-token 等），TTY 隐藏输入无回显、管道 stdin 可供测试；写入 AGENT_AUTOLOOP_HOME 约定位置（config.json 字段或 secrets/<key>），文件 0600、目录 0700、临时文件 + rename 原子替换；值不作为命令行参数、不出现在 stdout/stderr/日志，报错不复述值。",
+        "error_behavior": "非法 key 拒绝并列出允许项；空值/二次确认不一致不写入；写入失败不留临时文件与半成品。",
+        "acceptance_example": "test/secret-write.test.mjs 断言值不出现在 stdout/stderr/日志与进程参数、文件模式 0600、原子替换无中间态、非法 key 拒绝。",
+        "files": [
+          "src/secret-write.mjs",
+          "scripts/secret-write.mjs",
+          "test/secret-write.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "public-host-config",
+      "title": "控制台可选 publicHost：配置后放行该域名 Host/Origin，未配置行为不变",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "PRD 阶段二与 decision #5；现状 src/server.mjs 仅接受 127.0.0.1/localhost Host，经 Cloudflare Tunnel 的公网请求会被 403。spec §3.3。",
+        "output": "config.json 新增可选 publicHost（单域名、小写、无端口/路径/通配）；配置后 Host==publicHost 放行，写操作 Origin 追加允许 https://<publicHost>；未配置或非法值时行为与现状完全一致（非法值启动告警并回退）；自定义请求头、JSON 内容类型、路由允许列表校验不放宽。",
+        "error_behavior": "非法 publicHost 告警回退本机模式不阻断启动；其他 Host 一律 403；Origin 不符拒绝写操作。",
+        "acceptance_example": "test/server-public-host.test.mjs 覆盖：未配置时公网 Host 403、配置后 publicHost 读写放行、其他域名仍 403、写操作 Origin 白名单含且仅含本机与 publicHost。",
+        "files": [
+          "src/config.mjs",
+          "src/server.mjs",
+          "test/server-public-host.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "release-packaging",
+      "title": "release 发布包组装与守门：排除上游内核/运行状态/密钥/本机路径，产物带 sha256 清单",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "PRD 成功标准 2 与 decision #3（上游内核不分发，user_confirmed）；spec §3.4。",
+        "output": "scripts/release.mjs 组装发布目录/tarball：控制台源码、docs/install/、examples/、README、LICENSE，APK 列为发布附件清单项；排除 app/（上游内核）、node_modules、config.json/rules.json/数据库/日志、密钥与本机绝对路径；内置守门扫描检出内核文件、私钥/token 模式、/Users/ 路径即构建失败；输出确定性产物与 manifest.json（逐文件 sha256）；package.json 增加 release 脚本入口。",
+        "error_behavior": "守门命中即失败并列出命中文件，不静默跳过；产物写入临时目录后原子就位，失败不留半成品。",
+        "acceptance_example": "test/release.test.mjs 构造含内核文件/密钥/本机路径的假发布源断言构建失败；正常源产物确定（两次构建 manifest 一致）且不含排除项。",
+        "files": [
+          "scripts/release.mjs",
+          "test/release.test.mjs",
+          "package.json"
+        ]
+      }
+    },
+    {
+      "id": "install-playbook",
+      "title": "Agent 安装 playbook：阶段一/二分步指引、每步验证命令、凭据索取纪律与人类入口文档",
+      "depends_on": ["doctor-cli", "secret-write", "public-host-config", "release-packaging"],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "heavy",
+      "contract": {
+        "input": "PRD 全文（decisions 1-6）；spec §3.5；上游四个节点交付的最终 CLI 行为。",
+        "output": "docs/install/playbook.md：面向 Agent 的可执行说明——阶段一（环境检查、npm ci、运行目录生成、上游内核 GitHub 地址引导获取、config.json/rules.json、宿主平台与模型探测与确认、doctor --phase local 自验、启动控制台）；阶段二（publicHost 配置、secret-write 写入 cloudflare-token、cloudflared 隧道与 Access 配置、doctor --phase public 自验、发布页 APK 下载、App 内填控制台地址（HTTPS）+ 扫码绑定）。每步 = 动作 + 验证命令 + 失败修复路径，全程可重入；凭据索取仅限 AGENTS.md §4 六类且一律经 secret-write；记录用户交互预算阶段一 ≤4 次。README.md 增加一页人类入口段（用 Agent 打开本目录并读 playbook），docs/setup.md 指向 playbook，examples/ 增补 cloudflared 配置示例。",
+        "error_behavior": "playbook 内每个失败分支给出修复路径或明确的升级口径；文档与脚本实际行为不一致视为缺陷。",
+        "acceptance_example": "按 playbook 在临时环境走查阶段一全部步骤可复现；文档中每条验证命令真实存在且退出码语义与 doctor/secret-write 实现一致。",
+        "files": [
+          "docs/install/playbook.md",
+          "README.md",
+          "docs/setup.md",
+          "examples/cloudflared.example.yml"
+        ]
+      }
+    },
+    {
+      "id": "install-e2e-smoke",
+      "title": "安装 e2e 离线冒烟：临时目录模拟干净机器，覆盖可重入、失败路径与凭据不泄漏",
+      "depends_on": ["doctor-cli", "secret-write", "public-host-config", "release-packaging"],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "PRD 成功标准 1/4/5；spec §5；上游四个节点的交付物。",
+        "output": "test/install-e2e.test.mjs + test/fixtures/install/：临时目录模拟干净机器（假上游骨架、假控制台、假隧道配置），跑 doctor 两阶段、secret-write 往返、release 组装；断言可重入（连跑两次结果一致）、失败路径（缺内核时输出 GitHub 指引与退出码 1）、凭据不泄漏（值不出现在任何输出与日志）；全程离线，进 npm test。",
+        "error_behavior": "任一断言失败即测试失败；不依赖网络与真实 Cloudflare。",
+        "acceptance_example": "npm test 中本文件全绿；人为移除假内核后重跑，缺内核分支按预期报告。",
+        "files": [
+          "test/install-e2e.test.mjs",
+          "test/fixtures/install/"
+        ]
+      }
+    },
+    {
+      "id": "release-acceptance",
+      "title": "发布验收：全量回归证据、发布包 dry-run 审查与阶段二真实域名手动验收清单",
+      "depends_on": ["install-playbook", "install-e2e-smoke"],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "PRD §8 验收命令；spec §5；全部上游节点交付物。",
+        "output": "docs/install/acceptance.md：记录 npm test 与 npm run test:browser 实际运行结果与通过数量；release dry-run 产物 manifest 审查结论（无内核/密钥/本机路径）；阶段二真实域名端到端与 APK 真机绑定的手动验收清单（逐项留授权与执行记录位，未授权项如实标注未执行）。",
+        "error_behavior": "回归未全绿不得宣告验收通过；手动项未授权如实标注，不编造证据。",
+        "acceptance_example": "acceptance.md 含实际命令、通过数量、manifest 审查结论与手动清单；未覆盖边界如实列出。",
+        "files": [
+          "docs/install/acceptance.md"
+        ]
+      }
+    }
+  ]
+}
