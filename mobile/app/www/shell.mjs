@@ -611,16 +611,18 @@ export function attachReconnectLifecycle({ win, doc, controller }) {
 export const PULL_REFRESH_THRESHOLD_PX = 56; // 下拉越过该距离，松手触发当前页重载
 export const PULL_REFRESH_MAX_PX = 96; // 跟手指示的最大位移，避免把内容拖出屏幕
 export const PULL_REFRESH_AXIS_LOCK_PX = 8; // 超过该位移才锁定主轴：纵向归下拉，横向留给 tab-swipe / 左滑关闭
+export const PULL_REFRESH_MAX_SPEED_PX_PER_MS = 1.5; // 超过该速度的向下甩动视为惯性滚动，不触发刷新
 
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 
 /**
  * 下拉刷新手势状态机：start → move* → end/cancel。
  *
- * 真机可用性：用户常在列表中部起拉，先靠原生滚动回到顶部，再继续下拉才产生 overscroll。
- * 因此 start 只要求坐标合法、不必已在顶部；atTop 每次 move 重新传入（由 DOM 实时测量）。
- * 当「从未到顶 → 刚到顶」且主轴已锁为纵向向下时，把基准点重设到当前触点：前面的滚动量
- * 不计入下拉距离，既不误触，也保证越阈判定与跟手指示器从 overscroll 起点开始。
+ * 滚动守卫（issue #349）：只有「起拉时容器已到顶」才武装刷新；从列表中部起拉一律视为
+ * 会话历史/长列表浏览，即使中途滚到顶再继续下拉也不接管（旧版在到顶时重设基准，把浏览
+ * 历史的滚动量算成下拉，正是误触根因）。同时用相邻事件的速度识别惯性甩动：高速向下滑
+ * 不算明确下拉。任一守卫生效都返回 pulling:false，宁可不触发也不误触。
+ *
  * 横向一旦锁定就不再抢手势；未到顶时返回 pulling:false，调用方据此把滚动交还浏览器。
  * 这些都保证与 tab 滑动切页、会话行左滑关闭、折叠卡片点击互不冲突。
  */
@@ -628,49 +630,57 @@ export function createPullRefreshGesture({
   thresholdPx = PULL_REFRESH_THRESHOLD_PX,
   maxPullPx = PULL_REFRESH_MAX_PX,
   axisLockPx = PULL_REFRESH_AXIS_LOCK_PX,
+  maxSpeedPxPerMs = PULL_REFRESH_MAX_SPEED_PX_PER_MS,
 } = {}) {
   let session = null;
   const idle = () => ({ pulling: false, distance: 0, ready: false });
+  const trackSpeed = (s, y, t) => {
+    if (!finite(y) || !finite(t) || !finite(s.lastY) || !finite(s.lastT) || t <= s.lastT) return;
+    s.maxSpeed = Math.max(s.maxSpeed, (y - s.lastY) / (t - s.lastT));
+    s.lastY = y;
+    s.lastT = t;
+    if (s.maxSpeed > maxSpeedPxPerMs) s.inertial = true;
+  };
   return {
     active: () => Boolean(session),
     start({ x, y, t, atTop = true, enabled = true } = {}) {
       if (!enabled || !finite(x) || !finite(y)) { session = null; return false; }
-      // 未在顶部也先接管：接下来的 move 会实时判定到顶，再把滚动量重设掉。
-      session = { x, y, t: finite(t) ? t : 0, dx: 0, dy: 0, axis: null, atTop: Boolean(atTop), armed: !atTop };
+      // 严格判定顶部：atTop 不可信（非布尔）时不武装，宁可不触发。
+      const armed = atTop === true;
+      session = {
+        x, y, dx: 0, dy: 0, axis: null,
+        atTop: armed, armed, inertial: false, maxSpeed: 0,
+        lastY: y, lastT: finite(t) ? t : null,
+      };
       return true;
     },
-    move({ x, y, atTop } = {}) {
+    move({ x, y, atTop, t } = {}) {
       if (!session) return idle();
-      if (finite(x)) session.dx = x - session.x;
-      if (finite(y)) session.dy = y - session.y;
-      const top = typeof atTop === 'boolean' ? atTop : session.atTop;
-      if (!session.axis && Math.max(Math.abs(session.dx), Math.abs(session.dy)) >= axisLockPx) {
-        session.axis = Math.abs(session.dy) > Math.abs(session.dx) ? 'y' : 'x';
+      const s = session;
+      if (finite(x)) s.dx = x - s.x;
+      if (finite(y)) s.dy = y - s.y;
+      trackSpeed(s, y, t);
+      const top = typeof atTop === 'boolean' ? atTop : s.atTop;
+      if (!s.axis && Math.max(Math.abs(s.dx), Math.abs(s.dy)) >= axisLockPx) {
+        s.axis = Math.abs(s.dy) > Math.abs(s.dx) ? 'y' : 'x';
       }
-      // 滚动到顶的那一刻重设基准：overscroll 距离从此处算，避免把列表滚动量算成下拉。
-      if (session.armed && top && session.axis === 'y' && session.dy > 0) {
-        if (finite(x)) session.x = x;
-        if (finite(y)) session.y = y;
-        session.dx = 0;
-        session.dy = 0;
-        session.armed = false;
-      }
-      session.atTop = top;
-      // 未到顶（仍在滚动）、主轴横向、向上滑都不接管，滚动/切页照常。
-      if (!top || session.axis !== 'y' || session.dy <= 0) return idle();
+      s.atTop = top;
+      // 滚动守卫：非顶部起拉、已离开顶部、主轴横向、向上滑、惯性甩动都不接管。
+      if (!s.armed || !top || s.axis !== 'y' || s.dy <= 0 || s.inertial) return idle();
       return {
         pulling: true,
-        distance: Math.min(session.dy, maxPullPx),
-        ready: session.dy >= thresholdPx,
+        distance: Math.min(s.dy, maxPullPx),
+        ready: s.dy >= thresholdPx,
       };
     },
-    end({ x, y } = {}) {
+    end({ x, y, t } = {}) {
       if (!session) return { fired: false, distance: 0 };
       const s = session;
       session = null;
       if (finite(x)) s.dx = x - s.x;
       if (finite(y)) s.dy = y - s.y;
-      const fired = s.atTop && s.axis === 'y' && s.dy >= thresholdPx;
+      trackSpeed(s, y, t);
+      const fired = s.armed && s.atTop && s.axis === 'y' && s.dy >= thresholdPx && !s.inertial;
       return { fired, distance: fired ? Math.min(s.dy, maxPullPx) : 0 };
     },
     cancel() {
