@@ -12,7 +12,7 @@
     },
     {
       "path": "docs/design/2026-11-26-nomoto-fix6-baseline/verifiers/fix6-design.verify.mjs",
-      "sha256": "96608485453ac6e254db5a99d0b41e174154ac3c7cf4af39cacb286ba15a089d"
+      "sha256": "da989cd93fd8695573d6b338a845945bd1b855f4949f75a3d60c649902c8b382"
     },
     {
       "path": "docs/design/2026-11-26-nomoto-fix6-baseline/verifiers/fix6-design-fallback.mjs",

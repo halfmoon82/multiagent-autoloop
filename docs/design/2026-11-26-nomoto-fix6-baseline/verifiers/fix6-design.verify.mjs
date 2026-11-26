@@ -12,6 +12,11 @@ const MARKERS = {
   'ring-cost-chips': { file: 'mobile/src/core/pages.mjs', any: ['今日费用', '链累计', '创建于', 'createdAt'] },
   'archived-rings': { file: 'mobile/app/www/pages/core.mjs', any: ['已归档的任务环', 'archivedRing'] },
   'pull-anywhere': { file: 'mobile/app/www/app.mjs', any: ['pullRefresh', '下拉', 'pull-to-refresh', 'pointerdown'] },
+  // fix6 补齐（2026-11-26 调度修复）：card-two-places 与 artifact-viewer 两个 surface 的约定标记，
+  // 初版沿用 fix5 词表时漏配，导致三项交互检查必然失败（验证器缺陷，非实现缺陷）。
+  'answer-vanish-session': { file: 'mobile/src/features/sessions/browser.mjs', any: ['markCardAnsweredLocal', '统一「卡已答」', 'openCardsBySession'] },
+  'handled-idempotent': { file: 'mobile/src/core/write.mjs', any: ['idempotent409', '幂等成功', 'idempotent === true'] },
+  'image-preview': { file: 'mobile/app/www/pages/artifacts.mjs', any: ['image-preview', 'imagePreview', 'previewImage', '图片预览', '在线查看', '在线预览'] },
 };
 
 const read = (worktree, rel) => { try { return readFileSync(path.join(worktree, rel), 'utf8'); } catch { return null; } };
