@@ -617,7 +617,7 @@ test('artifactPagePlan 标注图片类产物：在线查看、MIME 与 5MB 封�
   assert.equal(byId.img2.previewKind, 'image');
   assert.equal(byId.img2.imageOverCap, true, '超 5MB 图片标注封顶，给提示与下载备选');
   assert.equal(byId.a1.previewKind, 'html', 'HTML 预览保持不变');
-  assert.equal(byId.a2.previewKind, null, 'Markdown 仍无预览');
+  assert.equal(byId.a2.previewKind, 'text', 'Markdown 改为文本在线预览');
 
   const opened = artifactPagePlan(openArtifactReader(b, 'img1').browser);
   assert.equal(opened.selected.previewKind, 'image');
@@ -745,4 +745,155 @@ test('移动端产物服务：列表返回图片类产物、图片只读文件�
   assert.equal(over.status, 413, '超封顶图片明确拒绝');
   assert.match(over.data.error, /5MB|下载/);
   assert.equal(over.data.download, true, '给下载备选');
+});
+
+// ---------------------------------------------------------------------------
+// artifact-doc-preview（2026-11-27，issue #360）：md/文本类产物在线预览（纯文本安全渲染），
+// pdf/word 如实提示保留下载；html/图片与下载反馈不回归。
+// ---------------------------------------------------------------------------
+function docArtifacts() {
+  return [
+    { id: 'd1', path: 'docs/plan.md', name: 'plan.md', size: 128, sessionId: 's1', task: 't' },
+    { id: 'd2', path: 'docs/big.md', name: 'big.md', size: 600 * 1024, sessionId: 's1', task: 't' },
+    { id: 'd3', path: 'out/手册.pdf', name: '手册.pdf', size: 2048, sessionId: 's1', task: 't' },
+    { id: 'd4', path: 'out/合同.docx', name: '合同.docx', size: 2048, sessionId: 's1', task: 't' },
+    { id: 'd5', path: 'docs/dashboard.html', name: 'dashboard.html', size: 512, sessionId: 's1', task: 't' },
+  ];
+}
+
+test('artifactPagePlan 标注 md/markdown/txt 文本在线预览、pdf/word 如实提示，html/图片不回归', () => {
+  const { artifactPreviewMeta, ARTIFACT_TEXT_MAX_BYTES } = artifactPageModule;
+  assert.equal(ARTIFACT_TEXT_MAX_BYTES, 500 * 1024, '文本封顶与服务端只读路由 500KB 对齐');
+  for (const ext of ['.md', '.markdown', '.txt', '.MD']) {
+    assert.equal(artifactPreviewMeta({ path: `docs/a${ext}`, size: 10 }).previewKind, 'text', ext);
+  }
+  assert.equal(artifactPreviewMeta({ path: 'docs/a.md', size: 600 * 1024 }).textOverCap, true, '超封顶标注');
+  assert.equal(artifactPreviewMeta({ path: 'docs/a.md', size: 10 }).textOverCap, false);
+  for (const ext of ['.pdf', '.doc', '.docx']) {
+    assert.equal(artifactPreviewMeta({ path: `out/a${ext}` }).previewKind, 'unsupported', ext);
+  }
+  assert.equal(artifactPreviewMeta({ path: 'a.html' }).previewKind, 'html', 'html 预览不回归');
+  assert.equal(artifactPreviewMeta({ path: 'a.png' }).previewKind, 'image', '图片在线查看不回归');
+
+  const plan = artifactPagePlan(createArtifactBrowser({ artifacts: docArtifacts() }));
+  const byId = Object.fromEntries(plan.artifacts.map(row => [row.id, row]));
+  assert.equal(byId.d1.previewKind, 'text');
+  assert.equal(byId.d2.textOverCap, true);
+  assert.equal(byId.d3.previewKind, 'unsupported');
+  assert.equal(byId.d4.previewKind, 'unsupported');
+  assert.equal(byId.d5.previewKind, 'html');
+});
+
+test('mount md 产物：点「在线预览」走只读文件路由，纯文本安全渲染，不下载不建 iframe', async () => {
+  const doc = fakeDoc();
+  const root = doc.add('page-artifacts');
+  const win = { innerWidth: 390, location: { origin: 'https://auto.example' }, addEventListener() {}, removeEventListener() {} };
+  const fileCalls = [];
+  const downloadCalls = [];
+  const ctx = {
+    client: {
+      sessionArtifactFile: async (sid, p) => {
+        fileCalls.push([sid, p]);
+        return { name: 'plan.md', path: 'docs/plan.md', content: '# 标题\n<script>alert(1)</script>\n<b>粗体</b>' };
+      },
+    },
+    state: {},
+    hooks: {
+      artifacts: () => [docArtifacts()[0]],
+      download() { downloadCalls.push(1); return Promise.resolve({ started: true }); },
+    },
+  };
+  mountArtifactsPage(ctx, { doc, win, feature: artifactsFeature });
+  buttonsNamed(root, 'plan.md')[0].click();
+  const previewBtn = buttonsNamed(root, '在线预览')[0];
+  assert.ok(previewBtn, 'md 产物提供「在线预览」按钮');
+  assert.ok(buttonsNamed(root, '下载').length, '下载按钮保留');
+  previewBtn.click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(fileCalls, [['s1', 'docs/plan.md']], '在线预览复用只读文件路由，不经原生下载桥');
+  assert.equal(downloadCalls.length, 0, '在线预览不触发下载');
+  const classes = node => String(node.getAttribute('class') || '');
+  const box = collect(root).find(node => classes(node).includes('artifacts-preview'));
+  assert.ok(box && box.hidden === false, '就地显示预览容器');
+  const textNode = collect(root).find(node => classes(node).includes('artifacts-preview-text'));
+  assert.ok(textNode, '纯文本预览节点');
+  assert.match(textNode.textContent, /# 标题/);
+  assert.ok(textNode.textContent.includes('<script>alert(1)</script>'), '脚本按纯文本原样显示，不解析');
+  assert.equal(collect(root).some(node => node.tag === 'script' || node.tag === 'iframe'), false, '不建 iframe、不注入脚本');
+});
+
+// 审阅返工 P2（PR #361）：预览 <pre> 无换行/滚动样式，手机上长行被 .content 的 overflow-x:clip 截掉。
+// CSS 文件不在本节点写域，样式就近写在预览节点上；本断言守长行换行、超长词断行、限高纵向滚动。
+test('mount md 纯文本预览：长行换行、超长词断行、限高可滚动，避免手机横向截断', async () => {
+  const doc = fakeDoc();
+  const root = doc.add('page-artifacts');
+  const win = { innerWidth: 390, location: { origin: 'https://auto.example' }, addEventListener() {}, removeEventListener() {} };
+  const ctx = {
+    client: { sessionArtifactFile: async () => ({ content: `# 标题\n${'A'.repeat(2000)}\n结尾` }) },
+    state: {},
+    hooks: { artifacts: () => [docArtifacts()[0]], download() { return Promise.resolve({ started: true }); } },
+  };
+  mountArtifactsPage(ctx, { doc, win, feature: artifactsFeature });
+  buttonsNamed(root, 'plan.md')[0].click();
+  buttonsNamed(root, '在线预览')[0].click();
+  await new Promise(r => setTimeout(r, 10));
+  const textNode = collect(root).find(node => String(node.getAttribute('class') || '').includes('artifacts-preview-text'));
+  assert.ok(textNode, '纯文本预览节点存在');
+  const style = String(textNode.getAttribute('style') || '');
+  assert.match(style, /white-space\s*:\s*pre-wrap/, '保留换行同时长行自动换行');
+  assert.match(style, /overflow-wrap\s*:\s*anywhere/, '超长不可断词也断行，不被横向裁掉');
+  assert.match(style, /max-height\s*:/, '长文限高');
+  assert.match(style, /overflow-y\s*:\s*auto/, '超出限高纵向滚动');
+});
+
+test('mount pdf/word：如实「暂不支持在线预览，请下载后查看」，保留下载且不提供在线预览', () => {
+  const doc = fakeDoc();
+  const root = doc.add('page-artifacts');
+  const win = { innerWidth: 390, location: { origin: 'https://auto.example' }, addEventListener() {}, removeEventListener() {} };
+  const ctx = {
+    client: {},
+    state: {},
+    hooks: { artifacts: () => docArtifacts(), download() { return Promise.resolve({ started: true }); } },
+  };
+  mountArtifactsPage(ctx, { doc, win, feature: artifactsFeature });
+  buttonsNamed(root, '手册.pdf')[0].click();
+  assert.match(elText(root), /暂不支持在线预览，请下载后查看/, '不支持格式如实提示');
+  assert.equal(buttonsNamed(root, '在线预览').length, 0, '不支持格式不给在线预览按钮');
+  assert.ok(buttonsNamed(root, '下载').length, '不支持格式保留下载');
+});
+
+test('mount md 超封顶给明确提示与下载备选；加载失败就地重试', async () => {
+  const doc = fakeDoc();
+  const root = doc.add('page-artifacts');
+  const win = { innerWidth: 390, location: { origin: 'https://auto.example' }, addEventListener() {}, removeEventListener() {} };
+  let call = 0;
+  const ctx = {
+    client: {
+      sessionArtifactFile: async () => {
+        call += 1;
+        if (call === 1) throw new Error('no token');
+        return { content: '重试成功正文' };
+      },
+    },
+    state: {},
+    hooks: { artifacts: () => docArtifacts(), download() { return Promise.resolve({ started: true }); } },
+  };
+  mountArtifactsPage(ctx, { doc, win, feature: artifactsFeature });
+  buttonsNamed(root, 'big.md')[0].click();
+  assert.match(elText(root), /超过 500KB/, '超封顶明确提示');
+  assert.equal(buttonsNamed(root, '在线预览').length, 0, '超封顶不提供在线预览');
+  assert.ok(buttonsNamed(root, '下载').length, '超封顶给下载备选');
+
+  buttonsNamed(root, '返回列表')[0].click();
+  buttonsNamed(root, 'plan.md')[0].click();
+  buttonsNamed(root, '在线预览')[0].click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.match(elText(root), /预览加载失败/, '加载失败就地提示');
+  assert.ok(buttonsNamed(root, '重试').length, '失败就地重试');
+  buttonsNamed(root, '重试')[0].click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(call, 2, '重试重新走只读文件路由');
+  const textNode = collect(root).find(node => String(node.getAttribute('class') || '').includes('artifacts-preview-text'));
+  assert.match(textNode.textContent, /重试成功正文/, '重试成功后就地渲染正文');
+  assert.equal(buttonsNamed(root, '重试').length, 0, '重试成功后撤掉失败提示');
 });
