@@ -85,10 +85,11 @@ test('浏览器：左滑露出关闭→二次确认→行消失；滑动不进�
     },
   });
 
-  // 双按钮显隐：B 两颗；C（已放行）只有「确认执行范围」；普通会话没有。
+  // 双按钮显隐：B 只有「放行落盘」一颗；C（已放行）与普通会话没有；页面无「确认执行范围」入口。
   const buttons = id => page.evaluate(sessionId => [...document.querySelectorAll(`[data-design-actions="${sessionId}"] button`)].map(button => button.dataset.action), id);
-  assert.deepEqual(await buttons('sess-b'), ['approve-plan', 'design-authorize']);
-  assert.deepEqual(await buttons('sess-c'), ['design-authorize']);
+  assert.deepEqual(await buttons('sess-b'), ['approve-plan']);
+  assert.deepEqual(await buttons('sess-c'), []);
+  assert.ok(!(await page.evaluate(() => document.body.textContent)).includes('确认执行范围'));
   assert.deepEqual(await buttons('sess-a'), []);
 
   // 滑动中不触发点击进入：滑完仍在列表。
@@ -117,49 +118,7 @@ test('浏览器：左滑露出关闭→二次确认→行消失；滑动不进�
   // 放行落盘后按钮消失。
   await page.locator('[data-design-actions="sess-b"] [data-action="approve-plan"]').click();
   await page.waitForFunction(() => !document.querySelector('[data-design-actions="sess-b"] [data-action="approve-plan"]'));
-  assert.deepEqual(await buttons('sess-b'), ['design-authorize']);
-  assert.deepEqual(pageErrors, []);
-});
-
-test('浏览器：确认执行范围——未勾选不可提交；失败不清空勾选；成功回传服务端 planDigest', { skip: browserSkip }, async t => {
-  let attempts = 0;
-  const { page, pageErrors, posts } = await open(t, {
-    sessions: () => [{ id: 'sess-b', kind: 'design', project: '/work/p', status: 'idle', prompt: '设计会话 B', planApproved: true, updatedAt: '2026-11-24T01:00:00Z' }],
-    routes: (route, pathname) => {
-      if (pathname === '/api/mobile/dag-plan') return route.fulfill({ json: PLAN });
-      if (pathname === '/api/mobile/dag-preflight') return route.fulfill({ json: { source: 'native', checks: [{ id: 'plan-source', label: '计划来源', ok: true, message: '原生计划' }] } });
-      if (pathname === '/api/mobile/dag-runs') {
-        attempts += 1;
-        return attempts === 1
-          ? route.fulfill({ status: 400, json: { error: 'PLAN_DIGEST_MISMATCH：计划已变化需重新确认' } })
-          : route.fulfill({ status: 201, json: { runId: 'dagrun-ui' } });
-      }
-      return undefined;
-    },
-  });
-  await page.locator('[data-design-actions="sess-b"] [data-action="design-authorize"]').click();
-  await page.locator('.sessions-auth-plan').waitFor({ state: 'visible' });
-  await page.locator('.sessions-auth-plan').fill('plan-1');
-  await page.locator('.sessions-auth-load').click();
-  await page.locator('[data-plan-digest]').waitFor({ state: 'visible' });
-  assert.match(await page.locator('[data-plan-digest]').textContent(), new RegExp(DIGEST));
-  assert.ok(await page.locator('[data-auth-node="n1"]').textContent().then(text => text.includes('src/a.mjs')), '逐条出示节点文件范围');
-  assert.equal(await page.locator('.sessions-auth-submit').isDisabled(), true, '未勾选不可提交');
-
-  await page.locator('.sessions-auth-ack').check();
-  assert.equal(await page.locator('.sessions-auth-submit').isDisabled(), false);
-  await page.locator('.sessions-auth-submit').click();
-  await page.locator('[data-auth-error]').waitFor({ state: 'visible' });
-  assert.match(await page.locator('[data-auth-error]').textContent(), /计划已变化/);
-  assert.equal(await page.locator('.sessions-auth-ack').isChecked(), true, '失败不清空已勾选项');
-
-  await page.locator('.sessions-auth-submit').click();
-  await page.locator('[data-auth-created]').waitFor({ state: 'visible' });
-  const sent = posts.filter(item => item.pathname === '/api/mobile/dag-runs');
-  assert.equal(sent.length, 2);
-  assert.equal(sent[1].body.planDigest, DIGEST);
-  assert.equal(sent[1].body.confirm, true);
-  assert.deepEqual(sent[1].body.confirmedActionIds, ['worktree', 'run-tests']);
+  assert.deepEqual(await buttons('sess-b'), []);
   assert.deepEqual(pageErrors, []);
 });
 

@@ -15,9 +15,6 @@ const loadAutogrow = typeof window === 'undefined'
   ? () => Promise.resolve(null)
   : () => import('../src/features/composer-autogrow/index.mjs');
 
-const loadAuthorizeModel = typeof window === 'undefined'
-  ? () => Promise.resolve(null)
-  : () => import('../src/features/design-authorize/index.mjs');
 // 通知接线：点击通知打开具体会话（takePendingSession / open-session），进出详情登记正在看的会话（setActiveSession）。
 const loadNotifyModel = typeof window === 'undefined'
   ? () => Promise.resolve(null)
@@ -44,8 +41,6 @@ export function mount(ctx) {
   if (!host) return;
 
   const modelPromise = Promise.all([loadViewModel(), loadQuestionModel()]);
-  let amodel = null;
-  void loadAuthorizeModel().then(module => { amodel = module; });
   const notifyPromise = loadNotifyModel().catch(() => null);
   // 正在看的会话：只有会话页可见且停在详情时才算，其余一律清空（切 Tab、返回列表、进设置页）。
   const syncActiveSession = () => {
@@ -225,22 +220,12 @@ export function mount(ctx) {
     newProjects, newPromptRow, newRecommend, newKinds, newSubmit,
   ]);
 
-  // 确认执行范围：读取计划 → 逐条出示 → 勾选已阅读 → 提交（服务端校验 planDigest）。
-  const authBack = node('button', { type: 'button', className: 'sessions-auth-back', text: '‹ 会话列表' });
-  const authPlanId = node('input', { className: 'sessions-auth-plan', attrs: { type: 'text', placeholder: '计划编号（docs/dag-plans 下的 planId）', 'aria-label': '计划编号', autocomplete: 'off', autocapitalize: 'off' } });
-  const authLoad = node('button', { type: 'button', className: 'sessions-auth-load', text: '读取计划' });
-  const authBody = node('div', { className: 'sessions-auth-body' });
-  const authView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'authorize', hidden: '' } }, [
-    authBack, node('h2', { text: '确认执行范围' }),
-    node('div', { className: 'sessions-auth-plan-row' }, [authPlanId, authLoad]), authBody,
-  ]);
-
   const menuCopy = node('button', { type: 'button', text: '复制' });
   const menu = node('div', { className: 'sessions-menu', attrs: { hidden: '' } }, [menuCopy]);
-  host.replaceChildren(banner, listView, detailView, archiveView, newView, authView, menu);
+  host.replaceChildren(banner, listView, detailView, archiveView, newView, menu);
   renderIcons(host);
 
-  const views = { list: listView, detail: detailView, archive: archiveView, new: newView, authorize: authView };
+  const views = { list: listView, detail: detailView, archive: archiveView, new: newView };
   let detailTimer = null;
   // 详情跟随/滚底基于消息窗自身滚动。
   const pageMetrics = () => ({
@@ -306,7 +291,7 @@ export function mount(ctx) {
     detailActions.replaceChildren(...(row ? [row] : []));
   }
 
-  // 设计会话的两颗操作按钮（与网页卡片同口径）：放行落盘仅未放行时出现；确认执行范围恒有。
+  // 设计会话的授权按钮：只有「确认计划 · 放行落盘」一颗，且仅未放行时出现（其余授权在调度会话对话里完成）。
   function designActionsRow(session) {
     const items = smodel ? smodel.designSessionActions(session) : [];
     if (!items.length) return null;
@@ -319,7 +304,6 @@ export function mount(ctx) {
       button.addEventListener('click', event => {
         event.stopPropagation();
         if (action.id === 'approve-plan') void approvePlan(session, button);
-        else openAuthorize(session);
       });
       row.appendChild(button);
     }
@@ -445,58 +429,6 @@ export function mount(ctx) {
       errorLine.hidden = false;
     }
   }
-
-  // ---- 确认执行范围 ----
-  const auth = { session: null, planId: '', plan: null, preflight: null, preflightError: '', ack: false, submitting: false, error: '', created: null, loading: false };
-  let authClient = null;
-  function openAuthorize(session) {
-    if (!amodel) { showBanner('授权模块尚未就绪，请稍后重试'); return; }
-    authClient = authClient || amodel.createAuthorizeClient(ctx.client);
-    Object.assign(auth, { session, plan: null, preflight: null, preflightError: '', ack: false, submitting: false, error: '', created: null });
-    authPlanId.value = auth.planId;
-    renderAuthorize();
-    showView('authorize');
-    if (typeof ctx.hooks?.pushView === 'function') ctx.hooks.pushView({ type: 'sessions', view: 'authorize', id: session.id });
-  }
-  async function loadAuthorizePlan() {
-    if (!authClient || auth.loading) return;
-    auth.planId = authPlanId.value.trim();
-    Object.assign(auth, { plan: null, preflight: null, preflightError: '', ack: false, error: '', created: null, loading: true });
-    renderAuthorize();
-    try {
-      const result = await authClient.loadPlan(auth.session.project, auth.planId);
-      auth.plan = result.plan; auth.preflight = result.preflight; auth.preflightError = result.preflightError;
-    } catch (error) { auth.error = `读取计划失败：${error?.message || '请重试'}`; }
-    auth.loading = false;
-    renderAuthorize();
-  }
-  async function submitAuthorize() {
-    if (!authClient || auth.submitting) return;
-    const body = amodel.buildCreateBody(auth.plan, { acknowledged: auth.ack });
-    if (!body) return;
-    auth.submitting = true; auth.error = '';
-    renderAuthorize();
-    try {
-      auth.created = await authClient.createRun(body);
-      ctx.hooks?.haptic?.success?.();
-    } catch (error) { auth.error = `提交失败：${error?.message || '请重试'}（已勾选内容保留，可直接再次提交）`; }
-    auth.submitting = false;
-    renderAuthorize();
-  }
-  function renderAuthorize() {
-    if (!amodel) return;
-    const view = amodel.buildAuthorizeView(auth.plan, auth.preflight, { acknowledged: auth.ack, submitting: auth.submitting, created: auth.created });
-    authLoad.disabled = auth.loading;
-    authLoad.textContent = auth.loading ? '读取中…' : '读取计划';
-    const parts = amodel.renderAuthorizeParts(view, auth, {
-      node,
-      onAck: checked => { auth.ack = checked; renderAuthorize(); },
-      onSubmit: () => { void submitAuthorize(); },
-    });
-    authBody.replaceChildren(...parts);
-  }
-  authBack.addEventListener('click', goList);
-  authLoad.addEventListener('click', () => { void loadAuthorizePlan(); });
 
   function renderList(list) {
     if (!list) return;
