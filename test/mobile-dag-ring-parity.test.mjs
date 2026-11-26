@@ -127,6 +127,19 @@ const webDetail = el => Object.fromEntries(byClass(byClass(el, 'overview-node')[
 const mobileDetail = el => Object.fromEntries(byClass(el, 'pring-fact').map(row => [textOf(byClass(row, 'pring-fact-label')[0]), textOf(byClass(row, 'pring-fact-value')[0])]));
 const webChips = el => byClass(el, 'chip').map(textOf);
 const mobileChips = el => byClass(el, 'pring-chip').map(textOf);
+// fix10 / issue #356：移动端串行链改为统一 hsl 波次配色（wave=null → 色相 168 绿系），
+// 网页版仍是同色系的十六进制色板；两者「绿系一致」而非逐字相等，故按色相家族比对。
+const colorHue = value => {
+  const hsl = /^hsl\((\d+),/.exec(String(value));
+  if (hsl) return Number(hsl[1]);
+  const hex = /^#([0-9a-f]{6})$/i.exec(String(value));
+  if (!hex) return NaN;
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(hex[1].slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  if (!d) return 0;
+  let h = max === r ? ((b - g) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return Math.round((h * 60 + 360) % 360);
+};
 
 test('串行链：节点数/扇区标签/配色/中心百分比与网页版逐一相等', () => {
   const web = webSerialRow();
@@ -138,7 +151,11 @@ test('串行链：节点数/扇区标签/配色/中心百分比与网页版逐�
   assert.deepEqual(m.segments, w.segments, '扇区 = 节点，顺序一致');
   assert.equal(m.segments.length, 5);
   assert.deepEqual(m.labels, w.labels, '弧排节点标签（同弧长截断）逐字相等');
-  assert.deepEqual(m.colors, w.colors, '扇区配色（同一色相、深浅 = 状态）相等');
+  assert.equal(m.colors.length, w.colors.length, '扇区数一致');
+  assert.ok(m.colors.every(c => colorHue(c) === 168), '移动端串行链统一 wave=null → 色相 168 绿系');
+  assert.ok(w.colors.every(c => colorHue(c) >= 150 && colorHue(c) <= 175), '网页版串行链同为绿系色相家族');
+  const lightness = c => Number(/^hsl\(\d+, 52%, (\d+)%\)$/.exec(c)[1]);
+  assert.ok(lightness(m.colors[1]) < lightness(m.colors[m.colors.length - 1]), '移动端完成度驱动明度：已完成节点（cron）比待开始节点（tenant）更深');
   assert.equal(m.pointers, w.pointers, '进行中节点内圈三角指针数量相等');
   assert.deepEqual(m.selected, w.selected, '默认选中当前节点，与网页一致');
   assert.equal(mobilePercent(el), webPercent(web), '中心总进度% 与节点数相等');

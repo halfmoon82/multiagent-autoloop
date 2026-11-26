@@ -14,7 +14,7 @@ const array = value => (Array.isArray(value) ? value : []);
 const object = value => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
 const text = value => String(value ?? '').trim();
 
-// ---------- 状态与配色：与网页 progress-view.mjs / dag-model.mjs 同表 ----------
+// ---------- 状态与配色：所有环路径统一走 segmentColor(kind, wave) ----------
 const SERIAL_STATUS = {
   done: { label: '已完成', kind: 'done', icon: '✓' },
   dev_dispatched: { label: '开发中', kind: 'active', icon: '●' },
@@ -27,7 +27,8 @@ const SERIAL_STATUS = {
   pending: { label: '未开始', kind: 'pending', icon: '○' },
 };
 export const serialStatus = state => SERIAL_STATUS[state] || { label: state ? String(state) : '未知状态', kind: 'unknown', icon: '?' };
-const SERIAL_COLORS = { done: '#157a65', active: '#2f8d76', review: '#6fae9d', rework: '#c08a2e', blocked: '#d59a37', external: '#3f9b88', pending: '#cfdad6', unknown: '#cfdad6' };
+// fix10 / issue #356：原绿色十六进制状态色板已移除。串行链 wave=null → 色相 168 绿系
+// （与网页版一致）；并行 DAG 按 wave 取不同色相；所有路径共用同一公式，完成度只驱动明度。
 const COMPLETION = { done: 1, review: 0.75, rework: 0.5, active: 0.5, external: 0.4, blocked: 0.2, pending: 0, unknown: 0 };
 export const completionOf = kind => COMPLETION[kind] ?? 0;
 const waveHue = wave => Math.round((168 + (Math.max(1, Math.round(wave || 1)) - 1) * 137.5) % 360);
@@ -62,7 +63,7 @@ export function buildSerialRingView(chain, { usageText = UNKNOWN_USAGE, executor
       model: executor?.model || (node.id === currentId ? '模型待选择' : '未上报'),
       usageText: serialNodeUsage(executor),
       part: text(node.part), percent: Number(node.percent) || 0, prUrl: text(node.prUrl),
-      color: SERIAL_COLORS[status.kind] || SERIAL_COLORS.unknown,
+      color: segmentColor(status.kind, null),
       completion: completionOf(status.kind),
       wave: null, slot: null, branch: '',
     };
@@ -173,7 +174,7 @@ function placeholderRing(item) {
       id: `n${index + 1}`, title: `节点 ${index + 1}`, status: { label: kind === 'done' ? '已完成' : '未完成', kind },
       groupOrder: 1, wave: null, summary: '归档记录未保留该节点明细', agent: '未上报', model: '未上报', usageText: UNKNOWN_USAGE,
       part: '', percent: null, prUrl: '', slot: null, branch: '',
-      color: SERIAL_COLORS[kind], completion: completionOf(kind),
+      color: segmentColor(kind, null), completion: completionOf(kind),
     };
   });
   return { nodes, note: '归档记录未保留节点明细：扇区按完成数示意' };
