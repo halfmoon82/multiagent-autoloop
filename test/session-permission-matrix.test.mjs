@@ -247,3 +247,12 @@ test('closing the session resolves an unanswered card as cancelled', async () =>
   await waitFor(() => r.out(0));
   assert.deepEqual(r.out(0), { outcome: 'cancelled' });
 });
+
+test('adapter process exit clears pending decision cards (no stale buttons)', async () => {
+  const r = await runKind('normal', [exec('git push origin main')], { ownerChoice: null });
+  await waitFor(() => r.manager.list()[0]?.pendingPermissions?.length === 1);
+  r.fake.child.kill(); // 适配器进程退出
+  await waitFor(() => r.manager.list()[0]?.pendingPermissions?.length === 0);
+  assert.equal(r.manager.list()[0].pendingPermissions.length, 0);
+  r.manager.dispose();
+});

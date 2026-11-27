@@ -506,6 +506,7 @@ export class SchedulingSessionManager {
     record.connection = connection;
     connection.closed.then(() => {
       record.closed = true;
+      this.#cancelPendingPermissions(record); // 进程退出后授权卡已无人接收，清掉以免界面残留失效按钮
       if (!this.sessions.has(record.id)) return;
       if (record.status !== 'closing' && record.status !== 'closed') {
         record.status = child.exitCode === 0 ? 'closed' : 'error';
