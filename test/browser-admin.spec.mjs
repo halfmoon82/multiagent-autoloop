@@ -63,9 +63,11 @@ try {
   assert.equal(await page.getByLabel('Claude Code 中档').inputValue(), 'claude-sonnet-5-5');
   assert.equal(await page.getByText('（不可用）').count(), 0, '预填值都必须是可选项');
 
-  // 会话平台：WorkBuddy / Claude 显示未接入且不可选
+  // 会话平台：Codex / Claude Code / WorkBuddy 都可选；没有会话适配器的 Gemini 显示未接入且不可选
   const designOptions = await page.getByLabel('设计会话平台').locator('option').evaluateAll(nodes => nodes.map(n => ({ text: n.textContent, disabled: n.disabled, selected: n.selected })));
-  assert.ok(designOptions.some(o => o.text === 'WorkBuddy AI（未接入）' && o.disabled));
+  assert.ok(designOptions.some(o => o.text === 'Gemini CLI（未接入）' && o.disabled));
+  assert.ok(designOptions.some(o => o.text === 'WorkBuddy AI' && !o.disabled), 'WorkBuddy 已接入会话');
+  assert.ok(designOptions.some(o => o.text === 'Claude Code' && !o.disabled), 'Claude Code 已接入会话');
   assert.ok(designOptions.some(o => o.text === 'Codex' && !o.disabled && o.selected), '设计会话预填 Codex 平台');
 
   // 打开开关 → 改调度会话档位 → 预览实时变化

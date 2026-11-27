@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync } fro
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  discoverPlatforms, readPlatformModels, applyPlatformModels, suggestedSettings, sessionLaunch, tierAgentId, parseTierAgent, PlatformModelsError,
+  discoverPlatforms, readPlatformModels, applyPlatformModels, suggestedSettings, sessionLaunch, sessionPlatforms, tierAgentId, parseTierAgent, PlatformModelsError,
 } from '../src/platform-models.mjs';
 import { loadEnabledTiers } from '../src/dag-tier.mjs';
 import { resolveFallback, loadPolicy } from '../src/detour-policy.mjs';
@@ -55,8 +55,9 @@ test('平台自动发现：只列 AI 执行者，排除脚本与生成的分档�
   assert.equal(list.find(p => p.id === 'claude').defaultModel, 'claude-sonnet-5-5');
   assert.equal(list.find(p => p.id === 'gemini').models, null, '读不到清单 → 手填');
   assert.equal(list.find(p => p.id === 'codex-full').sessionCapable, true);
-  assert.equal(list.find(p => p.id === 'workbuddy').sessionCapable, false, 'WorkBuddy 会话模式没有只读/工作区写沙箱，暂不接入会话');
-  assert.equal(list.find(p => p.id === 'claude').sessionCapable, false);
+  assert.equal(list.find(p => p.id === 'workbuddy').sessionCapable, true, 'WorkBuddy 经 ACP 接入会话（安全靠控制台权限矩阵 + 决策卡）');
+  assert.equal(list.find(p => p.id === 'claude').sessionCapable, true, 'Claude Code 经 claude-agent-acp 接入会话');
+  assert.equal(list.find(p => p.id === 'gemini').sessionCapable, false, '没有会话适配器的程序不可选');
 });
 
 test('平台 = 宿主程序：同一程序上的多个执行者合并为一个平台，模板优先选工作分配在用、可写的执行者', () => {
@@ -135,8 +136,8 @@ test('校验：开启时主/备必须是三档配齐的平台；会话平台须�
     settings({ roles: { ...settings().roles, dev: { primary: 'scan', fallback: 'claude' } } }),
     settings({ roles: { ...settings().roles, dev: { primary: 'workbuddy', fallback: 'workbuddy' } } }),
     settings({ platforms: { ...settings().platforms, workbuddy: { light: 'hy4flash-free', standard: '', heavy: 'x' } } }),
-    settings({ sessions: { ...settings().sessions, design: { platform: 'claude', tier: 'light' } } }),
-    settings({ sessions: { ...settings().sessions, normal: { platform: 'workbuddy', tier: 'light' } } }),
+    settings({ sessions: { ...settings().sessions, design: { platform: 'scan', tier: 'light' } } }),
+    settings({ sessions: { ...settings().sessions, normal: { platform: 'nope', tier: 'light' } } }),
     settings({ sessions: { ...settings().sessions, coord: { tier: 'huge' } } }),
     settings({ platforms: { ...settings().platforms, claude: { light: 'a b', standard: 'x', heavy: 'y' } } }),
   ];
@@ -195,8 +196,14 @@ test('会话启动：按会话类型给出平台、模型与启动方式；未�
   const config = setup();
   assert.equal(sessionLaunch(config, 'design'), null);
   await applyPlatformModels(config, settings(), opts);
-  assert.deepEqual(sessionLaunch(config, 'design'), { platform: 'codex-full', use: 'codex', tier: 'standard', model: 'kimi-for-coding', label: 'Codex 可写调度' });
-  assert.deepEqual(sessionLaunch(config, 'normal'), { platform: 'codex-full', use: 'codex', tier: 'light', model: 'deepseek-v4.1-flash', label: 'Codex 可写调度' });
+  assert.deepEqual(sessionLaunch(config, 'design'), { platform: 'codex-full', use: 'codex', tier: 'standard', model: 'kimi-for-coding', label: 'Codex', command: null });
+  assert.deepEqual(sessionLaunch(config, 'normal'), { platform: 'codex-full', use: 'codex', tier: 'light', model: 'deepseek-v4.1-flash', label: 'Codex', command: null });
+  // 新建会话时显式选平台：不依赖「已开启分档」；WorkBuddy 带上启动命令（去掉旧 --model），Claude Code 用别名模型
+  assert.deepEqual(sessionLaunch(config, 'normal', 'workbuddy'), { platform: 'workbuddy', use: 'acp', tier: 'light', model: 'hy4flash-free', label: 'WorkBuddy AI', command: ['/bin/wb.sh', '--acp'] });
+  assert.equal(sessionLaunch(config, 'normal', 'claude').use, 'claude');
+  assert.equal(sessionLaunch(config, 'normal', 'scan'), null, '脚本类执行者不能开会话');
+  assert.equal(sessionLaunch(config, 'normal', 'workbuddy-tier-light'), null, '分档执行者不是平台');
+  assert.deepEqual(sessionPlatforms(config, { catalog }).map(p => p.id).sort(), ['claude', 'codex-full', 'workbuddy']);
   assert.equal(sessionLaunch(config, 'scheduling'), null, '调度会话走中台规则，不在这里启动');
 });
 

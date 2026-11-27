@@ -76,6 +76,12 @@ export function mobileSessionSummaries(sessions = []) {
         statusLabel: statusLabel(session.status),
         agent: String(session.agent ?? '').trim() || null,
         model: session.model ?? null,
+        platform: String(session.platform ?? '').trim() || null,
+        platformLabel: String(session.platformLabel ?? '').trim() || null,
+        // 会话内决策卡：需要主人确认的越权请求（只放行展示字段）。
+        pendingPermissions: (Array.isArray(session.pendingPermissions) ? session.pendingPermissions : [])
+          .filter(item => item && typeof item.id === 'string' && item.id)
+          .map(item => ({ id: item.id, reason: String(item.reason ?? ''), title: String(item.title ?? ''), command: String(item.command ?? ''), paths: Array.isArray(item.paths) ? item.paths.map(String) : [] })),
         continuedFrom: session.continuedFrom ?? null,
         // 事项 subject：会话内决策卡按 lane 归属过滤的依据（fix4）；ACP 会话没有，为 null 不编造。
         hubSubject: String(session.hubSubject ?? '').trim() || null,

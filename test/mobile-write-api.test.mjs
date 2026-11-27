@@ -280,7 +280,7 @@ test('绑定设备可经移动端网关创建会话，复用同一会话管理�
   assert.equal(payload.sourceDeviceId, ctx.deviceId);
   const startCall = ctx.sessions.calls.find(call => call[0] === 'start');
   assert.ok(startCall, '必须复用网页 /api/scheduling-sessions 的同一 sessions.start');
-  assert.deepEqual(startCall[1], { kind: 'scheduling', prompt: '请调度失败任务', project: WORKTREE });
+  assert.deepEqual(startCall[1], { kind: 'scheduling', prompt: '请调度失败任务', project: WORKTREE, platform: null });
 });
 
 test('移动端创建会话：kind 缺省按首轮语义分类，非法 kind / 缺提示词 / 未知项目 400', async t => {

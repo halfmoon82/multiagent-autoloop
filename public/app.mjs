@@ -297,6 +297,7 @@ document.addEventListener('click', async event => {
     if (action === 'cancel' && !confirm(`确定停止第 ${id} 轮？`)) return;
     if (action === 'close-session' && !confirm(`关闭调度会话“${id}”？`)) return;
     if (action === 'edit') { const rule = state.rules.find(item => item.name === id); openRuleForm({ rule, agents: state.agents, sources: state.sources, api, onSaved: refresh }); return; }
+    if (action === 'session-permission') { const [sessionId, requestId, choice] = id.split('|'); await api(`/api/scheduling-sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`, { method: 'POST', body: JSON.stringify({ choice }) }); showNotice(choice === 'allow' ? '已允许这一次。' : '已拒绝。'); await refresh(); return; }
     if (action === 'answer-choice') { const split = id.lastIndexOf(':'); const answered = await api(`/api/cards/${id.slice(0, split)}/answer`, { method: 'POST', body: JSON.stringify({ choice: Number(id.slice(split + 1)) }) }); showNotice(wakeNotice(answered)); await refresh(); return; }
     if (action === 'delegate-card') {
       const result = await api(`/api/cards/${encodeURIComponent(id)}/delegate`, { method: 'POST', body: JSON.stringify({}) });
@@ -587,7 +588,18 @@ function paintClassification() {
   $('classification-reason').textContent = typeOverride === 'auto' ? (classification?.reason || meta.reason) : meta.reason;
   $('classification-contract').textContent = meta.contract;
 }
+// 会话平台选择：来自 /api/session-platforms（可写的 Codex / Claude Code / WorkBuddy 等）；留空 = 管理后台设置的默认平台。
+async function loadSessionPlatforms() {
+  const select = $('new-session-platform');
+  const previous = select.value;
+  try {
+    const { platforms = [] } = await api('/api/session-platforms');
+    select.replaceChildren(new Option('默认（管理后台设置）', ''), ...platforms.map(item => new Option(`${item.name}${item.defaultModel ? ` · ${item.defaultModel}` : ''}`, item.id)));
+    if ([...select.options].some(option => option.value === previous)) select.value = previous;
+  } catch { /* 平台清单暂不可用：保留「默认」，不阻断创建 */ }
+}
 function openNewSession() {
+  loadSessionPlatforms();
   showView('sessions');
   if (!$('new-session-project').options.length) { showNotice('未发现可用项目，请先配置 AUTOLOOP_PROJECT_ROOTS。'); return; }
   typeOverride = 'auto'; classification = null; classifiedText = '';
@@ -628,7 +640,8 @@ async function createFromDialog() {
   const project = $('new-session-project').value.trim();
   const prompt = $('new-session-request').value.trim();
   const kind = typeOverride !== 'auto' ? typeOverride : (classification?.kind || null);
-  const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project, prompt, kind }) });
+  const platform = $('new-session-platform').value || undefined;
+  const session = await api('/api/scheduling-sessions', { method: 'POST', body: JSON.stringify({ project, prompt, kind, platform }) });
   showToast(`${KIND_NAMES[session.kind] || '会话'}已创建并进入${KIND_NAMES[session.kind] || '会话'}列表。`);
   state.projectFilter = projectName(session.project || '');
   state.sessionTab = session.kind || 'scheduling'; state.selectedSession = session.id; state.archivedView = ''; state.sessionQuery = '';
@@ -668,7 +681,7 @@ $('create-session').addEventListener('click', async event => {
   const kind = typeOverride !== 'auto' ? typeOverride : (classification?.kind || null);
   const conflict = localConflict(project, kind);
   if (conflict) { showDialogConflict(conflict); return; }
-  if (!confirm(`为项目 ${projectName(project)} 开启${KIND_NAMES[kind] || '会话'}并发送首轮？这会启动 Codex，并可能消耗模型额度。`)) return;
+  if (!confirm(`为项目 ${projectName(project)} 开启${KIND_NAMES[kind] || '会话'}并发送首轮？这会启动 ${$('new-session-platform').selectedOptions[0]?.value ? $('new-session-platform').selectedOptions[0].textContent.split(' · ')[0] : '所选平台'}，并可能消耗模型额度。`)) return;
   button.disabled = true;
   try { await createFromDialog(); }
   catch (error) { if (error.conflict) showDialogConflict(error.conflict); else showDialogError(error.message); }

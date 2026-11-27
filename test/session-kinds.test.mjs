@@ -115,13 +115,17 @@ test('design session queue edits cannot smuggle slash commands', async () => {
   await assert.rejects(() => manager.updateQueued(started.id, queued.queued[0].id, '/plan 偷偷切换模式'), /设计会话不接受斜杠命令/);
 });
 
-test('design session cancels every permission request, even edits inside the writable dir', async () => {
+test('design session never auto-approves: even edits inside the writable dir wait for the owner, who rejects', async () => {
   const fake = fakeAdapter({ askPermission: true });
   const manager = new SchedulingSessionManager({ cwd: '/workspace/demo', adapterPath: '/fixed/acp.js', writableDir: process.cwd(), spawnFn: () => fake.process });
   await manager.start({ kind: 'design', project: '/workspace/demo', prompt: '设计新功能' });
+  await waitFor(() => manager.list()[0]?.pendingPermissions?.length === 1);
+  assert.ok(!fake.responses.some(response => response.id === 'perm-1'), '主人答复前不得回适配器（更不能自动放行）');
+  const [session] = manager.list();
+  manager.answerPermission(session.id, session.pendingPermissions[0].id, 'reject');
   await waitFor(() => fake.responses.some(response => response.id === 'perm-1'));
   const reply = fake.responses.find(response => response.id === 'perm-1');
-  assert.equal(reply.result.outcome.outcome, 'cancelled', '设计会话的写审批必须全部取消，不能只依赖 ACP read-only');
+  assert.notEqual(reply.result.outcome.optionId, 'allow', '拒绝后不得放行');
 });
 
 test('design session re-verifies read-only + plan after each turn and errors on drift', async () => {

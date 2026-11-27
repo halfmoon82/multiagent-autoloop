@@ -144,7 +144,7 @@ export function initAdmin({ api, toast }) {
       tr.append(tierCell); body.append(tr);
     }
     table.append(body); panel.append(table);
-    panel.append(el('p', 'subtle admin-foot', '会话类改动只影响之后新建的会话，已打开的会话保持原平台和模型。WorkBuddy 的会话模式没有只读/工作区写沙箱，暂不能用于设计和普通会话。'));
+    panel.append(el('p', 'subtle admin-foot', '会话类改动只影响之后新建的会话，已打开的会话保持原平台和模型。新建会话时也可以临时改选平台。Codex 带只读/工作区写沙箱；Claude Code、WorkBuddy 没有沙箱，靠控制台权限矩阵把越权操作转成会话内决策卡，由您决定。'));
     return panel;
   }
 

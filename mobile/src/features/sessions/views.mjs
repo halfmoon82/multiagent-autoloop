@@ -61,7 +61,7 @@ export function buildSessionList(snapshot = {}, options = {}) {
 
 // 新建会话表单：语义分类推荐来自 /api/session-classify 的结果（调用方传入），默认采用推荐、
 // 用户可手动覆盖；推荐缺失时不编造。首轮提示词与项目是提交前提。
-export function buildNewSessionForm({ projects = [], prompt = '', classification = null, selectedKind = null } = {}) {
+export function buildNewSessionForm({ projects = [], prompt = '', classification = null, selectedKind = null, platforms = [], selectedPlatform = '' } = {}) {
   const options = (Array.isArray(projects) ? projects : [])
     .filter(item => item && typeof item.id === 'string' && item.id.length > 0)
     .map(item => ({ id: item.id, label: String(item.label || item.id) }));
@@ -72,7 +72,12 @@ export function buildNewSessionForm({ projects = [], prompt = '', classification
     : null;
   const chosen = SESSION_KINDS.includes(selectedKind) ? selectedKind : (recommendation?.kind || 'normal');
 
+  const platformItems = (Array.isArray(platforms) ? platforms : []).filter(item => item && typeof item.id === 'string' && item.id)
+    .map(item => ({ id: item.id, label: `${item.name || item.id}${item.defaultModel ? ` · ${item.defaultModel}` : ''}`, selected: item.id === selectedPlatform }));
   return {
+    // 平台选择：首项「默认」= 管理后台设置的会话平台；其余是可写的 Codex / Claude Code / WorkBuddy 等。
+    platformOptions: [{ id: '', label: '默认平台', selected: !platformItems.some(item => item.selected) }, ...platformItems],
+    selectedPlatform: platformItems.some(item => item.selected) ? selectedPlatform : '',
     projectOptions: collection(options, '暂无可选项目'),
     prompt: cleanPrompt,
     recommendation,

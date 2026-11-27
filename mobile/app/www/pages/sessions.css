@@ -295,3 +295,10 @@
 .sessions-send-state { color: var(--tertiary); }
 .sessions-send-state.failed { color: var(--danger); }
 .sessions-retry { min-height: 30px; margin: 0.15rem 0 0; padding: 0.2rem 0.6rem; font-size: 0.66rem; }
+
+.sessions-permission-card { margin-top: 0.5rem; padding: 0.7rem; background: #fff3df; border: 1px solid #edd5ae; border-radius: 0.65rem; color: #74430e; }
+.sessions-permission-title { display: block; margin-bottom: 0.2rem; font-size: 0.85rem; }
+.sessions-permission-reason { margin: 0 0 0.45rem; font-size: 0.78rem; line-height: 1.5; }
+.sessions-permission-detail { margin: 0 0 0.55rem; padding: 0.45rem 0.55rem; max-height: 7.5rem; overflow: auto; background: #fff; border: 1px solid #edd5ae; border-radius: 0.45rem; font-size: 0.74rem; white-space: pre-wrap; word-break: break-all; }
+.sessions-permission-actions { display: flex; gap: 0.4rem; }
+.sessions-permission-actions .sessions-design-btn { min-height: 40px; }

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HubError, hubRequest } from './hub.mjs';
 import { readRuleOptions, saveRule, RuleError, defaultCheck } from './rules.mjs';
-import { readPlatformModels, applyPlatformModels, sessionLaunch, PlatformModelsError } from './platform-models.mjs';
+import { readPlatformModels, applyPlatformModels, sessionLaunch, sessionPlatforms, PlatformModelsError } from './platform-models.mjs';
 import { loadPolicy } from './detour-policy.mjs';
 import { modelLabels } from './models.mjs';
 import { SchedulingSessionManager, SchedulingSessionError } from './scheduling-session.mjs';
@@ -221,6 +221,7 @@ async function handleApi(config, req, res, url) {
     let policy = null; try { policy = loadPolicy(config); } catch { policy = null; }
     return jsonResponse(res, 200, readPlatformModels(config, { ...(config.platformCatalog ? { catalog: config.platformCatalog } : {}), policy }));
   }
+  if (req.method === 'GET' && url.pathname === '/api/session-platforms') return jsonResponse(res, 200, { platforms: sessionPlatforms(config) });
   if (req.method === 'GET' && url.pathname === '/api/scheduling-sessions') return jsonResponse(res, 200, await config.schedulingSessions.list());
   if (req.method === 'GET' && url.pathname === '/api/session-limit') return jsonResponse(res, 200, {
     maxSessions: config.schedulingSessions?.maxSessions ?? config.maxSessions ?? DEFAULT_MAX_SESSIONS,
@@ -401,7 +402,8 @@ async function handleApi(config, req, res, url) {
     if (explicit && !['normal', 'scheduling', 'design'].includes(explicit)) throw new RequestError(400, '会话类型必须是 normal、scheduling 或 design');
     const kind = explicit || classifySessionRequest(prompt).kind;
     if (!kind) throw new RequestError(400, '无法判定会话类型，请补充首轮提示词');
-    return jsonResponse(res, 201, await config.schedulingSessions.start({ kind, prompt, project: known.path }));
+    const platform = String(body.platform ?? '').trim() || null;
+    return jsonResponse(res, 201, await config.schedulingSessions.start({ kind, prompt, project: known.path, platform }));
   }
   if (req.method === 'POST' && url.pathname === '/api/dag-runs') {
     if (!config.dagService) throw new RequestError(503, 'DAG 通道不可用（未配置运行目录）');
@@ -447,6 +449,7 @@ async function handleApi(config, req, res, url) {
   if (req.method === 'DELETE' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/([^/]+)$/))) return jsonResponse(res, 200, await config.schedulingSessions.removeQueued(decodeURIComponent(match[1]), decodeURIComponent(match[2])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/queue\/([^/]+)\/steer$/))) return jsonResponse(res, 200, await config.schedulingSessions.steerQueued(decodeURIComponent(match[1]), decodeURIComponent(match[2])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/close$/))) return jsonResponse(res, 200, await config.schedulingSessions.close(decodeURIComponent(match[1])));
+  if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/permissions\/([^/]+)$/))) return jsonResponse(res, 200, config.schedulingSessions.answerPermission(decodeURIComponent(match[1]), decodeURIComponent(match[2]), String(body.choice || '')));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/approve-plan$/))) return jsonResponse(res, 200, await config.schedulingSessions.approvePlan(decodeURIComponent(match[1])));
   if (req.method === 'POST' && (match = url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/messages$/))) return jsonResponse(res, 200, await config.schedulingSessions.send(decodeURIComponent(match[1]), body.text, { interrupt: body.interrupt === true }));
   if (req.method === 'PUT' && (match = url.pathname.match(/^\/api\/rules\/([^/]+)$/))) return jsonResponse(res, 200, await saveRule(config, body, decodeURIComponent(match[1])));
@@ -538,7 +541,7 @@ export function createConsoleServer(config, schedulingSessions) {
       try { mkdirSync(allowedDir, { recursive: true }); }
       catch (error) { console.error(`[console] 脚本目录 ${allowedDir} 创建失败，会话按只读处理：${error.message}`); allowedDir = null; }
     }
-    schedulingSessions = new SchedulingSessionManager({ maxSessions: config.maxSessions, writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }), sessionLaunch: kind => sessionLaunch(config, kind) });
+    schedulingSessions = new SchedulingSessionManager({ maxSessions: config.maxSessions, writableDir: allowedDir, archiveRoot: config.root, hubScheduling: new HubSchedulingSessionAdapter({ hubConfig: config }), sessionLaunch: (kind, platform) => sessionLaunch(config, kind, platform) });
   }
   const dagService = config.dagService || (config.root ? createDagService({ root: config.root, storeDirectory: path.join(config.root, 'dag-runs') }) : null);
   // 退回记录落盘：重启后「待代理决策」列表不丢；无运行目录退回内存 store（退回行为不变）。

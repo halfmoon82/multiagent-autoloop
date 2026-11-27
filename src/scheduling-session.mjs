@@ -22,6 +22,7 @@ import { saveSessionAttachments, attachmentPrompt } from './session-attachments.
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, '..');
 export const DEFAULT_ADAPTER_PATH = path.join(REPOSITORY_ROOT, 'node_modules', '@agentclientprotocol', 'codex-acp', 'dist', 'index.js');
+export const DEFAULT_CLAUDE_ADAPTER_PATH = path.join(REPOSITORY_ROOT, 'node_modules', '@agentclientprotocol', 'claude-agent-acp', 'dist', 'index.js');
 export const HUB_TOOLS_PATH = path.join(REPOSITORY_ROOT, 'src', 'mcp', 'hub-tools.mjs');
 
 // 调度会话挂载的只读 MCP server：stdio JSON-RPC，数据来自 Autoloop Hub。
@@ -60,6 +61,12 @@ export function mobileSessionSummaries(sessions = []) {
         statusLabel: statusLabel(session.status),
         agent: String(session.agent ?? '').trim() || null,
         model: session.model ?? null,
+        platform: String(session.platform ?? '').trim() || null,
+        platformLabel: String(session.platformLabel ?? '').trim() || null,
+        // 会话内决策卡：需要主人确认的越权请求（只放行展示字段）。
+        pendingPermissions: (Array.isArray(session.pendingPermissions) ? session.pendingPermissions : [])
+          .filter(item => item && typeof item.id === 'string' && item.id)
+          .map(item => ({ id: item.id, reason: String(item.reason ?? ''), title: String(item.title ?? ''), command: String(item.command ?? ''), paths: Array.isArray(item.paths) ? item.paths.map(String) : [] })),
         continuedFrom: session.continuedFrom ?? null,
         // 事项 subject：移动端会话内决策卡按 lane 归属过滤的依据（fix4）；ACP 会话没有，为 null 不编造。
         hubSubject: String(session.hubSubject ?? '').trim() || null,
@@ -163,6 +170,8 @@ function toPublicSession(record) {
     agent: record.agent,
     model: record.model || null,
     tier: record.tier || null,
+    platform: record.platform || null,
+    platformLabel: record.platformLabel || null,
     cwd: record.cwd,
     status: record.status,
     statusText: statusLabel(record.status),
@@ -179,6 +188,7 @@ function toPublicSession(record) {
     // 「Agent 正在响应」指示：本轮开始时间（界面算已运行时长）与最近一次活动。只在本轮进行中给出，结束即清空。
     turnStartedAt: ['running', 'unknown'].includes(record.status) ? record.turnStartedAt || null : record.status === 'initializing' ? record.createdAt : null,
     activity: record.status === 'running' ? record.activity || '' : '',
+    pendingPermissions: [...(record.pendingPermissions?.values() || [])].map(item => ({ id: item.id, toolKind: item.toolKind, title: item.title, command: item.command, paths: item.paths, reason: item.reason, at: item.at })),
     queuedCount: (record.queue || []).length,
     queued: (record.queue || []).map(item => ({ id: item.id, text: item.text, at: item.at })),
     createdAt: record.createdAt,
@@ -214,7 +224,7 @@ function summarizeUpdate(update) {
 }
 
 export class SchedulingSessionManager {
-  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 6, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null, sessionLaunch = null, hubScheduling, hubReconcileMs = HUB_RECONCILE_INTERVAL_MS } = {}) {
+  constructor({ cwd = REPOSITORY_ROOT, adapterPath = DEFAULT_ADAPTER_PATH, spawnFn = spawn, maxSessions = 6, writableDir = null, archiveRoot = null, now = () => new Date(), settleMs = 1500, codexHomeDir = null, userCodexHome = null, sessionLaunch = null, claudeAdapterPath = DEFAULT_CLAUDE_ADAPTER_PATH, hubScheduling, hubReconcileMs = HUB_RECONCILE_INTERVAL_MS } = {}) {
     this.cwd = path.resolve(cwd);
     this.writableDir = writableDir ? path.resolve(writableDir) : null;
     // §6：kind=scheduling 走 Hub 事项/run/resume，绝不派生私有 ACP；normal/design 始终走 ACP。
@@ -228,6 +238,7 @@ export class SchedulingSessionManager {
     // #100：前端轮询 list() 时活跃 Hub 会话的最小对账间隔（默认 ≥5s）。
     this.hubReconcileMs = hubReconcileMs;
     this.adapterPath = adapterPath;
+    this.claudeAdapterPath = claudeAdapterPath;
     this.spawnFn = spawnFn;
     // 调度会话全局上限：生产由 config.json maxSessions 装配（默认 6、允许 1–12）。
     this.maxSessions = maxSessions;
@@ -389,10 +400,10 @@ export class SchedulingSessionManager {
     try { record = await this.archive.read(id); }
     catch (error) { throw new SchedulingSessionError(`无法继续该会话：${error.message}`, { status: error.status || 400 }); }
     const prompt = await this.archive.buildContinuation(id);
-    return this.start({ kind: record.kind || 'scheduling', prompt, project: record.project, continuedFrom: record.id, planApproved: record.planApproved === true });
+    return this.start({ kind: record.kind || 'scheduling', prompt, project: record.project, continuedFrom: record.id, planApproved: record.planApproved === true, platform: record.platform || null });
   }
 
-  async start({ kind = 'scheduling', prompt, project, continuedFrom = null, planApproved = false } = {}) {
+  async start({ kind = 'scheduling', prompt, project, continuedFrom = null, planApproved = false, platform = null } = {}) {
     const sessionKind = SESSION_KINDS.includes(kind) ? kind : 'scheduling';
     const projectId = this.#validateProject(project);
     const base = sessionKind === 'design'
@@ -414,23 +425,27 @@ export class SchedulingSessionManager {
       const userText = String(prompt ?? '').trim() || '按调度会话护栏开局：读 open 事项并汇报处理清单。';
       return this.#startHubSession({ projectId, text: this.#validatePrompt(userText, 64000), guide: base, continuedFrom });
     }
-    if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
-
     const sessionCwd = this.#projectCwd(projectId);
-    // fail closed：专用 CODEX_HOME 准备失败就不启动，绝不回退到继承全局 approval_policy 的环境。
     let launch = null;
-    try { launch = this.sessionLaunch ? this.sessionLaunch(sessionKind) : null; } catch { launch = null; }
-    if (launch && launch.use !== 'codex') launch = null; // 只有 Codex 能保证会话沙箱护栏
-    let codexHome;
-    try { codexHome = prepareSessionCodexHome({ targetDir: this.codexHomeDir, userCodexHome: this.userCodexHome || defaultUserCodexHome(), model: launch?.model || null }); }
-    catch (error) { throw new SchedulingSessionError(`无法准备会话专用 CODEX_HOME：${safeMessage(error)}`, { status: 500 }); }
-    const child = this.spawnFn(process.execPath, [this.adapterPath], {
-      cwd: sessionCwd,
-      env: { ...process.env, NO_BROWSER: process.env.NO_BROWSER || '1', CODEX_HOME: codexHome },
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false,
-    });
-    if (!child?.stdin || !child?.stdout || !child?.stderr) throw new SchedulingSessionError('无法启动 Codex ACP 适配器', { status: 500 });
+    try { launch = this.sessionLaunch ? this.sessionLaunch(sessionKind, platform || null) : null; } catch { launch = null; }
+    if (platform && !launch) throw new SchedulingSessionError(`所选平台「${platform}」不可用于${SESSION_KIND_LABELS[sessionKind]}（未登记、只读或缺少启动命令）`, { status: 400 });
+    const use = launch?.use || 'codex';
+    const env = { ...process.env, NO_BROWSER: process.env.NO_BROWSER || '1' };
+    let command;
+    if (use === 'codex') {
+      if (this.spawnFn === spawn && !existsSync(this.adapterPath)) throw new SchedulingSessionError('找不到 Codex ACP 适配器，请先运行 npm ci', { status: 500 });
+      // fail closed：专用 CODEX_HOME 准备失败就不启动，绝不回退到继承全局 approval_policy 的环境。
+      try { env.CODEX_HOME = prepareSessionCodexHome({ targetDir: this.codexHomeDir, userCodexHome: this.userCodexHome || defaultUserCodexHome(), model: launch?.model || null }); }
+      catch (error) { throw new SchedulingSessionError(`无法准备会话专用 CODEX_HOME：${safeMessage(error)}`, { status: 500 }); }
+      command = [process.execPath, this.adapterPath];
+    } else if (use === 'claude') {
+      if (this.spawnFn === spawn && !existsSync(this.claudeAdapterPath)) throw new SchedulingSessionError('找不到 Claude Code ACP 适配器，请先运行 npm ci', { status: 500 });
+      command = [process.execPath, this.claudeAdapterPath];
+    } else if (use === 'acp') {
+      command = [...launch.command, ...(launch.model ? ['--model', launch.model] : [])];
+    } else throw new SchedulingSessionError(`不支持的会话平台类型：${use}`, { status: 400 });
+    const child = this.spawnFn(command[0], command.slice(1), { cwd: sessionCwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+    if (!child?.stdin || !child?.stdout || !child?.stderr) throw new SchedulingSessionError(`无法启动 ${launch?.label || 'Codex'} ACP 适配器`, { status: 500 });
     let stderrTail = '';
     child.stderr.on('data', chunk => { stderrTail = (stderrTail + chunk.toString()).slice(-4096); });
 
@@ -438,7 +453,10 @@ export class SchedulingSessionManager {
       id: randomUUID(),
       kind: sessionKind,
       sessionId: null,
-      agent: 'Codex ACP',
+      agent: launch ? `${launch.label} ACP` : 'Codex ACP',
+      use,
+      platform: launch?.platform || null,
+      platformLabel: launch?.label || 'Codex',
       model: launch?.model || null,
       tier: launch?.tier || null,
       cwd: sessionCwd,
@@ -468,7 +486,7 @@ export class SchedulingSessionManager {
     const acpClient = client({ name: 'autoloop-console' })
       .onRequest(methods.client.session.requestPermission, async request => {
         touch('permission');
-        return { outcome: this.#decidePermission(request?.params, record) };
+        return { outcome: await this.#decidePermission(request?.params, record) };
       })
       .onNotification(methods.client.session.update, notification => {
         const update = notification?.params?.update || {};
@@ -493,7 +511,7 @@ export class SchedulingSessionManager {
         record.status = child.exitCode === 0 ? 'closed' : 'error';
         this.#persist(record);
         if (record.status === 'error' && !record.error) {
-        record.error = 'Codex ACP 进程已退出';
+        record.error = `${record.platformLabel || 'Codex'} ACP 进程已退出`;
         const tail = stderrTail.trim();
         if (tail) console.error(`[scheduling-session] adapter stderr:\n${tail}`);
       }
@@ -517,7 +535,15 @@ export class SchedulingSessionManager {
       record.sessionId = session.sessionId;
       // 设计会话：首个 prompt 前完成沙箱/协作模式核验，任一失败即创建失败，不降级。
       // 未放行：read-only + 原生 Plan Mode（只做规划）；已放行（主人确认计划）：workspace-write + 默认协作模式（AGENTS.md §10 落盘登记）。
-      if (sessionKind === 'design') {
+      if (use !== 'codex') {
+        // Claude Code / WorkBuddy 没有 Codex 的沙箱模式：设计会话 plan（只规划），普通会话 default（每次越权都问）。
+        // 越出预授权范围的请求由控制台权限矩阵转成会话内决策卡，不靠平台自己的审批 UI。
+        await this.#applyPlatformMode(record, sessionKind === 'design' && !record.planApproved ? 'plan' : 'default');
+        if (launch?.model && use === 'claude') {
+          try { await record.connection.agent.request(methods.agent.session.setConfigOption, { sessionId: record.sessionId, configId: 'model', value: launch.model }); }
+          catch { record.model = null; } // 适配器不认这个模型名：沿用适配器默认，不谎报
+        }
+      } else if (sessionKind === 'design') {
         if (record.planApproved) await this.#applyApprovedDesign(record);
         else await this.#applyDesignGuards(record);
       } else await this.#applySandboxMode(record, sessionKind === 'normal' ? 'workspace-write' : 'read-only');
@@ -794,6 +820,7 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
       if (steerText) record.queue.unshift({ id: randomUUID(), text: steerText, at: this.now().toISOString() });
       record.interruptRequested = true; // cancel 引发的 prompt 拒绝按中断收尾，不算错误
       record.updatedAt = this.now().toISOString();
+      this.#cancelPendingPermissions(record);
       try { await record.connection?.agent?.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch { /* 连接断开时由 promptTurn 收尾 */ }
       return toPublicSession(record);
     }
@@ -969,6 +996,7 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
     }
     record.status = 'closing';
     record.updatedAt = this.now().toISOString();
+    this.#cancelPendingPermissions(record); // 先回「取消」再关连接，适配器才收得到
     if (record.sessionId) {
       try { await record.connection.agent.request(methods.agent.session.cancel, { sessionId: record.sessionId }); } catch {}
       try { await record.connection.agent.request(methods.agent.session.close, { sessionId: record.sessionId }); } catch {}
@@ -983,9 +1011,18 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
     for (const record of this.sessions.values()) this.#destroyRecord(record);
   }
 
+  // 非 Codex 平台的权限模式：set_mode + 用 set_config_option(configId='mode') 复读核验（Claude Code 与 WorkBuddy 的 ACP 均支持），失败即拒绝创建。
+  async #applyPlatformMode(record, modeId) {
+    await record.connection.agent.request(methods.agent.session.setMode, { sessionId: record.sessionId, modeId });
+    const applied = await record.connection.agent.request(methods.agent.session.setConfigOption, { sessionId: record.sessionId, configId: 'mode', value: modeId });
+    const options = Array.isArray(applied?.configOptions) ? applied.configOptions : [];
+    if (!options.some(option => option.id === 'mode' && option.currentValue === modeId)) throw new Error(`无法将会话设置为 ${modeId} 模式`);
+  }
+
   // 放行落盘（主人确认计划后）：workspace-write（经 #applySandboxMode）+ 退出 Plan Mode，逐个核验返回的 configOptions。
   // 核验任一失败即抛错且不置 planApproved，不留半解锁状态；幂等（已放行直接返回）。
   async #applyApprovedDesign(record) {
+    if (record.use && record.use !== 'codex') return this.#applyPlatformMode(record, 'default');
     await this.#applySandboxMode(record, 'workspace-write');
     const applied = await record.connection.agent.request(methods.agent.session.setConfigOption, { sessionId: record.sessionId, configId: 'collaboration_mode', value: 'default' });
     const options = Array.isArray(applied?.configOptions) ? applied.configOptions : [];
@@ -994,6 +1031,7 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
 
   // 设计会话护栏：read-only（经 #applySandboxMode）+ 原生 Plan Mode，逐个核验返回的 configOptions。
   async #applyDesignGuards(record) {
+    if (record.use && record.use !== 'codex') return this.#applyPlatformMode(record, 'plan');
     await this.#applySandboxMode(record, 'read-only');
     const plan = await record.connection.agent.request(methods.agent.session.setConfigOption, { sessionId: record.sessionId, configId: 'collaboration_mode', value: 'plan' });
     const planOptions = Array.isArray(plan?.configOptions) ? plan.configOptions : [];
@@ -1012,7 +1050,9 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
   }
 
   // 按 kind 的权限矩阵裁定（逻辑见 session-permission.mjs），每次裁定写审计留痕。
-  #decidePermission(params, record = null) {
+  // 三种结果：自动放行 / 策略拒绝（显式 reject 选项）/ 需主人确认——后者挂起为会话内决策卡，
+  // 主人在网页或 App 里点「允许一次 / 拒绝」后才回复适配器；会话关闭或被打断则按取消收尾。
+  async #decidePermission(params, record = null) {
     const kind = record?.planApproved ? 'normal' : (record?.kind || 'scheduling');
     let decision;
     try {
@@ -1020,17 +1060,62 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
     } catch (error) {
       decision = { allow: false, reason: `裁定异常：${safeMessage(error)}`, optionId: null, toolKind: null, command: '', paths: [], title: '' };
     }
+    if (decision.ask && record && !record.closed) return this.#askOwner(record, params, decision);
     this.#auditPermission(record, params, decision);
-    return decision.allow ? { outcome: 'selected', optionId: decision.optionId } : { outcome: 'cancelled' };
+    if (decision.allow) return { outcome: 'selected', optionId: decision.optionId };
+    // 策略拒绝必须显式选择 reject 选项（decideByKind 已解析 optionId），让上游收到明确拒绝；
+    // 只有请求方未提供任何 reject 选项（病态请求）时才回 cancelled 兜底——cancelled 的协议语义是
+    // 「用户打断了本轮」，随便回会把拒绝伪装成主人取消（2026-11-26 事故，设计/普通会话同此路径）。
+    if (decision.optionId) return { outcome: 'selected', optionId: decision.optionId };
+    return { outcome: 'cancelled' };
   }
 
-  #auditPermission(record, params, decision) {
+  #askOwner(record, params, decision) {
+    if (!record.pendingPermissions) record.pendingPermissions = new Map();
+    const id = randomUUID().slice(0, 8);
+    this.#auditPermission(record, params, { ...decision, allow: false }, 'asked');
+    return new Promise(resolve => {
+      record.pendingPermissions.set(id, {
+        id, toolCallId: params?.toolCall?.toolCallId ?? null, toolKind: decision.toolKind, title: decision.title,
+        command: decision.command, paths: decision.paths, reason: decision.reason,
+        allowOptionId: decision.allowOptionId, rejectOptionId: decision.rejectOptionId,
+        at: this.now().toISOString(), resolve, params, decision,
+      });
+      record.updatedAt = this.now().toISOString();
+    });
+  }
+
+  // 主人答复会话内决策卡：allow = 仅允许这一次（allow_once），reject = 拒绝（reject_once，没有则取消）。
+  answerPermission(sessionId, requestId, choice) {
+    const record = this.sessions.get(String(sessionId || ''));
+    if (!record) throw new SchedulingSessionError('会话不存在或已关闭', { status: 404 });
+    const pending = record.pendingPermissions?.get(String(requestId || ''));
+    if (!pending) throw new SchedulingSessionError('这条授权请求已处理或已失效', { status: 409 });
+    if (choice !== 'allow' && choice !== 'reject') throw new SchedulingSessionError('答复必须是 allow 或 reject', { status: 400 });
+    record.pendingPermissions.delete(pending.id);
+    record.updatedAt = this.now().toISOString();
+    const allowed = choice === 'allow' && pending.allowOptionId;
+    this.#auditPermission(record, pending.params, { ...pending.decision, allow: Boolean(allowed), reason: allowed ? '主人在会话内决策卡允许一次' : '主人在会话内决策卡拒绝' }, 'owner');
+    pending.resolve(allowed ? { outcome: 'selected', optionId: pending.allowOptionId }
+      : pending.rejectOptionId ? { outcome: 'selected', optionId: pending.rejectOptionId } : { outcome: 'cancelled' });
+    this.#persist(record);
+    return toPublicSession(record);
+  }
+
+  // 会话关闭 / 本轮被打断：未答复的授权请求按取消收尾，不留悬挂的 Promise。
+  #cancelPendingPermissions(record) {
+    for (const pending of record.pendingPermissions?.values() || []) pending.resolve({ outcome: 'cancelled' });
+    record.pendingPermissions?.clear();
+  }
+
+  #auditPermission(record, params, decision, via = 'policy') {
     const entry = {
+      via,
       at: this.now().toISOString(), kind: record?.kind || 'scheduling', project: record?.project, session: record?.id,
       toolCallId: params?.toolCall?.toolCallId, toolKind: decision.toolKind, title: decision.title, command: decision.command,
-      paths: decision.paths, decision: decision.allow ? 'allowed' : 'denied', reason: decision.reason,
+      paths: decision.paths, decision: via === 'asked' ? 'asked' : decision.allow ? 'allowed' : 'denied', reason: decision.reason,
     };
-    if (!decision.allow) console.error(`[permission] 拒绝 ${entry.kind}/${entry.toolKind || 'unknown'}：${entry.reason}`);
+    if (!decision.allow && via !== 'asked') console.error(`[permission] 拒绝 ${entry.kind}/${entry.toolKind || 'unknown'}：${entry.reason}`);
     if (!this.auditFile) return;
     try { appendFileSync(this.auditFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 }); }
     catch { if (!this.auditWarned) { this.auditWarned = true; console.error('[permission] 审计日志写入失败'); } }
@@ -1069,6 +1154,7 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
       id: record.id,
       kind: record.kind || 'scheduling',
       planApproved: record.planApproved === true,
+      platform: record.platform || null,
       project: record.project,
       agent: record.agent,
       prompt: record.prompt,
@@ -1241,6 +1327,7 @@ ${attachmentPrompt(saveSessionAttachments(this.runtimeRoot, id, attachments))}`;
   }
 
   #destroyRecord(record) {
+    this.#cancelPendingPermissions(record);
     this.sessions.delete(record.id);
     try { record.connection?.close(); } catch {}
     try { record.child?.kill('SIGTERM'); } catch {}
