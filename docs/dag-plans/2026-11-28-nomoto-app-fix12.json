@@ -1,44 +1,11 @@
 {
   "plan_id": "2026-11-28-nomoto-app-fix12",
-  "title": "NoMoTo App fix12：产物页对齐网页版（安装包可见可下载）+ 控制台自定义名称",
+  "title": "NoMoTo App fix12：控制台自定义名称（产物下载回归已由 #366 直接修复）",
   "design": {
     "manifestPath": "docs/design/2026-11-28-nomoto-fix12-baseline/design-manifest.json",
     "approvalPath": "docs/design/2026-11-28-nomoto-fix12-baseline/design-approval.json"
   },
   "nodes": [
-    {
-      "id": "mobile-artifact-download",
-      "title": "产物页对齐网页版：apk 等二进制交付物可见、点击经既有下载通道下载",
-      "depends_on": [],
-      "integration_after": [],
-      "parallel_group": "wave-0",
-      "status": "planned",
-      "complexity": "light",
-      "contract": {
-        "input": "主人 2026-11-28 裁定（issue #364）：手机 App 产物页应与控制台网页版一模一样。现状：手机产物列表（src/mobile-write.mjs sessionArtifactsRoute/artifactsRoute）刻意只放行文档与图片，apk 等二进制交付物只在桌面产物面板出现，主人在手机上找不到已打好的安装包；手机端已有 session-download 路由（GET /api/mobile/sessions/:id/download）与 resolveSessionDownload 越界/封顶校验可复用。",
-        "output": "1) 手机会话产物列表与全局产物聚合放行 DOWNLOAD_EXTENSIONS 中的二进制交付物（至少 .apk/.ipa/.zip/.pdf，图片沿用在线查看），条目标注大小与「下载」；2) 点击二进制条目经既有 session-download 路由下载，不新造下载通道；3) 文档/图片在线预览与 5MB 图片封顶、300MB 下载封顶、路径越界校验不回归。",
-        "error_behavior": "下载失败就地提示并可重试；超封顶给明确提示；越界/符号链接拒绝口径不变。",
-        "acceptance_example": "单测覆盖手机列表放行 apk 与下载路由衔接；模拟器 smoke：产物页出现 ⬇ apk 条目→点击开始下载；文档/图片预览回归。",
-        "files": [
-          "src/mobile-write.mjs",
-          "mobile/app/www/pages/artifacts.mjs",
-          "mobile/src/features/artifacts/page.mjs",
-          "test/mobile-artifacts*.test.mjs"
-        ],
-        "design": {
-          "surfaceIds": [
-            "artifact-list"
-          ],
-          "states": [
-            "list"
-          ],
-          "interactions": [
-            "apk-download-entry",
-            "apk-mobile-download"
-          ]
-        }
-      }
-    },
     {
       "id": "console-custom-name",
       "title": "控制台自定义名称：添加/选择控制台可命名，缺省回落地址显示",

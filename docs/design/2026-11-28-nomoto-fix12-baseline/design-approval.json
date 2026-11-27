@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "designDigest": "d542f3b386a3ebe16f0628deaac98e1daca5c3af9724cd8c407633f9d86e1eba",
+  "designDigest": "cf9dfc3b5ccab545713cf6d9e6f59301a0bc6c7654b7490787fb40e29e128d23",
   "confirmedAt": "2026-11-28",
-  "evidence": "调度会话 ec59a992 内主人 2026-11-28 裁定（issue #364）：手机 App 产物页与控制台网页版一模一样，安装包必须可见可下载；主人 2026-11-27 提出（issue #365）：控制台支持自定义名称方便记忆和选择。"
+  "evidence": "调度会话 ec59a992 内主人 2026-11-27 提出（issue #365）：控制台支持自定义名称方便记忆和选择。产物下载回归（#364）已由 PR #366 直接修复，不再属于本基线。"
 }
