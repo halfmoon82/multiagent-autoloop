@@ -103,6 +103,7 @@
   <dialog id="new-session-dialog" class="new-session-dialog" aria-labelledby="new-session-title">
     <div class="dialog-heading"><div><p class="eyebrow">NEW SESSION</p><h2 id="new-session-title">新建会话</h2><p class="subtle">根据第一句话的语义推荐会话类型，您也可以手动更改。</p></div><button class="icon-button js-close-new-session" type="button" aria-label="关闭">×</button></div>
     <label class="form-field">项目工作区<select id="new-session-project" aria-label="项目工作区"></select></label>
+    <label class="form-field">会话平台<select id="new-session-platform" aria-label="会话平台"><option value="">默认（管理后台设置）</option></select></label>
     <label class="form-field">您想做什么？<textarea id="new-session-request" aria-label="首轮提示词" placeholder="例如：分析一下账单 API 的依赖；排查失败的调度任务；设计一个多租户计费方案…"></textarea></label>
     <div class="session-classification">
       <div class="classification-top"><span>语义判断</span><span id="classification-method">语义分类 · 关键词 + 意图</span></div>

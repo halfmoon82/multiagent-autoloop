@@ -70,7 +70,7 @@ export function mount(ctx) {
     view: 'list', session: null, group: null, messages: [],
     follow: true, listScroll: 0, promptExpanded: false,
     drafts: { composer: '', question: '' }, respondingSince: 0,
-    projects: [], cards: [], newPrompt: '', selectedKind: null, classification: null,
+    projects: [], cards: [], newPrompt: '', selectedKind: null, classification: null, platforms: [], selectedPlatform: '', permissionKey: '',
     list: null, rawArchives: [], menuText: '',
   };
 
@@ -208,6 +208,7 @@ export function mount(ctx) {
   const newMic = node('button', { type: 'button', className: 'sessions-mic sessions-new-mic mic-btn', attrs: { 'aria-label': '语音输入', hidden: '' } }, [node('span', { attrs: { 'data-icon': 'mic', 'aria-hidden': 'true' } })]);
   const newPromptRow = node('div', { className: 'sessions-new-prompt-row' }, [newPrompt, newMic]);
   const newKinds = node('div', { className: 'sessions-new-kinds' });
+  const newPlatform = node('select', { className: 'sessions-project-select sessions-platform-select', attrs: { 'aria-label': '会话平台' } });
   const newRecommend = node('p', { className: 'hint sessions-recommend' });
   const newSubmit = node('button', { type: 'button', className: 'primary sessions-new-submit', text: '创建并发送首轮' });
   const newView = node('section', { className: 'sessions-view', attrs: { 'data-view': 'new', hidden: '' } }, [
@@ -217,7 +218,7 @@ export function mount(ctx) {
       node('h1', { className: 'page-title', text: '您想做什么？' }),
       node('p', { className: 'page-subtitle', text: '输入第一句话，系统会推荐会话类型，您也可以手动更改。' }),
     ]),
-    newProjects, newPromptRow, newRecommend, newKinds, newSubmit,
+    newProjects, newPlatform, newPromptRow, newRecommend, newKinds, newSubmit,
   ]);
 
   const menuCopy = node('button', { type: 'button', text: '复制' });
@@ -288,7 +289,44 @@ export function mount(ctx) {
   // ---- 列表 ----
   function renderDetailActions() {
     const row = state.session ? designActionsRow(state.session) : null;
-    detailActions.replaceChildren(...(row ? [row] : []));
+    detailActions.replaceChildren(...(row ? [row] : []), ...permissionCards(state.session));
+  }
+
+  // 会话内决策卡：需要主人确认的越权请求，与调度会话的决策卡同一交互（不弹原生窗口）。
+  function permissionCards(session) {
+    return (Array.isArray(session?.pendingPermissions) ? session.pendingPermissions : []).map(request => {
+      const detail = request.command || request.title || (request.paths || []).join('\n');
+      const reply = (button, choice) => button.addEventListener('click', event => {
+        event.stopPropagation();
+        void answerPermission(session, request.id, choice, card);
+      });
+      const allow = node('button', { type: 'button', className: 'sessions-design-btn primary', text: '允许一次', attrs: { 'data-action': 'permission-allow' } });
+      const reject = node('button', { type: 'button', className: 'sessions-design-btn', text: '拒绝', attrs: { 'data-action': 'permission-reject' } });
+      const card = node('div', { className: 'sessions-permission-card', attrs: { role: 'alert', 'data-permission': request.id } }, [
+        node('strong', { className: 'sessions-permission-title', text: '需要您确认' }),
+        node('p', { className: 'sessions-permission-reason', text: request.reason || '这个操作需要您决定' }),
+        detail ? node('pre', { className: 'sessions-permission-detail', text: detail }) : null,
+        node('div', { className: 'sessions-permission-actions' }, [allow, reject]),
+      ]);
+      reply(allow, 'allow'); reply(reject, 'reject');
+      return card;
+    });
+  }
+
+  async function answerPermission(session, requestId, choice, card) {
+    if (!write) return;
+    card.querySelectorAll('button').forEach(button => { button.disabled = true; });
+    try {
+      await write.answerPermission(session.id, requestId, choice);
+      ctx.hooks?.haptic?.success?.();
+      session.pendingPermissions = (session.pendingPermissions || []).filter(item => item.id !== requestId);
+      for (const item of state.snapshot?.sessions || []) if (item.id === session.id) item.pendingPermissions = (item.pendingPermissions || []).filter(entry => entry.id !== requestId);
+      showBanner('');
+      renderDetailActions();
+    } catch (error) {
+      card.querySelectorAll('button').forEach(button => { button.disabled = false; });
+      showBanner(`答复失败：${error?.message || '请重试'}`);
+    }
   }
 
   // 设计会话的授权按钮：只有「确认计划 · 放行落盘」一颗，且仅未放行时出现（其余授权在调度会话对话里完成）。
@@ -512,6 +550,7 @@ export function mount(ctx) {
       state.group = smodel ? smodel.pruneQuestionGroup(restored, smodel.openCardsBySession(state.cards, session, qmodel.cardsForSession).map(card => String(card.id))) : restored;
     }
     detailTitle.textContent = session.title || '会话';
+    state.permissionKey = (session.pendingPermissions || []).map(item => item.id).join(',');
     renderDetailActions();
     renderDetailMeta(session);
     showView('detail');
@@ -527,7 +566,7 @@ export function mount(ctx) {
   }
 
   function renderDetailMeta(session) {
-    detailMeta.textContent = [session?.kindLabel, session?.agent, session?.statusLabel].filter(Boolean).join(' · ');
+    detailMeta.textContent = [session?.kindLabel, session?.platformLabel || session?.agent, session?.model, session?.statusLabel].filter(Boolean).join(' · ');
     detailContext.textContent = `项目 ${session?.projectLabel || '未识别'} · 会话上下文`;
     const queue = Array.isArray(session?.queue) ? session.queue : [];
     queueToggle.textContent = `排队消息 ${queue.length}`;
@@ -711,6 +750,9 @@ export function mount(ctx) {
       } else await load({ quiet: true });
       const session = (state.snapshot?.sessions || []).find(item => item.id === state.detailSessionId);
       if (!session) return;
+      // 会话内决策卡：待确认请求集合变化时才重绘（用 id 串比对，避免每次轮询重建按钮造成抖动）。
+      const permissionKey = (session.pendingPermissions || []).map(item => item.id).join(',');
+      if (permissionKey !== state.permissionKey) { state.permissionKey = permissionKey; state.session = session; renderDetailActions(); }
       if (smodel?.isAwaitingReply(session)) state.awaitingUntil = 0; // 服务端已确认在跑，交给状态判断
       let messages = mapMessages(session);
       const echo = [...state.messages].reverse().find(message => message.role === '主人' && !message.at);
@@ -1080,6 +1122,7 @@ export function mount(ctx) {
 
   // ---- 新建会话 ----
   newProjects.addEventListener('change', () => { state.activeProject = newProjects.value; });
+  newPlatform.addEventListener('change', () => { state.selectedPlatform = newPlatform.value; });
   newPrompt.addEventListener('input', () => {
     state.newPrompt = newPrompt.value;
     void classifyDebounced();
@@ -1104,7 +1147,10 @@ export function mount(ctx) {
     const form = smodel.buildNewSessionForm({
       projects: state.projects, prompt: state.newPrompt,
       classification: state.classification, selectedKind: state.selectedKind,
+      platforms: state.platforms, selectedPlatform: state.selectedPlatform,
     });
+    newPlatform.replaceChildren(...form.platformOptions.map(item => node('option', { text: item.label, attrs: { value: item.id } })));
+    newPlatform.value = form.selectedPlatform;
     newProjects.replaceChildren(...(form.projectOptions.items.length
       ? form.projectOptions.items.map(item => {
         const option = node('option', { text: item.label, attrs: { value: item.id } });
@@ -1139,6 +1185,7 @@ export function mount(ctx) {
           project: newProjects.value || state.activeProject,
           prompt: state.newPrompt,
           kind: state.selectedKind || undefined,
+          platform: state.selectedPlatform || undefined,
         });
         ctx.hooks?.haptic?.success?.();
         state.newPrompt = '';
@@ -1156,6 +1203,8 @@ export function mount(ctx) {
   newButton.addEventListener('click', () => {
     showView('new');
     renderNewForm();
+    // 平台清单每次进入新建页刷新一次；读取失败保留「默认平台」，不阻断创建。
+    if (write?.listPlatforms) void write.listPlatforms().then(list => { state.platforms = list; renderNewForm(); }).catch(() => {});
     if (typeof ctx.hooks?.pushView === 'function') ctx.hooks.pushView({ type: 'sessions', view: 'new' });
   });
   searchInput.addEventListener('input', event => {

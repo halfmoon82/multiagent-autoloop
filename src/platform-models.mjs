@@ -21,10 +21,10 @@ const MODEL_RE = /^[A-Za-z0-9][\w.:/@+-]{0,99}$/;
 const GENERATED_RULE = /·(light|standard|heavy)$/;
 // 需要写权限的工作：开发与调度会话不能落到只读执行者上（审阅可以只读）。
 const WRITE_ROLES = new Set(['dev', 'coord']);
-// 会话能直接开的平台：只有 codex（内置 Codex ACP 适配器，带只读/工作区写沙箱与 Plan Mode 核验）。
-// WorkBuddy 的 ACP 会话模式没有只读/工作区写沙箱（实测 default/acceptEdits/plan/fullAccess…），
-// 会话安全护栏无法等价核验，暂不接入；claude 暂无 ACP 适配器。
-const SESSION_USES = new Set(['codex']);
+// 会话能直接开的平台：Codex（内置 Codex ACP 适配器，带只读/工作区写沙箱）、Claude Code（claude-agent-acp）、
+// WorkBuddy 等 ACP 执行者（读其登记的 command）。后两者没有 Codex 那样的沙箱，安全靠控制台权限矩阵：
+// 设计会话固定 plan 模式、普通会话 default 模式，所有越出预授权范围的请求都出会话内决策卡由主人裁定。
+const SESSION_USES = new Set(['codex', 'claude', 'acp']);
 
 export const tierAgentId = (platform, tier) => `${platform}-tier-${tier}`;
 export function parseTierAgent(id) {
@@ -104,7 +104,7 @@ export function discoverPlatforms(raw, { catalog = defaultCatalog, preferred = [
     const defaultModel = defaultModelOf(agent);
     // 平台默认模型总在可选清单里（如 claude 的别名清单不含具体版本号）。
     if (models?.length && defaultModel && !models.includes(defaultModel)) models = [...models, defaultModel];
-    return { id, name: HOST_NAMES[agent.use] || agent.name || id, use: agent.use, access: agent.access || 'edit', defaultModel, models: models?.length ? models : null, sessionCapable: SESSION_USES.has(agent.use) };
+    return { id, name: HOST_NAMES[agent.use] || agent.name || id, use: agent.use, access: agent.access || 'edit', defaultModel, models: models?.length ? models : null, sessionCapable: SESSION_USES.has(agent.use) && (agent.access || 'edit') !== 'read' && (agent.use !== 'acp' || Array.isArray(agent.command) && agent.command.length > 0) };
   });
 }
 
@@ -132,7 +132,9 @@ export function suggestedSettings(platforms, roles = {}) {
   // 都不能开会话时才退回第一个可写的 Codex 类平台。
   const usable = platforms.filter(p => p.sessionCapable && p.access !== 'read');
   const assigned = ['coord', 'dev', 'review'].flatMap(role => [roles[role]?.primary, roles[role]?.fallback]).filter(Boolean);
-  const session = assigned.map(id => usable.find(p => p.id === id)).find(Boolean) || usable[0] || platforms.find(p => p.sessionCapable);
+  // 默认优先 Codex（唯一带只读/工作区写沙箱的平台）；没有 Codex 才用其他可开会话的平台。
+  const candidates = [...assigned.map(id => usable.find(p => p.id === id)).filter(Boolean), ...usable];
+  const session = candidates.find(p => p.use === 'codex') || candidates[0] || platforms.find(p => p.sessionCapable);
   if (session) { out.sessions.design.platform = session.id; out.sessions.normal.platform = session.id; }
   return out;
 }
@@ -218,7 +220,7 @@ function validate(input, platforms) {
   for (const kind of SESSION_KINDS) {
     const item = input.sessions?.[kind];
     const platform = known.get(String(item?.platform ?? ''));
-    if (!platform || !platform.sessionCapable) throw new PlatformModelsError(`${kind === 'design' ? '设计' : '普通'}会话的平台目前只能选 Codex 类平台`);
+    if (!platform || !platform.sessionCapable) throw new PlatformModelsError(`${kind === 'design' ? '设计' : '普通'}会话的平台必须是可开会话的可写平台（Codex / Claude Code / WorkBuddy 等）`);
     if (!isTier(item.tier)) throw new PlatformModelsError(`${kind === 'design' ? '设计' : '普通'}会话档位不合法`);
     if (enabled && !tiersOf[platform.id]) throw new PlatformModelsError(`${platform.name} 还没配齐三档模型`);
     sessions[kind] = { platform: platform.id, tier: item.tier };
@@ -320,15 +322,36 @@ export async function applyPlatformModels(config, input, { check, catalog = defa
 }
 
 // ---- 运行时读取：设计/普通会话启动参数 ----
-export function sessionLaunch(config, kind) {
+// platformId 缺省 = 管理后台设置的会话平台（需开启分档）；显式传入 = 用户在新建会话时选的平台。
+export function sessionLaunch(config, kind, platformId = null) {
   if (!SESSION_KINDS.includes(kind)) return null;
   const saved = loadSettings(config);
-  if (saved?.enabled !== true) return null;
-  const item = saved.sessions?.[kind];
-  const model = saved.platforms?.[item?.platform]?.[item?.tier];
+  const item = saved?.sessions?.[kind];
+  const id = platformId || (saved?.enabled === true ? item?.platform : null);
+  if (!id) return null;
   let raw;
   try { raw = JSON.parse(readFileSync(config.rulesFile, 'utf8')); } catch { return null; }
-  const agent = raw.agents?.[item?.platform];
-  if (!agent || !model || !SESSION_USES.has(agent.use)) return null;
-  return { platform: item.platform, use: agent.use, tier: item.tier, model, label: agent.name || item.platform };
+  const agent = raw.agents?.[id];
+  if (!agent || parseTierAgent(id) || !SESSION_USES.has(agent.use) || (agent.access || 'edit') === 'read') return null;
+  const tier = item?.tier && TIERS.includes(item.tier) ? item.tier : 'light';
+  const model = saved?.platforms?.[id]?.[tier] || (platformId ? null : undefined);
+  if (model === undefined) return null;
+  let command = null;
+  if (agent.use === 'acp') {
+    if (!Array.isArray(agent.command) || !agent.command.length) return null;
+    command = [];
+    for (let i = 0; i < agent.command.length; i++) { if (agent.command[i] === '--model') { i++; continue; } command.push(agent.command[i]); }
+  }
+  return { platform: id, use: agent.use, tier, model, label: HOST_NAMES[agent.use] || agent.name || id, command };
+}
+
+// 新建会话可选的平台清单（网页与 App 的平台选择共用）：只列可开会话的可写平台。
+export function sessionPlatforms(config, { catalog = defaultCatalog } = {}) {
+  const data = readPlatformModels(config, { catalog });
+  const saved = loadSettings(config);
+  return data.platforms.filter(platform => platform.sessionCapable).map(platform => ({
+    id: platform.id, name: platform.name, use: platform.use, defaultModel: platform.defaultModel,
+    models: platform.models, tiers: platform.tiers || null,
+    isDefault: saved?.enabled === true && saved.sessions && (saved.sessions.design?.platform === platform.id || saved.sessions.normal?.platform === platform.id),
+  }));
 }

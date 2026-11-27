@@ -20,16 +20,23 @@ const fetchReq = { toolCall: { toolCallId: 'f1', kind: 'fetch', status: 'pending
 const mcpStart = (id, tool) => ({ sessionUpdate: 'tool_call', toolCallId: id, kind: 'execute', title: `mcp.autoloop-hub.${tool}`, status: 'pending' });
 const mcpApproval = id => ({ toolCall: { toolCallId: id, kind: 'execute', status: 'pending' }, options: ALLOW_ONCE });
 
-async function runKind(kind, permissions, { updates = [], extra = {} } = {}) {
+// ownerChoice：需要主人确认的请求由测试代主人在会话内决策卡上答复（默认拒绝）；null = 不答复，留给用例自己处理。
+async function runKind(kind, permissions, { updates = [], extra = {}, ownerChoice = 'reject' } = {}) {
   const e = env();
   const list = typeof permissions === 'function' ? permissions(e) : permissions;
   const fake = fakeAcp({ permissions: list, updates, ...extra });
   const manager = new SchedulingSessionManager({ cwd: e.project, adapterPath: '/fixed/acp.js', spawnFn: () => fake.child, writableDir: e.scripts, archiveRoot: e.home, userCodexHome: e.userCodex });
   await manager.start({ kind, project: e.project, prompt: '开始' });
-  await waitFor(() => Object.keys(fake.outcomes).length >= list.length);
-  const audit = existsSync(path.join(e.home, 'permission-audit.jsonl')) ? readFileSync(path.join(e.home, 'permission-audit.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
-  manager.dispose();
-  return { e, fake, audit, out: i => fake.outcomes[`perm-${i}`] };
+  const asked = [];
+  const owner = ownerChoice ? setInterval(() => {
+    for (const session of manager.list()) for (const card of session.pendingPermissions || []) { asked.push(card); try { manager.answerPermission(session.id, card.id, ownerChoice); } catch {} }
+  }, 5) : null;
+  if (ownerChoice) await waitFor(() => Object.keys(fake.outcomes).length >= list.length, 3000);
+  if (owner) clearInterval(owner);
+  const audit = (existsSync(path.join(e.home, 'permission-audit.jsonl')) ? readFileSync(path.join(e.home, 'permission-audit.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []).filter(item => item.via !== 'asked');
+  const result = { e, fake, audit, asked, manager, out: i => fake.outcomes[`perm-${i}`] };
+  if (ownerChoice) manager.dispose();
+  return result;
 }
 
 // ---- 事故复现：调度/设计会话请求 shell 与被禁写入必须被拒并留痕 ----
@@ -57,7 +64,8 @@ test('scheduling: edits inside the project workspace are cancelled, edits in AGE
 test('design: even edits inside scripts are rejected via reject_once', async () => {
   const r = await runKind('design', e => [edit(path.join(e.scripts, 'scan.mjs'))]);
   assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' });
-  assert.match(r.audit[0].reason, /设计会话只读/);
+  assert.equal(r.asked.length, 1, '设计会话的提权请求出会话内决策卡，不静默拒绝');
+  assert.match(r.audit[0].reason, /主人在会话内决策卡拒绝/);
 });
 test('scheduling: Hub controlled-write MCP tools are approved, unknown MCP tools and standalone elicitations are cancelled', async () => {
   const r = await runKind('scheduling', [mcpApproval('m1'), mcpApproval('m2'), mcpApproval('m3'), mcpApproval('m4'), { toolCall: { toolCallId: 'standalone', kind: 'execute', status: 'pending', title: 'MCP tool call approval', input: { serverName: 'autoloop-hub' } }, options: ALLOW_ONCE }], {
@@ -106,7 +114,7 @@ test('normal: feature/fix/hotfix branch push, commits and PR create/merge (autho
 test('normal: a shell cwd outside the project workspace is cancelled', async () => {
   const r = await runKind('normal', e => [{ toolCall: { toolCallId: 'c1', kind: 'execute', status: 'pending', rawInput: { command: 'ls', cwd: path.dirname(e.root) } }, options: ALLOW_ONCE }, { toolCall: { toolCallId: 'c2', kind: 'execute', status: 'pending', rawInput: { command: 'ls', cwd: path.join(e.project, 'sub') } }, options: ALLOW_ONCE }]);
   assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' }); assert.equal(r.out(1).outcome, 'selected');
-  assert.match(r.audit[0].reason, /工作目录越出项目工作区/, 'must be denied for the cwd, not for an unrelated fail-closed reason');
+  assert.match(r.asked[0].reason, /工作目录越出项目工作区/, 'must be escalated for the cwd, not for an unrelated reason');
 });
 test('started commands whose approval request omits kind/command are judged from the earlier tool_call update', async () => {
   const startCmd = (id, command) => ({ sessionUpdate: 'tool_call', toolCallId: id, kind: 'execute', title: command, rawInput: { command }, status: 'pending' });
@@ -190,10 +198,10 @@ test('normal: execute with an mcp title still goes through command analysis', as
 // 权限层以前把策略拒绝一律回 cancelled，上游 agent 于是向主人谎称「你取消了授权弹窗」，
 // 设计会话与普通会话的推送/登记被这种假「取消」阻塞。拒绝必须显式选择 reject 选项。
 test('regression: policy denial selects reject_once instead of reporting a user cancellation', async () => {
-  const r = await runKind('normal', [exec('git push origin main')]);
+  const r = await runKind('normal', [exec('git push --force origin feat/x')]);
   assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'deny' }, 'denial must surface as an explicit rejection, not as a user cancel');
   assert.equal(r.audit[0].decision, 'denied');
-  assert.match(r.audit[0].reason, /main|受保护|分支/);
+  assert.match(r.audit[0].reason, /force|强推/);
 });
 test('regression: a request offering no reject option falls back to cancelled (fail closed)', async () => {
   const r = await runKind('normal', [{ toolCall: { toolCallId: 'nr', kind: 'execute', status: 'pending', title: 'git push origin main', rawInput: { command: 'git push origin main' } }, options: ALLOW_ALWAYS_ONLY }]);
@@ -211,4 +219,31 @@ test('regression: a reject-only option set never yields a bare selected approval
   assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'no' }, 'read without an allow_once option must fail closed as an explicit reject');
   assert.deepEqual(r.out(1), { outcome: 'selected', optionId: 'no' });
   assert.ok(r.audit.every(item => item.decision === 'denied'));
+});
+
+// ---- 会话内决策卡：需要主人确认的请求挂起，主人答复后才回给适配器 ----
+test('design: an escalation is held as an in-session decision card until the owner answers', async () => {
+  const r = await runKind('design', e => [exec('git push origin feat/x')], { ownerChoice: null });
+  await waitFor(() => r.manager.list()[0]?.pendingPermissions?.length === 1);
+  const [session] = r.manager.list(); const [card] = session.pendingPermissions;
+  assert.equal(card.command, 'git push origin feat/x'); assert.equal(r.out(0), undefined, '主人未答复前不回适配器');
+  r.manager.answerPermission(session.id, card.id, 'allow');
+  await waitFor(() => r.out(0));
+  assert.deepEqual(r.out(0), { outcome: 'selected', optionId: 'allow' });
+  assert.equal(r.manager.list()[0].pendingPermissions.length, 0);
+  assert.throws(() => r.manager.answerPermission(session.id, card.id, 'allow'), /已处理或已失效/);
+  r.manager.dispose();
+});
+test('normal: pre-authorised push / PR / merge never raise a card; protected-branch push asks, force push is hard-denied', async () => {
+  const r = await runKind('normal', [exec('git push origin feat/a'), exec('gh pr create --fill'), exec('gh pr merge 9 --squash'), exec('git push origin main'), exec('git push --force origin feat/a')], { ownerChoice: 'allow' });
+  for (const i of [0, 1, 2]) assert.deepEqual(r.out(i), { outcome: 'selected', optionId: 'allow' });
+  assert.equal(r.asked.length, 1); assert.equal(r.asked[0].command, 'git push origin main');
+  assert.deepEqual(r.out(4), { outcome: 'selected', optionId: 'deny' }, '强推永远硬拒绝，不进决策卡');
+});
+test('closing the session resolves an unanswered card as cancelled', async () => {
+  const r = await runKind('normal', [exec('git push origin main')], { ownerChoice: null });
+  await waitFor(() => r.manager.list()[0]?.pendingPermissions?.length === 1);
+  await r.manager.close(r.manager.list()[0].id);
+  await waitFor(() => r.out(0));
+  assert.deepEqual(r.out(0), { outcome: 'cancelled' });
 });

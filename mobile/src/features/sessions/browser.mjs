@@ -180,7 +180,7 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
           'x-console-request': '1',
           'x-device-token': token,
         },
-        body: JSON.stringify(body),
+        ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
       });
     } catch { throw new Error('无法连接控制台，操作未提交，请重试'); }
     let payload = {};
@@ -266,12 +266,25 @@ export function createSessionsWrite(client, { fetchImpl } = {}) {
     classify(text) {
       return call('/api/mobile/session-classify', { text: String(text ?? '') });
     },
-    createSession({ project, prompt, kind } = {}) {
+    // 会话内决策卡：choice = allow（仅允许一次）| reject（拒绝）。
+    answerPermission(id, requestId, choice) {
+      const sid = encodeURIComponent(String(id ?? '').trim()); const rid = encodeURIComponent(String(requestId ?? '').trim());
+      if (!sid || !rid) throw new Error('这条授权请求已失效');
+      if (choice !== 'allow' && choice !== 'reject') throw new Error('答复必须是 allow 或 reject');
+      return call(`/api/mobile/sessions/${sid}/permissions/${rid}`, { choice });
+    },
+    // 可开会话的平台清单（Codex / Claude Code / WorkBuddy …），只读。
+    async listPlatforms() {
+      const result = await call('/api/mobile/session-platforms', undefined, 'GET');
+      return Array.isArray(result?.platforms) ? result.platforms : [];
+    },
+    createSession({ project, prompt, kind, platform } = {}) {
       const value = String(project ?? '').trim();
       const firstTurn = String(prompt ?? '').trim();
       if (!value || !firstTurn) throw new Error('请选择项目并输入首轮提示词');
       const payload = { project: value, prompt: firstTurn };
       if (kind) payload.kind = String(kind);
+      if (platform) payload.platform = String(platform);
       return call('/api/mobile/sessions', payload);
     },
   };

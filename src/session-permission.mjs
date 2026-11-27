@@ -18,6 +18,8 @@ const PUSH_DENIED_FLAGS = new Set(['--force', '--force-if-includes', '--delete',
 
 export const deny = reason => ({ allow: false, reason });
 export const permit = reason => ({ allow: true, reason });
+// 需要主人当场决定：不自动放行也不硬拒绝，由会话内决策卡把请求交给主人（allow_once / reject_once 二选一）。
+export const ask = reason => ({ allow: false, ask: true, reason });
 
 // ---- 路径边界 ----
 function resolveReal(target) {
@@ -80,14 +82,14 @@ function analyzePush(args) {
     if (arg.startsWith('-')) continue;
     positional.push(arg);
   }
-  if (positional.length < 2) return deny('git push 必须显式写出远端与分支名（不用裸 push / HEAD 推断）');
+  if (positional.length < 2) return ask('git push 没有显式写出远端与分支名（裸 push / HEAD 推断），需要主人确认');
   for (const spec of positional.slice(1)) {
     if (spec.startsWith('+')) return deny('禁止强制推送 refspec（+）');
     if (spec.startsWith(':')) return deny('禁止删除远端分支（:ref）');
     const parts = spec.split(':');
     if (parts.length > 2) return deny(`无法识别的 refspec：${spec}`);
     const dst = (parts[1] ?? parts[0]).replace(/^refs\/heads\//, '');
-    if (dst.includes('..') || !FEATURE_BRANCH.test(dst)) return deny(`禁止直推 ${dst}：只允许 feat|fix|hotfix|chore|docs|refactor|test|perf|ci|build/<topic> 分支`);
+    if (dst.includes('..') || !FEATURE_BRANCH.test(dst)) return ask(`直推 ${dst} 不在预授权范围（预授权只含 feat|fix|hotfix|chore|docs|refactor|test|perf|ci|build/<topic> 分支），需要主人确认`);
   }
   return permit('feature 分支推送');
 }
@@ -119,15 +121,17 @@ function analyzeSegment(tokens, depth) {
 export function analyzeCommand(command, depth = 0) {
   if (depth > 4) return deny('命令嵌套过深，无法审查');
   const text = String(command || '');
+  let pending = null; // ask 先记下：同一命令里只要有一处硬拒绝，整条按拒绝处理
+  const take = result => { if (!result.allow && !result.ask) return result; if (result.ask && !pending) pending = result; return null; };
   for (const match of text.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
-    const result = analyzeCommand(match[1] ?? match[2], depth + 1);
-    if (!result.allow) return result;
+    const hit = take(analyzeCommand(match[1] ?? match[2], depth + 1));
+    if (hit) return hit;
   }
   for (const segment of tokenize(text)) {
-    const result = analyzeSegment(segment, depth);
-    if (!result.allow) return result;
+    const hit = take(analyzeSegment(segment, depth));
+    if (hit) return hit;
   }
-  return permit('命令检查通过');
+  return pending || permit('命令检查通过');
 }
 
 // ---- 权限矩阵 ----
@@ -165,11 +169,10 @@ export function decideByKind({ kind, params, known, workspace, writableDir }) {
     || (params?.options || []).find(option => option?.kind === 'reject_always');
   const result = verdict => {
     // 批准路径必须有 allow_once 才回 selected；缺失即 fail closed（走拒绝路径，绝不回裸 selected）。
-    if (verdict.allow && !allowOnce) verdict = deny('批准路径没有 allow_once 选项（不选 allow_always）');
-    return { ...base, ...verdict, optionId: verdict.allow ? allowOnce.optionId : (rejectOnce?.optionId ?? null) };
+    if ((verdict.allow || verdict.ask) && !allowOnce) verdict = deny('批准路径没有 allow_once 选项（不选 allow_always）');
+    return { ...base, ...verdict, optionId: verdict.allow ? allowOnce.optionId : (rejectOnce?.optionId ?? null), allowOptionId: allowOnce?.optionId ?? null, rejectOptionId: rejectOnce?.optionId ?? null };
   };
   if (!allowOnce && !rejectOnce) return result(deny('请求没有 allow_once/reject_once 选项（不选 allow_always）'));
-  if (kind === 'design') return result(deny('设计会话只读：权限请求一律拒绝（策略拒绝，非主人取消）'));
 
   // 标题可被工具自报：带 command 的请求是 shell 执行，不论标题怎么写都必须落入 execute 分析，不能按 MCP 放行。
   const rawInput = call.rawInput ?? call.input;
@@ -177,27 +180,28 @@ export function decideByKind({ kind, params, known, workspace, writableDir }) {
   const mcp = hasCommand ? null : /^mcp\.([^.\s]+)\.(\S+)$/.exec(text(call.title));
   if (mcp) {
     if (kind === 'scheduling' && mcp[1] === HUB_SERVER && [...HUB_READ_TOOLS, ...HUB_WRITE_TOOLS].includes(mcp[2])) return result(permit(`Hub 工具 ${mcp[2]}`));
-    return result(deny(`${kind} 会话不允许 MCP 工具 ${mcp[1]}.${mcp[2]}`));
+    return result(kind === 'scheduling' ? deny(`${kind} 会话不允许 MCP 工具 ${mcp[1]}.${mcp[2]}`) : ask(`请求使用 MCP 工具 ${mcp[1]}.${mcp[2]}，需要主人确认`));
   }
-  if (!toolKind) return result(deny('无法识别的权限请求（fail closed）'));
+  if (!toolKind) return result(kind === 'scheduling' ? deny('无法识别的权限请求（fail closed）') : ask('无法识别的权限请求，需要主人确认'));
 
   if (toolKind === 'read' || toolKind === 'search' || toolKind === 'think') return result(permit('只读操作'));
+  // 设计会话（计划未放行）：只读沙箱 + Plan Mode。除只读操作外的提权请求不静默拒绝，交给主人在会话内决策卡里决定。
+  if (kind === 'design') return result(ask('设计会话（计划未放行）请求越出只读范围的操作，需要主人确认'));
   if (toolKind === 'edit') {
     const root = kind === 'scheduling' ? writableDir : workspace;
     if (!root) return result(deny('没有可写范围'));
     if (!paths.length) return result(deny('编辑请求缺少文件路径'));
-    return paths.every(file => isWithin(root, file))
-      ? result(permit(kind === 'scheduling' ? '调度脚本目录内编辑' : '项目工作区内编辑'))
-      : result(deny(kind === 'scheduling' ? '调度会话只能编辑 AGENT_AUTOLOOP_HOME/scripts' : '写入越出项目工作区'));
+    if (paths.every(file => isWithin(root, file))) return result(permit(kind === 'scheduling' ? '调度脚本目录内编辑' : '项目工作区内编辑'));
+    return result(kind === 'scheduling' ? deny('调度会话只能编辑 AGENT_AUTOLOOP_HOME/scripts') : ask('写入越出项目工作区，需要主人确认'));
   }
   if (kind === 'scheduling') return result(deny(`调度会话不允许 ${toolKind}（shell/网络/合并等远端动作由派发的 worker 执行）`));
-  // 以下仅普通会话
+  // 以下仅普通会话（含已放行落盘的设计会话）：GitHub 推送 feature 分支 / 开 PR / 合并 PR 已由主人预授权给所有会话。
   if (toolKind === 'fetch') return result(permit('网络访问'));
   if (toolKind === 'execute') {
     if (!command) return result(deny('无法取得待执行命令（fail closed）'));
     const cwd = cwdOf(call);
-    if (cwd && !isWithin(workspace, cwd)) return result(deny('命令工作目录越出项目工作区'));
+    if (cwd && !isWithin(workspace, cwd)) return result(ask('命令工作目录越出项目工作区，需要主人确认'));
     return result(analyzeCommand(command));
   }
-  return result(deny(`普通会话不允许 ${toolKind} 类请求`));
+  return result(ask(`${kind === 'normal' ? '普通' : kind}会话请求 ${toolKind} 类操作，需要主人确认`));
 }

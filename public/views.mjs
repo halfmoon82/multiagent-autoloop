@@ -120,7 +120,7 @@ export function renderSessionCard(session, { queueEditing = null, artifactsPanel
   const title = el('div');
   const status = session.statusText || session.status || '未知';
   title.append(
-    el('div', 'run-name', `${session.agent || 'Codex ACP'} · ${session.id.slice(0, 8)}`),
+    el('div', 'run-name', `${session.agent || 'Codex ACP'}${session.model ? ` · ${session.model}` : ''} · ${session.id.slice(0, 8)}`),
     el('div', 'row-meta', `${SESSION_KIND_LABELS[session.kind] || '调度'}会话 · ACP · ${session.sessionId || '未识别'} · ${formatTime(session.createdAt)}${session.stopReason ? ` · ${session.stopReason}` : ''}`),
   );
   top.append(title, badge(status, session.status === 'error' ? 'bad' : session.status === 'idle' ? 'good' : ''));
@@ -129,6 +129,16 @@ export function renderSessionCard(session, { queueEditing = null, artifactsPanel
   meta.append(projectChip, el('span', 'chip', `更新 · ${formatTime(session.updatedAt)}`));
   card.append(top, meta);
   if (session.error) card.append(el('p', 'run-summary run-error', session.error));
+  // 会话内决策卡：需要主人确认的越权请求（推送受保护分支、越界写入等）。与调度会话的决策卡同一交互，不再弹原生窗口。
+  for (const request of session.pendingPermissions || []) {
+    const ask = el('div', 'permission-card'); ask.setAttribute('role', 'alert'); ask.dataset.permission = request.id;
+    ask.append(el('strong', 'permission-title', '需要您确认'), el('p', 'permission-reason', request.reason || '这个操作需要您决定'));
+    const detail = request.command || request.title || (request.paths || []).join('\n');
+    if (detail) ask.append(el('pre', 'permission-detail', detail));
+    const actions = el('div', 'actions');
+    actions.append(button('允许一次', 'session-permission', `${session.id}|${request.id}|allow`, 'primary'), button('拒绝', 'session-permission', `${session.id}|${request.id}|reject`, 'danger'));
+    ask.append(actions); card.append(ask);
+  }
 
   const closed = ['closing', 'closed'].includes(session.status);
   const log = el('div', 'chat-log');

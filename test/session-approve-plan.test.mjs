@@ -43,15 +43,19 @@ test('design: after approvePlan, writes inside the workspace are allowed like a 
   const fake = fakeAcp({ permissions: [edit(path.join(e.project, 'a.txt')), edit(e.outside)] });
   const m = managerFor(e, fake);
   const started = await m.start({ kind: 'design', project: e.project, prompt: '开始' });
+  await waitFor(() => m.list()[0]?.pendingPermissions?.length === 2);
+  assert.deepEqual(fake.outcomes, {}, '放行前工作区内编辑不自动放行，等主人在决策卡上答复');
+  for (const card of m.list()[0].pendingPermissions) m.answerPermission(started.id, card.id, 'reject');
   await waitFor(() => Object.keys(fake.outcomes).length >= 2);
-  assert.deepEqual(fake.outcomes['perm-0'], { outcome: 'selected', optionId: 'deny' }, '放行前工作区内编辑也被拒（显式拒绝，不伪装成主人取消）');
+  assert.deepEqual(fake.outcomes['perm-0'], { outcome: 'selected', optionId: 'deny' }, '主人拒绝 = 显式拒绝，不伪装成主人取消');
   assert.deepEqual(fake.outcomes['perm-1'], { outcome: 'selected', optionId: 'deny' });
 
   await m.approvePlan(started.id);
   await m.send(started.id, '现在落盘');
-  await waitFor(() => fake.outcomes['perm-0']?.outcome === 'selected');
-  assert.equal(fake.outcomes['perm-0'].outcome, 'selected', '放行后工作区内编辑获批');
-  assert.deepEqual(fake.outcomes['perm-1'], { outcome: 'selected', optionId: 'deny' }, '放行后工作区外仍被拒');
+  await waitFor(() => fake.outcomes['perm-0']?.optionId === 'allow');
+  assert.equal(fake.outcomes['perm-0'].optionId, 'allow', '放行后工作区内编辑直接获批，不再出决策卡');
+  await waitFor(() => m.list()[0]?.pendingPermissions?.length === 1);
+  assert.match(m.list()[0].pendingPermissions[0].reason, /越出项目工作区/, '放行后工作区外写入仍要主人确认，不自动放行');
   m.dispose();
 });
 
@@ -73,6 +77,9 @@ test('design: approvePlan fails closed when collaboration_mode cannot be switche
   m.dispose();
   const m2 = managerFor(e, deniedFake);
   const s2 = await m2.start({ kind: 'design', project: e.project, prompt: '设计' });
+  await waitFor(() => m2.list()[0]?.pendingPermissions?.length === 1);
+  assert.deepEqual(deniedFake.outcomes, {}, '半解锁失败后仍按设计会话处理：不自动放行，等主人答复');
+  m2.answerPermission(s2.id, m2.list()[0].pendingPermissions[0].id, 'reject');
   await waitFor(() => Object.keys(deniedFake.outcomes).length >= 1);
   assert.deepEqual(deniedFake.outcomes['perm-0'], { outcome: 'selected', optionId: 'deny' });
   m2.dispose();

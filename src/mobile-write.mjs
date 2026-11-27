@@ -10,7 +10,7 @@ import path from 'node:path';
 import { hubRequest, HubError } from './hub.mjs';
 import { discoverGitProjects } from './projects.mjs';
 import { readRuleOptions, defaultCheck } from './rules.mjs';
-import { readPlatformModels, applyPlatformModels, PlatformModelsError } from './platform-models.mjs';
+import { readPlatformModels, applyPlatformModels, sessionPlatforms, PlatformModelsError } from './platform-models.mjs';
 import { loadPolicy } from './detour-policy.mjs';
 import { reconcile, syncPrompt, createSyncState } from '../mobile/src/features/device-sync/index.mjs';
 import { classifySessionRequest } from './session-classify.mjs';
@@ -89,9 +89,11 @@ export const MOBILE_WRITE_ROUTES = Object.freeze([
   { key: 'session-artifacts', method: 'GET', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/artifacts$/ },
   { key: 'session-artifact-file', method: 'GET', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/file$/ },
   { key: 'preview-ticket', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/preview-ticket$/ },
+  { key: 'session-platforms', method: 'GET', pattern: /^\/api\/mobile\/session-platforms$/ },
   { key: 'session-create', method: 'POST', pattern: /^\/api\/mobile\/sessions$/ },
   { key: 'session-close', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/close$/ },
   { key: 'session-approve-plan', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/approve-plan$/ },
+  { key: 'session-permission', method: 'POST', pattern: /^\/api\/mobile\/sessions\/([^/]+)\/permissions\/([^/]+)$/ },
   { key: 'dag-run-create', method: 'POST', pattern: /^\/api\/mobile\/dag-runs$/ },
   { key: 'dag-plan', method: 'GET', pattern: /^\/api\/mobile\/dag-plan$/ },
   { key: 'dag-preflight', method: 'GET', pattern: /^\/api\/mobile\/dag-preflight$/ },
@@ -520,10 +522,11 @@ async function sessionCreateRoute(res, body, ctx, req) {
   if (explicit && !['normal', 'scheduling', 'design'].includes(explicit)) fail(400, '会话类型必须是 normal、scheduling 或 design');
   const kind = explicit || classifySessionRequest(prompt).kind;
   if (!kind) fail(400, '无法判定会话类型，请补充首轮提示词');
-  const fields = { project: known.path, kind, sourceDeviceId: ctx.device.id };
+  const platform = String(body.platform ?? '').trim() || null;
+  const fields = { project: known.path, kind, platform, sourceDeviceId: ctx.device.id };
   let result;
   try {
-    result = await sessions.start({ kind, prompt, project: known.path });
+    result = await sessions.start({ kind, prompt, project: known.path, platform });
   } catch (error) { auditFailure(ctx, req, 'session.create', fields); throw error; }
   audit(ctx, req, 'session.create', fields);
   jsonResponse(res, 201, { ...result, sourceDeviceId: ctx.device.id });
@@ -565,6 +568,19 @@ async function sessionApprovePlanRoute(res, url, route, ctx, req) {
   let result;
   try { result = await sessions.approvePlan(id); } catch (error) { auditFailure(ctx, req, 'session.approve', fields); throw error; }
   audit(ctx, req, 'session.approve', fields);
+  jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
+}
+
+// 会话内决策卡答复（授权请求）：与网页 /api/scheduling-sessions/:id/permissions/:reqId 同一 sessions.answerPermission。
+async function sessionPermissionRoute(res, url, route, ctx, req, body) {
+  const sessions = ctx.config.schedulingSessions;
+  if (!sessions || typeof sessions.answerPermission !== 'function') fail(503, '会话通道不可用');
+  const match = url.pathname.match(route.pattern);
+  const id = decodeURIComponent(match[1]); const requestId = decodeURIComponent(match[2]);
+  const fields = { sessionId: id, permissionId: requestId, sourceDeviceId: ctx.device.id };
+  let result;
+  try { result = sessions.answerPermission(id, requestId, String(body?.choice || '')); } catch (error) { auditFailure(ctx, req, 'session.permission', fields); throw error; }
+  audit(ctx, req, 'session.permission', { ...fields, choice: String(body?.choice || '') });
   jsonResponse(res, 200, { ...result, sourceDeviceId: ctx.device.id });
 }
 
@@ -672,9 +688,11 @@ async function executeWrite(route, req, res, url, ctx) {
     if (route.key === 'rule-action') return await ruleAction(req, res, url, route, ctx, body);
     if (route.key === 'session-classify') return sessionClassifyRoute(res, body);
     if (route.key === 'admin-platform-models') return await adminPlatformModelsRoute(res, ctx, body, req);
+    if (route.key === 'session-platforms') return jsonResponse(res, 200, { platforms: sessionPlatforms(ctx.config) });
     if (route.key === 'session-create') return await sessionCreateRoute(res, body, ctx, req);
     if (route.key === 'session-close') return await sessionCloseRoute(res, url, route, ctx, req);
     if (route.key === 'session-approve-plan') return await sessionApprovePlanRoute(res, url, route, ctx, req);
+    if (route.key === 'session-permission') return await sessionPermissionRoute(res, url, route, ctx, req, body);
     if (route.key === 'dag-run-create') return await dagRunCreateRoute(res, ctx, body, req);
     if (route.key === 'dag-plan' || route.key === 'dag-preflight') return await dagReadRoute(route, res, url, ctx);
     if (route.key === 'session-message') return await sessionMessageRoute(res, url, route, ctx, body, req);
