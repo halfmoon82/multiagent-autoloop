@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "designId": "nomoto-fix12-2026-11-28",
+  "artifacts": [
+    {
+      "path": "docs/design/2026-11-28-nomoto-fix12-baseline/refs/artifact-download.html",
+      "sha256": "572cce20a48da6d71d7385a155fd3e711132be1bc9cc4d34de6d69fc5b786e37"
+    },
+    {
+      "path": "docs/design/2026-11-28-nomoto-fix12-baseline/refs/console-custom-name.html",
+      "sha256": "deda653c7938a7f2fe64750ed94662513d9bef6740261b420706ad1fda782007"
+    },
+    {
+      "path": "docs/design/2026-11-28-nomoto-fix12-baseline/verifiers/fix12-design.verify.mjs",
+      "sha256": "8db4faf2be04d915f5cc13430bd13fabe4813e6b1a4ebc3fd0b87e455260e044"
+    },
+    {
+      "path": "docs/design/2026-11-28-nomoto-fix12-baseline/verifiers/fix12-design-fallback.mjs",
+      "sha256": "1c2ada44fc3145b53c7a55da1b413f5f1efb1aa8527031aa3070286af136a2ec"
+    }
+  ],
+  "verifierPath": "docs/design/2026-11-28-nomoto-fix12-baseline/verifiers/fix12-design.verify.mjs",
+  "fallbackVerifierPath": "docs/design/2026-11-28-nomoto-fix12-baseline/verifiers/fix12-design-fallback.mjs",
+  "surfaces": [
+    {
+      "id": "artifact-list",
+      "route": "#artifacts",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "list"
+      ],
+      "interactions": [
+        "apk-download-entry",
+        "apk-mobile-download"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-28-nomoto-fix12-baseline/refs/artifact-download.html"
+      ]
+    },
+    {
+      "id": "console-picker",
+      "route": "#consoles",
+      "viewports": [
+        "402x874"
+      ],
+      "states": [
+        "picker"
+      ],
+      "interactions": [
+        "custom-name-display",
+        "custom-name-edit"
+      ],
+      "referencePaths": [
+        "docs/design/2026-11-28-nomoto-fix12-baseline/refs/console-custom-name.html"
+      ]
+    }
+  ]
+}
