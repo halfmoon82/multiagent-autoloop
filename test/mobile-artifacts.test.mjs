@@ -732,10 +732,12 @@ test('移动端产物服务：列表返回图片类产物、图片只读文件�
   const global = await call('/api/mobile/artifacts');
   assert.equal(global.status, 200);
   assert.ok(global.data.files.some(f => f.name === '图.png' && f.kind === 'image' && f.mimeType === 'image/png'), '全局列表含图片并标注 MIME');
-  assert.ok(!global.data.files.some(f => f.name === 'app.apk'), '非图片二进制不进移动端产物列表');
+  assert.ok(global.data.files.some(f => f.name === 'app.apk' && f.kind === 'file' && f.sessionId === 's1'), 'apk 等二进制交付物进移动端全局产物列表（与网页版一致，issue #364 回归恢复）');
   assert.equal(global.data.files.find(f => f.name === '大图.jpg').overCap, true, '超 5MB 图片标注封顶');
   const session = await call('/api/mobile/sessions/s1/artifacts');
   assert.ok(session.data.files.some(f => f.name === '图.png' && f.kind === 'image'), '会话列表同样返回图片');
+  assert.ok(session.data.files.some(f => f.name === 'app.apk' && f.kind === 'file'), '会话列表同样返回二进制交付物（与网页版会话产物面板一致）');
+  assert.ok(session.data.files.some(f => f.name === 'docs.md'), '会话列表保留文档条目');
   const file = await call('/api/mobile/sessions/s1/file?path=' + encodeURIComponent('out/图.png'));
   assert.equal(file.status, 200);
   assert.equal(file.data.kind, 'image');

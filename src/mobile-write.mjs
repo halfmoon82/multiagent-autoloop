@@ -36,7 +36,7 @@ function jsonResponse(res, status, value) {
 }
 
 // artifact-image-preview：移动端产物页只额外列可在线查看的图片（png/jpg/jpeg/webp/gif）。
-// 其余 DOWNLOAD_EXTENSIONS（apk/zip/pdf 等）仍只走桌面下载，不进手机列表。
+// DOWNLOAD_EXTENSIONS（apk/zip/pdf 等）与网页版同口径进列表（issue #364），下载走 session-download。
 // 文档沿用 500KB 口径；图片按需放宽到 5MB，超封顶标注 overCap 并保留下载备选。
 const MOBILE_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 const MOBILE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
@@ -377,19 +377,23 @@ async function artifactsRoute(res, ctx) {
     startedAt: view?.createdAt || null,
     task: taskOf(view),
   })));
-  // 图片：会话方法已按 includeFiles 列出二进制；这里只取图片类并标注 MIME/封顶，
-  // 不把 apk/zip/pdf 等只下载交付物带进手机列表。
+  // 与网页版产物口径一致（issue #364 回归恢复）：图片标注 MIME/封顶在线查看，
+  // apk 等二进制交付物（kind='file'）同样进列表，点击走既有 session-download 路由下载。
   const images = [];
+  const binaries = [];
   for (const view of views) {
     try {
       const found = await ctx.config.schedulingSessions.listSessionArtifacts(view?.id);
       for (const artifact of Array.isArray(found) ? found : []) {
-        if (!mobileImageExt(artifact?.name || artifact?.path)) continue;
-        images.push(withImageMeta(artifact, view?.id, taskOf(view)));
+        if (mobileImageExt(artifact?.name || artifact?.path)) {
+          images.push(withImageMeta(artifact, view?.id, taskOf(view)));
+        } else if (artifact?.kind === 'file') {
+          binaries.push({ ...artifact, sessionId: String(view?.id ?? ''), task: taskOf(view) });
+        }
       }
     } catch { /* 单个会话不可读不影响全局聚合 */ }
   }
-  const files = [...docs, ...images]
+  const files = [...docs, ...images, ...binaries]
     .sort((a, b) => String(b?.at || '').localeCompare(String(a?.at || ''))
       || String(a?.path || '').localeCompare(String(b?.path || ''))
       || String(a?.sessionId || '').localeCompare(String(b?.sessionId || '')))
@@ -397,12 +401,13 @@ async function artifactsRoute(res, ctx) {
   jsonResponse(res, 200, { device: ctx.device, files });
 }
 
-// 会话产物列表：文档与图片同源；其余二进制交付物仍只走桌面下载，不在手机列表露出。
+// 会话产物列表：与网页版会话产物面板同一口径（issue #364 回归恢复，#348 曾误把非图片
+// 二进制挡在列表外）——文档、图片与 apk 等二进制交付物全部列出；图片标注在线查看元信息，
+// 二进制点击走既有 session-download 路由，越界/封顶校验不变。
 async function sessionArtifactsRoute(res, url, route, ctx) {
   const id = decodeURIComponent(url.pathname.match(route.pattern)[1]);
   const found = await ctx.config.schedulingSessions.listSessionArtifacts(id);
   const files = (Array.isArray(found) ? found : [])
-    .filter(artifact => mobileImageExt(artifact?.name || artifact?.path) || isDocArtifact(artifact?.name || artifact?.path))
     .map(artifact => withImageMeta(artifact));
   jsonResponse(res, 200, { device: ctx.device, files });
 }
