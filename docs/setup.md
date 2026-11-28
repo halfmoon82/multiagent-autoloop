@@ -29,7 +29,7 @@
 
 ```bash
 npm ci
-AGENT_AUTOLOOP_HOME=/绝对路径/autoloop-state AUTOLOOP_CONSOLE_PORT=50761 npm start
+AGENT_AUTOLOOP_HOME="$HOME/.agent-autoloop" AUTOLOOP_CONSOLE_PORT=50761 npm start   # 与上游内核同一个运行目录
 ```
 
 常驻运行可用 launchd / systemd 包装 `scripts/start.mjs`；退出码非 0 即崩溃，交给监管进程拉起。

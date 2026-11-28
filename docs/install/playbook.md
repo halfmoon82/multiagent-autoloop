@@ -255,11 +255,50 @@ CHECK() {
      cloudflared tunnel list | grep -q ' autoloop-console ' || cloudflared tunnel create autoloop-console
      cloudflared tunnel route dns autoloop-console "<publicHost>"
      ```
-  4. 以 [examples/cloudflared.example.yml](../../examples/cloudflared.example.yml) 为模板写 `$AGENT_AUTOLOOP_HOME/cloudflared.yml`：填隧道 ID、凭据文件路径、`hostname: <publicHost>`、本机控制台端口。doctor 按顺序查找 `$AGENT_AUTOLOOP_HOME/cloudflared.yml`、`~/.cloudflared/config.yml`、`/etc/cloudflared/config.yml`，用第一个存在的文件。
-  5. 运行隧道：`cloudflared tunnel --config "$AGENT_AUTOLOOP_HOME/cloudflared.yml" run`（常驻用 `cloudflared service install` 或 launchd/systemd 包装）。
-- **验证**：`CHECK --public tunnel-config` 与 `CHECK --public public-reachable`。
+  4. 以 [examples/cloudflared.example.yml](../../examples/cloudflared.example.yml) 为模板写 `$AGENT_AUTOLOOP_HOME/cloudflared.yml`：填隧道 ID、凭据文件路径、`hostname: <publicHost>`、本机控制台端口。doctor 按顺序查找 `$AGENT_AUTOLOOP_HOME/cloudflared.yml`、`~/.cloudflared/config.yml`、`/etc/cloudflared/config.yml`，用第一个存在的文件。**只保留这一份配置**：`~/.cloudflared/config.yml` 或 `/etc/cloudflared/config.yml` 已存在且不是本隧道用的，不要删（可能属于用户别的隧道），但要知道 doctor 只核对第一个找到的文件，也就是本文件。
+  5. 先前台试跑一次：`cloudflared tunnel --config "$AGENT_AUTOLOOP_HOME/cloudflared.yml" run`，看到 `Registered tunnel connection` 后 Ctrl-C 停掉。
+  6. 设为常驻（开机/登录后自动起、崩溃自动拉起）。**不要用 `cloudflared service install`**：它不带 `--config`，只读默认位置 `~/.cloudflared/config.yml`（Linux 还要求 `/etc/cloudflared/`），读不到第 4 步写的配置，隧道起不来，而 doctor 的 `tunnel-config` 照样会通过。改用下面的包装，显式指定配置文件（已装好就跳过，可重入；运行目录路径不要含空格，systemd 的 `ExecStart` 不加引号）：
+     - macOS（launchd，当前用户登录后运行）：
+       ```bash
+       L="$HOME/Library/LaunchAgents/com.agent-autoloop.cloudflared.plist"; CF="$(command -v cloudflared)"
+       launchctl print "gui/$(id -u)/com.agent-autoloop.cloudflared" >/dev/null 2>&1 || {
+         mkdir -p "$HOME/Library/LaunchAgents" "$AGENT_AUTOLOOP_HOME/logs" && cat > "$L.tmp" <<EOF && mv "$L.tmp" "$L" && launchctl bootstrap "gui/$(id -u)" "$L"
+       <?xml version="1.0" encoding="UTF-8"?>
+       <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+       <plist version="1.0"><dict>
+         <key>Label</key><string>com.agent-autoloop.cloudflared</string>
+         <key>ProgramArguments</key><array>
+           <string>$CF</string><string>tunnel</string><string>--config</string><string>$AGENT_AUTOLOOP_HOME/cloudflared.yml</string><string>run</string>
+         </array>
+         <key>RunAtLoad</key><true/>
+         <key>KeepAlive</key><true/>
+         <key>StandardErrorPath</key><string>$AGENT_AUTOLOOP_HOME/logs/cloudflared.log</string>
+       </dict></plist>
+       EOF
+       }
+       ```
+       改了配置文件后重启：`launchctl kickstart -k "gui/$(id -u)/com.agent-autoloop.cloudflared"`。
+     - Linux（systemd 用户服务）：
+       ```bash
+       U="$HOME/.config/systemd/user/agent-autoloop-cloudflared.service"; CF="$(command -v cloudflared)"
+       test -e "$U" || { mkdir -p "$(dirname "$U")" && cat > "$U.tmp" <<EOF && mv "$U.tmp" "$U"; }
+       [Unit]
+       Description=agent-autoloop console tunnel
+       After=network-online.target
+       [Service]
+       ExecStart=$CF tunnel --config $AGENT_AUTOLOOP_HOME/cloudflared.yml run
+       Restart=always
+       RestartSec=5
+       [Install]
+       WantedBy=default.target
+       EOF
+       systemctl --user daemon-reload && systemctl --user enable --now agent-autoloop-cloudflared
+       ```
+       要在用户未登录时也运行，需 `loginctl enable-linger "$USER"`（部分系统要 sudo；做不到时如实告诉用户「电脑登录后隧道才在线」）。改了配置文件后重启：`systemctl --user restart agent-autoloop-cloudflared`。
+- **验证**：常驻进程在跑且用的是本配置（macOS：`launchctl print "gui/$(id -u)/com.agent-autoloop.cloudflared" | grep -q 'state = running' && echo ok`；Linux：`systemctl --user is-active agent-autoloop-cloudflared`），再 `CHECK --public tunnel-config` 与 `CHECK --public public-reachable`。
 - **失败修复**：
   - `未找到 cloudflared 隧道配置` → 第 4 步没写到 doctor 查找的路径。
+  - 常驻进程没在跑 / 反复重启 → 看日志（macOS：`$AGENT_AUTOLOOP_HOME/logs/cloudflared.log`；Linux：`journalctl --user -u agent-autoloop-cloudflared -n 50`）。`cannot determine default configuration path` 或找不到 ingress → 服务没带 `--config`，多半是之前用过 `cloudflared service install`：先 `sudo cloudflared service uninstall`（macOS 不用 sudo），再按第 6 步重装包装。`credentials-file` 读不到 → 第 4 步凭据路径要写绝对路径。
   - `隧道配置 … 的 ingress 不含 <publicHost>` → `hostname:` 行要与 config.json 的 `publicHost` 完全一致（小写）。
   - `不可达` → `cloudflared tunnel info autoloop-console` 看是否有活跃连接；DNS 刚生效可能需要几分钟，稍后重跑验证；`route dns` 报记录已存在 → 到 Cloudflare DNS 里确认该记录指向本隧道。
   - 通过隧道访问返回 `控制台只接受本机地址` → 隧道转发的 Host 不是 publicHost：检查 config.json 的 `publicHost` 与隧道 `hostname` 一致，且控制台已在 2.1 后重启。
