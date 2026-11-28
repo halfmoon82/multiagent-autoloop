@@ -77,7 +77,7 @@
 - `npm run test:browser`：全部通过。
 - 390×844 浏览器渲染：无 `pageerror`。
 - Release APK：构建、zipalign、v1/v2/v3 签名、ZIP 完整性和基线资源检查通过；生物识别类字节码确认 `Activity.runOnUiThread`。
-- APK：`/Users/macmini/Downloads/NoMoTo-2026-11-23-collapsible-fix.apk`
+- APK：`/Users/<user>/Downloads/NoMoTo-2026-11-23-collapsible-fix.apk`
 - SHA-256：`b447e712bdadd93ef37ad7ce08c9b5130d1374ffc0a425df0951f8908e7a21d4`
 
 final result: passed

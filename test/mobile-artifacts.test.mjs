@@ -344,7 +344,7 @@ test('readSessionArtifact 按会话读取；越界与缺失映射为可读错误
   assert.equal(readableArtifactError(new Error('路径越界：只允许会话工作目录内的相对路径')), ARTIFACT_ERRORS.outOfBounds);
   assert.equal(readableArtifactError(new Error('产物文件不存在：missing.md')), ARTIFACT_ERRORS.missing);
   assert.equal(readableArtifactError(new Error('不支持的产物类型：.txt')), ARTIFACT_ERRORS.unsupported);
-  const leaked = readableArtifactError(new Error('boom /Users/macmini/secret'));
+  const leaked = readableArtifactError(new Error('boom /Users/example/secret'));
   assert.ok(!leaked.includes('/Users/'), '任何错误都不把绝对路径回给移动端');
   symlinkSync('/etc/passwd', path.join(root, 'docs', 'evil.md'));
   assert.throws(() => readSessionArtifact(sessions, 's1', 'docs/evil.md'), /越界/);

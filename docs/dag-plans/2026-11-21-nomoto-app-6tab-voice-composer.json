@@ -91,8 +91,8 @@
       "status": "planned",
       "complexity": "standard",
       "contract": {
-        "input": "本机已有 whisper CLI（/Users/macmini/.local/bin/whisper，openai-whisper，已验证可运行；faster_whisper Python 模块不可用故不采用）；控制台 src/server.mjs 路由走允许列表，写操作已有 Host/Origin/自定义头校验与设备鉴权（checkWrite、x-device-token）可复用；App 端 session-inputs 与本节点仅通过 HTTP 契约解耦（软依赖，并行无冲突）。",
-        "output": "新建 src/whisper-transcribe.mjs + src/server.mjs 路由允许列表项：POST /api/speech/transcribe（鉴权后受理）。请求体为音频（Content-Type audio/* 或 multipart，≤2MB、≤60s，超限 413），落临时文件后调用本机 whisper CLI——路径与模型经 src/config.mjs 配置（默认 /Users/macmini/.local/bin/whisper、--model small），参数全部白名单拼接防注入，子进程超时 60s（超时杀进程回 504），stderr 不回传客户端；识别完成清理临时文件，返回 JSON {text}。同会话冷却（如 3s 内重复请求 429）防滥用。路由保持默认仅 127.0.0.1/设备鉴权可达，密钥与路径不进日志前端。",
+        "input": "本机已有 whisper CLI（/Users/<user>/.local/bin/whisper，openai-whisper，已验证可运行；faster_whisper Python 模块不可用故不采用）；控制台 src/server.mjs 路由走允许列表，写操作已有 Host/Origin/自定义头校验与设备鉴权（checkWrite、x-device-token）可复用；App 端 session-inputs 与本节点仅通过 HTTP 契约解耦（软依赖，并行无冲突）。",
+        "output": "新建 src/whisper-transcribe.mjs + src/server.mjs 路由允许列表项：POST /api/speech/transcribe（鉴权后受理）。请求体为音频（Content-Type audio/* 或 multipart，≤2MB、≤60s，超限 413），落临时文件后调用本机 whisper CLI——路径与模型经 src/config.mjs 配置（默认 /Users/<user>/.local/bin/whisper、--model small），参数全部白名单拼接防注入，子进程超时 60s（超时杀进程回 504），stderr 不回传客户端；识别完成清理临时文件，返回 JSON {text}。同会话冷却（如 3s 内重复请求 429）防滥用。路由保持默认仅 127.0.0.1/设备鉴权可达，密钥与路径不进日志前端。",
         "error_behavior": "未鉴权 401、超限 413、冷却 429、whisper 非零退出/超时 502/504（统一文案「转写失败，请重试」），临时文件在 finally 清理；whisper 缺失（配置路径不可执行）返回 503 使客户端走降级。",
         "acceptance_example": "单测：鉴权拒绝、非 audio 类型拒绝、超限 413、冷却 429、假 whisper 命令替身验证参数白名单/超时/清理/成功返回 text/失败 502；配置路径不可执行时 503。npm test 全绿。",
         "files": [
