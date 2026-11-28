@@ -1,0 +1,87 @@
+{
+  "plan_id": "2026-11-28-fix-ledger",
+  "title": "防回退机制：修复台账 + 派发注入 + 审阅核查 + 会话沉淀闭环",
+  "nodes": [
+    {
+      "id": "fix-ledger-core",
+      "title": "台账核心模块 src/fix-ledger.mjs + 单测 + fix1–12 种子回填",
+      "depends_on": [],
+      "integration_after": [],
+      "parallel_group": "wave-0",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "PRD docs/2026-11-28-fix-ledger-prd.md 与 spec docs/2026-11-28-fix-ledger-spec.md（主人 2026-11-28 确认契约 v2）。fix1–fix12 历史见 git log 与 docs/dag-plans/2026-11-2*-nomoto-app-fix*.json。",
+        "output": "1) 新模块 src/fix-ledger.mjs：台账（目标项目 docs/fix-ledger.jsonl，JSONL append-only）读写、格式校验（type=fix 必有 regressionTest、type=decision 必有 decisionRef、id kebab-case、status active/superseded）、按文件路径与关键词查询 active 条目、原子写；2) 单测 test/fix-ledger.test.mjs 覆盖合法/非法条目、查询命中、原子写、superseded 不拦截；3) 回填本仓库 docs/fix-ledger.jsonl 种子：fix1–fix12 修复与已定决策（含 fix9→fix11 重复修复、fix12 恢复类案例），每条挂回归测试路径或决策出处，历史缺口如实标注。",
+        "error_behavior": "台账文件缺失时读接口返回空集合并如实标注，不抛错阻塞调用方；非法条目拒绝写入并给出字段级错误；写盘失败不留半截文件。",
+        "acceptance_example": "npm test 通过；node -e 逐行校验 docs/fix-ledger.jsonl 全部条目合法；种子条目覆盖 042e210→1173897 重复修复案例与 55c6ba1 恢复类案例。",
+        "files": [
+          "src/fix-ledger.mjs",
+          "test/fix-ledger.test.mjs",
+          "docs/fix-ledger.jsonl"
+        ]
+      }
+    },
+    {
+      "id": "ledger-context-injection",
+      "title": "调度资料包「修复台账/已定决策」一节 + 派发 prompt 按写范围注入台账条目",
+      "depends_on": ["fix-ledger-core"],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "N1 交付的 src/fix-ledger.mjs 查询接口与种子台账；现有 src/scheduling-context.mjs 资料包组装与派发 prompt 组装链路。",
+        "output": "1) scheduling-context 资料包新增「修复台账/已定决策」一节：读项目台账 active 条目，有字节上限、最近在前、超出注明总数（沿用既有 section 口径），台账缺失降级为可读占位；2) 派发 worker 的 prompt 组装处按节点 contract.files 匹配台账 files，注入相关条目（id+title+summary+回归测试路径）；3) 单测覆盖命中/未命中/台账缺失降级/超上限截断注明。",
+        "error_behavior": "台账读取异常时降级为占位文本并注明原因，不阻塞资料包与派发；匹配不到条目时如实为空，不编造。",
+        "acceptance_example": "npm test 通过；构造含种子条目的临时项目，资料包输出含台账一节；写范围命中条目的节点派发 prompt 含对应条目 id。",
+        "files": [
+          "src/scheduling-context.mjs",
+          "src/scheduling-session.mjs",
+          "test/scheduling-context.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "ledger-review-gate",
+      "title": "审阅核查模块 src/ledger-review.mjs + CLI + review-severity 口径",
+      "depends_on": ["fix-ledger-core"],
+      "integration_after": [],
+      "parallel_group": "wave-1",
+      "status": "planned",
+      "complexity": "standard",
+      "contract": {
+        "input": "N1 交付的台账查询接口；docs/review-severity.md 现有分级口径；scripts/review-claim.mjs 既有 CLI 形态参考。",
+        "output": "1) 新模块 src/ledger-review.mjs：输入 PR diff 文件清单与台账，输出触碰的 active 条目清单与豁免校验结果（PR 描述需含 ledger-waiver: <entry-id> <理由>）；2) scripts/ 下通用 CLI 入口（无私有路径）；3) docs/review-severity.md 增补：触碰 active 台账条目且无豁免按 P2，豁免需 reviewer 确认理由成立；4) 单测覆盖触碰无豁免/触碰有豁免/未触碰/superseded 不拦截。",
+        "error_behavior": "台账缺失时输出「无台账」结论并如实标注，不阻塞审阅；豁免格式非法按无豁免处理并说明。",
+        "acceptance_example": "npm test 通过；CLI 对构造 diff 输出触碰清单与豁免判定；review-severity.md 含新口径段落。",
+        "files": [
+          "src/ledger-review.mjs",
+          "test/ledger-review.test.mjs",
+          "docs/review-severity.md",
+          "scripts/ledger-review.mjs"
+        ]
+      }
+    },
+    {
+      "id": "session-precipitation-closeout",
+      "title": "会话沉淀闭环契约：AGENTS.md/调度契约/会话 prompt 模板增补当轮沉淀纪律",
+      "depends_on": ["ledger-context-injection"],
+      "integration_after": [],
+      "parallel_group": "wave-2",
+      "status": "planned",
+      "complexity": "light",
+      "contract": {
+        "input": "N2 交付的资料包注入；PRD 决策 4（沉淀双层落点：项目台账 + 统一知识库，责任在调度会话，worker 只消费）。",
+        "output": "1) AGENTS.md §4 与 docs/scheduling-contract.md 增补：主人拍板事项（决策/否决/范围确认）当轮追加台账 type=decision 条目，沉淀完成才算该轮闭环；跨项目可复用教训走知识库 admission；2) src/scheduling-session.mjs 会话 prompt 模板补沉淀纪律一句（与 N2 串行，避免写范围冲突）；3) 文档与模板口径一致。",
+        "error_behavior": "仅文档与 prompt 模板修改；不改变乔哈里对齐门语义，不新增硬门禁。",
+        "acceptance_example": "npm test 通过；AGENTS.md、scheduling-contract.md、prompt 模板三处沉淀口径一致。",
+        "files": [
+          "AGENTS.md",
+          "docs/scheduling-contract.md",
+          "src/scheduling-session.mjs"
+        ]
+      }
+    }
+  ]
+}
