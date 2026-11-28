@@ -81,7 +81,9 @@ async function consoleFetch(pathname, { method = 'POST', body } = {}) {
       method,
       headers: { 'x-console-request': '1', 'content-type': 'application/json' },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(8000),
+      // dag.create 服务端要做设计预检与 mirror git fetch，实测落盘约 38s；8s 客户端超时会把
+      // 已成功创建误判为临时失败并触发 Hub 重派（2026-11-28 run 18600 假失败事故）。放宽到 90s。
+      signal: AbortSignal.timeout(90_000),
     });
   } catch (error) {
     throw new SchedActionError(`连不上控制台：${error.message}`, { status: 502, permanent: false });
