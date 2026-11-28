@@ -21,7 +21,7 @@
 
 | 阶段 | 次数上限 | 交互点 |
 | --- | --- | --- |
-| 阶段一（本机网页版） | **≤ 4 次** | ① 启动指令（用户让你读本文）② 上游内核获取授权 ③ 用户在自己终端写入宿主密钥 ④ 确认模型分档（只有 1 个可写平台时跳过，见 1.8） |
+| 阶段一（本机网页版） | **≤ 4 次** | ① 启动指令（用户让你读本文）② 上游内核获取授权 ③ 用户在自己终端写入宿主密钥（上游 `init` 已生成时跳过，见 1.5）④ 确认模型分档（只有 1 个可写平台时跳过，见 1.8） |
 | 阶段二（公网 + 手机 App） | 按需，逐项标注 | 提供域名与登录邮箱、`cloudflared` 浏览器授权、写入 Cloudflare Token、手机安装 App 并扫码 |
 
 阶段一除这 4 次外不得再打扰用户；超出预算说明你漏了自愈手段，先自查。
@@ -31,11 +31,20 @@
 下面所有命令都假定在**本发布包根目录**（含 `package.json` 的目录）执行，并先设置：
 
 ```bash
-export AGENT_AUTOLOOP_HOME="${AGENT_AUTOLOOP_HOME:-$HOME/autoloop-state}"   # 运行目录，必须在本目录之外
+export AGENT_AUTOLOOP_HOME="${AGENT_AUTOLOOP_HOME:-$HOME/.agent-autoloop}"  # 运行目录 = 上游内核的数据目录，必须在本目录之外
 export AUTOLOOP_CONSOLE_PORT="${AUTOLOOP_CONSOLE_PORT:-50761}"              # 控制台端口；doctor 默认也查 50761
 ```
 
-你的命令工具若每次新开 shell，每条命令前都要带上这两行。用户已有运行目录时沿用它，不要另建。
+你的命令工具若每次新开 shell，每条命令前都要带上这两行。
+
+**运行目录必须和上游内核用同一个。** 上游默认把程序装在 `~/.agent-autoloop/app`、配置和数据放在 `~/.agent-autoloop`，上面的默认值与它一致。用户已经装过上游时**沿用它的目录，绝不另建**：另建会多出第二套密钥、第二个系统服务，并与已有中台抢同一个端口（默认 3350）。设置变量前先探测：
+
+```bash
+command -v agent-autoloop >/dev/null && readlink -f "$(command -v agent-autoloop)"   # 输出形如 <目录>/app/bin/agent-autoloop.ts
+test -e "$HOME/.agent-autoloop/config.json" && echo "已有默认位置的上游安装"
+```
+
+第一条输出的 `<目录>` 就是已有运行目录，把 `AGENT_AUTOLOOP_HOME` 设为它；只有第二条命中时用 `~/.agent-autoloop`；都没有才是全新安装，用默认值。
 
 ### doctor 速查
 
@@ -55,7 +64,7 @@ CHECK() {
 | local | `node-version`、`home-layout`、`console-reachable`、`rules-draft` |
 | public（在 local 之后追加） | `public-host`、`tunnel-config`、`public-reachable`、`access-blocks-anonymous`、`mobile-api` |
 
-`skip` 不算失败（例如没给设备令牌时 `mobile-api` 为 skip），但阶段二收尾前要把它跑成 pass。
+`skip` 不算失败（例如没给设备令牌时 `mobile-api` 为 skip）。`mobile-api` 正常安装时保持 skip，手机绑定改用 2.6 的验证命令确认。
 
 ---
 
@@ -89,41 +98,41 @@ CHECK() {
   运行目录**必须在本发布包目录之外**（里面会放密钥与数据库）。已存在就不动。
 - **验证**：
   ```bash
-  test -d "$AGENT_AUTOLOOP_HOME" && case "$(cd "$AGENT_AUTOLOOP_HOME" && pwd -P)/" in "$(pwd -P)/"*) echo "运行目录在发布包内，不允许"; exit 1;; *) echo ok;; esac
+  test -d "$AGENT_AUTOLOOP_HOME" && case "$(cd "$AGENT_AUTOLOOP_HOME" && pwd -P)/" in "$(pwd -P)/"*) echo "运行目录在发布包内，不允许"; false;; *) echo ok;; esac
   ```
+  （用 `false` 而不是 `exit 1` 表示失败：在常驻 shell 里 `exit` 会把整个 shell 关掉。）
 - **失败修复**：权限不足 → 换到用户主目录下的路径；运行目录落在发布包内 → 换路径重建。
 
 ### 1.4 获取上游内核【用户交互 ②：上游内核获取授权】
 
 本项目**不分发**上游内核（知识产权要求），只给地址：`https://github.com/KKKKhazix/agent-autoloop`。
 
-- **先验证再动作**：`test -e "$AGENT_AUTOLOOP_HOME/app/bin/agent-autoloop.ts" && echo 已有内核`。已有就跳到 1.5，不需要问用户。
-- **动作**：向用户说明「需要从上游作者的 GitHub 仓库下载内核到你的运行目录，下载后受上游许可约束；可以吗？」。得到同意后：
+- **先验证再动作**：`test -e "$AGENT_AUTOLOOP_HOME/app/bin/agent-autoloop.ts" && echo 已有内核`。已有就跳过下载，不需要问用户；`config.json` 也已存在时说明上游已初始化，直接到 1.5 做验证。
+- **动作**：向用户说明「需要从上游作者的 GitHub 仓库下载内核到你的运行目录，下载后受上游许可约束；可以吗？」。得到同意后下载并初始化：
   ```bash
-  git clone https://github.com/KKKKhazix/agent-autoloop "$AGENT_AUTOLOOP_HOME/app"
+  test -e "$AGENT_AUTOLOOP_HOME/app/bin/agent-autoloop.ts" || git clone https://github.com/KKKKhazix/agent-autoloop "$AGENT_AUTOLOOP_HOME/app"
+  test -e "$AGENT_AUTOLOOP_HOME/config.json" || AGENT_AUTOLOOP_HOME="$AGENT_AUTOLOOP_HOME" "$AGENT_AUTOLOOP_HOME/app/bin/agent-autoloop.ts" init
   ```
-  然后**按上游仓库 README** 完成内核安装与启动（`agent-autoloop up`，它会注册本机 worker 名并生成宿主密钥）。内核的安装细节以上游 README 为准，本文不复述。
+  `init` 是上游的安装命令：注册本机 worker 名，生成宿主密钥（`owner`）等全部密钥，写好 `config.json`（含 `url`，默认 `http://127.0.0.1:3350`）和起步用的 `rules.json`，装上系统服务并等中台起来。`init` 发现 `config.json` 已存在会报「已经装过了」并退出，所以**在它之前不要手写 config.json**。`agent-autoloop up` 只负责启动（平时由系统服务调用），没 `init` 过直接 `up` 会提示先运行 `init`。其余细节以上游 README / INSTALL.md 为准，本文不复述。
 - **验证**：
   ```bash
-  test -x "$AGENT_AUTOLOOP_HOME/app/bin/agent-autoloop.ts" && echo ok
+  test -x "$AGENT_AUTOLOOP_HOME/app/bin/agent-autoloop.ts" && test -e "$AGENT_AUTOLOOP_HOME/config.json" && echo ok
   ```
   （控制台直接执行这个文件做规则校验，所以它必须可执行。）
 - **失败修复**：
   - 用户拒绝 → 停在这里，告诉用户没有内核无法继续，随时可以回来接着装（重入后从本步开始）。
   - clone 失败（网络/目录已存在且非空）→ 目录非空时不要删，先 `git -C "$AGENT_AUTOLOOP_HOME/app" status` 看是不是已有的 clone，是就 `git pull`；否则换网络重试。
+  - `init` 报「这台电脑上没找到 Claude Code 或 Codex」→ 升级口径：请用户先安装并登录任一受支持的 Agent 工具。
+  - `init` 报端口被占（中台起不来）→ 先确认是不是本机已有另一份上游安装（回到「约定变量」的探测，改用那个目录）；确实不是时加 `--port <空闲端口>` 重跑 `init`。
   - 文件存在但不可执行 → 按上游 README 的安装方式处理（通常是 `chmod +x` 该文件并确保其解释器可用）。
-- 这一步完成后 `CHECK home-layout` 仍可能因缺 config.json/rules.json 失败，属正常，下两步补齐。
 
-### 1.5 写 config.json 与宿主密钥【用户交互 ③：用户在自己终端写入宿主密钥】
+### 1.5 核对 config.json 与宿主密钥【用户交互 ③：仅在缺宿主密钥时，用户在自己终端写入】
 
-`config.json` 字段：`url` = 本机 `agent-autoloop up` 的监听地址（以上游输出为准，只能是 127.0.0.1）；`owner` = 宿主生成的密钥（**凭据**）。样例见 [examples/config.example.json](../../examples/config.example.json)。
+`config.json` 字段：`url` = 上游中台的监听地址（只能是 127.0.0.1）；`owner` = 宿主密钥（**凭据**）。样例见 [examples/config.example.json](../../examples/config.example.json)。正常情况下 1.4 的 `init` 已把两者都写好，本步只需跑下面的「验证」，通过就直接进入 1.6，**不打扰用户**。
 
-- **动作 A（你做）**：config.json 不存在时，先只写 `url`（不写 owner、不写占位符）：
-  ```bash
-  test -e "$AGENT_AUTOLOOP_HOME/config.json" || node -e '
-    const fs=require("fs"),p=require("path"),f=p.join(process.env.AGENT_AUTOLOOP_HOME,"config.json"),t=f+".tmp";
-    fs.writeFileSync(t,JSON.stringify({url:process.argv[1]},null,2)+"\n",{mode:0o600});fs.renameSync(t,f);' "http://127.0.0.1:<上游监听端口>"
-  ```
+只有验证报「缺 owner」时才做下面的动作（例如这台电脑是用上游 `join` 接入别人的中台、配置里本来就没有 owner）：
+
+- **动作 A（你做）**：config.json 不存在（`init` 没跑成）时回到 1.4 重跑 `init`，不要手写 config.json。
 - **动作 B（用户做）**：把下面这条命令原样发给用户，请对方在**自己的终端窗口**（不是聊天框）执行，按提示粘贴宿主密钥两次（屏幕不显示属正常）：
   ```bash
   cd "<本发布包绝对路径>" && AGENT_AUTOLOOP_HOME="<运行目录绝对路径>" node scripts/secret-write.mjs owner
@@ -136,15 +145,15 @@ CHECK() {
 - **失败修复**（secret-write 退出码 0 = 写入成功，1 = 未写入；未写入时原文件不变，可直接重跑）：
   - `不允许的 key` → 命令里的 key 拼错，只能是 `owner` 或 `cloudflare-token`。
   - `请设置 AGENT_AUTOLOOP_HOME` → 命令缺了运行目录前缀，重发完整命令。
-  - `config.json 读取或解析失败，未写入` / `config.json 格式不对，未写入` → 先由你修好 config.json（回到动作 A；文件已损坏就把它改名为 `config.json.broken-<日期>` 后重写），再请用户重跑。
+  - `config.json 读取或解析失败，未写入` / `config.json 格式不对，未写入` → config.json 已损坏：升级口径，告诉用户上游配置文件损坏，建议用上游 `agent-autoloop backup` / `restore` 恢复，不要自行删除或重写（里面还有其他密钥）。
   - `两次输入不一致，未写入` / `值为空，未写入` → 请用户重跑同一条命令。
-  - 用户不知道密钥在哪 → 密钥由上游 `agent-autoloop up` 生成，按上游 README 找到后再写入。
+  - 用户手里没有宿主密钥 → 请用户在**中台所在电脑**自己的终端运行上游 `agent-autoloop key new owner console` 为控制台新建一把（只显示这一次；用新名字 `console`，不要覆盖已有的 `owner`），再用上面的 secret-write 命令写入。
 
 ### 1.6 写 rules.json 与宿主平台/模型探测
 
 - **动作**：
   1. 探测本机已安装的宿主 Agent：`command -v codex; command -v claude`（以及用户已在用的其他 ACP 程序）。
-  2. 运行目录里没有 `rules.json` 时，参照 [examples/rules.example.json](../../examples/rules.example.json) 生成：`agents` 里为每个探测到的宿主各登记一个可写执行端（`access: "full"`）和一个只读执行端（`access: "read"`），`worker` 填上游 `agent-autoloop up` 注册的本机 worker 名，字段含义以上游 README 为准；`rules` 先留空数组 `[]`（规则装好后在控制台表单里建）。已有 `rules.json` 不覆盖。
+  2. 1.4 的 `init` 通常已按探测到的宿主生成了起步 `rules.json`，此时**不覆盖**，直接跑验证。只有运行目录里没有 `rules.json` 时，才参照 [examples/rules.example.json](../../examples/rules.example.json) 生成：`agents` 里为每个探测到的宿主各登记一个可写执行端（`access: "full"`）和一个只读执行端（`access: "read"`），`worker` 填上游 `init` 注册的本机 worker 名（config.json 的 `worker.name`），字段含义以上游 README 为准；`rules` 先留空数组 `[]`（规则装好后在控制台表单里建）。已有 `rules.json` 不覆盖。
   3. 写入同样用「临时文件 + rename」。
 - **验证**：
   ```bash
@@ -173,7 +182,7 @@ CHECK() {
   - `请设置 AGENT_AUTOLOOP_HOME` / `读不到 …config.json` → 启动命令漏了环境变量，重启。
   - `缺少中台地址或本人密钥` → 回到 1.5。
   - `控制台启动失败：…EADDRINUSE` → 端口被占：先确认占用者是不是已在跑的本控制台（是就不用再启）；否则换一个端口，并在后续所有命令里用同一个 `AUTOLOOP_CONSOLE_PORT`。
-  - `/api/state` 返回 502 → 上游内核没在跑或 `url` 端口不对：按上游 README 启动 `agent-autoloop up`，核对 config.json 的 `url`。返回 401/403 → 宿主密钥不对，请用户重跑 1.5 动作 B 写入正确的值。
+  - `/api/state` 返回 502 → 上游内核没在跑或 `url` 端口不对：用 `"$AGENT_AUTOLOOP_HOME/app/bin/agent-autoloop.ts" status` 看中台是否在线，不在线就 `"$AGENT_AUTOLOOP_HOME/app/bin/agent-autoloop.ts" service install`（或前台 `up`）拉起，再核对 config.json 的 `url`。返回 401/403 → 宿主密钥不对，按 1.5 动作 B 写入正确的值。
 
 ### 1.8 确认模型分档【用户交互 ④：确认模型分档】
 
@@ -262,7 +271,8 @@ CHECK() {
 - **动作**（用 2.2 的 token 调 Cloudflare API，或请用户在 Zero Trust 后台按同样内容点选）：
   1. 应用 A（拦住所有人）：类型 self-hosted，域名 `<publicHost>`，策略 `Allow`，规则 Include → Emails = 2.1 里用户给的邮箱，登录方式用邮箱验证码（One-time PIN）或 Google。
   2. 应用 B（放行手机 App）：域名 `<publicHost>/api/mobile`，策略 `Bypass` → Include Everyone。手机 App 没有浏览器登录态；这条路径由控制台自己的**设备令牌**鉴权（未绑定设备一律 401），且只在 HTTPS 下可用。需要在手机上预览产物时，同样为 `<publicHost>/mobile/preview` 加一条 Bypass（该路径只认一次性预览票据）。
-  3. 不要 Bypass 其他路径。
+  3. 可选：为 `<publicHost>/mobile/index.html` 加一条 Bypass。App 会定时请求这个页面，比较界面版本，有新版时提示「请更新安装包」。不加这一条时请求会被 Access 拦住，只是收不到这个提示，绑定和使用不受影响。这个页面是公开的静态界面，不含数据和密钥。
+  4. 不要 Bypass 其他路径。
 - **验证**：`CHECK --public access-blocks-anonymous`：匿名请求 `/` 与 `/api/state` 必须被重定向（3xx）或拒绝（401/403），**任何 2xx 都算失败**。再请用户在手机浏览器打开 `https://<publicHost>`，应看到 Cloudflare 登录页，用自己邮箱登录后看到控制台。
 - **失败修复**：`匿名请求未被拦截` → 应用 A 没生效或域名写错，立刻修，修好前不进行下一步；用户登录后仍被拒 → 邮箱不在 Include 列表里。
 
@@ -279,7 +289,12 @@ CHECK() {
   1. 请用户从本项目发布页（获取本发布包的同一页面）下载 APK 附件，在 Android 手机上安装（需允许「安装未知来源应用」）。发布包里的 `manifest.json` 列出了 APK 附件的 sha256，可用于核对。
   2. 用户在电脑浏览器打开 `https://<publicHost>` →「管理后台」→「设备授权管理」→「生成一次性二维码」（5 分钟内有效）。
   3. 用户在手机 App 的「设备绑定」页：「控制台地址」填 `https://<publicHost>`（必须 HTTPS），点「扫码绑定」扫电脑上的二维码，再点「绑定设备」。扫不了码时，可把二维码下方的备用绑定码复制到「绑定二维码内容」里。
-- **验证**：设备出现在「设备授权管理 → 已绑定设备」列表中。需要机器验证 `mobile-api` 时，在**用户自己的终端**执行（设备令牌是凭据，不进聊天）：`AUTOLOOP_DEVICE_TOKEN=<设备令牌> node scripts/doctor.mjs --phase public`，全部 pass。
+- **验证**（你做，不需要用户提供任何令牌）：
+  ```bash
+  curl -s "http://127.0.0.1:$AUTOLOOP_CONSOLE_PORT/api/devices" | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"));const n=r.devices.filter(d=>d.status==="authorized").length;console.log("已授权设备数",n);process.exit(n>0?0:1)'
+  ```
+  退出码 0 即绑定成功，网页「设备授权管理 → 已绑定设备」里也能看到这台手机。App 首页能刷出任务列表，说明经 Cloudflare 到 `/api/mobile` 的整条链路是通的。
+  设备令牌保存在 App 内部，用户看不到，所以**不要向用户索要**。doctor 的 `mobile-api` 项需要设备令牌，正常安装时它保持 skip，阶段二收尾以上面的验证为准，不要求它 pass。
 - **失败修复**：
   - App 提示地址不安全 → 地址必须以 `https://` 开头。
   - 绑定失败「二维码已过期」或一次性令牌已用 → 回到第 2 步重新生成二维码。
@@ -296,7 +311,8 @@ CHECK() {
 | `CHECK node-version` 不过 | 1.1 |
 | `node_modules` 缺失 | 1.2 |
 | `home-layout` 缺 `app/bin/agent-autoloop.ts` | 1.4 |
-| `home-layout` 缺 `config.json` 或 owner 验证不过 | 1.5 |
+| `home-layout` 缺 `config.json` | 1.4（上游 `init`） |
+| owner 验证不过 | 1.5 |
 | `home-layout` 缺 `rules.json` 或 `rules-draft` 不过 | 1.6 |
 | `console-reachable` 不过 | 1.7 |
 | 分档验证不过（≥ 2 个可写平台时） | 1.8 |
