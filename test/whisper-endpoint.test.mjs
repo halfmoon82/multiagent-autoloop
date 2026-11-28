@@ -2,7 +2,7 @@
 // 假 whisper 命令替身验证参数白名单/超时/清理/成功/失败/缺失。不调用真实 whisper。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync, readdirSync, accessSync, constants } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -132,18 +132,26 @@ test('whisper 超时 504 并杀进程，临时文件清理', async t => {
   assert.deepEqual(leftovers(ctx), []);
 });
 
-test('配置路径不可执行 503（客户端降级）；未配置也走默认路径检查', async t => {
+test('配置路径不可执行 503（客户端降级）；默认解析不可用同样 503', async t => {
   const ctx = await setup(t, { whisperPath: '/nonexistent/whisper' });
   assert.equal((await post(ctx, wav(1))).status, 503);
   assert.equal(existsSync(path.join(ctx.root, 'args.log')), false);
-  // 未配置时只核对可用性判定落在默认路径上，不发请求：本机若装了真 whisper，发请求会真跑模型
-  // （全量 npm test 负载下超过 15s 超时，且测试不得调用真实模型）。
-  const { createWhisperTranscriber, DEFAULT_WHISPER_PATH } = await import('../src/whisper-transcribe.mjs');
-  let defaultExecutable = true;
-  try { accessSync(DEFAULT_WHISPER_PATH, constants.X_OK); } catch { defaultExecutable = false; }
-  const check = () => createWhisperTranscriber({}).assertAvailable();
-  if (defaultExecutable) assert.doesNotThrow(check);
-  else assert.throws(check, error => error.status === 503);
+  // 未配置时只核对默认可用性判定，不发请求（本机可能真装 whisper，发请求会真跑模型）。
+  // 用受控 env（空 PATH、无 AUTOLOOP_WHISPER_PATH）保证不依赖开发机真实安装。
+  const { createWhisperTranscriber } = await import('../src/whisper-transcribe.mjs');
+  const empty = mkdtempSync(path.join(tmpdir(), 'whisper-none-'));
+  t.after(() => rmSync(empty, { recursive: true, force: true }));
+  const savedPath = process.env.PATH;
+  const savedWhisper = process.env.AUTOLOOP_WHISPER_PATH;
+  try {
+    process.env.PATH = empty;
+    delete process.env.AUTOLOOP_WHISPER_PATH;
+    assert.throws(() => createWhisperTranscriber({}).assertAvailable(), error => error.status === 503);
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedWhisper === undefined) delete process.env.AUTOLOOP_WHISPER_PATH;
+    else process.env.AUTOLOOP_WHISPER_PATH = savedWhisper;
+  }
 });
 
 test('模型名非法时不拼进命令行（白名单）', async t => {
@@ -153,16 +161,31 @@ test('模型名非法时不拼进命令行（白名单）', async t => {
   assert.ok(WhisperError);
 });
 
-test('config.mjs 提供默认 whisper 路径与模型，可由 config.json 覆盖', () => {
+test('config.mjs 默认 whisper 路径走 env 解析，config.json 覆盖优先级最高', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'whisper-cfg-'));
+  const savedPath = process.env.PATH;
+  const savedWhisper = process.env.AUTOLOOP_WHISPER_PATH;
   try {
+    // env 覆盖生效：无 config.json whisper 字段时取 AUTOLOOP_WHISPER_PATH。
+    process.env.AUTOLOOP_WHISPER_PATH = '/opt/custom/whisper';
     writeFileSync(path.join(root, 'config.json'), JSON.stringify({ url: 'http://127.0.0.1:1', owner: 'o' }));
     const config = loadConsoleConfig(root);
-    assert.equal(config.whisper.path, '/Users/macmini/.local/bin/whisper');
+    assert.equal(config.whisper.path, '/opt/custom/whisper');
     assert.equal(config.whisper.model, 'small');
+    // config.json 覆盖优先级最高：压过 env。
     writeFileSync(path.join(root, 'config.json'), JSON.stringify({ url: 'http://127.0.0.1:1', owner: 'o', whisper: { path: '/x/w', model: 'base' } }));
     const custom = loadConsoleConfig(root);
     assert.equal(custom.whisper.path, '/x/w');
     assert.equal(custom.whisper.model, 'base');
-  } finally { rmSync(root, { recursive: true, force: true }); }
+    // env 未设置且 PATH 探测不到 → null（不可用，走 503 降级），不依赖开发机真实安装。
+    delete process.env.AUTOLOOP_WHISPER_PATH;
+    process.env.PATH = root;
+    writeFileSync(path.join(root, 'config.json'), JSON.stringify({ url: 'http://127.0.0.1:1', owner: 'o' }));
+    assert.equal(loadConsoleConfig(root).whisper.path, null);
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedWhisper === undefined) delete process.env.AUTOLOOP_WHISPER_PATH;
+    else process.env.AUTOLOOP_WHISPER_PATH = savedWhisper;
+    rmSync(root, { recursive: true, force: true });
+  }
 });

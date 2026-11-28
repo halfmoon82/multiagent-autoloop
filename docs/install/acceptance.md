@@ -47,7 +47,7 @@
 
 - 命令：`node scripts/release.mjs --out <仓库外临时目录> --json`，退出码 1，stderr：`发布构建失败：发布源缺少必需内容：LICENSE`。
 - 阻塞一：发布源缺少必需内容 `LICENSE`（`scripts/release.mjs` 的 `REQUIRED` 含 LICENSE，仓库根无此文件）。本轮复核与 g1a1/g1a2 一致。
-- 阻塞二：`src/whisper-transcribe.mjs:9` 将 `DEFAULT_WHISPER_PATH` 写死为开发机绝对路径，触犯守门规则「本机路径」（正则含 `/Users/<用户>/` 形式）。补齐 LICENSE 后重跑仍会被此项命中；本轮已目视确认该行属实（具体个人路径不写入本仓库）。
+- 阻塞二：`src/whisper-transcribe.mjs:9` 将 `DEFAULT_WHISPER_PATH` 写死为开发机绝对路径，触犯守门规则「本机路径」（正则匹配 macOS 用户主目录、Linux home 目录、Windows 用户目录等本机绝对路径形式；此处不写字面量以免本文件自身命中守门）。补齐 LICENSE 后重跑仍会被此项命中；本轮已目视确认该行属实（具体个人路径不写入本仓库）。
 - 结论：`scanFiles` 一次性汇总全部命中，真实源确认上述两项阻塞；**真实发布包当前无法产出 manifest**，发布验收不通过。这两项是**稳定阻塞**（非时序波动），是本次「验收未通过」判定的依据。
 
 ### 2.2 夹具 dry-run：manifest 结构审查（不代表真实发布可用）

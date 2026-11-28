@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_WHISPER_PATH, DEFAULT_WHISPER_MODEL } from './whisper-transcribe.mjs';
+import { defaultWhisperPath, DEFAULT_WHISPER_MODEL } from './whisper-transcribe.mjs';
 
 // 调度会话全局上限：默认 6、允许 1–12。缺失/非法/越界都回退 6 并告警，绝不因配置错误阻止启动。
 export const DEFAULT_MAX_SESSIONS = 6;
@@ -52,9 +52,10 @@ export function loadConsoleConfig(root = process.env.AGENT_AUTOLOOP_HOME) {
     publicHost: resolvePublicHost(config.publicHost),
     host: '127.0.0.1',
     port: Number(process.env.AUTOLOOP_CONSOLE_PORT || 0),
-    // 语音转写：本机 whisper CLI 路径与模型，可由 config.json 的 whisper 字段覆盖。
+    // 语音转写：本机 whisper CLI 路径与模型。config.json 的 whisper.path 覆盖优先级最高；
+    // 未配置时按 AUTOLOOP_WHISPER_PATH 环境变量 → PATH 探测解析，可能为 null（转写不可用，走 503 降级）。
     whisper: {
-      path: typeof config.whisper?.path === 'string' && config.whisper.path ? config.whisper.path : DEFAULT_WHISPER_PATH,
+      path: typeof config.whisper?.path === 'string' && config.whisper.path ? config.whisper.path : defaultWhisperPath(),
       model: typeof config.whisper?.model === 'string' && config.whisper.model ? config.whisper.model : DEFAULT_WHISPER_MODEL,
     },
     projectRoots: (process.env.AUTOLOOP_PROJECT_ROOTS || '').split(/[,:]/).map(item => item.trim()).filter(Boolean),
