@@ -299,6 +299,50 @@ export function createMobileClient({ base, state = new ShellState(), tokenStore 
 export const CONSOLES_KEY = 'consoles';
 export const CURRENT_CONSOLE_KEY = 'current-console';
 
+// 自定义显示名（console-custom-name / issue #365）：名称只写在安全存储的控制台清单里，
+// 不上传、不进 URL、不写普通浏览器存储。名称为可选字段：空或超长（>40 字）按地址回落并给就地提示。
+export const CONSOLE_NAME_MAX_LENGTH = 40;
+export const CONSOLE_NAME_UNSET_HINT = '未命名（按地址显示）';
+
+/** 控制台显示名的地址回落值：host（含端口），与既有「item.name || item.origin」口径一致。 */
+export function consoleNameFallback(origin) {
+  try { return new URL(normalizeBaseUrl(origin)).host; }
+  catch { return ''; }
+}
+
+/**
+ * 校验并归一化自定义名称。返回 { name, note, overlong }：
+ * - name 为最终写入/展示的名称（空或超长时回落地址 host）；
+ * - note 为给用户的就地提示（正常名称为空串）；
+ * - overlong 标记是否因超长被回落，便于 UI 区隔「可选留空」与「超长」。
+ */
+export function parseConsoleName(raw, origin) {
+  const fallback = consoleNameFallback(origin);
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  if (!value) return { name: fallback, note: '未填写名称，将按地址显示', overlong: false };
+  if ([...value].length > CONSOLE_NAME_MAX_LENGTH) {
+    return { name: fallback, note: `名称不能超过 ${CONSOLE_NAME_MAX_LENGTH} 字，已按地址显示`, overlong: true };
+  }
+  return { name: value, note: '', overlong: false };
+}
+
+// 添加流程的名称在用户填「自定义名称」时暂存：settings.mjs 写、registry.addConsole 读一次即清。
+// 模块级变量安全：app.mjs 与 settings.mjs 共用同一 shell.mjs 模块实例；不写浏览器存储、不进 URL。
+let stagedConsoleName = null;
+export function stageConsoleName(name) { stagedConsoleName = typeof name === 'string' ? name : null; }
+export function takeStagedConsoleName() {
+  const value = stagedConsoleName;
+  stagedConsoleName = null;
+  return value;
+}
+
+// 改名桥接：registry 在 app.mjs 内创建，settings.mjs 拿不到实例；这里保留当前实例供改名入口调用。
+let activeConsoleRegistry = null;
+export function renameConsoleFor(origin, name) {
+  if (!activeConsoleRegistry) return Promise.reject(new MobileShellError('CONSOLE_UNKNOWN', '控制台列表尚未就绪'));
+  return activeConsoleRegistry.renameConsole(origin, name);
+}
+
 /** 每台控制台设备凭证的安全存储键：`<host>:device-token`（host 含端口，按控制台隔离）。 */
 export function consoleTokenKey(origin) {
   return `${new URL(normalizeBaseUrl(origin)).host}:device-token`;
@@ -360,7 +404,7 @@ export function createConsoleRegistry({ storage }) {
         try {
           const origin = normalizeBaseUrl(item?.origin);
           if (!consoles.some(entry => sameConsole(entry.origin, origin))) {
-            consoles.push({ origin, name: typeof item?.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 80) : new URL(origin).host });
+            consoles.push({ origin, name: parseConsoleName(item?.name, origin).name });
           }
         } catch { /* 非法条目丢弃，不让一条坏数据挡住其他控制台 */ }
       }
@@ -401,7 +445,10 @@ export function createConsoleRegistry({ storage }) {
         }
         throw error;
       }
-      const label = typeof name === 'string' && name.trim() ? name.trim().slice(0, 80) : new URL(origin).host;
+      // 显式 name 优先；否则取 settings.mjs 暂存的自定义名称；都没有则按地址回落。
+      // 两种来源都消费暂存，避免上一次的名称残留到下一次添加。
+      const staged = takeStagedConsoleName();
+      const label = parseConsoleName(name !== undefined ? name : staged, origin).name;
       const snapshot = { consoles: consoles.map(entry => ({ ...entry })), current };
       const existing = consoles.find(entry => entry.origin === origin);
       if (existing) existing.name = label;
@@ -425,6 +472,24 @@ export function createConsoleRegistry({ storage }) {
       await storage.set(CURRENT_CONSOLE_KEY, origin);
       return origin;
     },
+    /**
+     * 改名（console-custom-name）：只改本机清单里的显示名，不动设备凭证与当前指针。
+     * 空/超长按地址回落；写清单失败整体回滚，控制台仍可连接（存储失败不影响连接流程）。
+     */
+    async renameConsole(origin, name) {
+      if (!registry.has(origin)) throw new MobileShellError('CONSOLE_UNKNOWN', '该控制台不在列表中');
+      const target = consoles.find(entry => entry.origin === origin);
+      const label = parseConsoleName(name, origin).name;
+      if (target.name === label) return registry.list();
+      const snapshot = consoles.map(entry => ({ ...entry }));
+      target.name = label;
+      try { await persist(); }
+      catch (error) {
+        consoles = snapshot;
+        throw error instanceof MobileShellError ? error : new MobileShellError('STORAGE_FAILED', '安全存储读写失败，请稍后重试');
+      }
+      return registry.list();
+    },
     /** 移除控制台：同时删除它的设备凭证；移除的是当前控制台时改指向剩余第一台（没有则清空）。 */
     async removeConsole(origin) {
       if (!registry.has(origin)) return current;
@@ -443,6 +508,7 @@ export function createConsoleRegistry({ storage }) {
       return current;
     },
   };
+  activeConsoleRegistry = registry; // settings.mjs 的改名入口经 renameConsoleFor 复用同一实例
   return registry;
 }
 
