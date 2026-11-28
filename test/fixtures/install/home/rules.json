@@ -1,0 +1,1 @@
+{"agents":{"dev":{"name":"Dev"}},"rules":[{"name":"smoke","when":{"cron":"0 * * * *"},"to":"dev","cwd":"/tmp","prompt":"noop"}]}

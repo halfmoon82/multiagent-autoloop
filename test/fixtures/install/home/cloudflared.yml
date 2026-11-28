@@ -1,0 +1,5 @@
+tunnel: fake-tunnel
+ingress:
+  - hostname: console.example.com
+    service: http://127.0.0.1:50761
+  - service: http_status:404
