@@ -150,9 +150,15 @@ export function securityHeaders() {
 }
 export function jsonResponse(res, status, value) { res.writeHead(status, { ...securityHeaders(), 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value)); }
 class RequestError extends Error { constructor(status, message) { super(message); this.status = status; } }
-function checkWrite(req) {
+// Host 为 publicHost（公网入口，终结 HTTPS）时 Origin 只认 https://<publicHost>；否则沿用本机同源口径，并额外允许 https://<publicHost>。
+function originAllowed(origin, host, publicHost) {
+  const publicOrigin = publicHost ? `https://${publicHost}` : null;
+  if (publicHost && host === publicHost) return origin === publicOrigin;
+  return origin === `http://${host}` || origin === `https://${host}` || origin === publicOrigin;
+}
+function checkWrite(req, publicHost = null) {
   const origin = req.headers.origin;
-  if (origin && origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}`) throw new RequestError(403, '拒绝跨站操作');
+  if (origin && !originAllowed(origin, req.headers.host, publicHost)) throw new RequestError(403, '拒绝跨站操作');
   if (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) throw new RequestError(403, '拒绝跨站操作');
   if (req.headers['x-console-request'] !== '1') throw new RequestError(403, '缺少控制台请求标记');
   if (req.headers['content-type']?.split(';')[0] !== 'application/json') throw new RequestError(415, '操作内容必须是 JSON');
@@ -380,7 +386,7 @@ async function handleApi(config, req, res, url) {
     throw new RequestError(404, '没有这个控制台地址');
   }
   if (!['POST', 'PUT', 'DELETE'].includes(req.method)) return false;
-  checkWrite(req); const body = await readJson(req);
+  checkWrite(req, config.publicHost); const body = await readJson(req);
   const continueMatch = req.method === 'POST' ? url.pathname.match(/^\/api\/scheduling-sessions\/([^/]+)\/continue$/) : null;
   if (continueMatch) {
     const id = decodeURIComponent(continueMatch[1]);
@@ -552,7 +558,8 @@ export function createConsoleServer(config, schedulingSessions) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const host = req.headers.host?.split(':')[0]?.toLowerCase();
-    if (!['127.0.0.1', 'localhost'].includes(host)) return jsonResponse(res, 403, { error: '控制台只接受本机地址' });
+    const isPublicHost = Boolean(config.publicHost) && req.headers.host?.toLowerCase() === config.publicHost;
+    if (!isPublicHost && !['127.0.0.1', 'localhost'].includes(host)) return jsonResponse(res, 403, { error: '控制台只接受本机地址' });
     try { if (url.pathname.startsWith('/api/') && await handleApi(config, req, res, url) !== false) return; }
     catch (error) {
       const status = error instanceof RequestError || error instanceof RuleError || error instanceof PlatformModelsError || error instanceof SchedulingSessionError || error instanceof DagServiceError || error instanceof CardDelegateError || error instanceof DeviceAuthError ? error.status || 400 : error instanceof HubError && error.status < 500 ? error.status : 502;

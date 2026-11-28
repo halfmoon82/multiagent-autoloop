@@ -19,6 +19,15 @@ export function resolveMaxSessions(value, issue = maxSessionsIssue(value)) {
   return DEFAULT_MAX_SESSIONS;
 }
 
+// 公网域名（Cloudflare Tunnel）：单个小写 DNS 主机名，无端口/路径/通配/协议。缺省为 null；非法值告警回退 null，不阻断启动。
+const PUBLIC_HOST_PATTERN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/;
+export function resolvePublicHost(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string' && PUBLIC_HOST_PATTERN.test(value)) return value;
+  console.warn('[config] publicHost 非法（需单个小写域名，无端口/路径/通配），已忽略，仅接受本机地址');
+  return null;
+}
+
 export function loadConsoleConfig(root = process.env.AGENT_AUTOLOOP_HOME) {
   if (!root) throw new Error('请设置 AGENT_AUTOLOOP_HOME 为试点数据目录');
   const file = path.join(root, 'config.json');
@@ -40,6 +49,7 @@ export function loadConsoleConfig(root = process.env.AGENT_AUTOLOOP_HOME) {
     sourceKey: typeof config.source?.key === 'string' && config.source.key ? config.source.key : null,
     rulesFile: path.join(root, 'rules.json'),
     cliPath: path.join(root, 'app', 'bin', 'agent-autoloop.ts'),
+    publicHost: resolvePublicHost(config.publicHost),
     host: '127.0.0.1',
     port: Number(process.env.AUTOLOOP_CONSOLE_PORT || 0),
     // 语音转写：本机 whisper CLI 路径与模型，可由 config.json 的 whisper 字段覆盖。
