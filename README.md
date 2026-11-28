@@ -19,6 +19,19 @@ Agent Autoloop v1.8.1 本地化运行环境的跨平台控制台与调度控制�
 
 架构和调度边界见 [架构说明](docs/architecture.md) 与 [调度契约](docs/scheduling-contract.md)。
 
+## 快速安装：交给你的 Agent
+
+不想手工配置？用本机的 Agent 工具（Claude Code、Codex 等）打开本目录，对它说：
+
+> 读 `docs/install/playbook.md`，按步骤帮我装好。
+
+Agent 会完成环境检查、依赖安装、运行目录与配置生成、启动和自检；只在需要你授权或输入密钥时找你（本机版最多 4 次）。密钥由你在自己的终端窗口里输入（屏幕不显示），**不要把任何密钥发到聊天里**。
+
+- 阶段一（无需域名）：本机网页控制台 `http://127.0.0.1:50761`。
+- 阶段二（有自己的域名 + Cloudflare 账号）：公网 HTTPS 访问（邮箱登录保护）+ 手机 App 扫码绑定。
+
+上游内核不随本项目分发，Agent 会给出上游 GitHub 地址并在你同意后获取。完整步骤见 [安装 Playbook](docs/install/playbook.md)。
+
 ## 环境与安装
 
 需要 Node.js 24 或更高版本，以及一个已经配置好的 Agent Autoloop 运行目录。

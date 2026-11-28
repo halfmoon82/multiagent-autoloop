@@ -1,5 +1,7 @@
 # 外部用户配置引导（v1.0）
 
+> **推荐路径**：让你本机的 Agent 读 [安装 Playbook](install/playbook.md) 自动完成安装与自检（阶段一本机网页版、阶段二公网 + 手机 App）。本文是手工配置的参考说明，playbook 的每一步都以这里的字段口径为准。
+
 本仓库是 Agent Autoloop 上游内核（v1.8.1 代际）的**控制台与调度控制面增量**，
 不含上游内核本体。你需要先有一个已配置好的 Autoloop 运行目录（`AGENT_AUTOLOOP_HOME`），
 再启动本控制台对接它。
@@ -57,7 +59,7 @@ Agent 会被拒绝——这类错配运行期必然死锁。
 
 ## 4. 安全边界
 
-- 控制台只监听 `127.0.0.1`，没有远程认证；暴露到远程前必须另加 HTTPS、设备级凭证与私网/VPN。
+- 控制台只监听 `127.0.0.1`，自身没有远程认证；暴露到远程前必须另加 HTTPS、设备级凭证与访问控制。受支持的远程方式见 [playbook 阶段二](install/playbook.md)（`publicHost` + Cloudflare Tunnel + Cloudflare Access），隧道样例见 [examples/cloudflared.example.yml](../examples/cloudflared.example.yml)。
 - 密钥只进 Node 服务端，不进浏览器、截图、测试快照与日志。
 - 目标项目的源码、数据库、凭据留在目标项目自己的仓库与工作区，本控制台只持路径与规则。
 

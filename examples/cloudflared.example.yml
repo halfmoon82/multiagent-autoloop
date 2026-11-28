@@ -1,0 +1,13 @@
+# cloudflared 隧道配置样例（阶段二，见 docs/install/playbook.md 2.3）。
+# 复制到 <AGENT_AUTOLOOP_HOME>/cloudflared.yml 后替换尖括号占位符；不要把填好的文件提交进任何仓库。
+# 本文件只含隧道 ID 与凭据文件路径，凭据本体由 `cloudflared tunnel create` 写在 ~/.cloudflared/ 下。
+tunnel: <隧道 ID：cloudflared tunnel create 输出的 UUID>
+credentials-file: <~/.cloudflared/<隧道 ID>.json 的绝对路径>
+
+ingress:
+  # hostname 必须与 config.json 的 publicHost 完全一致（小写、无端口）；doctor --phase public 会核对这一行。
+  - hostname: console.example.com
+    # 控制台只监听本机；端口与 AUTOLOOP_CONSOLE_PORT 一致。
+    service: http://127.0.0.1:50761
+  # 兜底：其他主机名一律 404，不转发到控制台。
+  - service: http_status:404
