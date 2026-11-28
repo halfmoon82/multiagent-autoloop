@@ -38,10 +38,10 @@ Agent 会完成环境检查、依赖安装、运行目录与配置生成、启�
 
 ```bash
 npm ci
-AGENT_AUTOLOOP_HOME=/绝对路径/autoloop-state AUTOLOOP_CONSOLE_PORT=50761 npm start
+AGENT_AUTOLOOP_HOME="$HOME/.agent-autoloop" AUTOLOOP_CONSOLE_PORT=50761 npm start
 ```
 
-打开 `http://127.0.0.1:50761`。不设置端口时使用随机空闲端口。按 Ctrl+C 停止。
+`AGENT_AUTOLOOP_HOME` 用上游内核的数据目录（默认 `~/.agent-autoloop`），不要另建一份。打开 `http://127.0.0.1:50761`。不设置端口时使用随机空闲端口。按 Ctrl+C 停止。
 
 `AGENT_AUTOLOOP_HOME` 应至少包含 `config.json`、`rules.json` 和当前安装版 `app/bin/agent-autoloop.ts`。这些文件属于本机运行状态，不从公开仓库获取。
 
