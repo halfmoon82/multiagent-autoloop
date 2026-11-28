@@ -2,12 +2,33 @@
 // 边界：只做音频落临时文件 → 白名单参数调用 CLI → 读 txt → 清理；鉴权与路由分派在 server.mjs。
 // 安全：execFile 不经 shell，参数全部来自白名单常量/校验后的配置；stderr 只留服务端不回传。
 import { execFile } from 'node:child_process';
-import { accessSync, constants, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-export const DEFAULT_WHISPER_PATH = '/Users/macmini/.local/bin/whisper';
 export const DEFAULT_WHISPER_MODEL = 'small';
+
+// 默认 whisper 可执行文件解析：AUTOLOOP_WHISPER_PATH 环境变量优先，其次在 PATH 中逐个目录
+// 探测可执行的 whisper；都找不到返回 null（调用侧按「不可用 → 503」降级，不崩溃）。
+// 不写死任何本机绝对路径（发布守门禁止个人路径入库）。config.json 的 whisper.path 优先级最高，
+// 由 config.mjs 在调用 defaultWhisperPath 之前裁定。
+export function findWhisperOnPath(pathEnv = process.env.PATH) {
+  for (const dir of String(pathEnv || '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, 'whisper');
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) return candidate;
+    } catch { /* 该目录没有可执行的 whisper，继续找 */ }
+  }
+  return null;
+}
+
+export function defaultWhisperPath(env = process.env) {
+  const fromEnv = typeof env.AUTOLOOP_WHISPER_PATH === 'string' ? env.AUTOLOOP_WHISPER_PATH.trim() : '';
+  if (fromEnv) return fromEnv;
+  return findWhisperOnPath(env.PATH);
+}
 export const MAX_AUDIO_BYTES = 2 * 1024 * 1024;
 export const MAX_AUDIO_SECONDS = 60;
 const FAIL_TEXT = '转写失败，请重试';
@@ -63,7 +84,8 @@ export function parseMultipartAudio(buffer, contentType) {
 }
 
 export function createWhisperTranscriber(options = {}) {
-  const whisperPath = options.path || DEFAULT_WHISPER_PATH;
+  // options.path（config.json 覆盖）优先；否则按环境变量 → PATH 探测解析，可能为 null（不可用）。
+  const whisperPath = options.path || defaultWhisperPath();
   const model = options.model || DEFAULT_WHISPER_MODEL;
   if (!MODEL_PATTERN.test(model)) throw new Error('whisper 模型名不合法');
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 60000;
@@ -72,8 +94,9 @@ export function createWhisperTranscriber(options = {}) {
   const lastByDevice = new Map();
 
   return {
-    // 缺失/不可执行 → 503，客户端走降级。
+    // 未解析到路径或缺失/不可执行 → 503，客户端走降级。
     assertAvailable() {
+      if (!whisperPath) throw new WhisperError(503, '语音转写不可用');
       try { accessSync(whisperPath, constants.X_OK); } catch { throw new WhisperError(503, '语音转写不可用'); }
     },
     // 同设备冷却：受理即记时；超限抛 429。
