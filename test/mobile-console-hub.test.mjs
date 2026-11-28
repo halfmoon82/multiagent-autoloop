@@ -8,10 +8,11 @@ import path from 'node:path';
 import { chromium } from '@playwright/test';
 import {
   MobileShellError, createConsoleRegistry, createKeyedSecureStorage, consoleTokenKey, bootScreen,
-  CONSOLES_KEY, CURRENT_CONSOLE_KEY,
+  CONSOLES_KEY, CURRENT_CONSOLE_KEY, CONSOLE_NAME_MAX_LENGTH, parseConsoleName,
+  stageConsoleName, takeStagedConsoleName, renameConsoleFor,
 } from '../mobile/app/www/shell.mjs';
 import { createDefaultHooks } from '../mobile/app/www/app.mjs';
-import { SETTINGS_SECTIONS } from '../mobile/app/www/pages/settings.mjs';
+import { SETTINGS_SECTIONS, renderConsoleList } from '../mobile/app/www/pages/settings.mjs';
 import { createConsoleServer } from '../src/server.mjs';
 import { createDeviceStore } from '../src/device-auth.mjs';
 import { fakeHub, json, listen, close } from './helpers.mjs';
@@ -371,6 +372,174 @@ test('浏览器：两台控制台绑定、切换免重复解锁且数据隔离�
 
   const text = await page.locator('body').innerText();
   assert.ok(!text.includes(tokenA) && !text.includes(qrB.token), '页面不得出现设备凭证或一次性码');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '无横向溢出');
+  assert.deepEqual(errors, []);
+});
+
+// ---------- console-custom-name（issue #365）：命名 / 改名 / 缺省回落 ----------
+function nameFakeNode(tag, doc) {
+  return {
+    tag, className: '', textContent: '', value: '', hidden: false,
+    dataset: {}, attrs: {}, children: [], listeners: {},
+    classList: { add() {}, remove() {}, toggle() {} },
+    get ownerDocument() { return doc; },
+    setAttribute(key, value) { this.attrs[key] = String(value); },
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
+    replaceChildren(...kids) { this.children = kids; },
+    append(...kids) { this.children.push(...kids); },
+    after() {},
+    prepend(...kids) { this.children.unshift(...kids); },
+    querySelector() { return null; },
+    click() { for (const fn of this.listeners.click || []) fn({ stopPropagation() {} }); },
+  };
+}
+function nameFakeDoc() {
+  const doc = { createElement: tag => nameFakeNode(tag, doc) };
+  return doc;
+}
+function nameFlatten(node, out = []) {
+  if (node.textContent) out.push(node.textContent);
+  for (const kid of node.children || []) nameFlatten(kid, out);
+  return out;
+}
+function nameCollect(node, out = []) {
+  out.push(node);
+  for (const kid of node.children || []) nameCollect(kid, out);
+  return out;
+}
+
+test('自定义名称校验：空/超长（>40 字）按地址回落并给就地提示，边界 40 字保留', () => {
+  assert.equal(CONSOLE_NAME_MAX_LENGTH, 40);
+  assert.deepEqual(parseConsoleName('  书房主机  ', 'https://a.example.com'), { name: '书房主机', note: '', overlong: false });
+  const empty = parseConsoleName('   ', 'https://a.example.com');
+  assert.equal(empty.name, 'a.example.com');
+  assert.match(empty.note, /地址/);
+  assert.equal(empty.overlong, false);
+  const overlong = parseConsoleName('主'.repeat(41), 'https://a.example.com');
+  assert.equal(overlong.name, 'a.example.com');
+  assert.match(overlong.note, /40/);
+  assert.equal(overlong.overlong, true);
+  const edge = parseConsoleName('主'.repeat(40), 'https://a.example.com');
+  assert.equal(edge.name, '主'.repeat(40));
+  assert.equal(edge.note, '');
+});
+
+test('添加控制台：暂存自定义名称一次性消费；未命名回落地址；显式 name 优先且清暂存', async () => {
+  const storage = memoryStorage();
+  const registry = createConsoleRegistry({ storage });
+  await registry.load();
+  stageConsoleName('  我的书房  ');
+  await registry.addConsole({ base: 'https://a.example.com' }, bindWith('ta'));
+  assert.equal(registry.list()[0].name, '我的书房');
+  assert.equal(takeStagedConsoleName(), null, '暂存名称一次性消费，不污染下一次添加');
+  await registry.addConsole({ base: 'https://b.example.com' }, bindWith('tb'));
+  assert.equal(registry.list()[1].name, 'b.example.com', '未命名回落地址');
+  stageConsoleName('暂存名');
+  await registry.addConsole({ base: 'https://c.example.com', name: '显式名' }, bindWith('tc'));
+  assert.equal(registry.list()[2].name, '显式名');
+  assert.equal(takeStagedConsoleName(), null, '显式名称也清掉暂存');
+});
+
+test('改名：写穿本机清单、未知控制台拒绝、超长回落、写失败回滚不破坏连接', async () => {
+  const storage = memoryStorage();
+  const registry = createConsoleRegistry({ storage });
+  await registry.load();
+  await registry.addConsole({ base: 'https://a.example.com', name: '原名' }, bindWith('ta'));
+  const list = await registry.renameConsole('https://a.example.com', '  新名字  ');
+  assert.equal(list[0].name, '新名字');
+  assert.equal(JSON.parse(storage.data.get(CONSOLES_KEY))[0].name, '新名字', '改名只写本机清单');
+  assert.equal(storage.data.has('a.example.com:device-token'), true, '改名不动设备凭证，连接不受影响');
+  await assert.rejects(registry.renameConsole('https://x.example.com', 'x'), e => e.code === 'CONSOLE_UNKNOWN');
+  await registry.renameConsole('https://a.example.com', '长'.repeat(41));
+  assert.equal(registry.list()[0].name, 'a.example.com', '改名超长按地址回落');
+  const original = storage.set;
+  storage.set = async (key, value) => { if (key === CONSOLES_KEY) throw new Error('disk'); return original(key, value); };
+  await assert.rejects(registry.renameConsole('https://a.example.com', '改不了'), e => e.code === 'STORAGE_FAILED');
+  assert.equal(registry.list()[0].name, 'a.example.com', '改名失败保留原名');
+});
+
+test('改名桥接：设置页经 renameConsoleFor 改到当前 registry', async () => {
+  const storage = memoryStorage();
+  const registry = createConsoleRegistry({ storage });
+  await registry.load();
+  await registry.addConsole({ base: 'https://a.example.com', name: '原名' }, bindWith('ta'));
+  await renameConsoleFor('https://a.example.com', '桥接改名');
+  assert.equal(registry.list()[0].name, '桥接改名');
+});
+
+test('设置页列表：自定义名称为标题、地址为副标题，并提供就地改名入口', () => {
+  const doc = nameFakeDoc();
+  const container = nameFakeNode('div', doc);
+  const renamed = [];
+  renderConsoleList(container, {
+    consoles: [
+      { origin: 'https://a.example.com', name: '书房', current: true },
+      { origin: 'https://b.example.com', name: 'https://b.example.com', current: false },
+    ],
+    onRename: (origin, name) => renamed.push([origin, name]),
+  });
+  const text = nameFlatten(container).join(' ');
+  assert.match(text, /书房/);
+  assert.ok(text.includes('https://a.example.com'), '地址作为副标题展示');
+  assert.match(text, /未命名（按地址显示）/, '未自定义时如实标注按地址显示');
+  const buttons = nameCollect(container).filter(node => node.dataset.action === 'rename-console');
+  assert.equal(buttons.length, 2, '每张卡都有改名入口');
+  buttons[0].click();
+  const input = nameCollect(container).find(node => node.tag === 'input');
+  assert.ok(input, '改名进入就地输入');
+  input.value = '新书房';
+  const save = nameCollect(container).find(node => node.dataset.action === 'save-console-name');
+  assert.ok(save);
+  save.click();
+  assert.deepEqual(renamed, [['https://a.example.com', '新书房']]);
+});
+
+test('浏览器：添加控制台填名称→列表显示名称与地址副标题→改名生效→重启仍保留', { skip: browserSkip }, async t => {
+  const a = await makeConsole('name-a');
+  let browser;
+  t.after(async () => { if (browser) await browser.close(); await a.dispose(); });
+  browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 402, height: 874 }, bypassCSP: true });
+  await context.addInitScript(() => {
+    const k = key => `__hub_${key}`;
+    window.AutoloopConsoleStorage = {
+      async nativeGet({ key }) { return { value: sessionStorage.getItem(k(key)) }; },
+      async nativeSet({ key, value }) { sessionStorage.setItem(k(key), value); return { ok: true }; },
+      async nativeRemove({ key }) { sessionStorage.removeItem(k(key)); return { ok: true }; },
+      async nativeSessionGet() { return { unlocked: sessionStorage.getItem('__hub_session') === '1' }; },
+      async nativeSessionSet({ unlocked }) { sessionStorage.setItem('__hub_session', unlocked ? '1' : '0'); return { unlocked }; },
+    };
+    window.AutoloopBiometric = { async verify() { return true; } };
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`${a.url}/mobile/`);
+  await page.waitForFunction(() => !document.getElementById('bind-card').hidden);
+  const host = new URL(a.url).host;
+  await page.locator('#console-custom-name').fill('我的书房主机');
+  await page.locator('#base-url').fill(a.url);
+  await page.locator('#bind-payload').fill(a.deviceAuth.createBinding().qrPayload);
+  await page.locator('#bind-submit').click();
+  await page.waitForFunction(() => document.getElementById('bind-status')?.textContent?.includes('绑定成功'));
+  await page.locator('#unlock').click();
+  await page.locator('#app-main').waitFor({ state: 'visible' });
+  await page.locator('#open-settings').click();
+  await page.waitForFunction(() => document.querySelectorAll('#settings-console [data-console-origin]').length === 1);
+  const card = page.locator('#settings-console [data-console-origin]');
+  assert.match(await card.locator('.console-name').innerText(), /我的书房主机/);
+  assert.ok((await card.locator('.console-meta').innerText()).includes(host), '地址作为副标题');
+  await card.locator('[data-action="rename-console"]').click();
+  await page.locator('#settings-console .console-rename-input').fill('新名字');
+  await page.locator('#settings-console [data-action="save-console-name"]').click();
+  await page.waitForFunction(() => document.querySelector('#settings-console .console-name')?.textContent?.includes('新名字'));
+  const stored = await page.evaluate(() => JSON.parse(sessionStorage.getItem('__hub_consoles')));
+  assert.equal(stored[0].name, '新名字');
+  await page.reload();
+  // 进程会话解锁标记仍有效，重启后直接进入主界面，不经过绑定/解锁卡；只需核对本机清单。
+  await page.waitForFunction(() => window.__autoloopPagesReady === true);
+  const restored = await page.evaluate(() => JSON.parse(sessionStorage.getItem('__hub_consoles')));
+  assert.equal(restored[0].name, '新名字', '改名写穿本机存储，重启不丢');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '无横向溢出');
   assert.deepEqual(errors, []);
 });
