@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { spawnSync, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { runDoctor, formatReport, UPSTREAM_URL } from '../src/doctor.mjs';
 import { listen, close } from './helpers.mjs';
 
@@ -166,14 +166,30 @@ test('public：移动端 API 令牌无效失败，未提供令牌为 skip 且不
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+// 纯 Node 可移植目录快照：相对路径 + size + mtimeMs，排序后返回；不依赖 BSD/GNU stat 差异。
+function snapshotDir(root) {
+  const entries = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const p = path.join(dir, name);
+      const st = statSync(p);
+      if (st.isDirectory()) walk(p);
+      else if (st.isFile()) entries.push([path.relative(root, p), st.size, st.mtimeMs]);
+    }
+  };
+  walk(root);
+  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return entries;
+}
+
 test('只读且可重复：连跑两次结果一致，运行目录不被修改', async () => {
   const { home, cf } = publicFixture();
-  const snap = () => spawnSync('find', [home, '-type', 'f', '-exec', 'stat', '-f', '%N %m %z', '{}', '+'], { encoding: 'utf8' }).stdout;
+  const snap = () => snapshotDir(home);
   try {
     const opts = { phase: 'public', home, nodeVersion: '24.0.0', consoleUrl: 'http://127.0.0.1:1', tunnelConfigPaths: [cf], deviceToken: 'good' };
     const s0 = snap();
     const a = await runDoctor({ ...opts, fetch: fakeFetch() }); const b = await runDoctor({ ...opts, fetch: fakeFetch() });
-    assert.deepEqual(a, b); assert.equal(snap(), s0)
+    assert.deepEqual(a, b); assert.deepEqual(snap(), s0)
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
